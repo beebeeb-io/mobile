@@ -637,3 +637,26 @@ screen (`PLAN_MANAGEMENT_NOTE`):
 This is a deviation from the BRIEF, not from a design mock or a Guus ruling — recorded here per
 the same "flagged, never shipped silently" convention rather than silently dropping the button or
 silently adding one that would risk App Review rejection.
+
+## Task 1689 — PhotosScreen's 1322 "blur ALWAYS on" decision is amended (2026-10-02, bug-rel lane)
+
+Task 1322 deliberately mounted `ScrollEdgeBlur` UNCONDITIONALLY on PhotosScreen — the only such
+mount in the app — with two recorded reasons: Photos is permanently full-bleed, and `isScrolled`
+was permanently false on the shipping platform because the native grid never reported scroll.
+Task 1689 (light-mode "rare fade" at rest) changes this, and the change is a deviation from that
+recorded decision, recorded here per the same convention:
+
+- **What changed:** the mount is now gated `{isScrolled ? <ScrollEdgeBlur …/> : null}`, matching
+  every sibling screen (Files 4545, Settings 1826, Trash 386, Shared 737, Storage 403,
+  BackupInsights 629). The trigger was Guus's 2026-10-02 report: in light mode the 0.30-alpha
+  light tint (`glass-recipe.ts`'s derived `SCROLL_EDGE.lightTint`) renders as a visible
+  "plain-band fade" over the grid's paper background at rest — with `contentInsetTop` the first
+  row starts BELOW the header at rest, so the strip has nothing to make legible then.
+- **What did NOT change:** 1322's second reason (no scroll signal on iOS) still holds — the
+  native grid deliberately defers every bridge dispatch to rest positions. So `isScrolled` is
+  derived from the grid's own `onVisiblePhotoIdsChange` via a top-photo-visible heuristic rather
+  than a native scroll event; the FlatList fallback keeps its real `onScroll` derivation.
+- **Recorded trade-off:** during the drag itself (before the grid settles) the header rides over
+  unblurred content for the duration of the gesture — the same deferred-side-effect trade the
+  native grid already makes for thumbnail prefetch. At rest (the bug state) the fade is gone in
+  both schemes; while scrolled, the blur does exactly what 1322 wanted.

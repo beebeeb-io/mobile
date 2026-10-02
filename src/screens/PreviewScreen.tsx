@@ -16,7 +16,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import type { ImageStyle, StyleProp, ViewStyle } from 'react-native';
+import type { GestureResponderEvent, ImageStyle, StyleProp, ViewStyle } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RouteProp } from '@react-navigation/native';
@@ -94,12 +94,12 @@ import { InfoSheet } from '../components/preview/InfoSheet';
 import { PreviewBottomBar } from '../components/preview/PreviewBottomBar';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { formatBytes as formatSize } from '../lib/format';
-import { STILL_UPLOADING_MESSAGE, previewLoadErrorMessage } from '../lib/preview-load-error';
+import { PARTIAL_DECRYPT_MESSAGE, STILL_UPLOADING_MESSAGE, previewLoadErrorMessage } from '../lib/preview-load-error';
 import { displayedSizeBytes, savedFileMetaFrom, type SavedFileMeta } from '../lib/saved-file-meta';
 import { checkLockedFileIds, isPagerPageGated } from '../lib/preview-lock-gate';
 import { computePreviewContentInset } from '../lib/preview-content-inset';
 import { FILES_APP_LOCK_CAVEAT } from '../lib/lock-copy';
-import { formatPdfPageCounter, nextBarsVisible } from '../lib/preview-chrome';
+import { formatPdfPageCounter, nextBarsVisible, pagerTapAction } from '../lib/preview-chrome';
 import { buildInfoSheetRows, type InfoSheetFocus } from '../lib/preview-info';
 import { extensionForAudio } from '../lib/audio-format';
 import { extensionForRaw, rawFormatLabel } from '../lib/raw-format';
@@ -1167,6 +1167,18 @@ const ProgressiveOriginalImage = React.memo(function ProgressiveOriginalImage({
   );
 });
 
+/**
+ * Task 1687a — raw touch handlers for a pager page's locked-state wrapper.
+ * Stopping propagation here (the same pattern ZoomableImage documents and
+ * uses) keeps the pager FlatList's own onTouchStart/onTouchEnd tap detector
+ * from ALSO seeing the tap and calling handleContentTap — two toggles would
+ * cancel out and the tap would read as dead. The descendant Pressable is
+ * unaffected: stopPropagation only ends bubbling ABOVE this wrapper.
+ */
+const stopPageTouchPropagation = (e: GestureResponderEvent) => {
+  e.stopPropagation();
+};
+
 const PhotoPage = React.memo(function PhotoPage({
   entry,
   shouldLoadFull,
@@ -1611,43 +1623,98 @@ const PhotoPage = React.memo(function PhotoPage({
 
   return (
     <View style={[styles.photoPage, { width }]}>
-      {locked ? (
-        // Task 1539 (finding 1, P0): what a swipe onto a locked neighbor
-        // shows now, instead of silently decrypting and displaying it. Every
-        // effect that could populate `thumbnailUri`/`uri` is gated above,
-        // so this is not just a visual cover-up over content that already
-        // loaded — and (Codex P1 follow-up, PR #109 review) the render
-        // branch below that WOULD show `uri`/`thumbnailUri`/`error` is now
-        // also gated on `!locked`, so a value set by an in-flight load that
-        // was already running before `locked` flipped true (e.g. the
-        // startup window before `lockCheckReady`) can never surface
-        // alongside or underneath this prompt either.
-        <Pressable
-          style={styles.photoPageStatus}
-          onPress={() => onRequestUnlock(entry.id)}
-          disabled={unlocking}
-          accessibilityRole="button"
-          accessibilityLabel="Locked file — tap to authenticate"
-          testID="preview-locked-page"
-        >
-          <Ionicons name="lock-closed" size={32} color={colors.amber} />
-          <Text style={styles.photoPageStatusTitle}>Locked</Text>
-          <Text style={styles.photoPageStatusSub}>
-            {unlocking ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
-          </Text>
-          {/* Task 1539 (finding 5, lead decision — PR #109 review): the lock
-              has no keychainAccessGroup, so it is not visible to the File
-              Provider extension — say so wherever there is room next to the
-              explainer, rather than let "Locked" imply full coverage. */}
-          <Text style={styles.photoPageStatusSub}>{FILES_APP_LOCK_CAVEAT}</Text>
-        </Pressable>
-      ) : (
-        <>
-          {thumbnailUri && !uri && !error ? (
-            <Image
-              source={{ uri: thumbnailUri }}
-              style={styles.photoPageThumbnail}
-              resizeMode="contain"
+      {(() => {
+        // Task 1687a — the page's tap decision per lock state (unit-tested
+        // in preview-chrome.test.ts). Both locked branches wrap their
+        // Pressable in a View that stops raw touch propagation, exactly the
+        // pattern ZoomableImage uses: the pager FlatList's own
+        // onTouchStart/onTouchEnd tap detector would otherwise ALSO see the
+        // tap and call handleContentTap, toggling the chrome twice (net
+        // no-op — the tap would read as dead again).
+        const action = pagerTapAction({ fileLocked: locked, vaultLocked: !isUnlocked, contentOwned: false });
+        if (action === 'unlock-file') {
+          return (
+            <View
+              onTouchStart={stopPageTouchPropagation}
+              onTouchEnd={stopPageTouchPropagation}
+              onTouchCancel={stopPageTouchPropagation}
+            >
+              {/* Task 1539 (finding 1, P0): what a swipe onto a locked neighbor
+                  shows now, instead of silently decrypting and displaying it. Every
+                  effect that could populate `thumbnailUri`/`uri` is gated above,
+                  so this is not just a visual cover-up over content that already
+                  loaded — and (Codex P1 follow-up, PR #109 review) the render
+                  branch below that WOULD show `uri`/`thumbnailUri`/`error` is now
+                  also gated on `!locked`, so a value set by an in-flight load that
+                  was already running before `locked` flipped true (e.g. the
+                  startup window before `lockCheckReady`) can never surface
+                  alongside or underneath this prompt either. */}
+              <Pressable
+                style={styles.photoPageStatus}
+                onPress={() => onRequestUnlock(entry.id)}
+                disabled={unlocking}
+                accessibilityRole="button"
+                accessibilityLabel="Locked file — tap to authenticate"
+                testID="preview-locked-page"
+              >
+                <Ionicons name="lock-closed" size={32} color={colors.amber} />
+                <Text style={styles.photoPageStatusTitle}>Locked</Text>
+                <Text style={styles.photoPageStatusSub}>
+                  {unlocking ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
+                </Text>
+                {/* Task 1539 (finding 5, lead decision — PR #109 review): the lock
+                    has no keychainAccessGroup, so it is not visible to the File
+                    Provider extension — say so wherever there is room next to the
+                    explainer, rather than let "Locked" imply full coverage. */}
+                <Text style={styles.photoPageStatusSub}>{FILES_APP_LOCK_CAVEAT}</Text>
+              </Pressable>
+            </View>
+          );
+        }
+        if (action === 'toggle-chrome' && !isUnlocked) {
+          // Task 1687a — the VAULT-locked page (a different lock from the
+          // per-file gate above; keep the two apart). This state previously
+          // had NO dedicated render branch: the page fell through to the
+          // content branch's plain status View, whose only tap path was the
+          // pager's raw 10 pt / 500 ms detector — an imprecise or slow tap
+          // landed nowhere, which is exactly the "sometimes doesn't respond
+          // to touch, no menu top or bottom" report. A full-page Pressable
+          // makes every tap register (chrome toggle via onSingleTap). The
+          // card is informational only — NO auth step here; the vault
+          // unlock flow is task 1684's, this lane is hit-testing only.
+          return (
+            <View
+              onTouchStart={stopPageTouchPropagation}
+              onTouchEnd={stopPageTouchPropagation}
+              onTouchCancel={stopPageTouchPropagation}
+            >
+              <Pressable
+                style={styles.photoPageStatus}
+                onPress={onSingleTap}
+                accessibilityRole="button"
+                accessibilityLabel="Vault locked — tap to show or hide the menus"
+                testID="preview-vault-locked-page"
+              >
+                <Ionicons name="lock-closed" size={32} color={colors.amber} />
+                {/* 1346 — forced-dark text: every pager page sits on
+                    mediaRoot's fixed near-black ground (see the mediaMaterial
+                    comment in the main component), regardless of app scheme. */}
+                <Text style={styles.photoPageStatusTitle}>Vault locked</Text>
+                <Text style={styles.photoPageStatusSub}>
+                  Unlock your vault to view this file.
+                </Text>
+                <Text style={styles.photoPageStatusSub}>Tap anywhere to show or hide the menus.</Text>
+              </Pressable>
+            </View>
+          );
+        }
+        return (
+          <>
+            {thumbnailUri && !uri && !error ? (
+              <Image
+                source={{ uri: thumbnailUri }}
+                style={styles.photoPageThumbnail}
+                resizeMode="contain"
             />
           ) : null}
           {error ? (
@@ -1734,8 +1801,9 @@ const PhotoPage = React.memo(function PhotoPage({
               ) : null}
             </View>
           )}
-        </>
-      )}
+          </>
+        );
+      })()}
     </View>
   );
 });
@@ -4114,11 +4182,18 @@ export default function PreviewScreen() {
   };
   const renderLoadError = (title: string, message: string, tone: 'doc' | 'media' = 'doc') => {
     const stillUploading = message === STILL_UPLOADING_MESSAGE;
+    // Task 1687d — an honest card for the partial-file case ("halve file"):
+    // the message names what happened ("This file didn't fully decrypt."),
+    // the title names what the user is looking at, and Try again fetches a
+    // fresh copy (the truncated cache entry was already scrubbed at
+    // reject time). Never a promise that the retry "should work".
+    const partial = message === PARTIAL_DECRYPT_MESSAGE;
+    const resolvedTitle = partial ? 'Incomplete file' : stillUploading ? 'Still uploading' : title;
     const ink = tone === 'media' ? colors.white : c.ink;
     return (
       <View style={styles.imageStatus} testID="preview-load-error">
         <Text style={[styles.imageStatusTitle, { color: ink }]}>
-          {stillUploading ? 'Still uploading' : title}
+          {resolvedTitle}
         </Text>
         <Text style={[styles.imageStatusSub, tone === 'doc' && { color: c.ink3 }]}>{message}</Text>
         <TouchableOpacity
@@ -4202,6 +4277,31 @@ export default function PreviewScreen() {
             ("Encrypted · Type · size", item 2) instead of a second floating
             badge; see DEVIATIONS.md for the removal note. */}
 
+        {/* Task 1687b — swipe-down on preview CONTENT closes the preview,
+            same gesture + thresholds as the header rows (closeTranslateY
+            comment above): the pan wraps ALL media content branches (pager,
+            locked single-file stage, normal stage). Configuration copied
+            from the header's own PanGestureHandler: activeOffsetY
+            [-1000, 8] activates on a ≥8 pt downward move, failOffsetX ±20
+            hands horizontal moves to the pager's FlatList so page swipes
+            are untouched. This is an RNGH NATIVE pan, not a JS responder —
+            the bisected trap the pager comment below documents (a Pressable
+            ancestor ate every swipe) does not apply. `enabled={!mediaZoomed}`
+            matches the pager's own scrollEnabled gate (1579): while a
+            ZoomableImage is zoomed its ScrollView owns the vertical pan, so
+            the dismiss gesture stands down. The doc branch is deliberately
+            NOT wrapped: its content (PDF/WebView/text) scrolls vertically —
+            a content pan there would fight scrolling; the doc header
+            already carries the same swipe (see its PanGestureHandler).
+            Taps still reach the content: the header proves the tap/pan
+            coexistence (its TouchableOpacities work inside the same pan). */}
+        <PanGestureHandler
+          onGestureEvent={onCloseGestureEvent}
+          onHandlerStateChange={onCloseHandlerStateChange}
+          activeOffsetY={[-1000, 8]}
+          failOffsetX={[-20, 20]}
+          enabled={!mediaZoomed}
+        >
         {showPager ? (
           // Preview redesign item 3 — tap-to-hide on the swipe pager too.
           // See the `pagerTouchStartRef` comment above (by `pagerRef`) for
@@ -4408,6 +4508,7 @@ export default function PreviewScreen() {
             )}
           </Pressable>
         )}
+        </PanGestureHandler>
 
         {/* Task 1583 — the chrome layer is rendered AFTER the content stage,
             not before it. zIndex (chromeLayer: 20) already puts it on top,

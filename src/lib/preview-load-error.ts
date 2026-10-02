@@ -13,6 +13,16 @@ import { ApiError, friendlyError } from './api';
 
 export const STILL_UPLOADING_MESSAGE = 'This file is still uploading. Try again in a moment.';
 
+/**
+ * Task 1687d — what a genuinely PARTIAL result says. A decrypt that produced
+ * fewer plaintext bytes than the file's metadata (a truncated cache entry
+ * from a mid-write crash, or a native decrypt that came up short) used to
+ * render the decodable prefix silently — a "halve file" with no
+ * explanation. The message is plain about what happened and what to do;
+ * no promises that a retry "should work".
+ */
+export const PARTIAL_DECRYPT_MESSAGE = "This file didn't fully decrypt. The local copy is incomplete — try again to fetch it fresh.";
+
 function messageOf(err: unknown): string {
   if (err instanceof Error) return err.message ?? '';
   if (typeof err === 'string') return err;
@@ -49,6 +59,13 @@ export function stripNativeExceptionNoise(message: string): string {
 /** The message the preview shows for a failed load. */
 export function previewLoadErrorMessage(err: unknown): string {
   if (isStillUploadingError(err)) return STILL_UPLOADING_MESSAGE;
+  // Task 1687d — a plain Error's honest message (e.g. PARTIAL_DECRYPT_
+  // MESSAGE, thrown by native-decrypt's size check) passes through
+  // verbatim: friendlyError returns a plain Error's own message, and the
+  // native-bridge stripper only removes "…Exception:" prefixes and
+  // "(at File.swift:N)" suffixes, neither of which the partial message
+  // carries. The partial-decrypt tests pin that pass-through; a special-
+  // case map here would be dead code (kept out deliberately).
   const friendly = friendlyError(err);
   return stripNativeExceptionNoise(friendly) || 'Something went wrong. Please try again.';
 }

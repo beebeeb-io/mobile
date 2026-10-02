@@ -78,6 +78,7 @@ import ExportProgressBanner, { type ExportProgressBannerHandle } from '../compon
 import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken, getUploadResumeForFile, forgetUploadResume } from '../lib/api';
 import type { UploadResumeInfo } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
+import { ensurePhotoPermission } from '../lib/photo-permissions';
 import { generateAndUploadThumbnail } from '../lib/thumbnail';
 import { FileIcon } from '../components/FileIcon';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
@@ -3886,8 +3887,13 @@ export default function FilesScreen() {
       // Videos need post-import verification so we can avoid a false success
       // toast when PhotoKit creates a placeholder but no visible video. Full
       // read/write permission lets getAssetInfoAsync validate the new asset.
-      const perm = await MediaLibrary.requestPermissionsAsync(!isVideo);
-      if (perm.status !== 'granted') {
+      // Task 1688 — get first: an already-granted library (including
+      // LIMITED access, where saving into the selected set works) must not
+      // re-present the "Select More Photos" sheet from a plain save action;
+      // only a not-granted library prompts, and only because the user just
+      // tapped Save to Photos.
+      const perm = await ensurePhotoPermission(MediaLibrary, { writeOnly: !isVideo });
+      if (!perm.granted) {
         Alert.alert(
           'Permission required',
           'Allow Photos access to save to your library.',

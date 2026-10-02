@@ -22,6 +22,7 @@ mock.module('./api', () => ({
 
 const {
   STILL_UPLOADING_MESSAGE,
+  PARTIAL_DECRYPT_MESSAGE,
   isStillUploadingError,
   previewLoadErrorMessage,
   stripNativeExceptionNoise,
@@ -55,5 +56,27 @@ describe('previewLoadErrorMessage (task 1592 item 3)', () => {
     expect(isStillUploadingError(err)).toBe(false);
     expect(previewLoadErrorMessage(err)).toBe('Download failed with HTTP 500');
     expect(stripNativeExceptionNoise('Not available offline')).toBe('Not available offline');
+  });
+});
+
+// Task 1687d — the honest partial-file card. A truncated decrypt (native
+// result short of the file's own plaintext size) surfaces as
+// PARTIAL_DECRYPT_MESSAGE and must reach the error card verbatim — not be
+// eaten by the native-exception stripper or rewritten by friendlyError.
+// Mutation evidence in task 1687 Notes (mapping removed → both fail).
+describe('previewLoadErrorMessage — partial decrypt (task 1687d)', () => {
+  test('the plain partial message passes through unchanged', () => {
+    expect(previewLoadErrorMessage(new Error(PARTIAL_DECRYPT_MESSAGE))).toBe(PARTIAL_DECRYPT_MESSAGE);
+  });
+
+  test('a native-wrapped partial message is unwrapped but keeps the honest copy', () => {
+    const err = new Error(`UnexpectedException: ${PARTIAL_DECRYPT_MESSAGE} (at ExpoModulesCore/ConcurrentFunctionDefinition.swift:90)`);
+    expect(previewLoadErrorMessage(err)).toBe(PARTIAL_DECRYPT_MESSAGE);
+  });
+
+  test('PARTIAL_DECRYPT_MESSAGE itself is honest and specific (no "should work" claims)', () => {
+    expect(PARTIAL_DECRYPT_MESSAGE).toContain("didn't fully decrypt");
+    expect(PARTIAL_DECRYPT_MESSAGE).not.toMatch(/should work/i);
+    expect(PARTIAL_DECRYPT_MESSAGE).toMatch(/try again/i);
   });
 });

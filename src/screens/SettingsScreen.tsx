@@ -19,7 +19,7 @@ import * as SecureStore from 'expo-secure-store';
 let LocalAuthentication: any = { hasHardwareAsync: async () => false, authenticateAsync: async () => ({ success: false }), isEnrolledAsync: async () => false };
 let StoreReview: any = { requestReview: async () => {} };
 let Notifications: any = { getPermissionsAsync: async () => ({ status: 'undetermined' }), requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
-let MediaLibrary: any = { requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
+let MediaLibrary: any = { getPermissionsAsync: async () => ({ status: 'undetermined' }), requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
 let Contacts: any = {
   getPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
   requestPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
@@ -53,6 +53,7 @@ import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { ensureCalendarPermission } from '../lib/calendar-permissions';
+import { ensurePhotoPermission } from '../lib/photo-permissions';
 import { formatBytes } from '../lib/format';
 import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
 import {
@@ -1439,8 +1440,12 @@ export default function SettingsScreen() {
   const handleTogglePhotoBackup = useCallback(async () => {
     const enabling = !isPhotoBackupEnabled;
     if (enabling) {
-      const { status } = await MediaLibrary.requestPermissionsAsync();
-      if (status !== 'granted') {
+      // Task 1688 — get first: an already-granted library (full OR limited)
+      // must not be re-prompted by re-enabling the toggle; only a
+      // not-yet-granted one prompts, and only because the user just chose
+      // to enable backup (an explicit action).
+      const { granted } = await ensurePhotoPermission(MediaLibrary);
+      if (!granted) {
         Alert.alert(
           'Photo access needed',
           'Beebeeb needs access to your photo library to back up your camera roll. Open Settings and enable "Photos" access.',

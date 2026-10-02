@@ -28,6 +28,7 @@ import {
   DEFAULT_QUALITY,
 } from '../lib/thumbnail-quality';
 import { BeebeebThumbnails } from '../../modules/beebeeb-crypto';
+import { ensurePhotoPermission } from '../lib/photo-permissions';
 import { getFileIndex } from '../lib/api';
 import { loadCachedFileIndex, saveCachedFileIndex } from '../lib/file-index-cache';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
@@ -110,8 +111,13 @@ export default function ThumbnailQualityScreen() {
 
     void (async () => {
       try {
-        const { status } = await MediaLibrary.requestPermissionsAsync();
-        if (cancelled || status !== 'granted') return;
+        // Task 1688 — get first: a granted (full OR limited) library must
+        // not re-prompt; this screen's sample-photo preview only asks the
+        // system for access when there is nothing granted yet. The visit
+        // itself is the explicit action, so a first-time request here is
+        // unchanged behavior.
+        const { granted } = await ensurePhotoPermission(MediaLibrary);
+        if (cancelled || !granted) return;
         const result = await MediaLibrary.getAssetsAsync({
           first: 1,
           mediaType: MediaLibrary.MediaType.photo,
