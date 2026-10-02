@@ -214,6 +214,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
       createdAt,
       plaintextSizeBytes: plaintextSize,
       resumeKey,
+      resumeMeta: { sourceUri: uri, name, mimeType: mimeType ?? null },
       onProgress,
     })
     if (native) return native
@@ -229,6 +230,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
     createdAt,
     plaintextSizeBytes: plaintextSize,
     resumeKey,
+    resumeMeta: { sourceUri: uri, name, mimeType: mimeType ?? null },
     onProgress: onProgress
       ? (p) => onProgress({ ...p, cryptoBytesPerSec: measuredCryptoRate() })
       : undefined,

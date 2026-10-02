@@ -73,7 +73,8 @@ import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
 import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
-import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
+import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken, getUploadResumeForFile, forgetUploadResume } from '../lib/api';
+import type { UploadResumeInfo } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { generateAndUploadThumbnail } from '../lib/thumbnail';
 import { FileIcon } from '../components/FileIcon';
@@ -2309,11 +2310,28 @@ export default function FilesScreen() {
     navigateToBreadcrumb(stackIndex);
   }, [navigateToBreadcrumb]);
 
+  // Task 1685 fix 7 — durable resume affordance. api.ts records, once per
+  // upload attempt, a per-file pointer (fileId → resumeKey + sourceUri + name
+  // + parent + mime + size). This memo map caches the per-file lookups so
+  // repeated taps never repeat SecureStore reads; the first tap after a
+  // relaunch pays a single local read (ms), not a network round-trip.
+  const resumeInfosRef = useRef<Map<string, UploadResumeInfo | null>>(new Map());
+  const getResumeInfoForTap = useCallback(async (fileId: string): Promise<UploadResumeInfo | null> => {
+    const memo = resumeInfosRef.current.get(fileId);
+    if (memo !== undefined) return memo;
+    const info = await getUploadResumeForFile(fileId).catch(() => null);
+    resumeInfosRef.current.set(fileId, info);
+    return info;
+  }, []);
+
   // 1303 — a pending (never-finalized) upload placeholder gets a real
   // affordance instead of a dead-end toast: tap → status + Discard. Discard
   // trashes the row server-side (stale_upload_cleanup reaps its blobs at the
   // 7-day mark regardless) and drops it from the visible list immediately.
+  // Task 1685 fix 7 — the discarded attempt's resume pointer is dropped too.
   const discardPendingUpload = useCallback(async (file: FileEntry) => {
+    void forgetUploadResume(file.id);
+    resumeInfosRef.current.set(file.id, null);
     try {
       await deleteFile(file.id);
       setFiles((prev) => prev.filter((f) => f.id !== file.id));
@@ -2324,28 +2342,120 @@ export default function FilesScreen() {
     }
   }, [currentFolder.id, fetchFiles, showToast]);
 
-  const handlePendingUpload = useCallback(async (file: FileEntry) => {
-    let detail = 'This upload never finished.';
-    try {
-      const status = await getUploadStatus(file.id);
-      if (!status.is_uploading) {
-        // Server says it actually completed — the local flag is stale; reconcile.
-        fetchFiles(currentFolder.id, true);
-        return;
-      }
-      detail = `${status.uploaded_chunks.length} of ${status.chunk_count} encrypted chunks were stored before the upload stopped.`;
-    } catch {
-      // keep the generic line — the dialog still offers the way out
+  // Task 1685 fix 7 — actually resume an interrupted attempt: re-run
+  // encryptedUpload with the recorded inputs. api.ts recomputes the identical
+  // resumeKey, finds the stored resume state and continues from
+  // lastUploadedChunkIndex against the same upload session; if the server
+  // swept the session in the meantime, its bounded re-init takeover restarts
+  // it under the same file id. Requires the recorded source file to still
+  // exist — an evicted cache copy honestly reports instead of faking resume.
+  const resumePendingUpload = useCallback(async (file: FileEntry, info: UploadResumeInfo) => {
+    const sourceInfo = await FileSystem.getInfoAsync(info.sourceUri).catch(() => ({ exists: false }) as { exists: boolean });
+    if (!sourceInfo.exists) {
+      showToast({
+        type: 'error',
+        message: `"${info.name}" is no longer on this device, so this upload can't continue. Discard it and add the file again.`,
+      });
+      return;
     }
-    Alert.alert(
-      'Upload pending',
-      `${detail}\n\nDiscarding removes this placeholder and its stored chunks. To upload the file, add it again from its source.`,
-      [
-        { text: 'Discard upload', style: 'destructive', onPress: () => { void discardPendingUpload(file); } },
-        { text: 'Keep', style: 'cancel' },
-      ],
-    );
-  }, [currentFolder.id, discardPendingUpload, fetchFiles]);
+    const loc = trustLocation(undefined);
+    const display = info.name || displayName(file) || 'file';
+    setUpload({ fileName: display, stage: 2, percent: 0, city: loc.city, region: loc.region });
+    const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
+    try {
+      const uploaded = await encryptedUpload({
+        fileId: file.id,
+        uri: info.sourceUri,
+        name: info.name,
+        parentId: info.parentId ?? undefined,
+        mimeType: info.mimeType ?? undefined,
+        encryptChunkFn: encryptChunk,
+        encryptMetadataFn: encryptMetadata,
+        masterKeyHandleId: getMasterKeyHandleId(),
+        onProgress: (progress) => {
+          if (!allowProgress.allow(progress)) return;
+          const percent = progress.bytesTotal > 0
+            ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
+            : 0;
+          setUpload((prev) => {
+            const base = prev ?? { fileName: display, stage: 2 as UploadStage, percent: 0, city: loc.city, region: loc.region };
+            const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
+            return {
+              ...base,
+              stage,
+              percent,
+              chunksUploaded: progress.chunksUploaded,
+              chunksTotal: progress.chunksTotal,
+              chunkSizeBytes: progress.chunkSizeBytes,
+              bytesUploaded: progress.bytesUploaded,
+              bytesTotal: progress.bytesTotal,
+              cryptoBytesPerSec: progress.cryptoBytesPerSec,
+            };
+          });
+        },
+      });
+      const finalLoc = trustLocation(uploaded.storage_pool_id);
+      setUpload({ fileName: display, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
+      setFiles((prev) => upsertFileEntry(prev, uploaded));
+      indexFile(uploaded.id, toSearchIndexEntry(uploaded, info.name, currentFolder.id));
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showToast({ type: 'success', message: `"${display}" stored in ${finalLoc.city}` });
+      fetchFiles(currentFolder.id, true);
+      setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
+      // Resume pointer is spent — the upload completed.
+      void forgetUploadResume(uploaded.id);
+      resumeInfosRef.current.set(uploaded.id, null);
+      // Post-crash the thumbnail jobs never ran: regenerate both variants
+      // through the bounded queue, then clean up the plaintext upload copy
+      // (only the screen-owned `upload-*` cache file — never the picker's own).
+      const copyUri = info.sourceUri;
+      void Promise.allSettled([
+        thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes)),
+        thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes, 'large')),
+      ]).then(() => {
+        const leaf = copyUri.split('/').pop() ?? '';
+        if (leaf.startsWith('upload-')) void discardUploadCacheCopy(copyUri, '');
+      });
+    } catch (err) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
+      showToast({ type: 'error', message: `Resume failed: ${friendlyError(err)}` });
+      setUpload(null);
+      // The attempt may have advanced since — re-read the pointer next tap.
+      resumeInfosRef.current.delete(file.id);
+    }
+  }, [currentFolder.id, fetchFiles, showToast, encryptChunk, encryptMetadata, getMasterKeyHandleId, getFileKeyBytes, indexFile]);
+
+  // Task 1685 fix 3 — respond to the tap IMMEDIATELY. The old handler awaited
+  // getUploadStatus (a network round-trip) BEFORE showing anything, which read
+  // as "I tap and nothing happens for a long time". The dialog now opens with
+  // local state alone; the server status refines asynchronously and only
+  // reconciles the list — never a second, stacked dialog.
+  const handlePendingUpload = useCallback(async (file: FileEntry) => {
+    const resumeInfo = await getResumeInfoForTap(file.id);
+    const canResume = !!resumeInfo;
+    const detail = canResume
+      ? `"${resumeInfo!.name}" was interrupted before it finished. Resume continues the upload with the parts that were already stored.`
+      : 'This upload never finished.\n\nDiscarding removes this placeholder and its stored chunks. To upload the file, add it again from its source.';
+    const buttons: Array<{ text: string; style?: 'cancel' | 'default' | 'destructive'; onPress?: () => void }> = [];
+    if (resumeInfo) {
+      buttons.push({ text: 'Resume upload', onPress: () => { void resumePendingUpload(file, resumeInfo); } });
+    }
+    buttons.push({ text: 'Discard upload', style: 'destructive', onPress: () => { void discardPendingUpload(file); } });
+    buttons.push({ text: 'Keep', style: 'cancel' });
+    Alert.alert(canResume ? 'Upload pending — can resume' : 'Upload pending', detail, buttons);
+    // Async refinement — silent. If the server already finished the upload,
+    // refresh so the stale placeholder goes away; otherwise nothing to say
+    // that the dialog didn't already say.
+    void (async () => {
+      try {
+        const status = await getUploadStatus(file.id);
+        if (!status.is_uploading) fetchFiles(currentFolder.id, true);
+      } catch {
+        // unreachable server — the dialog already offered its ways out
+      }
+    })();
+  }, [currentFolder.id, discardPendingUpload, fetchFiles, getResumeInfoForTap, resumePendingUpload]);
 
   const ensureFileReady = useCallback(async (file: FileEntry): Promise<boolean> => {
     if (file.is_folder) return true;
