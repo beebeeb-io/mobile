@@ -502,7 +502,13 @@ async function decryptToTempFileUnshared(
   // + a fileKey getter). Refuse beyond the bound — recoverable error, not a
   // crash; a retry after the unlock takes the native streaming path.
   const FALLBACK_MAX_BYTES = 100 * 1024 * 1024;
-  if (sizeBytes != null && sizeBytes > FALLBACK_MAX_BYTES) {
+  // FAIL-CLOSED (task 1683g, second crash): an UNKNOWN size must refuse too —
+  // Guus's retry OOMed with a null sizeBytes AND a chunked response (no
+  // Content-Length), skipping both known-size checks. This path buffers the
+  // whole body in the Java heap; without a known bound it is unsafe, period.
+  // (The real fix — the native layer resolving the key itself so this fallback
+  // never runs on new builds — is task 1683h.)
+  if (sizeBytes == null || sizeBytes > FALLBACK_MAX_BYTES) {
     recordRuntimeTrace('preview.decrypt.js_download.refused_too_large', {
       fileId,
       sizeBytes,
@@ -544,9 +550,11 @@ async function decryptToTempFileUnshared(
   }
 
   const contentLength = responseHeaderInt(res.headers, 'Content-Length');
-  // Task 1683g belt-and-braces: a size not known from the manifest still gets
-  // gated here — an oversized body must never reach arrayBuffer on this path.
-  if (contentLength != null && contentLength > FALLBACK_MAX_BYTES) {
+  // Task 1683g belt-and-braces: fail-closed here too — an unknown
+  // Content-Length (chunked/streamed response) must refuse: the body would be
+  // buffered whole in the Java heap. (The real fix is 1683h — the native layer
+  // resolving the key itself so this fallback never runs on new builds.)
+  if (contentLength == null || contentLength > FALLBACK_MAX_BYTES) {
     recordRuntimeTrace('preview.decrypt.js_download.refused_too_large', {
       fileId,
       sizeBytes: contentLength,

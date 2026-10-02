@@ -316,4 +316,16 @@ describe('task 1683g — the JS-fetch fallback refuses oversized files (the 800 
     // The rateLimitedFetch mock's marker error proves the gate let it through.
     await expect(p).rejects.toThrow('no js download in this test');
   });
+
+  test('an UNKNOWN size refuses too (fail-closed — the 20:32 retry OOM had a null sizeBytes)', async () => {
+    const p = nd.decryptToTempFile(
+      'unknown-size',
+      () => new Uint8Array(32),
+      'mp4',
+      null,
+      null,
+      null,
+    );
+    await expect(p).rejects.toThrow('too large to open');
+  });
 });
