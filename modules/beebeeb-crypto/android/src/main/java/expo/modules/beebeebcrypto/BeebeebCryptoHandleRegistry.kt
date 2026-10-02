@@ -30,7 +30,7 @@ class BeebeebCryptoHandleRegistry {
    * Completed latches are consumed once: `awaitKey()` swaps in a fresh one
    * after a successful await so the NEXT launch's load produces a new signal.
    */
-  private val keyLoaded = CompletableDeferred<Unit>()
+  private var keyLoaded = CompletableDeferred<Unit>()
 
   /** App-wide adopted handle (for future native background readers, M3+). */
   @Volatile
