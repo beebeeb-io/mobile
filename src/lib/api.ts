@@ -354,10 +354,74 @@ export function formatAccountDeletedMessage(deletedAt: string, shredAfter: strin
   return `This account was deleted on ${dateOnly(deletedAt)}. Its encrypted data will be shredded on ${dateOnly(shredAfter)}. We can't recover it.`;
 }
 
+/**
+ * HTTP status phrases that leak into `err.message` when a response body is
+ * not the server's JSON error shape (`{"error": <statusText>}`) — never show
+ * them verbatim (task 1709).
+ */
+const HTTP_STATUS_PHRASES = new Set([
+  'unauthorized',
+  'forbidden',
+  'not found',
+  'bad request',
+  'conflict',
+  'gone',
+  'too many requests',
+  'payload too large',
+  'request timeout',
+  'unprocessable entity',
+  'internal server error',
+  'not implemented',
+  'service unavailable',
+  'bad gateway',
+  'gateway timeout',
+  'method not allowed',
+  'payment required',
+]);
+
+/**
+ * Task 1709 — decide whether a message is honest user-facing prose or a raw
+ * internal fragment that must never reach the UI: bare machine codes
+ * ("account_suspended", "key_binding_conflict"), lowercase internal
+ * fragments ("invalid base64 client_message"), HTTP status words
+ * ("forbidden", "Internal Server Error"), "404 …" prefixes, JSON dumps, or
+ * huge internal detail blobs. Short plain sentences (client-authored copy
+ * and the server's human `message` fields) pass unchanged. Mirrors the web
+ * client's `looksUserFriendly` heuristic (repos/web/src/lib/user-friendly-error.ts).
+ */
+function looksUserFacing(message: string): boolean {
+  const m = message.trim();
+  if (!m) return false;
+  if (m.length > 200) return false;
+  if (m.startsWith('{') || m.startsWith('[')) return false;
+  if (/^\d{3}\b/.test(m)) return false;
+  if (HTTP_STATUS_PHRASES.has(m.toLowerCase())) return false;
+  // One or more all-lowercase tokens with no sentence punctuation: a machine
+  // code or internal fragment, not prose.
+  if (!/[.!?]/.test(m) && /^(?:[a-z0-9_.:-]+(?:\s|$))+$/.test(m)) return false;
+  return true;
+}
+
+/**
+ * Show `message` only when it passes the prose check; anything else gets
+ * `fallback`. Task 1709.
+ */
+function displayFor(message: string | undefined, fallback: string): string {
+  return message && looksUserFacing(message) ? message : fallback;
+}
+
 /** Return a human-friendly message for common API errors. */
 export function friendlyError(err: unknown): string {
   if (err instanceof AccountDeletedError) {
     return formatAccountDeletedMessage(err.deletedAt, err.shredAfter);
+  }
+  // Task 1709 — typed client errors are mapped explicitly so their authored
+  // copy is the ONLY thing these classes can ever put on screen.
+  if (err instanceof NativeCryptoUnavailableError) {
+    return 'A required security component is missing. Update or reinstall the app to sign in.';
+  }
+  if (err instanceof IncorrectPasswordError) {
+    return 'Incorrect password. Please try again.';
   }
   if (err instanceof ApiError) {
     // Typed quota errors come back with a machine-readable `code` so we don't
@@ -388,8 +452,40 @@ export function friendlyError(err: unknown): string {
       // authenticated requests => "Session expired".
       return err.message || 'Session expired. Please sign in again.';
     }
-    if (err.status === 409) return err.message || 'A resource with that name already exists.';
-    if (err.status === 422) return err.message || 'Invalid input. Please check your details.';
+    // Task 1709 — account-state codes that reach the client WITHOUT a human
+    // `message` field (403 `{"error":"account_suspended"}` from the server's
+    // auth extractor, or a stale server sending the bare code). Map them to
+    // the honest copy; where the server does send its own sentence, that
+    // passes through below unchanged.
+    if (err.code === 'account_suspended' || err.message === 'account_suspended') {
+      return 'This account has been suspended. Contact support if you believe this is a mistake.';
+    }
+    if (err.code === 'account_disabled' || err.message === 'account_disabled') {
+      return 'This account has been disabled. Contact support if you believe this is in error.';
+    }
+    if (err.code === 'email_unverified' || err.message === 'email_unverified') {
+      return 'Verify your email address to upload, share, or receive files. Check your inbox or request a new link.';
+    }
+    if (err.code === 'key_binding_conflict' || err.message === 'key_binding_conflict') {
+      return 'This account already has a different recovery phrase or sharing key bound. Log out and back in, then try again — if this persists, contact support.';
+    }
+    if (err.status === 403) {
+      // A 403 always means the request was refused, so the status line is an
+      // honest fallback for both a missing and a machine-shaped message.
+      return displayFor(err.message, "You don't have permission to do that.");
+    }
+    if (err.status === 404) return displayFor(err.message, 'Not found.');
+    if (err.status === 409) {
+      // A 409 is NOT always a name conflict (e.g. "upload already completed"),
+      // so a machine-shaped or missing message gets the generic line rather
+      // than guessing a cause.
+      return displayFor(err.message, 'Something went wrong. Please try again.');
+    }
+    if (err.status === 422) {
+      // A 422 means the request itself failed validation — the status line is
+      // honest for both a missing and a machine-shaped message.
+      return displayFor(err.message, 'Invalid input. Please check your details.');
+    }
     if (err.status === 429) {
       if (err.retryAfterSeconds != null && err.retryAfterSeconds > 0) {
         return `Too many attempts. Try again in ${formatRetryAfter(err.retryAfterSeconds)}.`;
@@ -400,10 +496,16 @@ export function friendlyError(err: unknown): string {
     // "all storage pools are full or unavailable" for the StorageUnavailable variant;
     // either way, the user just needs to retry shortly.
     if (err.status === 503) return 'Storage is temporarily unavailable. Please try again in a moment.';
-    return err.message || 'Something went wrong. Please try again.';
+    return displayFor(err.message, 'Something went wrong. Please try again.');
   }
   if (err instanceof TypeError) return 'Could not reach the server. Check your connection and try again.';
-  if (err instanceof Error) return err.message || 'Something went wrong. Please try again.';
+  if (err instanceof Error) {
+    // Task 1709 — a plain Error's message may be raw native (UniFFI) error
+    // text; only honest prose reaches the screen.
+    return err.message && looksUserFacing(err.message)
+      ? err.message
+      : 'Something went wrong. Please try again.';
+  }
   return 'Something went wrong. Please try again.';
 }
 
@@ -3237,7 +3339,11 @@ export async function opaqueLoginStart(email: string, password: string): Promise
     ({ state, message } = await BeebeebCrypto.opaqueLoginStart(email, password));
   } catch (err) {
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginStart');
-    throw err;
+    // Task 1709 — the raw native (UniFFI) error text is internal and must not
+    // reach the sign-in screen. login-start never validates the password (the
+    // server mints a decoy challenge even for unknown emails), so this is
+    // never a wrong-password case — surface an honest client-side line.
+    throw new ApiError(500, 'Sign-in could not start. Please try again in a moment.');
   }
   let data: { server_message: string; server_state: string; ksf_version: number };
   try {
@@ -3279,7 +3385,13 @@ export async function opaqueLoginFinish(
     ({ message } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage, password, ksfVersion));
   } catch (err) {
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
-    throw err;
+    // Task 1709 — a WRONG password fails HERE, client-side, when the native
+    // finish verifies the server MAC; the raw UniFFI error text is internal.
+    // Map to the same 401 copy the server paths produce — exactly what
+    // confirmAction does for its own native finish (IncorrectPasswordError
+    // precedent). login-finish never reports anything else the user could
+    // act on differently.
+    throw new ApiError(401, 'Wrong email or password.');
   }
   let data: {
     session_token?: string;
