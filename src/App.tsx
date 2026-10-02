@@ -1,8 +1,34 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+// TEMP-DIAG (2026-10-02, task 1683): name the oversized response that OOMs
+// expo/fetch's ResponseSink (~176 MB body buffered against a ~384 MB heap on
+// Android, killing the app seconds after launch). Logs EVERY fetch — chunked
+// responses have no Content-Length, so no size filter is possible here.
+// REMOVE with the real fix (streaming download path).
+if (!(globalThis as { __bbFetchDiag?: boolean }).__bbFetchDiag) {
+  ;(globalThis as { __bbFetchDiag?: boolean }).__bbFetchDiag = true;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await originalFetch(input, init);
+    try {
+      const length = response.headers.get('Content-Length') ?? 'chunked';
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      console.log('[BeebeebDiag] fetch', response.status, length, url);
+    } catch {
+      // Diagnostics must never throw.
+    }
+    return response;
+  }) as typeof fetch;
+}
+
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, Linking, Platform, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, type AppStateStatus, type ImageSourcePropType, Keyboard, Linking, Platform, StyleSheet, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -486,10 +512,19 @@ const offlineStyles = StyleSheet.create({
 });
 
 // ---------------------------------------------------------------------------
-// Tab icons — SF Symbols (task 1308a). The native tab bar renders + tints
-// these itself (tabBarActiveTintColor/tabBarInactiveTintColor), so there is
-// no `color`/`focused` prop to thread through a wrapper component the way
-// the old Feather-based TabIcon needed — just the outline/filled pair.
+// Tab icons — platform-branching.
+//
+// iOS: SF Symbols (task 1308a). The native tab bar renders + tints these
+// itself (tabBarActiveTintColor/tabBarInactiveTintColor), so there is no
+// `color`/`focused` prop to thread through a wrapper component — just the
+// outline/filled pair.
+//
+// Android: SF Symbols don't exist there; react-native-bottom-tabs only
+// accepts image sources (require() or {uri}) for its BottomNavigationView.
+// We ship monochrome Lucide-outline SVGs (assets/tab-icons/) that the bar
+// tints itself via itemIconTintList — same geometry language as the app's
+// Feather/Lucide icon set (src/components/Icon.tsx). One glyph per tab; the
+// iOS filled/outline distinction doesn't carry over, but tint conveys state.
 // ---------------------------------------------------------------------------
 
 const TAB_SF_SYMBOLS: Record<string, { focused: SFSymbol; unfocused: SFSymbol }> = {
@@ -502,7 +537,18 @@ const TAB_SF_SYMBOLS: Record<string, { focused: SFSymbol; unfocused: SFSymbol }>
   Search: { focused: 'magnifyingglass', unfocused: 'magnifyingglass' },
 };
 
-function tabAppleIcon(routeName: string, focused: boolean): { sfSymbol: SFSymbol } {
+// Monochrome (black) single-glyph assets; the native bar applies its tint.
+const TAB_ANDROID_ICONS: Record<string, number> = {
+  Files: require('../assets/tab-icons/folder.svg'),
+  Shared: require('../assets/tab-icons/users.svg'),
+  Photos: require('../assets/tab-icons/image.svg'),
+  Settings: require('../assets/tab-icons/settings.svg'),
+  Search: require('../assets/tab-icons/search.svg'),
+};
+function tabIcon(routeName: string, focused: boolean): ImageSourcePropType | { sfSymbol: SFSymbol } {
+  if (Platform.OS === 'android') {
+    return TAB_ANDROID_ICONS[routeName] ?? TAB_ANDROID_ICONS.Files;
+  }
   const pair = TAB_SF_SYMBOLS[routeName];
   return { sfSymbol: focused ? (pair?.focused ?? 'questionmark') : (pair?.unfocused ?? 'questionmark') };
 }
@@ -887,7 +933,7 @@ function TabNavigator() {
         },
       }}
       screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused }) => tabAppleIcon(route.name, focused),
+        tabBarIcon: ({ focused }) => tabIcon(route.name, focused),
         // The scene must not paint under the capsule's rounded corners.
         sceneStyle: { backgroundColor: c.paper },
       })}
