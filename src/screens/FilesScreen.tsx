@@ -66,6 +66,8 @@ import {
   type BatchDecision,
   type ConflictResolution,
 } from '../lib/upload-conflict';
+// Task 1685 review should-fixes 1+2 — upload loop serialization + Resume-offer rule.
+import { canOfferResume, createUploadGate, type UploadGate } from '../lib/upload-gate';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
@@ -1673,6 +1675,24 @@ export default function FilesScreen() {
     ]);
   }, []);
 
+  // Task 1685 review should-fix 1 — ONE upload loop at a time. A second pick
+  // while a batch runs used to start a SECOND concurrent serial loop: two
+  // writers on the single `upload` card state (either loop's setUpload(null)
+  // could vanish the other's card) and 2 concurrent encrypted streams. Every
+  // upload entry point (single doc, photo batch, resume) runs through this
+  // gate; a pick made while busy is QUEUED behind the running loop and says so
+  // with a toast. (The gate promise-chain never rejects: a task's own failure
+  // is the task caller's to handle.)
+  const uploadGateRef = useRef<UploadGate | null>(null);
+  if (uploadGateRef.current === null) uploadGateRef.current = createUploadGate();
+
+  // Task 1685 review should-fix 2 — fileId of the upload currently in flight,
+  // set around every encryptedUpload and cleared when it settles. For a FRESH
+  // upload the tapped placeholder row carries the SERVER id (unknown until the
+  // attempt finishes), so handlePendingUpload additionally gates on the gate's
+  // busy flag; the ref makes the RESUME-of-a-resume row match exactly.
+  const activeUploadFileIdRef = useRef<string | null>(null);
+
   // Trust details sheet — opened by tapping the lock icon on a row/grid cell.
   const [trustFile, setTrustFile] = useState<FileEntry | null>(null);
   const openTrust = useCallback((file: FileEntry) => {
@@ -2358,72 +2378,89 @@ export default function FilesScreen() {
       });
       return;
     }
-    const loc = trustLocation(undefined);
-    const display = info.name || displayName(file) || 'file';
-    setUpload({ fileName: display, stage: 2, percent: 0, city: loc.city, region: loc.region });
-    const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
-    try {
-      const uploaded = await encryptedUpload({
-        fileId: file.id,
-        uri: info.sourceUri,
-        name: info.name,
-        parentId: info.parentId ?? undefined,
-        mimeType: info.mimeType ?? undefined,
-        encryptChunkFn: encryptChunk,
-        encryptMetadataFn: encryptMetadata,
-        masterKeyHandleId: getMasterKeyHandleId(),
-        onProgress: (progress) => {
-          if (!allowProgress.allow(progress)) return;
-          const percent = progress.bytesTotal > 0
-            ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
-            : 0;
-          setUpload((prev) => {
-            const base = prev ?? { fileName: display, stage: 2 as UploadStage, percent: 0, city: loc.city, region: loc.region };
-            const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
-            return {
-              ...base,
-              stage,
-              percent,
-              chunksUploaded: progress.chunksUploaded,
-              chunksTotal: progress.chunksTotal,
-              chunkSizeBytes: progress.chunkSizeBytes,
-              bytesUploaded: progress.bytesUploaded,
-              bytesTotal: progress.bytesTotal,
-              cryptoBytesPerSec: progress.cryptoBytesPerSec,
-            };
-          });
-        },
-      });
-      const finalLoc = trustLocation(uploaded.storage_pool_id);
-      setUpload({ fileName: display, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
-      setFiles((prev) => upsertFileEntry(prev, uploaded));
-      indexFile(uploaded.id, toSearchIndexEntry(uploaded, info.name, currentFolder.id));
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      showToast({ type: 'success', message: `"${display}" stored in ${finalLoc.city}` });
-      fetchFiles(currentFolder.id, true);
-      setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
-      // Resume pointer is spent — the upload completed.
-      void forgetUploadResume(uploaded.id);
-      resumeInfosRef.current.set(uploaded.id, null);
-      // Post-crash the thumbnail jobs never ran: regenerate both variants
-      // through the bounded queue, then clean up the plaintext upload copy
-      // (only the screen-owned `upload-*` cache file — never the picker's own).
-      const copyUri = info.sourceUri;
-      void Promise.allSettled([
-        thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes)),
-        thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes, 'large')),
-      ]).then(() => {
-        const leaf = copyUri.split('/').pop() ?? '';
-        if (leaf.startsWith('upload-')) void discardUploadCacheCopy(copyUri, '');
-      });
-    } catch (err) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
-      showToast({ type: 'error', message: `Resume failed: ${friendlyError(err)}` });
-      setUpload(null);
-      // The attempt may have advanced since — re-read the pointer next tap.
-      resumeInfosRef.current.delete(file.id);
+
+    // Task 1685 review should-fix 1 — a resume is an upload loop like any
+    // other: it queues behind a running batch instead of becoming a second
+    // concurrent writer on the single upload card.
+    const runResume = async (): Promise<void> => {
+      const loc = trustLocation(undefined);
+      const display = info.name || displayName(file) || 'file';
+      setUpload({ fileName: display, stage: 2, percent: 0, city: loc.city, region: loc.region });
+      const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
+      activeUploadFileIdRef.current = file.id;
+      try {
+        const uploaded = await encryptedUpload({
+          fileId: file.id,
+          uri: info.sourceUri,
+          name: info.name,
+          parentId: info.parentId ?? undefined,
+          mimeType: info.mimeType ?? undefined,
+          encryptChunkFn: encryptChunk,
+          encryptMetadataFn: encryptMetadata,
+          masterKeyHandleId: getMasterKeyHandleId(),
+          onProgress: (progress) => {
+            if (!allowProgress.allow(progress)) return;
+            const percent = progress.bytesTotal > 0
+              ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
+              : 0;
+            setUpload((prev) => {
+              const base = prev ?? { fileName: display, stage: 2 as UploadStage, percent: 0, city: loc.city, region: loc.region };
+              const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
+              return {
+                ...base,
+                stage,
+                percent,
+                chunksUploaded: progress.chunksUploaded,
+                chunksTotal: progress.chunksTotal,
+                chunkSizeBytes: progress.chunkSizeBytes,
+                bytesUploaded: progress.bytesUploaded,
+                bytesTotal: progress.bytesTotal,
+                cryptoBytesPerSec: progress.cryptoBytesPerSec,
+              };
+            });
+          },
+        });
+        const finalLoc = trustLocation(uploaded.storage_pool_id);
+        setUpload({ fileName: display, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
+        setFiles((prev) => upsertFileEntry(prev, uploaded));
+        indexFile(uploaded.id, toSearchIndexEntry(uploaded, info.name, currentFolder.id));
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showToast({ type: 'success', message: `"${display}" stored in ${finalLoc.city}` });
+        fetchFiles(currentFolder.id, true);
+        setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
+        // Resume pointer is spent — the upload completed.
+        void forgetUploadResume(uploaded.id);
+        resumeInfosRef.current.set(uploaded.id, null);
+        // Post-crash the thumbnail jobs never ran: regenerate both variants
+        // through the bounded queue, then clean up the plaintext upload copy
+        // (only the screen-owned `upload-*` cache file — never the picker's own).
+        const copyUri = info.sourceUri;
+        void Promise.allSettled([
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes)),
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes, 'large')),
+        ]).then(() => {
+          const leaf = copyUri.split('/').pop() ?? '';
+          if (leaf.startsWith('upload-')) void discardUploadCacheCopy(copyUri, '');
+        });
+      } catch (err) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
+        showToast({ type: 'error', message: `Resume failed: ${friendlyError(err)}` });
+        setUpload(null);
+        // The attempt may have advanced since — re-read the pointer next tap.
+        resumeInfosRef.current.delete(file.id);
+      } finally {
+        activeUploadFileIdRef.current = null;
+      }
+    };
+
+    const gate = uploadGateRef.current!;
+    if (gate.isBusy()) {
+      showToast({ type: 'info', message: 'Resume queued — it starts when the current upload finishes.' });
     }
+    void gate.run(runResume).catch(() => {
+      // The resume path toasts its own failures; this only guards the gate.
+    });
   }, [currentFolder.id, fetchFiles, showToast, encryptChunk, encryptMetadata, getMasterKeyHandleId, getFileKeyBytes, indexFile]);
 
   // Task 1685 fix 3 — respond to the tap IMMEDIATELY. The old handler awaited
@@ -2433,17 +2470,26 @@ export default function FilesScreen() {
   // reconciles the list — never a second, stacked dialog.
   const handlePendingUpload = useCallback(async (file: FileEntry) => {
     const resumeInfo = await getResumeInfoForTap(file.id);
-    const canResume = !!resumeInfo;
-    const detail = canResume
+    // Task 1685 review should-fix 2 — never offer Resume for a row that is
+    // uploading RIGHT NOW (or while any upload loop runs): a duplicate resume
+    // would double-PUT chunks / double-finalize. For a fresh upload the row's
+    // server id isn't known client-side until the attempt finishes, so the
+    // gate's busy flag carries that case; the ref pins the resume-of-resume row.
+    const gate = uploadGateRef.current!;
+    const uploadInFlight = gate.isBusy() || activeUploadFileIdRef.current !== null;
+    const offerResume = canOfferResume(resumeInfo, activeUploadFileIdRef.current, file.id, uploadInFlight);
+    const detail = offerResume
       ? `"${resumeInfo!.name}" was interrupted before it finished. Resume continues the upload with the parts that were already stored.`
-      : 'This upload never finished.\n\nDiscarding removes this placeholder and its stored chunks. To upload the file, add it again from its source.';
+      : uploadInFlight
+        ? 'An upload is in progress right now. Discarding removes this placeholder and its stored chunks. To upload the file again, add it from its source.'
+        : 'This upload never finished.\n\nDiscarding removes this placeholder and its stored chunks. To upload the file, add it again from its source.';
     const buttons: Array<{ text: string; style?: 'cancel' | 'default' | 'destructive'; onPress?: () => void }> = [];
-    if (resumeInfo) {
+    if (offerResume && resumeInfo) {
       buttons.push({ text: 'Resume upload', onPress: () => { void resumePendingUpload(file, resumeInfo); } });
     }
     buttons.push({ text: 'Discard upload', style: 'destructive', onPress: () => { void discardPendingUpload(file); } });
     buttons.push({ text: 'Keep', style: 'cancel' });
-    Alert.alert(canResume ? 'Upload pending — can resume' : 'Upload pending', detail, buttons);
+    Alert.alert(offerResume ? 'Upload pending — can resume' : 'Upload pending', detail, buttons);
     // Async refinement — silent. If the server already finished the upload,
     // refresh so the stale placeholder goes away; otherwise nothing to say
     // that the dialog didn't already say.
@@ -2580,72 +2626,87 @@ export default function FilesScreen() {
       }
     }
 
-    const loc = trustLocation(undefined);
-    setUpload({ fileName: uploadFileName, stage: 1, percent: 0, city: loc.city, region: loc.region });
-    // Task 1685 fix 5 — surface progress at ≈4 Hz, not per native poll tick:
-    // setUpload re-renders this 5,400-line screen + its FlatList per call.
-    const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
-    try {
-      const uploaded = await encryptedUpload({
-        fileId: uploadFileId,
-        uri: asset.uri,
-        name: uploadFileName,
-        parentId: currentFolder.id ?? undefined,
-        mimeType: asset.mimeType ?? undefined,
-        v2InitNameEncrypted,
-        encryptChunkFn: encryptChunk,
-        encryptMetadataFn: encryptMetadata,
-        masterKeyHandleId: getMasterKeyHandleId(),
-        onProgress: (progress) => {
-          if (!allowProgress.allow(progress)) return;
-          const percent = progress.bytesTotal > 0
-            ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
-            : 0;
-          setUpload((prev) => {
-            const base = prev ?? { fileName: asset.name, stage: 1 as UploadStage, percent: 0, city: loc.city, region: loc.region };
-            const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
-            return {
-              ...base,
-              stage,
-              percent,
-              chunksUploaded: progress.chunksUploaded,
-              chunksTotal: progress.chunksTotal,
-              chunkSizeBytes: progress.chunkSizeBytes,
-              bytesUploaded: progress.bytesUploaded,
-              bytesTotal: progress.bytesTotal,
-              cryptoBytesPerSec: progress.cryptoBytesPerSec,
-            };
-          });
-        },
-      });
-      const finalLoc = trustLocation(uploaded.storage_pool_id);
-      setUpload({ fileName: uploadFileName, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
-      setFiles((prev) => upsertFileEntry(prev, uploaded));
-      // Add to the encrypted search index so the new file is searchable
-      // across the whole vault from the very next keystroke.
-      indexFile(uploaded.id, toSearchIndexEntry(uploaded, uploadFileName, currentFolder.id));
-      // Fire-and-forget: generate + upload medium and large encrypted thumbnails for media files.
-      // Task 1685 fix 4 — bounded: both variants go through the shared 2-slot
-      // queue, so a burst of manual uploads can't stack unbounded full-image
-      // decodes (the bulk-crash class of task 1669).
-      void Promise.allSettled([
-        thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes)),
-        thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes, 'large')),
-      ]);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      donateSiriShortcut('upload');
-      showToast({ type: 'success', message: `"${uploadFileName}" stored in ${finalLoc.city}` });
-      fetchFiles(currentFolder.id, true);
-      // Hold the "Stored · Key stayed here" flash briefly before clearing.
-      setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
-    } catch (err) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      // Task 1037: a trial that lapsed while the app was open shows up here
-      // first. Re-read the account so the banner and backup follow.
-      if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
-      showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
-      setUpload(null);
+    // Task 1685 review should-fix 1 — the upload itself is the gated unit: the
+    // picker and the conflict prompt stay immediate, the bytes wait their turn.
+    const runSingleFile = async (): Promise<void> => {
+      const loc = trustLocation(undefined);
+      setUpload({ fileName: uploadFileName, stage: 1, percent: 0, city: loc.city, region: loc.region });
+      // Task 1685 fix 5 — surface progress at ≈4 Hz, not per native poll tick:
+      // setUpload re-renders this 5,400-line screen + its FlatList per call.
+      const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
+      activeUploadFileIdRef.current = uploadFileId;
+      try {
+        const uploaded = await encryptedUpload({
+          fileId: uploadFileId,
+          uri: asset.uri,
+          name: uploadFileName,
+          parentId: currentFolder.id ?? undefined,
+          mimeType: asset.mimeType ?? undefined,
+          v2InitNameEncrypted,
+          encryptChunkFn: encryptChunk,
+          encryptMetadataFn: encryptMetadata,
+          masterKeyHandleId: getMasterKeyHandleId(),
+          onProgress: (progress) => {
+            if (!allowProgress.allow(progress)) return;
+            const percent = progress.bytesTotal > 0
+              ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
+              : 0;
+            setUpload((prev) => {
+              const base = prev ?? { fileName: asset.name, stage: 1 as UploadStage, percent: 0, city: loc.city, region: loc.region };
+              const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
+              return {
+                ...base,
+                stage,
+                percent,
+                chunksUploaded: progress.chunksUploaded,
+                chunksTotal: progress.chunksTotal,
+                chunkSizeBytes: progress.chunkSizeBytes,
+                bytesUploaded: progress.bytesUploaded,
+                bytesTotal: progress.bytesTotal,
+                cryptoBytesPerSec: progress.cryptoBytesPerSec,
+              };
+            });
+          },
+        });
+        const finalLoc = trustLocation(uploaded.storage_pool_id);
+        setUpload({ fileName: uploadFileName, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
+        setFiles((prev) => upsertFileEntry(prev, uploaded));
+        // Add to the encrypted search index so the new file is searchable
+        // across the whole vault from the very next keystroke.
+        indexFile(uploaded.id, toSearchIndexEntry(uploaded, uploadFileName, currentFolder.id));
+        // Fire-and-forget: generate + upload medium and large encrypted thumbnails for media files.
+        // Task 1685 fix 4 — bounded: both variants go through the shared 2-slot
+        // queue, so a burst of manual uploads can't stack unbounded full-image
+        // decodes (the bulk-crash class of task 1669).
+        void Promise.allSettled([
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes)),
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes, 'large')),
+        ]);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        donateSiriShortcut('upload');
+        showToast({ type: 'success', message: `"${uploadFileName}" stored in ${finalLoc.city}` });
+        fetchFiles(currentFolder.id, true);
+        // Hold the "Stored · Key stayed here" flash briefly before clearing.
+        setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
+      } catch (err) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        // Task 1037: a trial that lapsed while the app was open shows up here
+        // first. Re-read the account so the banner and backup follow.
+        if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
+        showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
+        setUpload(null);
+      } finally {
+        activeUploadFileIdRef.current = null;
+      }
+    };
+
+    const gate = uploadGateRef.current!;
+    if (gate.isBusy()) {
+      showToast({ type: 'info', message: 'Upload queued — it starts when the current one finishes.' });
     }
+    void gate.run(runSingleFile).catch(() => {
+      // The single-file path toasts its own failure; this only guards the gate.
+    });
   }, [currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, findConflict, waitForFolderNames, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
 
   const pickAndUploadPhotos = useCallback(async () => {
@@ -2684,223 +2745,240 @@ export default function FilesScreen() {
     }
     if (picked.canceled || picked.assets.length === 0) return;
 
-    // Task 1685 fix 6 — pre-upload existence check. Wait for the folder's
-    // decrypted names first (the old findConflict returned null while they
-    // lagged, so the check silently passed), match every picked name against
-    // the current folder, and ASK per conflicting file — with an
-    // apply-to-remaining shortcut — before any bytes move. The old batch flow
-    // decided silently: auto-version on size-differs, auto-rename otherwise,
-    // which is exactly how re-uploading after a crash duplicated everything.
-    const total = picked.assets.length;
-    await waitForFolderNames();
-    const folderNamesById: Record<string, string> = {};
-    for (const f of files) {
-      if (f.is_folder) continue;
-      const n = decryptedNamesRef.current[f.id];
-      if (n) folderNamesById[f.id] = n;
-    }
-    const folderNameSet = new Set(Object.values(folderNamesById).map((n) => n.toLowerCase()));
-
-    const rawNames: string[] = picked.assets.map((asset, index) => {
-      const isVideo = asset.type === 'video';
-      return asset.fileName ?? `${isVideo ? 'video' : 'photo'}-${Date.now()}-${index}.${isVideo ? 'mp4' : 'jpg'}`;
-    });
-
-    const conflicts: BatchConflictInput[] = [];
-    for (let i = 0; i < total; i++) {
-      const asset = picked.assets[i]!;
-      if (!asset.uri) continue;
-      const existingId = findDecryptedNameConflict(rawNames[i]!, folderNamesById);
-      if (!existingId) continue;
-      const existingRow = files.find((f) => f.id === existingId);
-      if (!existingRow) continue;
-      conflicts.push({
-        index: i,
-        incomingName: rawNames[i]!,
-        incomingMimeType: asset.mimeType ?? null,
-        incomingSizeBytes: asset.fileSize ?? null,
-        existingId,
-        existingName: folderNamesById[existingId] ?? displayName(existingRow),
-        existingNameEncrypted: existingRow.name_encrypted ?? '',
-        existingSizeBytes: existingRow.size_bytes ?? null,
+    // Task 1685 review should-fix 1 — the batch loop is the gated unit: the
+    // picker stays immediate, the upload waits its turn behind any running
+    // loop instead of starting a second concurrent serial loop (two writers
+    // on the single `upload` card state, two encrypted streams).
+    const runBatch = async (): Promise<void> => {
+      // Task 1685 fix 6 — pre-upload existence check. Wait for the folder's
+      // decrypted names first (the old findConflict returned null while they
+      // lagged, so the check silently passed), match every picked name against
+      // the current folder, and ASK per conflicting file — with an
+      // apply-to-remaining shortcut — before any bytes move. The old batch flow
+      // decided silently: auto-version on size-differs, auto-rename otherwise,
+      // which is exactly how re-uploading after a crash duplicated everything.
+      const total = picked.assets.length;
+      await waitForFolderNames();
+      const folderNamesById: Record<string, string> = {};
+      for (const f of files) {
+        if (f.is_folder) continue;
+        const n = decryptedNamesRef.current[f.id];
+        if (n) folderNamesById[f.id] = n;
+      }
+      const folderNameSet = new Set(Object.values(folderNamesById).map((n) => n.toLowerCase()));
+  
+      const rawNames: string[] = picked.assets.map((asset, index) => {
+        const isVideo = asset.type === 'video';
+        return asset.fileName ?? `${isVideo ? 'video' : 'photo'}-${Date.now()}-${index}.${isVideo ? 'mp4' : 'jpg'}`;
       });
-    }
-
-    let skippedConflicts = 0;
-    let batchDecisions = new Map<number, BatchDecision>();
-    if (conflicts.length > 0) {
-      const resolutions: Array<ConflictResolution | undefined> = new Array(conflicts.length).fill(undefined);
-      let cancelledBatch = false;
-      for (let c = 0; c < conflicts.length; c++) {
-        if (resolutions[c]) continue;
-        const conflict = conflicts[c]!;
-        const choice = await promptBatchConflict(
-          {
-            incomingName: conflict.incomingName,
-            incomingSizeBytes: conflict.incomingSizeBytes,
-            existingName: conflict.existingName,
-            existingSizeBytes: conflict.existingSizeBytes,
-          },
-          conflicts.length - c - 1,
-        );
-        if (choice === 'cancel') { cancelledBatch = true; break; }
-        const resolved: ConflictResolution =
-          choice === 'overwrite-rest' ? 'overwrite' : choice === 'skip-rest' ? 'skip' : choice;
-        resolutions[c] = resolved;
-        if (choice === 'overwrite-rest') resolutions.fill('overwrite', c + 1);
-        if (choice === 'skip-rest') resolutions.fill('skip', c + 1);
-      }
-      if (cancelledBatch) {
-        setUpload(null);
-        return;
-      }
-      batchDecisions = planBatchResolutions(
-        conflicts,
-        resolutions as ConflictResolution[],
-        new Set([...folderNameSet, ...rawNames.map((n) => n.toLowerCase())]),
-      );
-      for (const decision of batchDecisions.values()) {
-        if (decision.action === 'skip') skippedConflicts += 1;
-      }
-    }
-
-    let successCount = 0;
-    let lastLoc = trustLocation(undefined);
-    let lastName = '';
-    // Track names already used in this batch to avoid duplicate suffixes.
-    // Pre-seed with the planner's keep-both finals so a later plain upload of
-    // the same name can never steal a reserved name.
-    const usedInBatch = new Set<string>();
-    for (const decision of batchDecisions.values()) {
-      if (decision.action === 'keep-both') usedInBatch.add(decision.finalName.toLowerCase());
-    }
-    let exportFailures = 0;
-    for (let i = 0; i < total; i++) {
-      const asset = picked.assets[i]!;
-      if (!asset.uri) {
-        // iCloud-offloaded originals can fail to export (network, storage); a missing uri
-        // would previously just skip with no signal — count and report honestly below.
-        exportFailures += 1;
-        continue;
-      }
-      const decision = batchDecisions.get(i);
-      if (decision?.action === 'skip') continue;
-
-      const isVideoAsset = asset.type === 'video';
-      let name = rawNames[i]!;
-      let fileId = await generateFileId();
-      let v2InitNameEncrypted: string | undefined;
-      if (decision?.action === 'version-existing') {
-        // Overwrite → a new version of the existing row (same id + name bytes).
-        fileId = decision.existingId;
-        v2InitNameEncrypted = decision.existingNameEncrypted;
-      } else if (decision?.action === 'keep-both') {
-        name = decision.finalName;
-      } else if (usedInBatch.has(name.toLowerCase())) {
-        // Plain within-batch duplicate (same name picked twice, neither row
-        // conflicted server-side): suffix silently — the planner reserved
-        // nothing for these, and the first occurrence keeps its plain name.
-        name = getUniqueMobileName(name, new Set([...folderNameSet, ...usedInBatch]));
-      }
-      usedInBatch.add(name.toLowerCase());
-
-      const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
-      lastName = display;
-      setUpload({ fileName: display, stage: 1, percent: 0, city: lastLoc.city, region: lastLoc.region });
-      // Task 1685 fix 5 — ≈4 Hz progress state, not per poll tick.
-      const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
-      // Task 1593 — the pre-encryption copy in Library/Caches (upload-*) is
-      // plaintext: delete it once the upload and both thumbnails are done.
-      let uploadUri: string | null = null;
-      try {
-        uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
-        const uploaded = await encryptedUpload({
-          fileId,
-          uri: uploadUri,
-          name,
-          parentId: currentFolder.id ?? undefined,
-          mimeType: asset.mimeType ?? (isVideoAsset ? 'video/mp4' : 'image/jpeg'),
-          v2InitNameEncrypted,
-          encryptChunkFn: encryptChunk,
-          encryptMetadataFn: encryptMetadata,
-          masterKeyHandleId: getMasterKeyHandleId(),
-          onProgress: (progress) => {
-            if (!allowProgress.allow(progress)) return;
-            const percent = progress.bytesTotal > 0
-              ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
-              : 0;
-            setUpload((prev) => {
-              const base = prev ?? { fileName: display, stage: 1 as UploadStage, percent: 0, city: lastLoc.city, region: lastLoc.region };
-              const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
-              return {
-                ...base,
-                stage,
-                percent,
-                chunksUploaded: progress.chunksUploaded,
-                chunksTotal: progress.chunksTotal,
-                chunkSizeBytes: progress.chunkSizeBytes,
-                bytesUploaded: progress.bytesUploaded,
-                bytesTotal: progress.bytesTotal,
-                cryptoBytesPerSec: progress.cryptoBytesPerSec,
-              };
-            });
-          },
+  
+      const conflicts: BatchConflictInput[] = [];
+      for (let i = 0; i < total; i++) {
+        const asset = picked.assets[i]!;
+        if (!asset.uri) continue;
+        const existingId = findDecryptedNameConflict(rawNames[i]!, folderNamesById);
+        if (!existingId) continue;
+        const existingRow = files.find((f) => f.id === existingId);
+        if (!existingRow) continue;
+        conflicts.push({
+          index: i,
+          incomingName: rawNames[i]!,
+          incomingMimeType: asset.mimeType ?? null,
+          incomingSizeBytes: asset.fileSize ?? null,
+          existingId,
+          existingName: folderNamesById[existingId] ?? displayName(existingRow),
+          existingNameEncrypted: existingRow.name_encrypted ?? '',
+          existingSizeBytes: existingRow.size_bytes ?? null,
         });
-        lastLoc = trustLocation(uploaded.storage_pool_id);
-        setFiles((prev) => upsertFileEntry(prev, uploaded));
-        indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
-        // Fire-and-forget: image picker only returns images, so always thumbnail (medium + large).
-        // Task 1685 fix 4 — bounded: per-variant jobs in the shared 2-slot queue
-        // (≤2 concurrent full-image decodes process-wide; queued jobs are just
-        // closures, so a 64-asset batch can no longer stack 128 decodes).
-        const copyUri = uploadUri;
-        uploadUri = null;
-        void Promise.allSettled([
-          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes)),
-          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large')),
-        ]).then(() => discardUploadCacheCopy(copyUri, asset.uri));
-        successCount += 1;
-      } catch (err) {
-        if (uploadUri) void discardUploadCacheCopy(uploadUri, asset.uri);
-        console.warn('[UPLOAD] Error type:', typeof err, err instanceof Error ? err.constructor.name : 'unknown');
-        console.warn('[UPLOAD] Error message:', err instanceof Error ? err.message : String(err));
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
-        showToast({ type: 'error', message: `${name}: ${friendlyError(err)}` });
       }
+  
+      let skippedConflicts = 0;
+      let batchDecisions = new Map<number, BatchDecision>();
+      if (conflicts.length > 0) {
+        const resolutions: Array<ConflictResolution | undefined> = new Array(conflicts.length).fill(undefined);
+        let cancelledBatch = false;
+        for (let c = 0; c < conflicts.length; c++) {
+          if (resolutions[c]) continue;
+          const conflict = conflicts[c]!;
+          const choice = await promptBatchConflict(
+            {
+              incomingName: conflict.incomingName,
+              incomingSizeBytes: conflict.incomingSizeBytes,
+              existingName: conflict.existingName,
+              existingSizeBytes: conflict.existingSizeBytes,
+            },
+            conflicts.length - c - 1,
+          );
+          if (choice === 'cancel') { cancelledBatch = true; break; }
+          const resolved: ConflictResolution =
+            choice === 'overwrite-rest' ? 'overwrite' : choice === 'skip-rest' ? 'skip' : choice;
+          resolutions[c] = resolved;
+          if (choice === 'overwrite-rest') resolutions.fill('overwrite', c + 1);
+          if (choice === 'skip-rest') resolutions.fill('skip', c + 1);
+        }
+        if (cancelledBatch) {
+          setUpload(null);
+          return;
+        }
+        batchDecisions = planBatchResolutions(
+          conflicts,
+          resolutions as ConflictResolution[],
+          new Set([...folderNameSet, ...rawNames.map((n) => n.toLowerCase())]),
+        );
+        for (const decision of batchDecisions.values()) {
+          if (decision.action === 'skip') skippedConflicts += 1;
+        }
+      }
+  
+      let successCount = 0;
+      let lastLoc = trustLocation(undefined);
+      let lastName = '';
+      // Track names already used in this batch to avoid duplicate suffixes.
+      // Pre-seed with the planner's keep-both finals so a later plain upload of
+      // the same name can never steal a reserved name.
+      const usedInBatch = new Set<string>();
+      for (const decision of batchDecisions.values()) {
+        if (decision.action === 'keep-both') usedInBatch.add(decision.finalName.toLowerCase());
+      }
+      let exportFailures = 0;
+      for (let i = 0; i < total; i++) {
+        const asset = picked.assets[i]!;
+        if (!asset.uri) {
+          // iCloud-offloaded originals can fail to export (network, storage); a missing uri
+          // would previously just skip with no signal — count and report honestly below.
+          exportFailures += 1;
+          continue;
+        }
+        const decision = batchDecisions.get(i);
+        if (decision?.action === 'skip') continue;
+  
+        const isVideoAsset = asset.type === 'video';
+        let name = rawNames[i]!;
+        let fileId = await generateFileId();
+        let v2InitNameEncrypted: string | undefined;
+        if (decision?.action === 'version-existing') {
+          // Overwrite → a new version of the existing row (same id + name bytes).
+          fileId = decision.existingId;
+          v2InitNameEncrypted = decision.existingNameEncrypted;
+        } else if (decision?.action === 'keep-both') {
+          name = decision.finalName;
+        } else if (usedInBatch.has(name.toLowerCase())) {
+          // Plain within-batch duplicate (same name picked twice, neither row
+          // conflicted server-side): suffix silently — the planner reserved
+          // nothing for these, and the first occurrence keeps its plain name.
+          name = getUniqueMobileName(name, new Set([...folderNameSet, ...usedInBatch]));
+        }
+        usedInBatch.add(name.toLowerCase());
+  
+        const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
+        lastName = display;
+        setUpload({ fileName: display, stage: 1, percent: 0, city: lastLoc.city, region: lastLoc.region });
+        // Task 1685 fix 5 — ≈4 Hz progress state, not per poll tick.
+        const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
+        activeUploadFileIdRef.current = fileId;
+        // Task 1593 — the pre-encryption copy in Library/Caches (upload-*) is
+        // plaintext: delete it once the upload and both thumbnails are done.
+        let uploadUri: string | null = null;
+        try {
+          uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
+          const uploaded = await encryptedUpload({
+            fileId,
+            uri: uploadUri,
+            name,
+            parentId: currentFolder.id ?? undefined,
+            mimeType: asset.mimeType ?? (isVideoAsset ? 'video/mp4' : 'image/jpeg'),
+            v2InitNameEncrypted,
+            encryptChunkFn: encryptChunk,
+            encryptMetadataFn: encryptMetadata,
+            masterKeyHandleId: getMasterKeyHandleId(),
+            onProgress: (progress) => {
+              if (!allowProgress.allow(progress)) return;
+              const percent = progress.bytesTotal > 0
+                ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
+                : 0;
+              setUpload((prev) => {
+                const base = prev ?? { fileName: display, stage: 1 as UploadStage, percent: 0, city: lastLoc.city, region: lastLoc.region };
+                const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
+                return {
+                  ...base,
+                  stage,
+                  percent,
+                  chunksUploaded: progress.chunksUploaded,
+                  chunksTotal: progress.chunksTotal,
+                  chunkSizeBytes: progress.chunkSizeBytes,
+                  bytesUploaded: progress.bytesUploaded,
+                  bytesTotal: progress.bytesTotal,
+                  cryptoBytesPerSec: progress.cryptoBytesPerSec,
+                };
+              });
+            },
+          });
+          lastLoc = trustLocation(uploaded.storage_pool_id);
+          setFiles((prev) => upsertFileEntry(prev, uploaded));
+          indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
+          // Fire-and-forget: image picker only returns images, so always thumbnail (medium + large).
+          // Task 1685 fix 4 — bounded: per-variant jobs in the shared 2-slot queue
+          // (≤2 concurrent full-image decodes process-wide; queued jobs are just
+          // closures, so a 64-asset batch can no longer stack 128 decodes).
+          const copyUri = uploadUri;
+          uploadUri = null;
+          void Promise.allSettled([
+            thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes)),
+            thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large')),
+          ]).then(() => discardUploadCacheCopy(copyUri, asset.uri));
+          successCount += 1;
+        } catch (err) {
+          if (uploadUri) void discardUploadCacheCopy(uploadUri, asset.uri);
+          console.warn('[UPLOAD] Error type:', typeof err, err instanceof Error ? err.constructor.name : 'unknown');
+          console.warn('[UPLOAD] Error message:', err instanceof Error ? err.message : String(err));
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
+          showToast({ type: 'error', message: `${name}: ${friendlyError(err)}` });
+        } finally {
+          activeUploadFileIdRef.current = null;
+        }
+      }
+      if (successCount > 0) {
+        setUpload({ fileName: lastName, stage: 'done', percent: 100, city: lastLoc.city, region: lastLoc.region });
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        donateSiriShortcut('upload');
+        showToast({
+          type: 'success',
+          message: successCount === 1
+            ? `Item stored in ${lastLoc.city}`
+            : `${successCount} items stored in ${lastLoc.city}`,
+        });
+        fetchFiles(currentFolder.id, true);
+        setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
+      } else {
+        setUpload(null);
+      }
+      if (skippedConflicts > 0) {
+        // Task 1685 fix 6 — a skipped conflict is a decision, not a failure; say it anyway.
+        showToast({
+          type: 'info',
+          message: skippedConflicts === 1
+            ? 'Skipped 1 file that was already in this folder'
+            : `Skipped ${skippedConflicts} files that were already in this folder`,
+        });
+      }
+      if (exportFailures > 0) {
+        // 1294 follow-up — an asset the system could not export (iCloud original that failed to
+        // download, storage pressure) used to vanish silently. Say so.
+        Alert.alert(
+          'Some items could not be read',
+          `${exportFailures} ${exportFailures === 1 ? 'item' : 'items'} could not be exported from your photo library. Check that originals are downloadable (iCloud) and try again.`,
+        );
+      }
+    };
+
+    const gate = uploadGateRef.current!;
+    if (gate.isBusy()) {
+      showToast({ type: 'info', message: 'Upload queued — it starts when the current one finishes.' });
     }
-    if (successCount > 0) {
-      setUpload({ fileName: lastName, stage: 'done', percent: 100, city: lastLoc.city, region: lastLoc.region });
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      donateSiriShortcut('upload');
-      showToast({
-        type: 'success',
-        message: successCount === 1
-          ? `Item stored in ${lastLoc.city}`
-          : `${successCount} items stored in ${lastLoc.city}`,
-      });
-      fetchFiles(currentFolder.id, true);
-      setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
-    } else {
-      setUpload(null);
-    }
-    if (skippedConflicts > 0) {
-      // Task 1685 fix 6 — a skipped conflict is a decision, not a failure; say it anyway.
-      showToast({
-        type: 'info',
-        message: skippedConflicts === 1
-          ? 'Skipped 1 file that was already in this folder'
-          : `Skipped ${skippedConflicts} files that were already in this folder`,
-      });
-    }
-    if (exportFailures > 0) {
-      // 1294 follow-up — an asset the system could not export (iCloud original that failed to
-      // download, storage pressure) used to vanish silently. Say so.
-      Alert.alert(
-        'Some items could not be read',
-        `${exportFailures} ${exportFailures === 1 ? 'item' : 'items'} could not be exported from your photo library. Check that originals are downloadable (iCloud) and try again.`,
-      );
-    }
+    void gate.run(runBatch).catch(() => {
+      // Per-file errors are toasted inside runBatch; this only guards the gate.
+    });
   }, [files, currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, waitForFolderNames, encryptChunk, encryptMetadata, indexFile]);
 
   const openDocumentScanner = useCallback(() => {
