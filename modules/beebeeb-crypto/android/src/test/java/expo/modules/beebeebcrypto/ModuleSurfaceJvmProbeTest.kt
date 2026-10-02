@@ -31,4 +31,37 @@ class ModuleSurfaceJvmProbeTest {
       def.syncFunctions.containsKey("getPreviewLoadProgress"),
     )
   }
+
+  // ── task 1683c — native upload engine + fast decrypt-to-file ───────────────
+  // Same assertions as the androidTest twin; RED before the port.
+
+  @Test
+  fun exposesNativeUploadEngineSurface() {
+    val def = BeebeebCryptoModule().definition()
+    assertTrue(
+      "Android BeebeebCrypto must expose planUploadChunksNative (task 1683c)",
+      def.syncFunctions.containsKey("planUploadChunksNative"),
+    )
+    assertTrue(
+      "Android BeebeebCrypto must expose uploadChunksNative (task 1683c)",
+      def.asyncFunctions.containsKey("uploadChunksNative"),
+    )
+    assertTrue(
+      "Android BeebeebCrypto must expose getUploadProgressNative (task 1683c)",
+      def.syncFunctions.containsKey("getUploadProgressNative"),
+    )
+    assertTrue(
+      "Android BeebeebCrypto must expose cancelUploadNative (task 1683c)",
+      def.asyncFunctions.containsKey("cancelUploadNative"),
+    )
+  }
+
+  @Test
+  fun exposesDecryptContiguousToFile() {
+    val def = BeebeebCryptoModule().definition()
+    assertTrue(
+      "Android BeebeebCrypto must expose decryptContiguousToFile (task 1683c)",
+      def.asyncFunctions.containsKey("decryptContiguousToFile"),
+    )
+  }
 }

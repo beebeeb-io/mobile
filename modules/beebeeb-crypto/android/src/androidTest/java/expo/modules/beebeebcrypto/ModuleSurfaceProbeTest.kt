@@ -45,4 +45,44 @@ class ModuleSurfaceProbeTest {
       def.syncFunctions.containsKey("getPreviewLoadProgress"),
     )
   }
+
+  // ── task 1683c — native upload engine + fast decrypt-to-file ───────────────
+  //
+  // iOS contract: planUploadChunksNative (sync, BeebeebCryptoModule.swift:4125),
+  // uploadChunksNative (AsyncFunction, :4133), getUploadProgressNative (sync,
+  // :4194), cancelUploadNative (:4198) and decryptContiguousToFile (:3780).
+  // RED before the port: none of these existed on the Kotlin module, so
+  // api.ts:1808 (`Platform.OS !== 'ios' || !isNativeUploadAvailable()`) bailed
+  // every Android upload to the JS chunk loop and isDecryptToFileReady()
+  // (`src/lib/decrypt-to-file.ts:97`) stayed false.
+
+  @Test
+  fun exposesNativeUploadEngineSurface() {
+    val def = BeebeebCryptoModule().definition()
+    assertTrue(
+      "Android BeebeebCrypto must expose planUploadChunksNative (task 1683c)",
+      def.syncFunctions.containsKey("planUploadChunksNative"),
+    )
+    assertTrue(
+      "Android BeebeebCrypto must expose uploadChunksNative (task 1683c)",
+      def.asyncFunctions.containsKey("uploadChunksNative"),
+    )
+    assertTrue(
+      "Android BeebeebCrypto must expose getUploadProgressNative (task 1683c)",
+      def.syncFunctions.containsKey("getUploadProgressNative"),
+    )
+    assertTrue(
+      "Android BeebeebCrypto must expose cancelUploadNative (task 1683c)",
+      def.asyncFunctions.containsKey("cancelUploadNative"),
+    )
+  }
+
+  @Test
+  fun exposesDecryptContiguousToFile() {
+    val def = BeebeebCryptoModule().definition()
+    assertTrue(
+      "Android BeebeebCrypto must expose decryptContiguousToFile (task 1683c)",
+      def.asyncFunctions.containsKey("decryptContiguousToFile"),
+    )
+  }
 }
