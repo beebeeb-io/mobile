@@ -367,6 +367,26 @@ class OfflineManager {
       folders: [...this.folders],
     };
   }
+
+  /**
+   * Sign-out purge (task 1683d, ora-2 ruling): forget the persisted offline
+   * state — both SecureStore manifest keys and every in-memory map/queue — so
+   * the NEXT account starts with an empty offline set. The pinned blobs under
+   * `offline/` are deleted by the sweep itself (account-cleanup.ts); this
+   * clears the state that would re-list them. Never throws.
+   */
+  async clearPersistedOfflineState(): Promise<void> {
+    await Promise.allSettled([
+      SecureStore.deleteItemAsync(OFFLINE_KEY),
+      SecureStore.deleteItemAsync(OFFLINE_FOLDERS_KEY),
+    ]);
+    this.status.clear();
+    this.manifest.clear();
+    this.folders.clear();
+    this.queue = [];
+    this.activeCount = 0;
+    this.emit();
+  }
 }
 
 export const offlineManager = new OfflineManager();

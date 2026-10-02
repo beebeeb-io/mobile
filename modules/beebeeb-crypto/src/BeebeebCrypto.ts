@@ -128,7 +128,15 @@ export interface PlaintextStoragePurgeResult {
  * must not leave one user's decrypted thumbnails/names/caches on disk for
  * whoever signs in next on the same device (the exact gap 0300's own audit
  * registry exists to close). Never throws; a purge failure must not block
- * sign-out. No-op off iOS.
+ * sign-out.
+ *
+ * PLATFORM CONTRACT (task 1683d, ora-2 ruling): this drives the NATIVE
+ * registry purge, which is iOS-only work — on Android it reports
+ * `{removed: 0, failed: 0}` **by design**: `allowBackup="false"` keeps the
+ * whole internal subtree out of backups (there is no protection-class to
+ * apply), and the JS sweep (`account-cleanup.ts` → `purgeCachesPlaintext` +
+ * `clearPersistedOfflineState`) IS the Android purge surface. The two
+ * platforms' counts compose additively in `purgeAllPlaintextCaches`.
  */
 export async function purgePlaintextStorage(): Promise<PlaintextStoragePurgeResult> {
   if (typeof BeebeebCryptoModule.purgePlaintextStorage !== 'function') return { removed: 0, failed: 0 }
