@@ -36,6 +36,12 @@ const nativeCalls: Pending[] = [];
 let ignoreAbort = false;
 mock.module('../../modules/beebeeb-crypto', () => ({
   isNativeAvailable: true,
+  // task 1683d — the offline streaming decrypt lives behind a typeof guard in
+  // native-decrypt.ts; this test drives the DOWNLOAD path, so a stub that
+  // throws (rather than silently succeeding) is the honest mock here.
+  decryptLocalFileNative: async () => {
+    throw new Error('decryptLocalFileNative must not be reached by the download-path tests');
+  },
   downloadAndDecryptFileNative: (_h, _api, _tok, _id, outputPath, opts) =>
     new Promise((resolve, reject) => {
       // Native writes progressively: a partial, non-empty file exists at once.

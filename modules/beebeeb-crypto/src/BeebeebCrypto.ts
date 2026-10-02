@@ -1483,6 +1483,54 @@ export const decryptContiguousToFile:
         BeebeebCryptoModule.decryptContiguousToFile(fileKey, body, chunkSize, outputPath) as Promise<number>
     : undefined
 
+/**
+ * Stream-decrypt a LOCAL offline ciphertext file to a plaintext output file
+ * without ever buffering the whole blob in the JS heap (task 1683d — the
+ * offline open path's whole-file base64 read/write was the 1683 OOM class at
+ * >100 MB). Kotlin reads the encrypted file from disk with the 1683b
+ * chunk-window loop, decrypts chunk-wise and renames a `.tmp` output into
+ * place; progress/cancel ride the preview-download surface
+ * (`getPreviewLoadProgress` / `cancelDownloadAndDecryptFileNative`).
+ *
+ * Module-load-time conditional export: `undefined` when the native build
+ * predates the function — callers fall through to the legacy JS path.
+ */
+export const decryptLocalFileNative:
+  | ((params: {
+      fileKey: Uint8Array
+      inputUri: string
+      outputUri: string
+      chunkSizeBytes: number
+      chunkCount: number
+      originalSize: number
+      requestId: string
+      fileId?: string
+      signal?: AbortSignal
+    }) => Promise<{ outputPath: string; outputUri: string; plaintextSize: number; chunksDecrypted: number }>)
+  | undefined =
+  typeof BeebeebCryptoModule.decryptLocalFileNative === 'function'
+    ? async (params) => {
+        // Signal → the existing preview-download cancel surface (the Kotlin
+        // side stores the decrypt under the same requestId registry).
+        const abortListener = () => {
+          if (typeof BeebeebCryptoModule.cancelDownloadAndDecryptFileNative === 'function') {
+            void BeebeebCryptoModule.cancelDownloadAndDecryptFileNative(params.requestId).catch(() => {})
+          }
+        }
+        params.signal?.addEventListener('abort', abortListener, { once: true })
+        try {
+          return (await BeebeebCryptoModule.decryptLocalFileNative(params)) as {
+            outputPath: string
+            outputUri: string
+            plaintextSize: number
+            chunksDecrypted: number
+          }
+        } finally {
+          params.signal?.removeEventListener('abort', abortListener)
+        }
+      }
+    : undefined
+
 /** Returns a debug-only native backup diagnostic snapshot. */
 export async function getNativeBackupDiagnostics(): Promise<NativeBackupDiagnostics | null> {
   if (typeof BeebeebCryptoModule.getNativeBackupDiagnostics !== 'function') return null

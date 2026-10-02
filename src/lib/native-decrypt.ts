@@ -15,6 +15,7 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import {
+  decryptLocalFileNative,
   downloadAndDecryptFileNative,
   isNativeAvailable,
   type PreviewLoadProgressEvent,
@@ -789,22 +790,20 @@ async function decryptLocalFileLeased(
   const resolvedFileKey = typeof fileKey === 'function' ? await fileKey() : fileKey;
   throwIfAborted(options.signal);
 
-  // Read the local ENCRYPTED bytes (same blob the server stores).
+  // Framing resolved from the file's SIZE (never a whole-file read): the
+  // offline blob is the exact server chunk stream, so size math + the
+  // manifest meta captured at download time decide the windows — the same
+  // math the legacy path below runs over the in-memory bytes.
   const info = await FileSystem.getInfoAsync(localEncryptedUri);
   if (!info.exists || !(info.size && info.size > 0)) {
     throw new Error('Offline copy is missing.');
   }
-  const b64 = await FileSystem.readAsStringAsync(localEncryptedUri, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
-  const encBytes = base64ToUint8Array(b64);
-  throwIfAborted(options.signal);
-
-  const effectiveSize = sizeBytes ?? encBytes.length - 28;
+  const encryptedSize = info.size;
+  const effectiveSize = sizeBytes ?? encryptedSize - 28;
   if (effectiveSize <= 0) {
     throw new Error('Could not determine plaintext size for the offline file.');
   }
-  const inferred = inferChunkCountFromEncryptedSize(encBytes.length, effectiveSize);
+  const inferred = inferChunkCountFromEncryptedSize(encryptedSize, effectiveSize);
   const effectiveChunkCount = chunkCount ?? inferred ?? 1;
   // The exact upload chunk size is required to slice a multi-chunk body. It is
   // captured from the download headers (offlineManager.getMeta); fall back to
@@ -814,10 +813,72 @@ async function decryptLocalFileLeased(
   recordRuntimeTrace('offline.decrypt.start', {
     fileId,
     extension: ext,
-    encryptedBytes: encBytes.length,
+    encryptedBytes: encryptedSize,
     effectiveSize,
     effectiveChunkCount,
     effectiveChunkSize,
+  });
+
+  // Native path (task 1683d): stream the local ciphertext through Kotlin's
+  // chunk-window loop — no whole-file base64 buffer in the JS heap (the 1683
+  // OOM class at offline sizes). Errors are real decrypt/IO failures and
+  // propagate (mirrors the fast-path contract below): a truncated or corrupt
+  // blob fails identically in the JS fallback, which at these sizes OOMs
+  // instead of succeeding.
+  if (typeof decryptLocalFileNative === 'function') {
+    const requestId = `offline-${fileId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    try {
+      options.onProgress?.({
+        requestId,
+        fileId,
+        stage: 'decrypting',
+        chunksCompleted: 0,
+        chunksTotal: effectiveChunkCount,
+      });
+      const result = await decryptLocalFileNative({
+        fileKey: resolvedFileKey,
+        inputUri: localEncryptedUri,
+        outputUri: outputPath,
+        chunkSizeBytes: effectiveChunkSize,
+        chunkCount: effectiveChunkCount,
+        originalSize: effectiveSize,
+        requestId,
+        fileId,
+        signal: options.signal,
+      });
+      if (options.signal?.aborted) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        throw abortError();
+      }
+      if (!(result.plaintextSize > 0)) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        throw new Error('Native offline decrypt returned zero bytes.');
+      }
+      await prunePreviewCache(outputPath);
+      options.onProgress?.({ requestId, fileId, stage: 'complete' });
+      recordRuntimeTrace('offline.decrypt.native.success', {
+        fileId,
+        plaintextSize: result.plaintextSize,
+        chunksDecrypted: result.chunksDecrypted,
+      });
+      return outputPath;
+    } catch (err) {
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+      recordRuntimeTrace('offline.decrypt.native.failed', { fileId, ...errorTraceFields(err) });
+      throw err;
+    }
+  }
+
+  // Read the local ENCRYPTED bytes (same blob the server stores).
+  const b64 = await FileSystem.readAsStringAsync(localEncryptedUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const encBytes = base64ToUint8Array(b64);
+  throwIfAborted(options.signal);
+
+  recordRuntimeTrace('offline.decrypt.legacy_whole_file', {
+    fileId,
+    encryptedBytes: encBytes.length,
   });
 
   // Fast path: hand the contiguous body to Rust to slice + decrypt + write.
