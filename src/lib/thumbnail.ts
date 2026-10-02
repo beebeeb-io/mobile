@@ -418,6 +418,19 @@ function responseHeaderInt(headers: Headers, key: string): number | null {
 }
 
 /**
+ * Task 1683i — hard ceiling for the legacy whole-source thumbnail repair.
+ * `ensureThumbnailForImage` used to download the ENTIRE encrypted media file,
+ * decrypt it fully and base64-write it just to produce a thumbnail; at the
+ * repair worker's old concurrency this filled the 384 MB largeHeap and OOM-killed
+ * the app on the Photos tab (three okio/expo-fetch whole-body accumulations in
+ * the crash stacks). Sources above this ceiling are never downloaded for a
+ * thumbnail — the tile shows the icon/placeholder instead, and the bounded
+ * server-thumbnail flow (`fetchDecryptedThumbnailUri`) keeps serving whatever
+ * the server already has.
+ */
+export const MAX_THUMBNAIL_REPAIR_SOURCE_BYTES = 10 * 1024 * 1024;
+
+/**
  * Best-effort repair for media files that predate thumbnail generation.
  * Only call this for visible/recent items: it downloads the full encrypted
  * file, decrypts it locally, creates the normal encrypted thumbnail, uploads
@@ -437,6 +450,12 @@ export async function ensureThumbnailForImage(
     throw new Error('thumbnail.ts iOS path replaced by BeebeebThumbnails — caller should use useThumbnail()');
   }
   if (!isThumbnailable(mimeType)) return false;
+  // Task 1683i — no-whole-file contract: videos are never downloaded client-side
+  // for a thumbnail (the tile shows the placeholder; a server thumbnail, when
+  // one exists, is served by the bounded fetchDecryptedThumbnailUri flow), and
+  // oversized sources are refused before any network I/O.
+  if (isVideoMime(mimeType)) return false;
+  if (sizeBytes != null && sizeBytes > MAX_THUMBNAIL_REPAIR_SOURCE_BYTES) return false;
   const pending = repairInflight.get(fileId);
   if (pending) return pending;
 
@@ -445,6 +464,20 @@ export async function ensureThumbnailForImage(
     let sourceUri: string | null = null;
     try {
       const res = await downloadFile(fileId);
+      // Task 1683i — gate at the wire BEFORE buffering the body: when the
+      // metadata size is unknown, the response headers still bound it. A body
+      // over the ceiling is dropped unread (the old code arrayBuffer()'d the
+      // whole response first — the Java-heap filler behind the OOM).
+      const wireSize = responseHeaderInt(res.headers, 'X-Original-Size')
+        ?? responseHeaderInt(res.headers, 'Content-Length');
+      if (wireSize != null && wireSize > MAX_THUMBNAIL_REPAIR_SOURCE_BYTES) {
+        try {
+          await res.body?.cancel();
+        } catch {
+          // body cancel is best-effort; the response is dropped either way
+        }
+        return false;
+      }
       const encryptedBytes = new Uint8Array(await res.arrayBuffer());
       const effectiveSize =
         responseHeaderInt(res.headers, 'X-Original-Size') ?? sizeBytes ?? encryptedBytes.length - 28;
