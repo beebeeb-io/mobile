@@ -4270,6 +4270,31 @@ export default function PreviewScreen() {
             ("Encrypted · Type · size", item 2) instead of a second floating
             badge; see DEVIATIONS.md for the removal note. */}
 
+        {/* Task 1687b — swipe-down on preview CONTENT closes the preview,
+            same gesture + thresholds as the header rows (closeTranslateY
+            comment above): the pan wraps ALL media content branches (pager,
+            locked single-file stage, normal stage). Configuration copied
+            from the header's own PanGestureHandler: activeOffsetY
+            [-1000, 8] activates on a ≥8 pt downward move, failOffsetX ±20
+            hands horizontal moves to the pager's FlatList so page swipes
+            are untouched. This is an RNGH NATIVE pan, not a JS responder —
+            the bisected trap the pager comment below documents (a Pressable
+            ancestor ate every swipe) does not apply. `enabled={!mediaZoomed}`
+            matches the pager's own scrollEnabled gate (1579): while a
+            ZoomableImage is zoomed its ScrollView owns the vertical pan, so
+            the dismiss gesture stands down. The doc branch is deliberately
+            NOT wrapped: its content (PDF/WebView/text) scrolls vertically —
+            a content pan there would fight scrolling; the doc header
+            already carries the same swipe (see its PanGestureHandler).
+            Taps still reach the content: the header proves the tap/pan
+            coexistence (its TouchableOpacities work inside the same pan). */}
+        <PanGestureHandler
+          onGestureEvent={onCloseGestureEvent}
+          onHandlerStateChange={onCloseHandlerStateChange}
+          activeOffsetY={[-1000, 8]}
+          failOffsetX={[-20, 20]}
+          enabled={!mediaZoomed}
+        >
         {showPager ? (
           // Preview redesign item 3 — tap-to-hide on the swipe pager too.
           // See the `pagerTouchStartRef` comment above (by `pagerRef`) for
@@ -4476,6 +4501,7 @@ export default function PreviewScreen() {
             )}
           </Pressable>
         )}
+        </PanGestureHandler>
 
         {/* Task 1583 — the chrome layer is rendered AFTER the content stage,
             not before it. zIndex (chromeLayer: 20) already puts it on top,
