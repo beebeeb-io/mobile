@@ -1125,7 +1125,14 @@ export async function uploadEncryptedFileNative(
  * JS passes only an opaque master-key handle and receives the output URI.
  */
 export async function downloadAndDecryptFileNative(
-  handleId: number,
+  /**
+   * Task 1683h — nullable: null means the native module resolves the master
+   * key itself (awaiting its internal key-loaded latch). A stale native
+   * build that still declares a non-null Int will fail the argument
+   * conversion, which the caller treats as not-available → the 1683g gated
+   * fallback still protects legacy builds.
+   */
+  handleId: number | null,
   apiUrl: string,
   token: string,
   fileId: string,

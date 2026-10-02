@@ -299,6 +299,17 @@ class BeebeebCryptoModule : Module() {
   }
 
   /**
+   * Task 1683h — native key resolution. A null/absent `handleId` means the
+   * module resolves the master key ITSELF: take the adopted handle when one
+   * is loaded, otherwise await the registry's key-loaded latch (completed by
+   * the keychain auto-unlock's `loadKeyFromKeychainAsHandle` store). A
+   * genuinely locked vault surfaces the specific ERR_VAULT_LOCKED error —
+   * no JS timer, no hang, never the memory-bomb fallback.
+   */
+  private suspend fun resolveMasterKey(handleId: Int?): uniffi.beebeeb_uniffi.MasterKeyHandle =
+    if (handleId != null) handles.get(handleId) else handles.awaitKey()
+
+  /**
    * JS `uploadChunksNative` params → the engine's request. Numbers arrive as
    * `Double` (JSI), so coerce like iOS's `number(_:)` helper
    * (BeebeebCryptoModule.swift:4134). Any missing required key throws the
@@ -357,14 +368,13 @@ class BeebeebCryptoModule : Module() {
    * Blocking; all cancellation/progress flows through `progress`.
    */
   private fun downloadAndDecryptPreview(
-    handleId: Int,
+    master: uniffi.beebeeb_uniffi.MasterKeyHandle,
     apiUrl: String,
     token: String,
     fileId: String,
     outputUri: String,
     requestId: String?,
   ): Map<String, Any?> {
-    val master = handles.get(handleId)
     val outputPath = filePathFromUri(outputUri)
     val outputFile = File(outputPath)
     val outputParent = outputFile.parentFile
@@ -1007,11 +1017,15 @@ class BeebeebCryptoModule : Module() {
     // download and decrypts chunk-wise from disk so plaintext/encrypted bytes
     // never enter the JS heap (the 1683 OOM class).
 
-    AsyncFunction("downloadAndDecryptFileNative") { handleId: Int, apiUrl: String, token: String, fileId: String, outputUri: String, requestId: String?, promise: Promise ->
+    // handleId is nullable (task 1683h): null → the module resolves the key
+    // itself from its loaded-key registry (awaiting the key-loaded latch —
+    // the relaunch-tap race is solved NATIVELY, not with a JS timer).
+    AsyncFunction("downloadAndDecryptFileNative") { handleId: Int?, apiUrl: String, token: String, fileId: String, outputUri: String, requestId: String?, promise: Promise ->
       scope.launch {
         try {
           val result = withContext(Dispatchers.IO) {
-            downloadAndDecryptPreview(handleId, apiUrl, token, fileId, outputUri, requestId)
+            val master = resolveMasterKey(handleId)
+            downloadAndDecryptPreview(master, apiUrl, token, fileId, outputUri, requestId)
           }
           promise.resolve(result)
         } catch (t: Throwable) {

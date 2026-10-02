@@ -431,11 +431,20 @@ async function decryptToTempFileUnshared(
   }
   throwIfAborted(options.signal);
 
-  if (masterKeyHandleId != null) {
+  // Task 1683h: null handleId no longer routes around the native path — the
+  // module resolves the master key itself (awaiting its internal key-loaded
+  // latch, completed by the keychain auto-unlock). This is the direct fix for
+  // the relaunch-tap race (a preview tapped ~1.5 s after launch used to fall
+  // to the JS-fetch fallback with a null handle and buffer the whole body in
+  // the Java heap). The 1683g fail-closed gate below remains only for legacy
+  // native builds, where a null handle fails argument conversion → treated
+  // as not-available → gated fallback.
+  if (isNativeAvailable) {
     try {
       recordRuntimeTrace('preview.decrypt.native.request', {
         fileId,
         extension: ext,
+        handleResolvedNatively: masterKeyHandleId == null,
       });
       const result = await downloadAndDecryptFileNative(
         masterKeyHandleId,

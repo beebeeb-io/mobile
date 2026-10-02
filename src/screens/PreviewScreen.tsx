@@ -434,31 +434,7 @@ interface PhotoPageEntry {
 
 type PhotoLoadStage = 'checking' | 'downloading' | 'decrypting' | 'caching';
 type FileKeyLoader = (fileId: string) => Promise<Uint8Array>;
-type MasterKeyHandleLoader = () => number;
 
-/**
- * Task 1683g — the keychain auto-unlock lands ~1.5–2 s after launch, but the
- * preview UI is interactive sooner. A preview tapped in that window sees a
- * null master-key handle and would fall to the JS-fetch fallback, which
- * buffers the WHOLE body in the Java heap — Guus's 800 MB video OOMed the app
- * dead exactly that way (relaunch-tap race, 20:08/20:11 crashes). Poll briefly
- * for the handle before giving up; the size gate in native-decrypt.ts is the
- * second layer behind this.
- */
-async function waitForMasterKeyHandle(
-  loader: MasterKeyHandleLoader,
-  signal?: AbortSignal,
-  timeoutMs = 10_000,
-): Promise<number | null> {
-  const deadline = Date.now() + timeoutMs;
-  let handle = loader();
-  while ((handle == null || typeof handle !== 'number') && Date.now() < deadline) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    await new Promise((r) => setTimeout(r, 250));
-    handle = loader();
-  }
-  return typeof handle === 'number' ? handle : null;
-}
 type ImagePreviewKind = 'thumbnail' | 'large' | 'original';
 
 const NORMAL_PREVIEW_THUMB_SIZE = 768;
