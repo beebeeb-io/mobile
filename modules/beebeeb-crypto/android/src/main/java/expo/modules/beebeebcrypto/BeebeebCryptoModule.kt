@@ -119,6 +119,16 @@ class BeebeebCryptoModule : Module() {
   private suspend fun sealKeyBytes(label: String, keyBytes: ByteArray, biometric: Boolean) {
     val vault = theVault()
     val blob = if (biometric) {
+      // Per-use keys require an ENROLLED strong biometric; surface the same
+      // retryable code JS already understands instead of ERR_UNEXPECTED.
+      val canAuthenticate = androidx.biometric.BiometricManager.from(reactContext)
+        .canAuthenticate(androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG)
+      if (canAuthenticate != androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS) {
+        throw VaultAuthException(
+          VaultAuthCodes.AUTH_NOT_AVAILABLE,
+          "no enrolled strong biometric (canAuthenticate=$canAuthenticate)",
+        )
+      }
       val cipher = withContext(Dispatchers.IO) {
         vault.getOrCreateBiometricKey()
         try {

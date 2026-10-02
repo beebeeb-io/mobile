@@ -92,12 +92,12 @@ class AndroidKeyStoreVaultTest {
   @Test
   fun biometricKeyGenerationAndTeardown() {
     val vault = freshVault()
-    val hasHardware = context.packageManager.hasSystemFeature(
-      android.content.pm.PackageManager.FEATURE_FINGERPRINT,
-    ) || context.packageManager.hasSystemFeature(
-      android.content.pm.PackageManager.FEATURE_FACE,
-    )
-    org.junit.Assume.assumeTrue("no biometric hardware declared", hasHardware)
+    // Per-use keys require an ENROLLED strong biometric (hardware feature alone
+    // is not enough — keystore throws InvalidAlgorithmParameterException).
+    val biometricsEnrolled = androidx.biometric.BiometricManager.from(context)
+      .canAuthenticate(androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG) ==
+      androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS
+    org.junit.Assume.assumeTrue("no enrolled strong biometric on this device", biometricsEnrolled)
 
     val key = vault.getOrCreateBiometricKey()
     assertNotNull(key)
