@@ -133,6 +133,19 @@ export default function LoginScreen() {
         navigation.navigate('TwoFactorChallenge', { partialToken: err.partialToken });
         return;
       }
+      // Task 1683i sweep — a wrong password fails INSIDE the native OPAQUE
+      // finish (the client verifies the server MAC with the password-derived
+      // key), and the raw Expo rejection ("Call to function
+      // 'BeebeebCrypto.opaqueLoginFinish' has been rejected..") is not
+      // user-facing wording. On this screen a finish rejection is the
+      // credential-mismatch case: network failures fail earlier, at
+      // loginStart, with their own message.
+      const raw = err instanceof Error ? err.message : String(err);
+      if (raw.includes('opaqueLoginFinish')) {
+        setError('Incorrect password. Try again.');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        return;
+      }
       setError(friendlyError(err));
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
