@@ -508,8 +508,7 @@ class BeebeebCryptoModule : Module() {
    * sibling and renames on success so a partial file can never be served from
    * the preview cache (Rust `decrypt_chunks_to_file` semantics).
    */
-  private fun decryptPreviewChunks(
-    progress: PreviewDownloadProgress,
+  private fun decryptPreviewChunks(    progress: PreviewDownloadProgress,
     master: uniffi.beebeeb_uniffi.MasterKeyHandle,
     fileId: String,
     downloaded: DownloadedEncryptedFile,
@@ -595,6 +594,111 @@ class BeebeebCryptoModule : Module() {
     val originalSize: Long,
     val plaintextChunkSize: Long,
   )
+
+  // ───────────────────── native offline decrypt (task 1683d) ────────────────
+  //
+  // The offline open path (`decryptLocalFileLeased`, src/lib/native-decrypt.ts
+  // :787–871) read the whole local ciphertext as base64 into the JS heap and
+  // wrote the plaintext back as base64 — the 1683 OOM class at offline sizes
+  // (>100 MB). This port streams the LOCAL encrypted file from disk with the
+  // 1683b chunk-window loop (RandomAccessFile window → UniFFI decryptChunk →
+  // plaintext stream → .tmp rename); peak memory is one window regardless of
+  // file size, and plaintext never enters the JS heap.
+  //
+  // Framing parity: JS resolves `originalSize` / `chunkCount` / `chunkSize`
+  // with the SAME math it uses for the fallback loop (manifest meta captured
+  // from the download headers, then the size-based inference) and passes the
+  // resolved values in — native only validates the window math (the same
+  // ERR_TRUNCATED/ERR_TRAILING guards as the preview loop). Progress + cancel
+  // reuse the 1683b preview surface (getPreviewLoadProgress /
+  // cancelDownloadAndDecryptFileNative) so no new JS plumbing is needed.
+
+  private fun decryptLocalFileChunks(
+    progress: PreviewDownloadProgress,
+    fileKey: ByteArray,
+    inputPath: String,
+    outputFile: File,
+    chunkSizeBytes: Long,
+    chunkCount: Int,
+    originalSize: Long,
+  ): Map<String, Any?> {
+    val encFile = File(inputPath)
+    if (!encFile.exists()) {
+      throw CodedException("ERR_OFFLINE_MISSING", "Offline copy is missing", null)
+    }
+    if (chunkCount <= 0 || chunkSizeBytes <= 0L || originalSize <= 0L) {
+      throw CodedException("ERR_CHUNK_METADATA", "Invalid offline decrypt metadata", null)
+    }
+    val encSize = encFile.length()
+    val tmpFile = File("${outputFile.absolutePath}.tmp")
+    try {
+      tmpFile.delete()
+    } catch (_: Exception) {}
+    progress.emitProgress(
+      stage = PreviewDownloadProgress.STAGE_DECRYPTING,
+      chunksCompleted = 0,
+      chunksTotal = chunkCount,
+    )
+
+    try {
+      RandomAccessFile(encFile, "r").use { raf ->
+        FileOutputStream(tmpFile).use { out ->
+          var chunkStart = 0L
+          for (index in 0 until chunkCount) {
+            if (progress.isCancelled()) {
+              throw CodedException("ERR_CANCELLED", "Offline decrypt cancelled", null)
+            }
+            val isLast = index == chunkCount - 1
+            val plaintextSize = if (chunkCount == 1) {
+              originalSize
+            } else if (isLast) {
+              originalSize - chunkSizeBytes * (chunkCount - 1)
+            } else {
+              chunkSizeBytes
+            }
+            if (plaintextSize <= 0L) {
+              throw CodedException("ERR_CHUNK_SIZE", "Invalid chunk size", null)
+            }
+            val windowSize = CHUNK_OVERHEAD_BYTES + plaintextSize
+            if (chunkStart + windowSize > encSize) {
+              throw CodedException(
+                "ERR_TRUNCATED",
+                "Encrypted payload ended before chunk $index",
+                null,
+              )
+            }
+            val window = ByteArray(windowSize.toInt())
+            raf.seek(chunkStart)
+            raf.readFully(window)
+            val nonce = window.copyOfRange(0, NONCE_BYTES)
+            val ciphertext = window.copyOfRange(NONCE_BYTES, window.size)
+            val plaintext = decryptChunk(fileKey, nonce, ciphertext)
+            out.write(plaintext)
+            chunkStart += windowSize
+            progress.onChunkDecrypted(index + 1, chunkCount)
+          }
+          if (chunkStart != encSize) {
+            throw CodedException("ERR_TRAILING", "Encrypted payload has trailing bytes", null)
+          }
+          out.flush()
+        }
+      }
+      if (!tmpFile.renameTo(outputFile)) {
+        throw CodedException("ERR_RENAME", "Could not finalize decrypted output", null)
+      }
+    } catch (t: Throwable) {
+      try { tmpFile.delete() } catch (_: Exception) {}
+      throw t
+    }
+
+    progress.onComplete()
+    return mapOf(
+      "outputPath" to outputFile.absolutePath,
+      "outputUri" to android.net.Uri.fromFile(outputFile).toString(),
+      "plaintextSize" to outputFile.length(),
+      "chunksDecrypted" to chunkCount,
+    )
+  }
 
   companion object {
     /** logcat tag for the native upload engine's trace lines (task 1683c). */
@@ -925,6 +1029,74 @@ class BeebeebCryptoModule : Module() {
     // }
     Function("getPreviewLoadProgress") { requestId: String? ->
       readPreviewProgress(requestId) ?: emptyMap()
+    }
+
+    // ───────────────────── native offline decrypt (task 1683d) ───────────────
+    //
+    // Kotlin port of the 1683b chunk-window loop for LOCAL offline ciphertext:
+    // streams the encrypted blob from disk (never a whole-file base64 buffer in
+    // the JS heap), decrypts chunk-wise, writes a .tmp and renames. JS keeps
+    // the framing resolution + fallback; progress/cancel ride the existing
+    // preview-download surface.
+    AsyncFunction("decryptLocalFileNative") { params: Map<String, Any?>, promise: Promise ->
+      scope.launch {
+        val requestId = params["requestId"] as? String ?: ""
+        try {
+          val fileKey = params["fileKey"] as? ByteArray
+            ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires fileKey", null)
+          val inputPath = filePathFromUri(
+            params["inputUri"] as? String
+              ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires inputUri", null),
+          )
+          val outputUri = params["outputUri"] as? String
+            ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires outputUri", null)
+          val outputFile = File(filePathFromUri(outputUri))
+          val outputParent = outputFile.parentFile
+            ?: throw CodedException("ERR_OUTPUT_PATH", "output path has no parent directory", null)
+          if (!outputParent.exists()) outputParent.mkdirs()
+          fun number(key: String): Long? = (params[key] as? Number)?.toLong()
+          val chunkSizeBytes = number("chunkSizeBytes")
+            ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires chunkSizeBytes", null)
+          val chunkCount = number("chunkCount")
+            ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires chunkCount", null)
+          val originalSize = number("originalSize")
+            ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires originalSize", null)
+
+          val progress = PreviewDownloadProgress(requestId, params["fileId"] as? String ?: "") { body ->
+            storePreviewProgress(requestId, body)
+          }
+          if (requestId.isNotEmpty()) {
+            storePreviewDownloadCancellation(
+              progress,
+              requestId,
+            )
+          }
+          try {
+            val result = withContext(Dispatchers.IO) {
+              decryptLocalFileChunks(
+                progress,
+                fileKey,
+                inputPath,
+                outputFile,
+                chunkSizeBytes,
+                chunkCount.toInt(),
+                originalSize,
+              )
+            }
+            promise.resolve(result)
+          } catch (t: Throwable) {
+            progress.onError(t.message ?: t.javaClass.simpleName)
+            throw t
+          } finally {
+            if (requestId.isNotEmpty()) {
+              removePreviewDownloadCancellation(requestId)
+              clearPreviewProgress(requestId)
+            }
+          }
+        } catch (t: Throwable) {
+          rejectUnexpected(promise, t)
+        }
+      }
     }
 
     // ─────────────────────── native manual upload (task 1683c) ───────────────
