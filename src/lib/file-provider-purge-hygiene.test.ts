@@ -3068,6 +3068,157 @@ if RuntimeTrace.events != [
     execFileSync('swiftc', [source, '-o', join(dir, 'RetryHarness')], { stdio: 'pipe' });
     execFileSync(join(dir, 'RetryHarness'), [], { stdio: 'pipe' });
   });
+
+  test('actual SQLite reset helper recovers from a transient live DB lock and still fails closed on a persistent lock', () => {
+    const vacuumHelper = bracedBody(moduleSwift, 'private func vacuumRetryingOnceOnBusy(');
+    const resetHelper = bracedBody(moduleSwift, 'private func resetFileProviderCacheDatabase(at url: URL) -> Bool {');
+    const retryHelper = bracedBody(moduleSwift, 'private func retryFileProviderCacheReset(');
+
+    const dir = mkdtempSync(join(tmpdir(), 'bb-reset-sqlite-'));
+    const source = join(dir, 'SQLiteResetHarness.swift');
+    writeFileSync(source, `
+import Foundation
+import SQLite3
+
+enum RuntimeTrace {
+  static var events: [String] = []
+  static func event(_ name: String, _ payload: [String: Any]) {
+    events.append(name)
+  }
+}
+
+${vacuumHelper}
+
+${resetHelper}
+
+${retryHelper}
+
+func require(_ condition: @autoclosure () -> Bool, _ message: String) {
+  if !condition() { fatalError(message) }
+}
+
+func execSQL(_ db: OpaquePointer?, _ sql: String) {
+  var error: UnsafeMutablePointer<Int8>?
+  let rc = sqlite3_exec(db, sql, nil, nil, &error)
+  if rc != SQLITE_OK {
+    let message = error.map { String(cString: $0) } ?? "unknown"
+    if let error { sqlite3_free(error) }
+    fatalError("sqlite rc=\\(rc): \\(message); sql=\\(sql)")
+  }
+}
+
+func openDb(_ url: URL) -> OpaquePointer? {
+  var db: OpaquePointer?
+  let rc = sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil)
+  require(rc == SQLITE_OK && db != nil, "open db failed rc=\\(rc)")
+  return db
+}
+
+func scalarInt(_ db: OpaquePointer?, _ sql: String) -> Int32 {
+  var stmt: OpaquePointer?
+  require(sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, "prepare failed: \\(sql)")
+  defer { sqlite3_finalize(stmt) }
+  require(sqlite3_step(stmt) == SQLITE_ROW, "no row: \\(sql)")
+  return sqlite3_column_int(stmt, 0)
+}
+
+func makeRuntimeSchemaDb(_ name: String) -> URL {
+  let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("bb-reset-sqlite-\\(UUID().uuidString)", isDirectory: true)
+  try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  let url = dir.appendingPathComponent(name)
+  let db = openDb(url)
+  defer { sqlite3_close(db) }
+  execSQL(db, """
+  CREATE TABLE file_cache (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT,
+    name_encrypted TEXT,
+    name_decrypted TEXT,
+    mime_type TEXT,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    is_folder INTEGER NOT NULL DEFAULT 0,
+    is_pinned INTEGER NOT NULL DEFAULT 0,
+    has_thumbnail INTEGER NOT NULL DEFAULT 0,
+    thumbnail_data BLOB,
+    thumbnail_nonce BLOB,
+    created_at TEXT,
+    updated_at TEXT,
+    sync_anchor INTEGER NOT NULL DEFAULT 0,
+    is_materialized INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_file_cache_parent ON file_cache(parent_id);
+  CREATE INDEX idx_file_cache_anchor ON file_cache(sync_anchor);
+  CREATE TABLE sync_state (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
+  CREATE TABLE upload_queue (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT,
+    local_path TEXT,
+    file_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL
+  );
+  PRAGMA user_version = 1;
+  INSERT INTO file_cache (id, parent_id, name_encrypted, size_bytes, is_folder) VALUES ('root-child', NULL, 'encrypted', 7, 0);
+  INSERT INTO sync_state (key, value) VALUES ('anchor', '1');
+  INSERT INTO upload_queue (id, parent_id, local_path, file_id, status, created_at) VALUES ('upload', NULL, '/tmp/local', NULL, 'pending', 'now');
+  """)
+  require(scalarInt(db, "SELECT count(*) FROM file_cache") == 1, "seed file_cache failed")
+  require(scalarInt(db, "PRAGMA user_version") == 1, "seed user_version failed")
+  return url
+}
+
+let transientUrl = makeRuntimeSchemaDb("transient.sqlite")
+let transientLock = openDb(transientUrl)
+execSQL(transientLock, "BEGIN EXCLUSIVE")
+var transientAttempts = 0
+RuntimeTrace.events = []
+let transientRecovered = retryFileProviderCacheReset(sleepMicros: 0) {
+  transientAttempts += 1
+  let ok = resetFileProviderCacheDatabase(at: transientUrl)
+  if transientAttempts == 1 {
+    execSQL(transientLock, "COMMIT")
+    sqlite3_close(transientLock)
+  }
+  return ok
+}
+require(transientRecovered, "transient lock should recover on retry")
+require(transientAttempts == 2, "transient retry count was \\(transientAttempts)")
+require(RuntimeTrace.events == ["storage.purge.file_provider_cache_reset_retry"], "unexpected transient events: \\(RuntimeTrace.events)")
+let transientCheck = openDb(transientUrl)
+require(scalarInt(transientCheck, "SELECT count(*) FROM file_cache") == 0, "transient file_cache not reset")
+require(scalarInt(transientCheck, "SELECT count(*) FROM sync_state") == 0, "transient sync_state not reset")
+require(scalarInt(transientCheck, "SELECT count(*) FROM upload_queue") == 0, "transient upload_queue not reset")
+require(scalarInt(transientCheck, "PRAGMA user_version") == 2, "transient user_version not bumped")
+sqlite3_close(transientCheck)
+
+let persistentUrl = makeRuntimeSchemaDb("persistent.sqlite")
+let persistentLock = openDb(persistentUrl)
+execSQL(persistentLock, "BEGIN EXCLUSIVE")
+var persistentAttempts = 0
+RuntimeTrace.events = []
+let persistentRecovered = retryFileProviderCacheReset(sleepMicros: 0) {
+  persistentAttempts += 1
+  return resetFileProviderCacheDatabase(at: persistentUrl)
+}
+execSQL(persistentLock, "COMMIT")
+sqlite3_close(persistentLock)
+require(!persistentRecovered, "persistent lock must fail closed")
+require(persistentAttempts == 2, "persistent retry count was \\(persistentAttempts)")
+require(RuntimeTrace.events == [
+  "storage.purge.file_provider_cache_reset_retry",
+  "storage.purge.file_provider_cache_reset_failed",
+], "unexpected persistent events: \\(RuntimeTrace.events)")
+let persistentCheck = openDb(persistentUrl)
+require(scalarInt(persistentCheck, "SELECT count(*) FROM file_cache") == 1, "persistent file_cache should remain when reset is unproven")
+require(scalarInt(persistentCheck, "PRAGMA user_version") == 1, "persistent user_version should not bump on failed reset")
+sqlite3_close(persistentCheck)
+`);
+    execFileSync('swiftc', [source, '-o', join(dir, 'SQLiteResetHarness'), '-lsqlite3'], { stdio: 'pipe' });
+    execFileSync(join(dir, 'SQLiteResetHarness'), [], { stdio: 'pipe' });
+  }, 20_000);
 });
 
 // Task 1593 f5 (reviewer follow-up 1) — "a registration's bump clears the
