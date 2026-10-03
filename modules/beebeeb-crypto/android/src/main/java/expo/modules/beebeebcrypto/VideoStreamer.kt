@@ -257,10 +257,15 @@ internal class VideoStreamSession(
     Thread(r, "beebeeb-stream-decrypt-${fileId.take(8)}").apply { isDaemon = true }
   }
 
-  /** HTTP per-chunk fetches; cancel() tears the in-flight ones down. */
+  /** HTTP per-chunk fetches; cancel() tears the in-flight ones down.
+   *  READ TIMEOUT (run 4, the buffered-48% stall): a chunk is ≤ 4 MiB — a
+   *  read that idles 30 s mid-body is a STALLED connection, not a slow one.
+   *  The old 600 s (1683b's whole-file body timeout) turned a hung read into
+   *  a 10-minute silent pump freeze; 30 s + the 3× retry converts it into a
+   *  fast recover (or a loud fatal). */
   private val client = OkHttpClient.Builder()
     .connectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
-    .readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS)
+    .readTimeout(CHUNK_READ_TIMEOUT_S, TimeUnit.SECONDS)
     .build()
   private val openCalls = ConcurrentHashMap<String, okhttp3.Call>()
 
@@ -336,6 +341,7 @@ internal class VideoStreamSession(
     val future = CompletableFuture<Boolean>()
     val raced = inFlight.putIfAbsent(index, future)
     if (raced != null) return raced
+    Log.i(TAG, "stream.ensure.new chunk=$index inFlight=${inFlight.size} decrypted=${decryptedCount.get()}/$chunkCount")
     // The OWNER (this call) starts the work only after winning the map slot,
     // so a racing caller can never duplicate the fetch.
     fetchExecutor.execute {
@@ -406,6 +412,8 @@ internal class VideoStreamSession(
         .build()
       val call = client.newCall(request)
       openCalls["$index:$attempt"] = call
+      val fetchStartedAt = android.os.SystemClock.elapsedRealtime()
+      Log.i(TAG, "stream.fetch.begin chunk=$index attempt=$attempt expected=$expectedLength")
       try {
         call.execute().use { resp ->
           if (!resp.isSuccessful) {
@@ -443,6 +451,7 @@ internal class VideoStreamSession(
             downloadedChunks.set(index)
             downloadedBytes.addAndGet(written)
           }
+          Log.i(TAG, "stream.fetch.done chunk=$index bytes=$written in=${android.os.SystemClock.elapsedRealtime() - fetchStartedAt}ms frontier_kb=${downloadedBytes.get() / 1024}")
           if (!downloadEmissionsMuted) {
             progress.emitDownload(downloadedBytes.get(), encryptedTotalBytes())
           }
@@ -450,6 +459,7 @@ internal class VideoStreamSession(
         }
       } catch (e: Exception) {
         if (stopRequested() || complete.get()) return -1L
+        Log.w(TAG, "stream.fetch.retry chunk=$index attempt=$attempt error=${e.message ?: e.javaClass.simpleName}")
         if (e is CodedException && e.code in NON_RETRYABLE_FETCH_CODES) throw e
         lastError = e
         try { Thread.sleep(500L * attempt) } catch (_: InterruptedException) { return -1L }
@@ -491,6 +501,7 @@ internal class VideoStreamSession(
       }
       synchronized(chunkStateLock) { decryptedChunks.set(index) }
       val done = decryptedCount.incrementAndGet()
+      Log.i(TAG, "stream.decrypt.done chunk=$index buffered=$done/$count")
       progress.emitProgress(
         stage = PreviewDownloadProgress.STAGE_DECRYPTING,
         chunksCompleted = done.toInt(),
@@ -601,7 +612,7 @@ internal class VideoStreamSession(
   companion object {
     private const val TAG = "BeebeebVideoStream"
     private const val CONNECT_TIMEOUT_S = 30L
-    private const val READ_TIMEOUT_S = 600L
+    private const val CHUNK_READ_TIMEOUT_S = 30L
     private const val CHUNK_WAIT_TIMEOUT_S = 120L
     private const val DECRYPT_PERMITS = 1
     private const val FETCH_CONCURRENCY = 4
@@ -819,6 +830,7 @@ internal object VideoStreamServer {
       return
     }
     val status = if (rangeHeader.isNullOrEmpty()) 200 else 206
+    Log.i(TAG, "stream.serve.open start=$start end=$end total=${plan.originalSize} status=$status buffered=${session.decryptedCount.get()}/${plan.chunkCount}")
     val out = BufferedOutputStream(socket.getOutputStream())
     out.write(buildHeaders(session, status, start, end, plan.originalSize).toByteArray(Charsets.ISO_8859_1))
     out.flush()
@@ -833,9 +845,14 @@ internal object VideoStreamServer {
       while (pos <= end) {
         if (session.stopRequested()) break
         val chunkIndex = plan.chunkIndexForPosition(pos)
+        val bufferedBefore = session.decryptedCount.get().toInt()
+        val chunkWaitStartedAt = android.os.SystemClock.elapsedRealtime()
         if (!session.awaitChunk(chunkIndex)) {
-          Log.w(TAG, "stream.serve.aborted fileId=${session.fileId} pos=$pos chunk=$chunkIndex")
+          Log.w(TAG, "stream.serve.aborted pos=$pos chunk=$chunkIndex bufferedNow=$bufferedBefore waitedMs=${android.os.SystemClock.elapsedRealtime() - chunkWaitStartedAt}")
           break
+        }
+        if (bufferedBefore < plan.chunkCount) {
+          Log.i(TAG, "stream.serve.chunk-ready pos=$pos chunk=$chunkIndex waitedMs=${android.os.SystemClock.elapsedRealtime() - chunkWaitStartedAt} bufferedNow=${session.decryptedCount.get()}")
         }
         val chunkPlainEnd = VideoChunkMath.plainOffset(chunkIndex, plan.chunkCount, plan.plaintextChunkSize) +
           VideoChunkMath.plaintextSize(chunkIndex, plan.chunkCount, plan.plaintextChunkSize, plan.originalSize) - 1
