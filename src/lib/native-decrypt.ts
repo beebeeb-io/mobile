@@ -68,6 +68,15 @@ export interface PreviewDecryptOptions {
    *               the fresh copy — "Prove it" deletes it after its 512-byte
    *               read in that case only).
    */
+  /**
+   * Task 1683j — the streaming session's progress events keep flowing AFTER
+   * this function resolves (the pump decrypts while the video plays). The
+   * shared-listener broadcaster above is torn down when the caller returns
+   * (`sharedListeners.delete(outputPath)`), so the stream wrapper needs the
+   * CALLER's own handler to keep receiving post-resolve events — the
+   * "Streaming · N% buffered" badge rides this sticky channel.
+   */
+  onStickyProgress?: (event: PreviewLoadProgressEvent) => void;
   onSource?: (source: PreviewDecryptSource) => void;
 }
 
@@ -265,6 +274,11 @@ export async function decryptToTempFile(
             onProgress: (event) => {
               sharedListeners.get(outputPath)?.forEach((l) => l.onProgress?.(event));
             },
+            // Task 1683j — the streaming wrapper outlives this job (the pump
+            // decrypts while the video plays); post-resolve events must reach
+            // the caller DIRECTLY — the broadcaster above is deleted when
+            // this job returns. Harmlessly double-delivers pre-resolve.
+            onStickyProgress: options.onProgress,
             onOfflineFallback: (event) => {
               sharedListeners.get(outputPath)?.forEach((l) => l.onOfflineFallback?.(event));
             },
@@ -488,7 +502,16 @@ async function decryptToTempFileUnshared(
             outputPath,
             sizeBytes ?? null,
             chunkCount ?? null,
-            { onProgress: options.onProgress, signal: options.signal },
+            {
+              onProgress: (event) => {
+                options.onProgress?.(event);
+                // Task 1683j — the sticky channel keeps the badge alive past
+                // resolve (the shared-listener broadcaster dies with this
+                // job's return; the pump runs on).
+                options.onStickyProgress?.(event);
+              },
+              signal: options.signal,
+            },
           );
           if (options.signal?.aborted) {
             await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
