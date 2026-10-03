@@ -717,3 +717,12 @@ from the screen's previous heading.
 Guus reports RAW uploads lingering before transfer. Stage 1 includes local copying,
 metadata encryption and session initialization; its label is now "Preparing on
 your device…". Live encryption throughput remains in stage 2. No design geometry changed.
+
+## 1723 — release preview regression repair (2026-10-03)
+
+The Android streaming merge regressed iOS preview behaviors already covered in
+the pre-PR `6ec146c` source: content-area swipe-to-close, locked-pager tap
+affordances, the partial-file error card, PhotoPage export/resource bounds and
+RAW EXIF keyed by file id. This repair restores those local PreviewScreen
+behaviors while preserving the merged streaming UI's buffered-video badge and
+single-file video streaming path. No design geometry changes.
