@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug overlay (task 1683j): dev builds keep FULL cleartext — Metro/dev
+     launcher connect over the LAN IP, not just loopback. Release keeps the
+     loopback-only rule from main/res/xml. -->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

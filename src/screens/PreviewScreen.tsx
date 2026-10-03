@@ -62,6 +62,7 @@ import {
   saveTextFileVersion,
 } from '../lib/text-file-save';
 import { decryptToTempFile, invalidatePreviewCache, releasePreviewCopy } from '../lib/native-decrypt';
+import { isLoopbackStreamUri, streamBufferPctFromEvent } from '../lib/video-stream';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
@@ -465,6 +466,12 @@ interface PreviewProgressState {
   bytesTotal: number;
   chunksCompleted: number;
   chunksTotal: number;
+  /**
+   * Task 1683j — the event belongs to a streaming session: the progress row
+   * reads "Streaming · N% buffered" instead of "Decrypting on …" (the
+   * buffered percent IS the chunks fraction).
+   */
+  streaming: boolean;
 }
 
 function emptyPreviewProgress(stage: PhotoLoadStage | null = null): PreviewProgressState {
@@ -474,6 +481,7 @@ function emptyPreviewProgress(stage: PhotoLoadStage | null = null): PreviewProgr
     bytesTotal: 0,
     chunksCompleted: 0,
     chunksTotal: 0,
+    streaming: false,
   };
 }
 
@@ -525,8 +533,24 @@ function isPreviewLockedError(err: unknown): boolean {
   return err instanceof Error && err.name === 'PreviewLockedError';
 }
 
-function PreviewProgressStatus({
-  color,
+/**
+ * Task 1683j — the buffered badge over a PLAYING streamed video: later
+ * chunks keep decrypting while earlier ones play, so the stage shows a small
+ * "Streaming · N% buffered" pill until the session completes. `pct` comes
+ * from the stream's own progress pump (not the load row, which the load
+ * finally clears at resolve time).
+ */
+function StreamingBufferBadge({ pct, bottomInset = 24 }: { pct: number; bottomInset?: number }) {
+  return (
+    <View style={[styles.streamBadgeLayer, { paddingBottom: bottomInset }]} pointerEvents="none">
+      <View style={styles.streamBadge} testID="preview-stream-buffer-badge">
+        <Text style={styles.streamBadgeText}>Streaming · {pct}% buffered</Text>
+      </View>
+    </View>
+  );
+}
+
+function PreviewProgressStatus({  color,
   // 1346 — textColor/trackColor are required, not defaulted: this component
   // has no useTheme() of its own (it takes its palette from the caller, same
   // as `color`), and both PreviewScreen call sites always sit on a ground
@@ -580,6 +604,15 @@ function progressStageText(
     return isVideo ? 'Downloading video...' : 'Downloading encrypted file...';
   }
   if (progress.stage === 'decrypting') {
+    // Task 1683j — a streaming session's buffered percent IS the user-facing
+    // signal (later chunks decrypt while earlier ones play); the "Decrypting
+    // on <device>" phrasing only applies to the whole-file pipeline.
+    if (progress.streaming) {
+      const buffered = progress.chunksTotal > 0
+        ? Math.round((progress.chunksCompleted / progress.chunksTotal) * 100)
+        : 0;
+      return `Streaming · ${buffered}% buffered`;
+    }
     const progressText = progress.chunksTotal > 0
       ? ` · ${Math.round((progress.chunksCompleted / progress.chunksTotal) * 100)}%`
       : '';
@@ -610,6 +643,7 @@ function applyNativeProgress(event: PreviewLoadProgressEvent, setProgress: React
     bytesTotal: event.bytesTotal ?? prev.bytesTotal,
     chunksCompleted: event.chunksCompleted ?? prev.chunksCompleted,
     chunksTotal: event.chunksTotal ?? prev.chunksTotal,
+    streaming: event.streaming ?? prev.streaming,
   }));
 }
 
@@ -875,6 +909,21 @@ async function loadDecryptedPhotoForViewer(
       await releasePreviewCopy(entry.id, ext);
       recordRuntimeTrace('preview.photo_page.original.aborted_after_decrypt', { fileId: entry.id });
       throwIfPreviewAborted(signal);
+    }
+
+    // Task 1683j — a streamed video hands back the LOOPBACK stream uri: the
+    // player must start from it NOW (that is the streaming effect), so skip
+    // the video-cache copy until the session completes. The stream's own
+    // completion writes the preview-cache plaintext; the next open takes the
+    // cache-hit path and copies into the video cache normally. (copyAsync on
+    // an http uri would throw — the stream uri is not a filesystem path.)
+    if (isLoopbackStreamUri(decryptedUri)) {
+      recordRuntimeTrace('preview.photo_page.original.stream_uri', {
+        fileId: entry.id,
+        cacheExt,
+        elapsedMs: Date.now() - startedAt,
+      });
+      return { uri: decryptedUri, kind: 'original' };
     }
 
     onStage?.('caching');
@@ -1230,6 +1279,9 @@ const PhotoPage = React.memo(function PhotoPage({
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<PhotoLoadStage | null>(null);
   const [progress, setProgress] = useState<PreviewProgressState>(() => emptyPreviewProgress('checking'));
+  // Task 1683j — the streamed video's buffered percent while it plays (the
+  // pager's own channel; cleared on the next page's load or unmount).
+  const [streamBufferPct, setStreamBufferPct] = useState<number | null>(null);
   const [performanceProfile, setPerformanceProfile] = useState<DevicePerformanceProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fullImageOpacity = useRef(new Animated.Value(0)).current;
@@ -1379,7 +1431,13 @@ const PhotoPage = React.memo(function PhotoPage({
             }
           },
           (event) => {
-            if (!cancelled) applyNativeProgress(event, setProgress);
+            if (!cancelled) {
+              applyNativeProgress(event, setProgress);
+              // Task 1683j — the streamed video's buffered percent side
+              // channel (the load row's progress is cleared at resolve).
+              const pct = streamBufferPctFromEvent(event);
+              if (pct !== undefined) setStreamBufferPct(pct);
+            }
           },
           controller.signal,
         );
@@ -1662,14 +1720,22 @@ const PhotoPage = React.memo(function PhotoPage({
               </Text>
             </View>
           ) : uri && isVideoEntry ? (
-            <VideoView
-              player={player}
-              style={styles.photoPageImage}
-              contentFit="contain"
-              nativeControls
-              fullscreenOptions={{ enable: true }}
-              allowsPictureInPicture
-            />
+            // Task 1683j — the pager's VideoView + buffered badge share a
+            // positioned wrap (same reasoning as the single-file branch's
+            // mediaVideoStageWrap: the pager stage is a centered flex box).
+            <View style={styles.mediaVideoStageWrap}>
+              <VideoView
+                player={player}
+                style={styles.photoPageImage}
+                contentFit="contain"
+                nativeControls
+                fullscreenOptions={{ enable: true }}
+                allowsPictureInPicture
+              />
+              {isLoopbackStreamUri(uri) && streamBufferPct != null && streamBufferPct < 100 ? (
+                <StreamingBufferBadge pct={streamBufferPct} />
+              ) : null}
+            </View>
           ) : uri && isRawEntry ? (
             // Task 1570 — RAW joining the pager. `RawRenderer` owns its own
             // loading/extraction/fallback states once handed this decrypted
@@ -2075,6 +2141,10 @@ export default function PreviewScreen() {
   const [videoUri, setVideoUri] = useState<string | null>(null);
   const [videoLoading, setVideoLoading] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
+  // Task 1683j — the streamed video's buffered percent while it PLAYS (the
+  // load row's progress is cleared once the stream uri is handed over; this
+  // side channel keeps tracking the pump until the session completes).
+  const [streamBufferPct, setStreamBufferPct] = useState<number | null>(null);
   const tempVideoUriRef = useRef<string | null>(null);
 
   // Task 1568 — audio inline preview state, same shape as video's above:
@@ -2875,7 +2945,12 @@ export default function PreviewScreen() {
    * unlocked). Returns a local URI suitable for an <Image> source or sharing.
    * Falls back to the encrypted URI if crypto is unavailable.
    */
-  const fetchAndDecrypt = useCallback(async (options: { signal?: AbortSignal } = {}): Promise<string> => {
+  const fetchAndDecrypt = useCallback(async (options: {
+    signal?: AbortSignal;
+    /** Task 1683j — streamed videos: the buffered percent as it climbs
+     * (number), null when the stream finishes/errors; undefined = no change. */
+    onStreamProgress?: (pct: number | null) => void;
+  } = {}): Promise<string> => {
     throwIfPreviewAborted(options.signal);
     // Task 1539 (finding 1, P0): every single-file decrypt path funnels
     // through this function — see PreviewLockedError's doc comment. Checked
@@ -2949,7 +3024,14 @@ export default function PreviewScreen() {
             currentChunkCount,
             handleId,
             {
-              onProgress: (event) => applyNativeProgress(event, setLoadProgress),
+              onProgress: (event) => {
+                applyNativeProgress(event, setLoadProgress);
+                // Task 1683j — the streaming session's buffered percent has
+                // its own channel (the load row is cleared at resolve time;
+                // the badge keeps tracking while the video plays).
+                const pct = streamBufferPctFromEvent(event);
+                if (pct !== undefined) options.onStreamProgress?.(pct);
+              },
               onOfflineFallback: () => {
                 showToast({ type: 'info', message: 'Offline copy unreadable. Re-downloading...' });
               },
@@ -3308,12 +3390,18 @@ export default function PreviewScreen() {
     let cancelled = false;
     setVideoLoading(true);
     setVideoError(null);
-    fetchAndDecrypt({ signal: controller.signal })
+    setStreamBufferPct(null);
+    fetchAndDecrypt({ signal: controller.signal, onStreamProgress: setStreamBufferPct })
       .then((uri) => {
         if (cancelled || controller.signal.aborted) {
           // Screen already unmounted by the time the download completed —
           // delete the file directly since the cleanup branch never sees it.
-          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          if (!isLoopbackStreamUri(uri)) {
+            FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          }
+          // A streamed video's plaintext is the preview-cache copy — give
+          // this caller's lease back (deletes it when sole holder).
+          void releasePreviewCopy(fileId, previewDecryptExtension(mimeType, fileName)).catch(() => {});
           return;
         }
         tempVideoUriRef.current = uri;
@@ -3332,16 +3420,24 @@ export default function PreviewScreen() {
       cancelled = true;
       controller.abort();
     };
-  }, [hasSwipe, isVideo, fetchAndDecrypt]);
+  }, [hasSwipe, isVideo, fetchAndDecrypt, fileId, mimeType, fileName]);
 
   // Delete the temp video file when the screen unmounts.
   useEffect(() => {
     return () => {
       const uri = tempVideoUriRef.current;
-      if (uri) {
-        FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
-        tempVideoUriRef.current = null;
+      if (!uri) return;
+      tempVideoUriRef.current = null;
+      if (isLoopbackStreamUri(uri)) {
+        // Task 1683j — a streamed video: the player read the loopback stream;
+        // the plaintext lives at the preview-cache path, lease-managed. Give
+        // this caller's lease back (deletes the copy when it is the sole
+        // holder — matching the old "delete the temp file on close" behavior
+        // without breaking "Prove it"/pager sharers of the same copy).
+        void releasePreviewCopy(fileId, previewDecryptExtension(mimeType, fileName)).catch(() => {});
+        return;
       }
+      FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
     };
   }, []);
 
@@ -4391,14 +4487,24 @@ export default function PreviewScreen() {
                 </View>
               )
             ) : videoUri ? (
-              <VideoView
-                player={player}
-                style={styles.mediaVideo}
-                contentFit="contain"
-                nativeControls
-                fullscreenOptions={{ enable: true }}
-                allowsPictureInPicture
-              />
+              // Task 1683j — the VideoView + the buffered badge share a
+              // POSITIONED wrap: mediaStage is a centered flex box (not
+              // positioned), so an absolute badge layer must anchor HERE —
+              // see previewArea's own full-bleed comment about escaping its
+              // centering with absolute positioning.
+              <View style={styles.mediaVideoStageWrap}>
+                <VideoView
+                  player={player}
+                  style={styles.mediaVideo}
+                  contentFit="contain"
+                  nativeControls
+                  fullscreenOptions={{ enable: true }}
+                  allowsPictureInPicture
+                />
+                {isLoopbackStreamUri(videoUri) && streamBufferPct != null && streamBufferPct < 100 ? (
+                  <StreamingBufferBadge pct={streamBufferPct} />
+                ) : null}
+              </View>
             ) : videoError ? (
               // 1346 — colors.white forced: same mediaStage/mediaRoot ground
               // argument as the image error above.
@@ -5802,6 +5908,33 @@ const styles = StyleSheet.create({
   mediaVideo: {
     width: '100%',
     height: '100%',
+  },
+  // Task 1683j — positioned wrap around the video branches' VideoView so the
+  // absolute buffered-badge layer anchors to THIS (the stage box), not to
+  // previewArea's ancestors — see previewArea's full-bleed comment about
+  // escaping its centering with absolute positioning.
+  mediaVideoStageWrap: {
+    position: 'relative',
+    width: '100%',
+    height: '100%',
+  },
+  streamBadgeLayer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+  },
+  streamBadge: {
+    backgroundColor: 'rgba(0,0,0,0.62)',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  streamBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
   },
   optionsLayer: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
