@@ -19,6 +19,79 @@
  */
 import { describe, expect, mock, test } from 'bun:test';
 
+// expo's async-require setup reads the RN global `__DEV__` at import time;
+// expo-modules-core's EventEmitter binds `globalThis.expo` — stub both before
+// anything loads (same stubs offline-manager.persist.test.ts uses).
+(globalThis as Record<string, unknown>).__DEV__ = false;
+(globalThis as Record<string, unknown>).expo = {
+  EventEmitter: class {
+    addListener = () => ({ remove: () => {} });
+    removeAllListeners = () => {};
+  },
+  modules: {},
+};
+
+// expo-file-system/legacy must be stubbed like the persist test does: the real
+// legacy shim extends NativeModule, which is not constructable under bun's
+// mock registry (offline-manager.ts imports it; account-cleanup uses deleteAsync).
+mock.module('expo-file-system/legacy', () => ({
+  documentDirectory: 'file:///documents/',
+  cacheDirectory: 'file:///cache/',
+  EncodingType: { Base64: 'base64', UTF8: 'utf8' },
+  getInfoAsync: async () => ({ exists: false }),
+  makeDirectoryAsync: async () => {},
+  readDirectoryAsync: async () => [],
+  deleteAsync: async () => {},
+  readAsStringAsync: async () => '',
+  writeAsStringAsync: async () => {},
+  createDownloadResumable: () => ({ downloadAsync: async () => ({ uri: 'file:///offline/x' }) }),
+}));
+
+// Same pattern: expo-secure-store's ExpoSecureStore.js requires the native
+// module at import time — offline-manager.ts imports it; the stub covers
+// getItemAsync/setItemAsync/deleteItemAsync (the only calls account-cleanup's
+// graph makes).
+mock.module('expo-secure-store', () => ({
+  getItemAsync: async () => null,
+  setItemAsync: async () => {},
+  deleteItemAsync: async () => {},
+}));
+
+// react-native must be mocked HERE too: `./account-cleanup` transitively pulls
+// the real `react-native/index.js` (Flow syntax — bun's parser rejects it) via
+// clears that don't import it directly. Without this mock the file dies at
+// import ("Unexpected typeof") — seen isolated 2026-10-02 (ac-alone2.log).
+mock.module('react-native', () => {
+  const noopEmitter = { addListener: () => ({ remove: () => {} }), emit: () => {}, removeAllListeners: () => {} };
+  const base: Record<string, unknown> = {
+    Platform: { OS: 'ios', select: (o) => o.ios ?? o.default ?? o.android },
+    TurboModuleRegistry: { getEnforcing: () => ({}), get: () => null },
+    AppRegistry: { registerRunnable: () => {}, getRunnable: () => null, registerComponent: () => {}, getComponent: () => null },
+    NativeModules: {},
+    DeviceEventEmitter: noopEmitter,
+    NativeEventEmitter: class { addListener = () => ({ remove: () => {} }); removeAllListeners = () => {}; },
+    InteractionManager: { runAfterInteractions: (cb) => { cb(); return { cancel: () => {} }; } },
+    PixelRatio: { get: () => 2 },
+  };
+  return base;
+});
+
+// Mock './api' (like offline-manager.persist.test.ts does): the real api.ts
+// drags RN's codegen Text path into the graph (expo-constants/sse chain) and
+// bun's named-binding check rejects the real react-native index.js at import.
+// account-cleanup only needs the two local-identifier-map fns to exist.
+mock.module('./api', () => ({
+  getDownloadUrl: (fileId: string) => `https://api.test/download/${fileId}`,
+  getToken: async () => 'test-token',
+  fetchPhotoBackupIdentifierMap: async () => ({}),
+  photoBackupClearAssociation: async () => {},
+  clearCachedFileIndex: async () => {},
+  // Task 1683f — account-cleanup imports sweepAllUploadResumeStates from './api';
+  // a missing name surfaces as "Export named 'X' not found" against the REAL
+  // api.ts (bun checks named bindings against the real file even when mocked).
+  sweepAllUploadResumeStates: async () => {},
+}));
+
 const purgeCalls: string[] = [];
 mock.module('./name-cache', () => ({
   clearNameCache: async () => { purgeCalls.push('names'); },
@@ -37,10 +110,43 @@ mock.module('./photo-cache', () => ({
 }));
 // Task 1593 round 2 (P2-E) — every other registered Library/Caches writer.
 mock.module('./caches-plaintext-registry', () => ({
-  purgeCachesPlaintext: async () => { purgeCalls.push('caches-registry'); return []; },
+  // True counts (task 1683d): the real purge returns {removed, failed}; a
+  // string[] stub here bled into other files' tests in combined bun runs
+  // (mock.module is invocation-global) and undefined'd their result fields.
+  purgeCachesPlaintext: async () => { purgeCalls.push('caches-registry'); return { removed: [], failed: [] }; },
 }));
 mock.module('../../modules/beebeeb-crypto', () => ({
+  // All named exports any static importer in this file's graph needs:
+  // account-cleanup.ts imports purgePlaintextStorage; plaintext-storage.ts
+  // imports harden/audit; native-decrypt.ts (pulled transitively) statically
+  // names decryptLocalFileNative/downloadAndDecryptFileNative/isNativeAvailable.
+  // A missing name surfaces as "Export named 'X' not found" from the REAL
+  // index.js — bun checks named bindings against the real file even when a
+  // mock is registered (seen: ac-alone4/5.log).
   purgePlaintextStorage: async () => { purgeCalls.push('native'); return { removed: 0, failed: 0 }; },
+  hardenPlaintextStorage: async () => ({}),
+  auditPlaintextStorage: async () => [],
+  decryptLocalFileNative: async () => { throw new Error('not exercised in this file'); },
+  downloadAndDecryptFileNative: async () => { throw new Error('not exercised in this file'); },
+  isNativeAvailable: true,
+  // api.ts statically names these three; ./api is mocked in this file, but bun
+  // resolves named bindings against the REAL index.js regardless — provide them.
+  isNativeUploadAvailable: () => false,
+  planUploadChunksNative: () => null,
+  uploadChunksNative: async () => { throw new Error('not exercised in this file'); },
+  // runtime-trace.ts (dynamically imported by plaintext-gate.ts:236) statically
+  // names logDiagnostic — a missing name falls back to the REAL index.js check
+  // and dies on RN's codegen Text pull (ac-alone7/9.log).
+  logDiagnostic: () => {},
+}));
+
+// Mock './local-identifier-map' at the leaf account-cleanup uses: the real
+// module statically drags ./thumbnail → expo-media-library/legacy → RN's
+// codegen Text path, which bun's named-binding check rejects against the real
+// react-native/index.js (ac-alone7..11.log whack-a-mole). Mocking the leaf
+// keeps that whole chain out of the graph.
+mock.module('./local-identifier-map', () => ({
+  clearLocalIdentifierMap: async () => {},
 }));
 
 const { purgeThenSignOut, purgeAllPlaintextCaches, purgeDecryptedCaches } = await import('./account-cleanup');

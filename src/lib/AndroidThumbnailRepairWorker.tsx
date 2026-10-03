@@ -12,7 +12,7 @@ import type { FileEntry } from './api';
 import { encryptedMetadataPayloadToBytes } from './encrypted-metadata';
 import { loadCachedFileIndex, saveCachedFileIndex } from './file-index-cache';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
-import { ensureThumbnailForImage, generateAndUploadPhotoLibraryThumbnail } from './thumbnail';
+import { ensureThumbnailForImage, generateAndUploadPhotoLibraryThumbnail, MAX_THUMBNAIL_REPAIR_SOURCE_BYTES } from './thumbnail';
 import { invalidateCachedThumbnail } from './thumbnail-cache';
 import { invalidateInMemoryThumbCache } from './thumbnail';
 import { formatBytes } from './format';
@@ -177,7 +177,10 @@ const REPAIR_TIMEOUT_MS = 45_000;
 const MANUAL_MAX_PER_SESSION = 2_000;
 const AUTO_MAX_PER_SESSION = 40;
 const MANUAL_REPAIR_BATCH_SIZE = 16;
-const MANUAL_REPAIR_CONCURRENCY = 6;
+// Task 1683i — was 6: six concurrent whole-source downloads+decrypts+base64
+// writes filled the 384 MB largeHeap and OOM-killed the app on the Photos tab.
+// The repair is a background backfill, not a latency-critical path; 1 at a time.
+const MANUAL_REPAIR_CONCURRENCY = 1;
 const AUTO_REPAIR_BATCH_SIZE = 1;
 const AUTO_REPAIR_CONCURRENCY = 1;
 const MAX_CONSECUTIVE_FAILURES = 5;
@@ -574,9 +577,24 @@ async function runDegradedTick({
     const cameraRollBacked = localMap.has(file.id);
 
     const mime = await resolveMime(file, crypto.decryptMetadata);
-    if (!mime || (!mime.startsWith('image/') && !mime.startsWith('video/'))) {
+    // Task 1683i — this degraded path feeds ensureThumbnailForImage, which
+    // downloads the (now size-gated) source over the network. Videos never
+    // download for a thumbnail (placeholder instead), and sources over
+    // MAX_THUMBNAIL_REPAIR_SOURCE_BYTES are skipped outright — the old code
+    // streamed 100 MB-class media files through the JS heap six at a time.
+    if (!mime || !mime.startsWith('image/')) {
       const skipped = next.skipped + 1;
       await setThumbnailRepairStatus(withActivity(next, `Skipped ${file.id.slice(0, 8)} (not media)`, {
+        skipped,
+        checked: next.checked + 1,
+        remaining: Math.max(0, next.remaining - 1),
+        currentFileName: null,
+      }));
+      return;
+    }
+    if (file.size_bytes != null && file.size_bytes > MAX_THUMBNAIL_REPAIR_SOURCE_BYTES) {
+      const skipped = next.skipped + 1;
+      await setThumbnailRepairStatus(withActivity(next, `Skipped ${file.id.slice(0, 8)} (too large for thumbnail repair)`, {
         skipped,
         checked: next.checked + 1,
         remaining: Math.max(0, next.remaining - 1),

@@ -128,7 +128,15 @@ export interface PlaintextStoragePurgeResult {
  * must not leave one user's decrypted thumbnails/names/caches on disk for
  * whoever signs in next on the same device (the exact gap 0300's own audit
  * registry exists to close). Never throws; a purge failure must not block
- * sign-out. No-op off iOS.
+ * sign-out.
+ *
+ * PLATFORM CONTRACT (task 1683d, ora-2 ruling): this drives the NATIVE
+ * registry purge, which is iOS-only work — on Android it reports
+ * `{removed: 0, failed: 0}` **by design**: `allowBackup="false"` keeps the
+ * whole internal subtree out of backups (there is no protection-class to
+ * apply), and the JS sweep (`account-cleanup.ts` → `purgeCachesPlaintext` +
+ * `clearPersistedOfflineState`) IS the Android purge surface. The two
+ * platforms' counts compose additively in `purgeAllPlaintextCaches`.
  */
 export async function purgePlaintextStorage(): Promise<PlaintextStoragePurgeResult> {
   if (typeof BeebeebCryptoModule.purgePlaintextStorage !== 'function') return { removed: 0, failed: 0 }
@@ -1117,7 +1125,14 @@ export async function uploadEncryptedFileNative(
  * JS passes only an opaque master-key handle and receives the output URI.
  */
 export async function downloadAndDecryptFileNative(
-  handleId: number,
+  /**
+   * Task 1683h — nullable: null means the native module resolves the master
+   * key itself (awaiting its internal key-loaded latch). A stale native
+   * build that still declares a non-null Int will fail the argument
+   * conversion, which the caller treats as not-available → the 1683g gated
+   * fallback still protects legacy builds.
+   */
+  handleId: number | null,
   apiUrl: string,
   token: string,
   fileId: string,
@@ -1495,6 +1510,54 @@ export const decryptContiguousToFile:
   typeof BeebeebCryptoModule.decryptContiguousToFile === 'function'
     ? (fileKey, body, chunkSize, outputPath) =>
         BeebeebCryptoModule.decryptContiguousToFile(fileKey, body, chunkSize, outputPath) as Promise<number>
+    : undefined
+
+/**
+ * Stream-decrypt a LOCAL offline ciphertext file to a plaintext output file
+ * without ever buffering the whole blob in the JS heap (task 1683d — the
+ * offline open path's whole-file base64 read/write was the 1683 OOM class at
+ * >100 MB). Kotlin reads the encrypted file from disk with the 1683b
+ * chunk-window loop, decrypts chunk-wise and renames a `.tmp` output into
+ * place; progress/cancel ride the preview-download surface
+ * (`getPreviewLoadProgress` / `cancelDownloadAndDecryptFileNative`).
+ *
+ * Module-load-time conditional export: `undefined` when the native build
+ * predates the function — callers fall through to the legacy JS path.
+ */
+export const decryptLocalFileNative:
+  | ((params: {
+      fileKey: Uint8Array
+      inputUri: string
+      outputUri: string
+      chunkSizeBytes: number
+      chunkCount: number
+      originalSize: number
+      requestId: string
+      fileId?: string
+      signal?: AbortSignal
+    }) => Promise<{ outputPath: string; outputUri: string; plaintextSize: number; chunksDecrypted: number }>)
+  | undefined =
+  typeof BeebeebCryptoModule.decryptLocalFileNative === 'function'
+    ? async (params) => {
+        // Signal → the existing preview-download cancel surface (the Kotlin
+        // side stores the decrypt under the same requestId registry).
+        const abortListener = () => {
+          if (typeof BeebeebCryptoModule.cancelDownloadAndDecryptFileNative === 'function') {
+            void BeebeebCryptoModule.cancelDownloadAndDecryptFileNative(params.requestId).catch(() => {})
+          }
+        }
+        params.signal?.addEventListener('abort', abortListener, { once: true })
+        try {
+          return (await BeebeebCryptoModule.decryptLocalFileNative(params)) as {
+            outputPath: string
+            outputUri: string
+            plaintextSize: number
+            chunksDecrypted: number
+          }
+        } finally {
+          params.signal?.removeEventListener('abort', abortListener)
+        }
+      }
     : undefined
 
 /** Returns a debug-only native backup diagnostic snapshot. */

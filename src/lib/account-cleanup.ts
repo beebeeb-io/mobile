@@ -31,11 +31,17 @@
  */
 import { purgePlaintextStorage, type PlaintextStoragePurgeResult } from '../../modules/beebeeb-crypto';
 import { purgeCachesPlaintext } from './caches-plaintext-registry';
+import { clearLocalIdentifierMap } from './local-identifier-map';
+// Task 1683f — sign-out sweeps the upload resume states (SecureStore keys that
+// survive sign-out AND account switches otherwise; cross-account leak).
+import { sweepAllUploadResumeStates } from './api';
 import { clearNameCache } from './name-cache';
 import { clearPreviewCache } from './native-decrypt';
 import { clearPhotoCache } from './photo-cache';
 import { clearThumbnailCache } from './thumbnail-cache';
 import { plaintextGate } from './plaintext-gate';
+import * as FileSystem from 'expo-file-system/legacy';
+import { OFFLINE_DIR, offlineManager } from './offline-manager';
 
 export type { PlaintextStoragePurgeResult };
 
@@ -52,14 +58,23 @@ export type { PlaintextStoragePurgeResult };
  *   also catches anything written while the two above were aborting.
  * Never throws.
  */
-async function sweepDecryptedCaches(): Promise<void> {
+async function sweepDecryptedCaches(): Promise<{ removed: string[]; failed: string[] }> {
   await Promise.allSettled([
     clearThumbnailCache(),
     clearNameCache(),
     clearPreviewCache(),
     clearPhotoCache(),
+    // Task 1683d (ora-2 ruling) — the two documentDirectory plaintext leaves
+    // no earlier sweep reached: the offline encrypted blobs + the identifier
+    // map (PHAsset local ids are account-scoped). Both writers' in-memory
+    // state resets inside these calls too (offlineManager.clearPersisted
+    // OfflineState drops the SecureStore manifest + maps; the identifier map's
+    // clear resets its hydration flag).
+    FileSystem.deleteAsync(OFFLINE_DIR, { idempotent: true }).catch(() => {}),
+    clearLocalIdentifierMap(),
+    offlineManager.clearPersistedOfflineState(),
   ]);
-  await purgeCachesPlaintext().catch(() => []);
+  return purgeCachesPlaintext().catch(() => ({ removed: [], failed: [] }));
 }
 
 /**
@@ -75,12 +90,27 @@ export async function purgeDecryptedCaches(): Promise<void> {
 }
 
 export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeResult> {
-  return plaintextGate
+  const result = await plaintextGate
     .purge(async () => {
-      await sweepDecryptedCaches();
-      return purgePlaintextStorage();
+      const swept = await sweepDecryptedCaches();
+      // True counts (task 1683d): compose the JS sweep's real outcome with the
+      // native registry purge (iOS work; Android reports {removed:0} by
+      // design — the JS sweep above IS the Android purge surface). Additive:
+      // native counts registry paths, the sweep counts caches entries, the
+      // sets are disjoint by construction (the native registry deliberately
+      // excludes Library/Caches).
+      const native = await purgePlaintextStorage().catch(() => ({ removed: 0, failed: 0 }) as PlaintextStoragePurgeResult);
+      return {
+        removed: native.removed + swept.removed.length,
+        failed: native.failed + swept.failed.length,
+      };
     })
     .catch(() => ({ removed: 0, failed: 1 }));
+  // Task 1683f — sign-out sweeps the upload resume states (SecureStore keys
+  // survive sign-out AND account switches otherwise; cross-account leak).
+  // Best-effort: never breaks the sign-out flow, counted or not.
+  await sweepAllUploadResumeStates().catch(() => {});
+  return result;
 }
 
 export interface PurgeThenSignOutDeps {

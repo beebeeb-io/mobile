@@ -21,6 +21,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 import { getDownloadUrl, getToken } from './api';
 import { notePlaintextPathCreated } from './plaintext-storage';
+import { recordRuntimeTrace } from './runtime-trace';
 
 export type OfflineState = 'queued' | 'downloading' | 'available' | 'error';
 
@@ -331,11 +332,32 @@ class OfflineManager {
 
   private async persistFiles(): Promise<void> {
     const payload: ManifestEntry[] = [...this.manifest.values()];
-    await SecureStore.setItemAsync(OFFLINE_KEY, JSON.stringify(payload)).catch(() => {});
+    // Task 1683d: a swallowed failure here silently desyncs the pin state —
+    // the row shows "available offline" but a relaunch (or a purge-then-
+    // relaunch) finds no manifest and drops the local copy. Never throw (the
+    // pin flow must not break), but leave a trace with the entry count so the
+    // failure is observable in diagnostics.
+    try {
+      await SecureStore.setItemAsync(OFFLINE_KEY, JSON.stringify(payload));
+    } catch (err) {
+      recordRuntimeTrace('offline.manifest.persist_failed', {
+        key: OFFLINE_KEY,
+        entries: payload.length,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   private async persistFolders(): Promise<void> {
-    await SecureStore.setItemAsync(OFFLINE_FOLDERS_KEY, JSON.stringify([...this.folders])).catch(() => {});
+    try {
+      await SecureStore.setItemAsync(OFFLINE_FOLDERS_KEY, JSON.stringify([...this.folders]));
+    } catch (err) {
+      recordRuntimeTrace('offline.manifest.persist_failed', {
+        key: OFFLINE_FOLDERS_KEY,
+        folders: this.folders.size,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /** Test seam. */
@@ -344,6 +366,26 @@ class OfflineManager {
       statuses: Object.fromEntries(this.status),
       folders: [...this.folders],
     };
+  }
+
+  /**
+   * Sign-out purge (task 1683d, ora-2 ruling): forget the persisted offline
+   * state — both SecureStore manifest keys and every in-memory map/queue — so
+   * the NEXT account starts with an empty offline set. The pinned blobs under
+   * `offline/` are deleted by the sweep itself (account-cleanup.ts); this
+   * clears the state that would re-list them. Never throws.
+   */
+  async clearPersistedOfflineState(): Promise<void> {
+    await Promise.allSettled([
+      SecureStore.deleteItemAsync(OFFLINE_KEY),
+      SecureStore.deleteItemAsync(OFFLINE_FOLDERS_KEY),
+    ]);
+    this.status.clear();
+    this.manifest.clear();
+    this.folders.clear();
+    this.queue = [];
+    this.activeCount = 0;
+    this.emit();
   }
 }
 

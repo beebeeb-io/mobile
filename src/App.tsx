@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, Linking, Platform, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, type AppStateStatus, type ImageSourcePropType, Keyboard, Linking, Platform, StyleSheet, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -351,7 +351,15 @@ const linking = {
   // beebeeb.io is the marketing domain. Both must be intercepted so a tapped
   // share link (app.beebeeb.io/s/:token) opens the in-app SharedView instead of
   // launching the app to the default tab and stranding the recipient.
-  prefixes: ['beebeeb://', 'https://app.beebeeb.io', 'https://beebeeb.io'],
+  // exp+beebeeb:// is the dev scheme prebuild derives from the app.json slug;
+  // the Android manifest already claims it, so it belongs in prefixes too
+  // (task 1683e) or such URLs reach the app but never route.
+  prefixes: [
+    'beebeeb://',
+    'exp+beebeeb://',
+    'https://app.beebeeb.io',
+    'https://beebeeb.io',
+  ],
   config: {
     screens: {
       // `__DEV__` only: a direct route to the glass primitives gallery
@@ -486,10 +494,19 @@ const offlineStyles = StyleSheet.create({
 });
 
 // ---------------------------------------------------------------------------
-// Tab icons — SF Symbols (task 1308a). The native tab bar renders + tints
-// these itself (tabBarActiveTintColor/tabBarInactiveTintColor), so there is
-// no `color`/`focused` prop to thread through a wrapper component the way
-// the old Feather-based TabIcon needed — just the outline/filled pair.
+// Tab icons — platform-branching.
+//
+// iOS: SF Symbols (task 1308a). The native tab bar renders + tints these
+// itself (tabBarActiveTintColor/tabBarInactiveTintColor), so there is no
+// `color`/`focused` prop to thread through a wrapper component — just the
+// outline/filled pair.
+//
+// Android: SF Symbols don't exist there; react-native-bottom-tabs only
+// accepts image sources (require() or {uri}) for its BottomNavigationView.
+// We ship monochrome Lucide-outline SVGs (assets/tab-icons/) that the bar
+// tints itself via itemIconTintList — same geometry language as the app's
+// Feather/Lucide icon set (src/components/Icon.tsx). One glyph per tab; the
+// iOS filled/outline distinction doesn't carry over, but tint conveys state.
 // ---------------------------------------------------------------------------
 
 const TAB_SF_SYMBOLS: Record<string, { focused: SFSymbol; unfocused: SFSymbol }> = {
@@ -502,7 +519,18 @@ const TAB_SF_SYMBOLS: Record<string, { focused: SFSymbol; unfocused: SFSymbol }>
   Search: { focused: 'magnifyingglass', unfocused: 'magnifyingglass' },
 };
 
-function tabAppleIcon(routeName: string, focused: boolean): { sfSymbol: SFSymbol } {
+// Monochrome (black) single-glyph assets; the native bar applies its tint.
+const TAB_ANDROID_ICONS: Record<string, number> = {
+  Files: require('../assets/tab-icons/folder.svg'),
+  Shared: require('../assets/tab-icons/users.svg'),
+  Photos: require('../assets/tab-icons/image.svg'),
+  Settings: require('../assets/tab-icons/settings.svg'),
+  Search: require('../assets/tab-icons/search.svg'),
+};
+function tabIcon(routeName: string, focused: boolean): ImageSourcePropType | { sfSymbol: SFSymbol } {
+  if (Platform.OS === 'android') {
+    return TAB_ANDROID_ICONS[routeName] ?? TAB_ANDROID_ICONS.Files;
+  }
   const pair = TAB_SF_SYMBOLS[routeName];
   return { sfSymbol: focused ? (pair?.focused ?? 'questionmark') : (pair?.unfocused ?? 'questionmark') };
 }
@@ -887,7 +915,7 @@ function TabNavigator() {
         },
       }}
       screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused }) => tabAppleIcon(route.name, focused),
+        tabBarIcon: ({ focused }) => tabIcon(route.name, focused),
         // The scene must not paint under the capsule's rounded corners.
         sceneStyle: { backgroundColor: c.paper },
       })}

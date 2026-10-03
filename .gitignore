@@ -126,3 +126,6 @@ google-service-account.json
 !e2e/fixtures/preview-matrix/**/*.png
 !e2e/fixtures/preview-matrix/**/*.mp4
 !e2e/fixtures/preview-matrix/**/*.mov
+
+# Kotlin compiler session dir (Gradle K2)
+.kotlin/

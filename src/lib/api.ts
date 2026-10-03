@@ -1376,6 +1376,7 @@ export async function getFileIndex(hash?: string): Promise<FileIndexResponse> {
   const path = hash
     ? `/api/v1/files/index?hash=${encodeURIComponent(hash)}`
     : '/api/v1/files/index';
+
   return request<FileIndexResponse>('GET', path);
 }
 
@@ -1569,6 +1570,12 @@ export async function uploadEncryptedChunked(params: {
    * Save spinner running on device. Every other caller keeps the default.
    */
   foregroundTransfer?: boolean
+  /**
+   * Task 1683f — trash-cancels-in-flight: aborting this signal stops the JS
+   * chunk loop at the next chunk boundary (before the next PUT). Threading
+   * comes from `encryptedUpload`'s `signal` option.
+   */
+  signal?: AbortSignal
 }): Promise<FileEntry> {
   const {
     fileId,
@@ -1585,6 +1592,7 @@ export async function uploadEncryptedChunked(params: {
     readEncryptedChunk,
     versionReplace,
     foregroundTransfer,
+    signal,
   } = params
   // Task 1594 round 3 (T5): snapshot the session at this upload's own start —
   // see `endSessionForAccountMismatch`. Threaded into `initUploadV2` and
@@ -1727,6 +1735,9 @@ export async function uploadEncryptedChunked(params: {
   const runChunksAndComplete = async (fromIndex: number): Promise<FileEntry> => {
     let bytesUploaded = estimateUploadedBytes(fromIndex, chunkSizeBytes, plaintextSizeBytes)
     for (let i = fromIndex; i < chunkCount; i++) {
+      // Task 1683f: trash aborted this upload — stop BEFORE the next PUT (the
+      // abort also trips any fetch inside putBinaryBytes mid-flight).
+      if (signal?.aborted) throw new DOMException('Upload cancelled.', 'AbortError')
       const encBytes = await readEncryptedChunk(i, chunkSizeBytes, serverFileId)
 
       const chunkPath = protocol === 'v2' && uploadSessionId
@@ -1932,11 +1943,22 @@ export async function uploadEncryptedFileNative(params: {
   /** Task 1685 — per-file resume pointer payload; see uploadEncryptedChunked. */
   resumeMeta?: { sourceUri: string; name: string; mimeType?: string | null }
   onProgress?: (p: UploadProgress) => void
+  /**
+   * Task 1683f — trash-cancels-in-flight: forwarded into the native bridge's
+   * existing signal surface (uploadChunksNativeTracked → uploadChunksNative),
+   * whose abort listener calls cancelUploadNative.
+   */
+  signal?: AbortSignal
 }): Promise<FileEntry | null> {
-  if (Platform.OS !== 'ios' || !isNativeUploadAvailable()) return null
+  // Task 1683c: Android now ships the same native upload engine (Kotlin port
+  // of the iOS one — modules/beebeeb-crypto/android .../NativeManualUploader.kt),
+  // so the platform gate collapses onto the capability check: the functions
+  // are only present when the native build exposes them, and a stale Android
+  // native build without them still falls back to the JS loop via `null`.
+  if (!isNativeUploadAvailable()) return null
   const {
     masterKeyHandleId, fileId, inputUri, nameEncrypted, v2InitNameEncrypted,
-    parentId, isMedia, createdAt, plaintextSizeBytes, resumeKey, resumeMeta, onProgress,
+    parentId, isMedia, createdAt, plaintextSizeBytes, resumeKey, resumeMeta, onProgress, signal,
   } = params
   // Task 1594 round 3 (T5): snapshot the session at this upload's own start —
   // see `endSessionForAccountMismatch`.
@@ -2055,6 +2077,9 @@ export async function uploadEncryptedFileNative(params: {
               persistResume(completedIndex)
             }
           },
+          // Task 1683f: trash aborts the engine mid-flight (the bridge's abort
+          // listener calls cancelUploadNative).
+          signal,
         },
       )
     } catch (err) {
@@ -2398,6 +2423,105 @@ interface UploadResumeState {
 
 const uploadResumeStoreKey = (resumeKey: string) => `beebeeb_upload_resume_${resumeKey}`
 
+/**
+ * Task 1683f — the index that makes resume state enumerable. SecureStore has
+ * no listing API, so every `saveUploadResumeState` writes the active key into
+ * `beebeeb_upload_resume_index` (a JSON string[]), every clear removes it, and
+ * the sign-out sweep (account-cleanup.ts → sweepAllUploadResumeStates) walks
+ * the index — today those keys survive sign-out AND account switches
+ * (cross-account leak). A malformed index self-heals by starting empty (the
+ * next save rewrites it).
+ */
+const RESUME_INDEX_KEY = 'beebeeb_upload_resume_index'
+
+async function readResumeIndex(): Promise<string[]> {
+  try {
+    const raw = await tokenStore.get(RESUME_INDEX_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((k): k is string => typeof k === 'string')
+  } catch {
+    return []
+  }
+}
+
+async function writeResumeIndex(keys: string[]): Promise<void> {
+  await tokenStore.set(RESUME_INDEX_KEY, JSON.stringify(keys))
+}
+
+async function addToResumeIndex(resumeKey: string): Promise<void> {
+  const keys = await readResumeIndex()
+  if (!keys.includes(resumeKey)) keys.push(resumeKey)
+  await writeResumeIndex(keys).catch(() => {})
+}
+
+async function removeFromResumeIndex(resumeKey: string): Promise<void> {
+  const keys = await readResumeIndex()
+  if (!keys.includes(resumeKey)) return
+  await writeResumeIndex(keys.filter((k) => k !== resumeKey)).catch(() => {})
+}
+
+/**
+ * Task 1683f — sign-out sweep: delete every indexed resume key + the index
+ * itself. Best-effort per key; never throws (sign-out must not break).
+ */
+export async function sweepAllUploadResumeStates(): Promise<void> {
+  const keys = await readResumeIndex().catch(() => [])
+  await Promise.all(
+    keys.map((k) => tokenStore.remove(uploadResumeStoreKey(k)).catch(() => {})),
+  )
+  await tokenStore.remove(RESUME_INDEX_KEY).catch(() => {})
+}
+
+// ── Task 1683f: trash-cancels-in-flight — a fileId→AbortController registry
+// covering BOTH upload engines. Trash (FilesScreen) calls `abortUploadForFile
+// (fileId)`; the controller's signal aborts the native bridge call (its
+// existing options.signal surface) and makes the JS chunk loop stop at the
+// next chunk boundary. Registry entries are removed when the upload settles.
+const uploadAbortRegistry = new Map<string, AbortController>()
+
+/** Task 1683f — encrypted-upload registers the engine run per fileId so the
+ * trash action can reach it (`abortUploadForFile`); an optional caller signal
+ * forwards into the same controller. */
+export function registerUploadAbort(fileId: string, external?: AbortSignal): AbortSignal {
+  const existing = uploadAbortRegistry.get(fileId)
+  existing?.abort(new Error('superseded'))
+  const controller = new AbortController()
+  // A caller-provided signal (encryptedUpload's `signal` option) forwards into
+  // the registered controller, so BOTH the caller's signal and a later trash
+  // call (`abortUploadForFile`) abort the same engine run.
+  if (external) {
+    if (external.aborted) controller.abort()
+    else external.addEventListener('abort', () => controller.abort(), { once: true })
+  }
+  uploadAbortRegistry.set(fileId, controller)
+  return controller.signal
+}
+
+function settleUploadAbort(fileId: string, signal: AbortSignal | undefined): void {
+  if (!signal) return
+  for (const [id, controller] of uploadAbortRegistry) {
+    if (controller.signal === signal) uploadAbortRegistry.delete(id)
+  }
+}
+
+/** Task 1683f — the engine call site (encrypted-upload) settles its registry entry. */
+export function settleUploadSignal(fileId: string, signal: AbortSignal | undefined): void {
+  settleUploadAbort(fileId, signal)
+}
+
+/** Trash/batch-trash calls this: abort the in-flight engine for a file, if any.
+ * One-shot: the entry is removed here (the engine's own settle is a no-op
+ * afterwards), so a repeated trash call reports `false`. */
+export function abortUploadForFile(fileId: string): boolean {
+  const controller = uploadAbortRegistry.get(fileId)
+  if (!controller) return false
+  uploadAbortRegistry.delete(fileId)
+  controller.abort()
+  return true
+}
+
 // ── Task 1685: durable resume VISIBILITY ─────────────────────────────────────
 // The primary resume state is keyed by hash(parentId|uri|name|mime|size) —
 // uncomputable after a relaunch, when neither the uri nor the name are known.
@@ -2503,11 +2627,16 @@ async function loadUploadResumeState(resumeKey: string): Promise<UploadResumeSta
 async function saveUploadResumeState(resumeKey: string | undefined, state: UploadResumeState): Promise<void> {
   if (!resumeKey) return
   await tokenStore.set(uploadResumeStoreKey(resumeKey), JSON.stringify(state))
+  // Task 1683f: keep the index in sync so the sign-out sweep can enumerate.
+  await addToResumeIndex(resumeKey)
 }
 
-async function clearUploadResumeState(resumeKey: string | undefined): Promise<void> {
+// Exported for encrypted-upload.ts (task 1683f): the abort listener clears the
+// persisted resume state the moment trash aborts the in-flight engine.
+export async function clearUploadResumeState(resumeKey: string | undefined): Promise<void> {
   if (!resumeKey) return
   await tokenStore.remove(uploadResumeStoreKey(resumeKey))
+  await removeFromResumeIndex(resumeKey)
 }
 
 function saveUploadResumeStateSoon(resumeKey: string | undefined, state: UploadResumeState): void {

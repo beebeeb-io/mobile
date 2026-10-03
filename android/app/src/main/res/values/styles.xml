@@ -1,17 +1,26 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-  <style name="AppTheme" parent="Theme.AppCompat.Light.NoActionBar">
-    <item name="android:textColor">@android:color/black</item>
-    <item name="android:editTextStyle">@style/ResetEditText</item>
+  <!-- Task 1683b: parent switched Theme.AppCompat.DayNight.NoActionBar ->
+       Theme.MaterialComponents.DayNight.NoActionBar. The tab bar
+       (react-native-bottom-tabs → BottomNavigationView) creates a
+       Material BadgeDrawable when any tab carries a badge
+       (RCTTabView.kt:272 getOrCreateBadge), and BadgeDrawable's constructor
+       hard-requires a MaterialComponents theme (ThemeEnforcement.checkTheme)
+       — with AppCompat the app died the moment the Settings '!' badge
+       appeared (storage >= 80 % / backup failed), crashing the whole RN
+       tree at 08:41:16 on the Nord (logcat: MountItemDispatcher
+       IllegalArgumentException). MaterialComponents.DayNight is a
+       descendant of AppCompat.DayNight with the same attribute contract
+       (colorPrimary etc.), so nothing else in the app changes visually. -->
+  <style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
     <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
     <item name="colorPrimary">@color/colorPrimary</item>
-    <item name="android:statusBarColor">#FAF8F5</item>
+    <item name="android:statusBarColor">@android:color/transparent</item>
+    <item name="android:navigationBarColor">@android:color/transparent</item>
   </style>
-  <style name="ResetEditText" parent="@android:style/Widget.EditText">
-    <item name="android:padding">0dp</item>
-    <item name="android:textColorHint">#c8c8c8</item>
-    <item name="android:textColor">@android:color/black</item>
-  </style>
-  <style name="Theme.App.SplashScreen" parent="AppTheme">
-    <item name="android:windowBackground">@drawable/ic_launcher_background</item>
+  <style name="Theme.App.SplashScreen" parent="Theme.SplashScreen">
+    <item name="windowSplashScreenBackground">@color/splashscreen_background</item>
+    <item name="windowSplashScreenAnimatedIcon">@drawable/splashscreen_logo</item>
+    <item name="postSplashScreenTheme">@style/AppTheme</item>
+    <item name="android:windowSplashScreenBehavior">icon_preferred</item>
   </style>
 </resources>

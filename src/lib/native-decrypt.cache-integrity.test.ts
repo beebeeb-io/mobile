@@ -31,6 +31,13 @@ mock.module('expo-file-system/legacy', () => ({
 const nativeCalls: number[] = [];
 mock.module('../../modules/beebeeb-crypto', () => ({
   isNativeAvailable: true,
+  // task 1683d — the offline streaming decrypt (decryptLocalFileNative) lives
+  // behind a typeof guard in native-decrypt.ts; this harness drives the
+  // DOWNLOAD path, so a stub that throws (rather than silently succeeding) is
+  // the honest mock here (same convention as native-decrypt.inflight.test.ts).
+  decryptLocalFileNative: async () => {
+    throw new Error('decryptLocalFileNative must not be reached by the download-path tests');
+  },
   downloadAndDecryptFileNative: (_h, _api, _tok, _id, outputPath, opts) =>
     new Promise((resolve, reject) => {
       files.set(outputPath, nativePlaintextSize);

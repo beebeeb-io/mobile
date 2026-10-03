@@ -79,20 +79,40 @@ export interface CachesFs {
 /**
  * Delete every top-level `Library/Caches/` entry the registry marks as
  * plaintext. Everything else there (system/framework caches, ciphertext) is
- * left alone. Never throws; returns the names it removed.
+ * left alone. Never throws.
+ *
+ * Task 1683d (true counts): returns what ACTUALLY happened — `removed` lists
+ * the names whose deleteAsync resolved, `failed` the ones whose delete threw
+ * (a doomed name that errored is NOT a removal; the old signature counted it
+ * as one, which made the sign-out report lie). Callers compose this with the
+ * native purge's counts.
  */
-export async function purgeCachesPlaintext(fs: CachesFs = FileSystem): Promise<string[]> {
+export interface CachesPurgeResult {
+  removed: string[]
+  failed: string[]
+}
+
+export async function purgeCachesPlaintext(fs: CachesFs = FileSystem): Promise<CachesPurgeResult> {
   const dir = fs.cacheDirectory;
-  if (!dir) return [];
+  if (!dir) return { removed: [], failed: [] };
   let names: string[];
   try {
     names = await fs.readDirectoryAsync(dir);
   } catch {
-    return [];
+    return { removed: [], failed: [] };
   }
   const doomed = names.filter(isCachesPlaintextName);
+  const removed: string[] = [];
+  const failed: string[] = [];
   await Promise.all(
-    doomed.map((name) => fs.deleteAsync(`${dir}${name}`, { idempotent: true }).catch(() => {})),
+    doomed.map(async (name) => {
+      try {
+        await fs.deleteAsync(`${dir}${name}`, { idempotent: true });
+        removed.push(name);
+      } catch {
+        failed.push(name);
+      }
+    }),
   );
-  return doomed;
+  return { removed, failed };
 }

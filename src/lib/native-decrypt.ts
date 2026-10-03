@@ -15,6 +15,7 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import {
+  decryptLocalFileNative,
   downloadAndDecryptFileNative,
   isNativeAvailable,
   type PreviewLoadProgressEvent,
@@ -450,14 +451,23 @@ async function decryptToTempFileUnshared(
   }
   throwIfAborted(options.signal);
 
-  if (masterKeyHandleId != null) {
+  // Task 1683h: null handleId no longer routes around the native path — the
+  // module resolves the master key itself (awaiting its internal key-loaded
+  // latch, completed by the keychain auto-unlock). This is the direct fix for
+  // the relaunch-tap race (a preview tapped ~1.5 s after launch used to fall
+  // to the JS-fetch fallback with a null handle and buffer the whole body in
+  // the Java heap). The 1683g fail-closed gate below remains only for legacy
+  // native builds, where a null handle fails argument conversion → treated
+  // as not-available → gated fallback.
+  if (isNativeAvailable) {
     try {
       recordRuntimeTrace('preview.decrypt.native.request', {
         fileId,
         extension: ext,
+        handleResolvedNatively: masterKeyHandleId == null,
       });
       const result = await downloadAndDecryptFileNative(
-        masterKeyHandleId,
+        masterKeyHandleId ?? null,
         getApiUrl(),
         token,
         fileId,
@@ -534,6 +544,27 @@ async function decryptToTempFileUnshared(
   // Fallback for older native builds: download the full encrypted blob through
   // JS, decrypt through the chunk bridge, and write base64. New iOS builds
   // should use the native handle path above.
+  //
+  // Task 1683g — this path buffers the WHOLE body in the Java heap (expo fetch
+  // → arrayBuffer): Guus's 800 MB video OOMed the 384 MB largeHeap dead
+  // (2026-10-02, three crashes: 19:29/20:08/20:11 — the last two on relaunch
+  // taps that raced the keychain auto-unlock, landing here with a null handle
+  // + a fileKey getter). Refuse beyond the bound — recoverable error, not a
+  // crash; a retry after the unlock takes the native streaming path.
+  const FALLBACK_MAX_BYTES = 100 * 1024 * 1024;
+  // FAIL-CLOSED (task 1683g, second crash): an UNKNOWN size must refuse too —
+  // Guus's retry OOMed with a null sizeBytes AND a chunked response (no
+  // Content-Length), skipping both known-size checks. This path buffers the
+  // whole body in the Java heap; without a known bound it is unsafe, period.
+  // (The real fix — the native layer resolving the key itself so this fallback
+  // never runs on new builds — is task 1683h.)
+  if (sizeBytes == null || sizeBytes > FALLBACK_MAX_BYTES) {
+    recordRuntimeTrace('preview.decrypt.js_download.refused_too_large', {
+      fileId,
+      sizeBytes,
+    });
+    throw new Error('This file is too large to open right now. Please wait a moment and try again.');
+  }
   let res: Response;
   try {
     recordRuntimeTrace('preview.decrypt.js_download.request', { fileId });
@@ -569,6 +600,17 @@ async function decryptToTempFileUnshared(
   }
 
   const contentLength = responseHeaderInt(res.headers, 'Content-Length');
+  // Task 1683g belt-and-braces: fail-closed here too — an unknown
+  // Content-Length (chunked/streamed response) must refuse: the body would be
+  // buffered whole in the Java heap. (The real fix is 1683h — the native layer
+  // resolving the key itself so this fallback never runs on new builds.)
+  if (contentLength == null || contentLength > FALLBACK_MAX_BYTES) {
+    recordRuntimeTrace('preview.decrypt.js_download.refused_too_large', {
+      fileId,
+      sizeBytes: contentLength,
+    });
+    throw new Error('This file is too large to open right now. Please wait a moment and try again.');
+  }
   options.onProgress?.({
     requestId: '',
     fileId,
@@ -830,22 +872,20 @@ async function decryptLocalFileLeased(
   const resolvedFileKey = typeof fileKey === 'function' ? await fileKey() : fileKey;
   throwIfAborted(options.signal);
 
-  // Read the local ENCRYPTED bytes (same blob the server stores).
+  // Framing resolved from the file's SIZE (never a whole-file read): the
+  // offline blob is the exact server chunk stream, so size math + the
+  // manifest meta captured at download time decide the windows — the same
+  // math the legacy path below runs over the in-memory bytes.
   const info = await FileSystem.getInfoAsync(localEncryptedUri);
   if (!info.exists || !(info.size && info.size > 0)) {
     throw new Error('Offline copy is missing.');
   }
-  const b64 = await FileSystem.readAsStringAsync(localEncryptedUri, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
-  const encBytes = base64ToUint8Array(b64);
-  throwIfAborted(options.signal);
-
-  const effectiveSize = sizeBytes ?? encBytes.length - 28;
+  const encryptedSize = info.size;
+  const effectiveSize = sizeBytes ?? encryptedSize - 28;
   if (effectiveSize <= 0) {
     throw new Error('Could not determine plaintext size for the offline file.');
   }
-  const inferred = inferChunkCountFromEncryptedSize(encBytes.length, effectiveSize);
+  const inferred = inferChunkCountFromEncryptedSize(encryptedSize, effectiveSize);
   const effectiveChunkCount = chunkCount ?? inferred ?? 1;
   // The exact upload chunk size is required to slice a multi-chunk body. It is
   // captured from the download headers (offlineManager.getMeta); fall back to
@@ -855,10 +895,72 @@ async function decryptLocalFileLeased(
   recordRuntimeTrace('offline.decrypt.start', {
     fileId,
     extension: ext,
-    encryptedBytes: encBytes.length,
+    encryptedBytes: encryptedSize,
     effectiveSize,
     effectiveChunkCount,
     effectiveChunkSize,
+  });
+
+  // Native path (task 1683d): stream the local ciphertext through Kotlin's
+  // chunk-window loop — no whole-file base64 buffer in the JS heap (the 1683
+  // OOM class at offline sizes). Errors are real decrypt/IO failures and
+  // propagate (mirrors the fast-path contract below): a truncated or corrupt
+  // blob fails identically in the JS fallback, which at these sizes OOMs
+  // instead of succeeding.
+  if (typeof decryptLocalFileNative === 'function') {
+    const requestId = `offline-${fileId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    try {
+      options.onProgress?.({
+        requestId,
+        fileId,
+        stage: 'decrypting',
+        chunksCompleted: 0,
+        chunksTotal: effectiveChunkCount,
+      });
+      const result = await decryptLocalFileNative({
+        fileKey: resolvedFileKey,
+        inputUri: localEncryptedUri,
+        outputUri: outputPath,
+        chunkSizeBytes: effectiveChunkSize,
+        chunkCount: effectiveChunkCount,
+        originalSize: effectiveSize,
+        requestId,
+        fileId,
+        signal: options.signal,
+      });
+      if (options.signal?.aborted) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        throw abortError();
+      }
+      if (!(result.plaintextSize > 0)) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        throw new Error('Native offline decrypt returned zero bytes.');
+      }
+      await prunePreviewCache(outputPath);
+      options.onProgress?.({ requestId, fileId, stage: 'complete' });
+      recordRuntimeTrace('offline.decrypt.native.success', {
+        fileId,
+        plaintextSize: result.plaintextSize,
+        chunksDecrypted: result.chunksDecrypted,
+      });
+      return outputPath;
+    } catch (err) {
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+      recordRuntimeTrace('offline.decrypt.native.failed', { fileId, ...errorTraceFields(err) });
+      throw err;
+    }
+  }
+
+  // Read the local ENCRYPTED bytes (same blob the server stores).
+  const b64 = await FileSystem.readAsStringAsync(localEncryptedUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const encBytes = base64ToUint8Array(b64);
+  throwIfAborted(options.signal);
+
+  recordRuntimeTrace('offline.decrypt.legacy_whole_file', {
+    fileId,
+    encryptedBytes: encBytes.length,
   });
 
   // Fast path: hand the contiguous body to Rust to slice + decrypt + write.

@@ -34,10 +34,24 @@ mock.module('expo-file-system/legacy', () => ({
 type Pending = { outputPath: string; signal?: AbortSignal; finish: () => void; fail: (e) => void };
 const nativeCalls: Pending[] = [];
 let ignoreAbort = false;
+// Task 1683h — when set, the native stub rejects with this error at once
+// (simulating a legacy build whose null-handle argument conversion fails →
+// the caller treats it as not-available → the 1683g gated fallback runs).
+let nativeFailError: Error | null = null;
 mock.module('../../modules/beebeeb-crypto', () => ({
   isNativeAvailable: true,
+  // task 1683d — the offline streaming decrypt lives behind a typeof guard in
+  // native-decrypt.ts; this test drives the DOWNLOAD path, so a stub that
+  // throws (rather than silently succeeding) is the honest mock here.
+  decryptLocalFileNative: async () => {
+    throw new Error('decryptLocalFileNative must not be reached by the download-path tests');
+  },
   downloadAndDecryptFileNative: (_h, _api, _tok, _id, outputPath, opts) =>
     new Promise((resolve, reject) => {
+      if (nativeFailError) {
+        reject(nativeFailError);
+        return;
+      }
       // Native writes progressively: a partial, non-empty file exists at once.
       files.set(outputPath, 100);
       const entry = {
@@ -93,6 +107,7 @@ beforeEach(() => {
   nativeCalls.length = 0;
   readDirHook = null;
   ignoreAbort = false;
+  nativeFailError = null;
   plaintextGate.open(); // a previous test's purge leaves it closed
 });
 
@@ -282,5 +297,53 @@ describe('task 1593 round 3 — #141 Codex P1: no replacement decrypt behind the
     await until(() => nativeCalls.length === 1);
     nativeCalls[0].finish();
     expect(await p).toBe('file:///cache/preview/r3.pdf');
+  });
+});
+
+describe('task 1683g — the JS-fetch fallback refuses oversized files (the 800 MB video OOM)', () => {
+  test('a >100 MB file with a null handle rejects with the recoverable error BEFORE any fetch', async () => {
+    // The relaunch-tap race landed here with a null master-key handle + a
+    // fileKey getter; the old path fetched the whole body into the Java heap
+    // and OOMed the app (384 MB largeHeap, three crashes 2026-10-02).
+    // 1683h routing: null handle → the native branch STILL runs; simulate a
+    // legacy native build whose null-handle argument conversion fails → the
+    // not-available path → the 1683g gated fallback → the size gate refuses.
+    nativeFailError = new Error('downloadAndDecryptFileNative is not available in this native build');
+    const p = nd.decryptToTempFile(
+      'big',
+      () => new Uint8Array(32),
+      'mp4',
+      200 * 1024 * 1024,
+      50,
+      null,
+    );
+    await expect(p).rejects.toThrow('too large to open');
+  });
+
+  test('a small file still takes the fallback path (the gate must not intercept it)', async () => {
+    nativeFailError = new Error('downloadAndDecryptFileNative is not available in this native build');
+    const p = nd.decryptToTempFile(
+      'small',
+      () => new Uint8Array(32),
+      'pdf',
+      5000,
+      1,
+      null,
+    );
+    // The rateLimitedFetch mock's marker error proves the gate let it through.
+    await expect(p).rejects.toThrow('no js download in this test');
+  });
+
+  test('an UNKNOWN size refuses too (fail-closed — the 20:32 retry OOM had a null sizeBytes)', async () => {
+    nativeFailError = new Error('downloadAndDecryptFileNative is not available in this native build');
+    const p = nd.decryptToTempFile(
+      'unknown-size',
+      () => new Uint8Array(32),
+      'mp4',
+      null,
+      null,
+      null,
+    );
+    await expect(p).rejects.toThrow('too large to open');
   });
 });

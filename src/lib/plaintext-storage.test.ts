@@ -118,4 +118,37 @@ describe('plaintext storage registry', () => {
       .filter((leaf) => leaf !== 'beebeeb-plaintext-audit.json');
     expect([...new Set(swiftLeaves)].sort()).toEqual([...PROTECTED_LEAF_NAMES].sort());
   });
+
+  // ── Android (task 1683d) ──────────────────────────────────────────────────
+  // The Android analogue of the iOS rule is structural, not path-based: Kotlin
+  // writers may only touch (a) `context.filesDir` subdirectories, (b)
+  // `context.cacheDir` subdirectories (evicted + swept by the JS caches
+  // registry), (c) `getSharedPreferences` (MODE_PRIVATE, internal-only), or
+  // (d) an explicit reviewed-registry below. `allowBackup="false"` (manifest)
+  // keeps the filesDir subtree out of device backups, and the sign-out purge
+  // (account-cleanup.ts) sweeps the cache subtree — so any NEW writer that
+  // steps outside those patterns (external storage, world-readable files,
+  // unregistered leaf names in the internal root) must fail this guard.
+
+  test('every Kotlin writer stays inside the reviewed Android storage roots', () => {
+    const KOTLIN_DIR = join(REPO_ROOT, 'modules', 'beebeeb-crypto', 'android', 'src', 'main');
+    // Writers that ESCAPE the reviewed roots (filesDir/cacheDir/shared prefs):
+    // external storage of any form and world-readable file modes. The
+    // reviewed loop builds every path from a rooted base (filesDir/cacheDir/
+    // caller-supplied preview output paths — the same sandbox the JS side
+    // registers), so a bare external path is exactly how an unregistered
+    // plaintext leaf would sneak in.
+    const RE_WRITER_RE =
+      /getExternalFilesDir|getExternalCacheDir|Environment\.getExternal|MODE_WORLD/g;
+    const offenders: string[] = [];
+    for (const file of walk(KOTLIN_DIR, /\.kt$/)) {
+      const text = readFileSync(file, 'utf8');
+      // UniFFI bindings are generated code — reviewed by the Rust side.
+      if (file.endsWith('uniffi.kt')) continue;
+      for (const match of text.matchAll(RE_WRITER_RE)) {
+        offenders.push(`${file.replace(REPO_ROOT + '/', '')}: ${match[0]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
 });

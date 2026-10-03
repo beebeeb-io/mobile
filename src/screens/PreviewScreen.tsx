@@ -44,6 +44,7 @@ import { useTheme } from '../lib/theme-context';
 import { GLASS_CIRCLE_SIZES, GlassCapsule, GlassCircle, PREVIEW_CHROME_MATERIAL, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
 import { bandColors, type Stop } from '../components/glass/gradient';
 import { useToast } from '../lib/toast-context';
+import { deviceNoun, cameraRollNoun } from '../lib/device-copy';
 import { getToken, friendlyError, trustLocation, trashFiles, getFile, getFileCurrentVersion, listAllFiles, moveFile, type UploadProgress } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import { generateFileId } from '../lib/encrypted-upload';
@@ -435,6 +436,7 @@ interface PhotoPageEntry {
 
 type PhotoLoadStage = 'checking' | 'downloading' | 'decrypting' | 'caching';
 type FileKeyLoader = (fileId: string) => Promise<Uint8Array>;
+
 type MasterKeyHandleLoader = () => number;
 type ImagePreviewKind = 'thumbnail' | 'large' | 'original';
 
@@ -584,7 +586,7 @@ function progressStageText(
       ? ` · ${Math.round((progress.chunksCompleted / progress.chunksTotal) * 100)}%`
       : '';
     const eta = formatDuration(estimatedDecryptSeconds(sizeBytes, profile ?? null));
-    return eta ? `Decrypting on iPhone · about ${eta}${progressText}` : `Decrypting on iPhone${progressText}`;
+    return eta ? `Decrypting on ${deviceNoun()} · about ${eta}${progressText}` : `Decrypting on ${deviceNoun()}${progressText}`;
   }
   if (progress.stage === 'caching') return isVideo ? 'Saving for faster playback...' : 'Saving for faster swipes...';
   return isVideo ? 'Preparing video...' : 'Loading preview...';
@@ -866,7 +868,7 @@ async function loadDecryptedPhotoForViewer(
       ext,
       entry.size_bytes,
       entry.chunk_count,
-      getMasterKeyHandleId(),
+      getMasterKeyHandleId() ?? null,
       { onProgress, signal },
     );
     if (signal?.aborted) {
@@ -951,7 +953,7 @@ async function loadDecryptedRawSourceForViewer(
     ext,
     entry.size_bytes,
     entry.chunk_count,
-    getMasterKeyHandleId(),
+    getMasterKeyHandleId() ?? null,
     { onProgress, signal },
   );
   throwIfPreviewAborted(signal);
@@ -2805,7 +2807,7 @@ export default function PreviewScreen() {
         // Keep both — a brand-new file, same folder, suffixed name. Never
         // touches the OTHER device's version at all.
         const newFileId = await generateFileId();
-        const keptName = buildKeepBothName(previewFileName, 'iPhone');
+        const keptName = buildKeepBothName(previewFileName, deviceNoun());
         const metadataPlain = fileMetadataPlaintext(keptName, currentMimeType ?? null, null);
         const encName = await encryptMetadata(newFileId, metadataPlain);
         const nameEncrypted = encryptedMetadataToJson(encName);
@@ -4072,7 +4074,7 @@ export default function PreviewScreen() {
 
     Alert.alert(
       'Move to Trash?',
-      `${previewFileName} will be removed from Beebeeb.${isImage || isVideo ? ' It will not be deleted from your iPhone camera roll.' : ''}`,
+      `${previewFileName} will be removed from Beebeeb.${isImage || isVideo ? ` It will not be deleted from ${cameraRollNoun()}.` : ''}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
