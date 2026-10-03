@@ -1403,15 +1403,10 @@ private func vacuumRetryingOnceOnBusy(_ db: OpaquePointer?) -> Bool {
   return sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK
 }
 
-/// Task 1722 — a Files mount can race the File Provider extension itself:
-/// Files launches the extension, the extension opens the shared cache DB,
-/// then the main app's force-reset mount tries to prove that same DB was
-/// wiped before re-adding the domain. A single transient SQLite lock made
-/// `resetFileProviderCacheDatabase` return `false`, so
-/// `mayAddFileProviderDomain` correctly refused the add forever while the
-/// stale purge marker stayed on disk. Keep that fail-closed gate, but give
-/// the reset one bounded second chance before reporting that the cache reset
-/// could not be proven.
+/// A Files mount can race the extension's live SQLite connection. Give a
+/// failed reset one bounded retry while retaining the existing fail-closed
+/// domain-add gate. This protects against transient lock contention; it does
+/// not recover a non-force registration blocked by a stale purge marker.
 private func retryFileProviderCacheReset(
   sleepMicros: useconds_t = 250_000,
   reset: () -> Bool
