@@ -851,8 +851,11 @@ internal object VideoStreamServer {
           Log.w(TAG, "stream.serve.aborted pos=$pos chunk=$chunkIndex bufferedNow=$bufferedBefore waitedMs=${android.os.SystemClock.elapsedRealtime() - chunkWaitStartedAt}")
           break
         }
-        if (bufferedBefore < plan.chunkCount) {
-          Log.i(TAG, "stream.serve.chunk-ready pos=$pos chunk=$chunkIndex waitedMs=${android.os.SystemClock.elapsedRealtime() - chunkWaitStartedAt} bufferedNow=${session.decryptedCount.get()}")
+        // Log only REAL frontier waits (the on-demand path) — per-64KB-window
+        // logging floods the logcat ring (~40 lines/s).
+        val waitedMs = android.os.SystemClock.elapsedRealtime() - chunkWaitStartedAt
+        if (waitedMs > 0L) {
+          Log.i(TAG, "stream.serve.chunk-wait pos=$pos chunk=$chunkIndex waitedMs=$waitedMs bufferedBefore=$bufferedBefore bufferedNow=${session.decryptedCount.get()}")
         }
         val chunkPlainEnd = VideoChunkMath.plainOffset(chunkIndex, plan.chunkCount, plan.plaintextChunkSize) +
           VideoChunkMath.plaintextSize(chunkIndex, plan.chunkCount, plan.plaintextChunkSize, plan.originalSize) - 1

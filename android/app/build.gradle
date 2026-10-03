@@ -113,6 +113,11 @@ android {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
             signingConfig signingConfigs.debug
+            // TEMP-DIAG 1683j run-4: debuggable release so `run-as` can wipe
+            // the preview cache for the cache-cold stream repro (`pm clear
+            // --cache-only` hangs on this device). REVERT BEFORE COMMIT —
+            // the 1683g/i TEMP-DIAG pattern.
+            debuggable true
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds
