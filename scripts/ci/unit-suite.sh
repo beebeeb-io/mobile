@@ -15,19 +15,11 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 print_failure_blocks() {
   local log="$1"
+  # test-isolated.mjs appends only failing files after the first separator.
   awk '
-    /^={70}$/ { block = $0 "\n"; capture = 1; next }
-    capture {
-      block = block $0 "\n"
-      if ($0 ~ /^={70}$/ && block ~ /\n(FAIL|error|Error|panic|fatal error|COMPILE FAILED|TEST FAILED)/) {
-        printf "%s", block
-        block = ""
-        capture = 0
-        next
-      }
-      next
-    }
-    /^FAIL / { print }
+    /^FAIL / { print; next }
+    /^={70}$/ { capture = 1 }
+    capture { print }
   ' "$log"
 }
 
@@ -77,8 +69,15 @@ self_test() {
   expect "a FAIL file line is RED"              1 'FAIL src/x.test.ts  (2 pass, 1 fail)\n\nisolated: 10 pass, 0 fail across 2 files\n' 0
   expect "two truth lines is RED (ambiguous)"   1 'isolated: 5 pass, 0 fail across 1 files\nisolated: 5 pass, 0 fail across 1 files\n' 0
   expect "an old-style word, no count, is RED"  1 'all tests passed\n' 0
+  printf '%s\n' 'FAIL src/broken.test.ts  (0 pass, 1 fail)' "$(printf '=%.0s' {1..70})" 'src/broken.test.ts' "$(printf '=%.0s' {1..70})" 'SyntaxError: missing export' 'error: expected value' > "$dir/diagnostic"
+  print_failure_blocks "$dir/diagnostic" > "$dir/details"
+  if grep -q '^FAIL src/broken.test.ts' "$dir/details" && grep -q '^SyntaxError: missing export$' "$dir/details" && grep -q '^error: expected value$' "$dir/details"; then
+    echo "  ok   failure diagnostic retains filename and error bodies"
+  else
+    echo "  BAD  failure diagnostic dropped filename or error bodies"; failures=$((failures + 1))
+  fi
   if [ "$failures" != "0" ]; then echo "SELF-TEST: FAIL ($failures wrong verdicts)"; return 1; fi
-  echo "SELF-TEST: PASS (11 verdicts correct, 10 of them red-proofs)"
+  echo "SELF-TEST: PASS (11 verdicts correct, 10 of them red-proofs; 1 diagnostic check)"
 }
 
 case "${1:-}" in
