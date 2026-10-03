@@ -2918,7 +2918,12 @@ public class BeebeebCryptoModule: Module {
           // never "still matches the previous owner record".
           BeebeebKeychainCore.deleteString(key: BeebeebKeychainCore.sessionUserIdKey)
         }
-        try? BeebeebKeychainCore.storeString(token, key: sharedSessionTokenKey)
+        do {
+          try BeebeebKeychainCore.storeString(token, key: sharedSessionTokenKey)
+        } catch {
+          RuntimeTrace.event("fileprovider.auth_mirror.failed", ["key": "sessionToken"])
+          return false
+        }
         try? KeychainManager.storeString(token, key: "io.beebeeb.backupToken")
       } else {
         BeebeebKeychainCore.deleteString(key: sharedSessionTokenKey)
@@ -2952,7 +2957,12 @@ public class BeebeebCryptoModule: Module {
         NativeBackupEngine.shared.clearOwnerUnconfirmedStopReasonOnNewAuthentication()
       }
       if let baseUrl, !baseUrl.isEmpty {
-        try? BeebeebKeychainCore.storeString(baseUrl, key: sharedAPIBaseURLKey)
+        do {
+          try BeebeebKeychainCore.storeString(baseUrl, key: sharedAPIBaseURLKey)
+        } catch {
+          RuntimeTrace.event("fileprovider.auth_mirror.failed", ["key": "apiBaseUrl"])
+          return false
+        }
         try? KeychainManager.storeString(baseUrl, key: "io.beebeeb.serverURL")
       } else {
         BeebeebKeychainCore.deleteString(key: sharedAPIBaseURLKey)
