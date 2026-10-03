@@ -1087,6 +1087,8 @@ export interface PreviewLoadProgressEvent {
   chunksCompleted?: number
   chunksTotal?: number
   error?: string
+  /** Task 1683j — the event belongs to a streaming session (buffered-% UI). */
+  streaming?: boolean
 }
 
 /**
@@ -1198,6 +1200,154 @@ export async function downloadAndDecryptFileNative(
     if (poll) clearInterval(poll)
     if (options.signal && abortListener) {
       options.signal.removeEventListener('abort', abortListener)
+    }
+  }
+}
+
+export interface StreamVideoNativeResult {
+  /** The loopback URI the player reads (the streaming engine's range server). */
+  streamUri: string
+  /** Where the final plaintext lands (the preview-cache copy) on completion. */
+  outputUri: string
+  outputPath: string
+  plaintextSize: number
+  chunkCount: number
+  streamId: string
+}
+
+/** Progress-poll cadence — matches downloadAndDecryptFileNative's 200 ms. */
+const POLL_INTERVAL_MS = 200
+
+/**
+ * True when this native build carries the 1683j streaming engine (Android
+ * today; the iOS port is recorded in the task file as future work).
+ */
+export function isStreamVideoNativeAvailable(): boolean {
+  return typeof BeebeebCryptoModule.streamVideoNative === 'function'
+}
+
+/**
+ * Task 1683j — chunked streaming video playback: native fetches the vault's
+ * per-chunk AEAD frames, decrypts ahead of the playhead (tail-first, so the
+ * MP4 moov parse is unblocked), and serves the decrypted output to ExoPlayer
+ * over a loopback range server. The promise resolves once the head is
+ * PLAYABLE (chunk 0 + the last chunk decrypted) with the stream URI; the
+ * pump keeps filling in the background and the final plaintext lands at
+ * `outputPath` (the preview-cache copy) on completion.
+ *
+ * Progress: the same `getPreviewLoadProgress(requestId)` snapshots as the
+ * whole-file path — the streaming session's `decrypting` events carry
+ * `streaming: true`, which the UI maps to "Streaming · N% buffered". The
+ * poll deliberately OUTLIVES the promise: the session keeps decrypting after
+ * playback started, and the poll ends only when the snapshot hits a terminal
+ * stage, VANISHES (the session's teardown clears the registry — the reliable
+ * completion signal after a long playback), or the caller aborts.
+ *
+ * Cancel: the existing `cancelDownloadAndDecryptFileNative(requestId)` — the
+ * session hooks itself into that surface natively.
+ */
+export async function streamVideoNative(
+  handleId: number | null,
+  apiUrl: string,
+  token: string,
+  fileId: string,
+  outputUri: string,
+  sizeBytes: number | null,
+  chunkCount: number | null,
+  options: { onProgress?: (event: PreviewLoadProgressEvent) => void; signal?: AbortSignal } = {},
+): Promise<StreamVideoNativeResult> {
+  if (typeof BeebeebCryptoModule.streamVideoNative !== 'function') {
+    throw new Error('streamVideoNative is not available in this native build')
+  }
+
+  const requestId = `stream-${fileId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const readSnapshot = (): PreviewLoadProgressEvent | null => {
+    const ev = BeebeebCryptoModule.getPreviewLoadProgress?.(requestId)
+    return ev && ev.requestId === requestId ? (ev as PreviewLoadProgressEvent) : null
+  }
+
+  // Long-lived progress pump (see doc comment): stops on a terminal stage,
+  // on the snapshot vanishing (session teardown), on abort, or at a 2 h
+  // safety cap.
+  let lastKey = ''
+  let lastSeenStage: string | null = null
+  let finished = false
+  let poll: ReturnType<typeof setInterval> | null = null
+  const stopPoll = () => {
+    if (poll) {
+      clearInterval(poll)
+      poll = null
+    }
+  }
+  const finish = (synthetic?: PreviewLoadProgressEvent) => {
+    if (finished) return
+    finished = true
+    stopPoll()
+    options.signal?.removeEventListener('abort', abortListener)
+    if (synthetic) options.onProgress?.(synthetic)
+  }
+  const forward = (ev: PreviewLoadProgressEvent) => {
+    const k = ev.stage + ':' + (ev.chunksCompleted ?? ev.bytesDownloaded ?? '')
+    if (k !== lastKey) {
+      lastKey = k
+      options.onProgress?.(ev)
+    }
+  }
+  poll = setInterval(() => {
+    if (finished) return
+    const ev = readSnapshot()
+    if (!ev) {
+      // Snapshot gone: the session's terminal cleanup cleared the registry.
+      // Surface a synthetic completion (unless we saw an error) so the UI's
+      // buffered badge retires, then stop.
+      if (lastSeenStage && lastSeenStage !== 'error') {
+        finish({ requestId, fileId, stage: 'complete' })
+      }
+      return
+    }
+    lastSeenStage = ev.stage
+    forward(ev)
+    if (ev.stage === 'complete' || ev.stage === 'error') finish()
+  }, POLL_INTERVAL_MS)
+
+  const abortListener = () => {
+    finish()
+    if (typeof BeebeebCryptoModule.cancelDownloadAndDecryptFileNative === 'function') {
+      void BeebeebCryptoModule.cancelDownloadAndDecryptFileNative(requestId).catch(() => {})
+    }
+  }
+  if (options.signal?.aborted) {
+    abortListener()
+    throw abortError()
+  }
+  options.signal?.addEventListener('abort', abortListener, { once: true })
+
+  try {
+    const result = (await BeebeebCryptoModule.streamVideoNative({
+      requestId,
+      handleId,
+      apiUrl,
+      token,
+      fileId,
+      outputUri,
+      sizeBytes: sizeBytes ?? null,
+      chunkCount: chunkCount ?? null,
+    })) as StreamVideoNativeResult
+    return result
+  } catch (error) {
+    if (options.signal?.aborted) {
+      throw abortError()
+    }
+    throw error
+  } finally {
+    // The native call settled: forward the last snapshot (a pre-playable
+    // failure's error event, if any), and stop the poll ONLY on failure —
+    // a resolved stream keeps pumping after playback started, so the poll
+    // stays alive until its own terminal rule fires.
+    const finalEv = readSnapshot()
+    if (finalEv) options.onProgress?.(finalEv)
+    if (!(finalEv && finalEv.stage === 'decrypting' && finalEv.streaming === true)) {
+      finish()
     }
   }
 }
