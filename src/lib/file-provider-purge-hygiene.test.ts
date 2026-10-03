@@ -15,8 +15,10 @@
  * calls per mobile/CLAUDE.md "Tests".
  */
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 const REPO_ROOT = join(import.meta.dir, '..', '..');
 const REGISTRY_SWIFT_PATH = join(
@@ -2271,9 +2273,9 @@ describe('f3 (item 2): clearFileProviderCacheState surfaces whether the database
     expect(branch).toMatch(/return \(removed, false\)/);
   });
 
-  test('a database that exists reports cacheResetOk as EXACTLY resetFileProviderCacheDatabase\'s own return value — never hardcoded true', () => {
+  test('a database that exists reports cacheResetOk as the retried reset result — never hardcoded true', () => {
     const body = bracedBody(moduleSwift, SIGNATURE);
-    expect(body).toMatch(/let cacheResetOk = resetFileProviderCacheDatabase\(at: dbUrl\)/);
+    expect(body).toMatch(/let cacheResetOk = retryFileProviderCacheReset \{\s*\n\s*resetFileProviderCacheDatabase\(at: dbUrl\)\s*\n\s*\}/);
     expect(body).toMatch(/if cacheResetOk \{ removed \+= 1 \}/);
     expect(body).toMatch(/return \(removed, cacheResetOk\)/);
   });
@@ -2998,6 +3000,73 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
       /\(cacheReady, cacheVersionBumped\) = await retryFileProviderCacheReadyAndBumpOffCooperativePool\(\s*\n\s*clearsPendingMarker: cacheResetOk,\s*\n\s*pendingNonceAtSnapshot: purgePendingNonceAtSnapshot\s*\n\s*\)/,
     );
     expect(body).toMatch(/cacheDatabaseReady: cacheReady,/);
+  });
+});
+
+describe('task 1722: forced Files mount retries transient cache-reset failure before refusing the domain add', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('clearFileProviderCacheState gates registration on a retried reset, not a single busy result', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func clearFileProviderCacheState(defaults: UserDefaults?) -> (removed: Int, cacheResetOk: Bool) {',
+    );
+    expect(body).toMatch(/retryFileProviderCacheReset \{\s*\n\s*resetFileProviderCacheDatabase\(at: dbUrl\)\s*\n\s*\}/);
+    expect(body).not.toMatch(/let cacheResetOk = resetFileProviderCacheDatabase\(at: dbUrl\)/);
+  });
+
+  test('retryFileProviderCacheReset is the actual Swift helper and gives a transient live SQLite lock one second chance', () => {
+    const helper = bracedBody(moduleSwift, 'private func retryFileProviderCacheReset(');
+    expect(helper).toMatch(/if reset\(\) \{\s*return true\s*\}/);
+    expect(helper).toMatch(/usleep\(sleepMicros\)/);
+    expect(helper).toMatch(/let ok = reset\(\)/);
+    expect(helper).toMatch(/storage\.purge\.file_provider_cache_reset_retry/);
+    expect(helper).toMatch(/storage\.purge\.file_provider_cache_reset_failed/);
+
+    const dir = mkdtempSync(join(tmpdir(), 'bb-reset-retry-'));
+    const source = join(dir, 'RetryHarness.swift');
+    writeFileSync(source, `
+import Foundation
+
+enum RuntimeTrace {
+  static var events: [String] = []
+  static func event(_ name: String, _ payload: [String: Any]) {
+    events.append(name)
+  }
+}
+
+${helper}
+
+var attempts = 0
+let recovered = retryFileProviderCacheReset(sleepMicros: 0) {
+  attempts += 1
+  return attempts == 2
+}
+if !recovered || attempts != 2 {
+  fatalError("expected false-then-true recovery, got recovered=\\(recovered) attempts=\\(attempts)")
+}
+if RuntimeTrace.events != ["storage.purge.file_provider_cache_reset_retry"] {
+  fatalError("unexpected recovery events: \\(RuntimeTrace.events)")
+}
+
+attempts = 0
+RuntimeTrace.events = []
+let failed = retryFileProviderCacheReset(sleepMicros: 0) {
+  attempts += 1
+  return false
+}
+if failed || attempts != 2 {
+  fatalError("expected two failed attempts, got failed=\\(failed) attempts=\\(attempts)")
+}
+if RuntimeTrace.events != [
+  "storage.purge.file_provider_cache_reset_retry",
+  "storage.purge.file_provider_cache_reset_failed",
+] {
+  fatalError("unexpected failure events: \\(RuntimeTrace.events)")
+}
+`);
+    execFileSync('swiftc', [source, '-o', join(dir, 'RetryHarness')], { stdio: 'pipe' });
+    execFileSync(join(dir, 'RetryHarness'), [], { stdio: 'pipe' });
   });
 });
 

@@ -1403,6 +1403,33 @@ private func vacuumRetryingOnceOnBusy(_ db: OpaquePointer?) -> Bool {
   return sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK
 }
 
+/// Task 1722 — a Files mount can race the File Provider extension itself:
+/// Files launches the extension, the extension opens the shared cache DB,
+/// then the main app's force-reset mount tries to prove that same DB was
+/// wiped before re-adding the domain. A single transient SQLite lock made
+/// `resetFileProviderCacheDatabase` return `false`, so
+/// `mayAddFileProviderDomain` correctly refused the add forever while the
+/// stale purge marker stayed on disk. Keep that fail-closed gate, but give
+/// the reset one bounded second chance before reporting that the cache reset
+/// could not be proven.
+private func retryFileProviderCacheReset(
+  sleepMicros: useconds_t = 250_000,
+  reset: () -> Bool
+) -> Bool {
+  if reset() {
+    return true
+  }
+  RuntimeTrace.event("storage.purge.file_provider_cache_reset_retry", [:])
+  if sleepMicros > 0 {
+    usleep(sleepMicros)
+  }
+  let ok = reset()
+  if !ok {
+    RuntimeTrace.event("storage.purge.file_provider_cache_reset_failed", [:])
+  }
+  return ok
+}
+
 /// Task 1593 f3 (independent security review of eff81b7, item 2) — used to
 /// return a bare `Int` (files-removed count) that every caller either
 /// discarded (`removeMountedFileProviderDomain`'s
@@ -1447,7 +1474,9 @@ private func clearFileProviderCacheState(defaults: UserDefaults?) -> (removed: I
     // `ensureFileProviderCacheDatabase()` creates it fresh and empty.
     return (removed, true)
   }
-  let cacheResetOk = resetFileProviderCacheDatabase(at: dbUrl)
+  let cacheResetOk = retryFileProviderCacheReset {
+    resetFileProviderCacheDatabase(at: dbUrl)
+  }
   if cacheResetOk { removed += 1 }
   return (removed, cacheResetOk)
 }
