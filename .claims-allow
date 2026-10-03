@@ -1,4 +1,6 @@
 # path|token|evidence (evidence is mandatory and is what a reviewer reads)
+modules/beebeeb-crypto/android/src/main/java/uniffi/beebeeb_uniffi/beebeeb_uniffi.kt|mozilla.github.io|Generated UniFFI Kotlin documentation comments link configuration reference; no runtime request (task1723 source review)
+modules/beebeeb-crypto/android/src/main/java/uniffi/beebeeb_uniffi/beebeeb_uniffi.kt|stackoverflow.com|Generated UniFFI Kotlin documentation comments cite Java finalize reachability explanation; no runtime request (task1723 source review)
 #
 # Phantom-region hits only (decision 1413, 2026-09-13): docs/canon/data-
 # residency.md's "The truth" section (git 37a15d6d, the LATER, explicitly-
