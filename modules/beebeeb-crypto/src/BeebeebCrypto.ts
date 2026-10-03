@@ -1301,6 +1301,7 @@ export async function streamVideoNative(
       // Surface a synthetic completion (unless we saw an error) so the UI's
       // buffered badge retires, then stop.
       if (lastSeenStage && lastSeenStage !== 'error') {
+        console.info('[1683j-poll] vanish -> synthetic complete')
         finish({ requestId, fileId, stage: 'complete' })
       }
       return
@@ -1345,8 +1346,13 @@ export async function streamVideoNative(
     // a resolved stream keeps pumping after playback started, so the poll
     // stays alive until its own terminal rule fires.
     const finalEv = readSnapshot()
+    console.info('[1683j-poll] native settled; finalEv=' + JSON.stringify({
+      stage: finalEv?.stage, streaming: finalEv?.streaming,
+      chunks: finalEv?.chunksCompleted, requestId: requestId.slice(0, 24),
+    }))
     if (finalEv) options.onProgress?.(finalEv)
     if (!(finalEv && finalEv.stage === 'decrypting' && finalEv.streaming === true)) {
+      console.info('[1683j-poll] finally -> finish (poll stops)')
       finish()
     }
   }

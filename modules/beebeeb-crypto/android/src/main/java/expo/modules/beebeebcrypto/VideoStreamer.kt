@@ -669,12 +669,32 @@ internal object VideoStreamServer {
   @Synchronized
   private fun ensureStarted(): Int {
     serverSocket?.let { return it.localPort }
-    val socket = ServerSocket(0, 16, InetAddress.getLoopbackAddress())
+    // ANY-IPv6 bind (::) + loopback reachability: a loopback-only bind
+    // ([::1]) is NOT reachable from an OkHttp request to 127.0.0.1 on this
+    // Android (the first stream attempt failed ConnectException: Failed to
+    // connect to /127.0.0.1:32789 with the server on [::1]) — the app's
+    // network stack resolves "127.0.0.1" to the IPv4 loopback only. Binding
+    // to :: accepts both the IPv6 loopback and the IPv4-mapped form;
+    // inbound connections are restricted to loopback at ACCEPT time below.
+    val socket = ServerSocket()
+    socket.reuseAddress = true
+    try {
+      socket.bind(java.net.InetSocketAddress("::", 0))
+    } catch (_: Exception) {
+      socket.bind(java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), 0))
+    }
     serverSocket = socket
     Thread({
       while (!socket.isClosed) {
         try {
           val client = socket.accept()
+          // Loopback-only enforcement (the bind is any-interface): a
+          // non-loopback peer is refused immediately.
+          val addr = client.inetAddress
+          if (!addr.isLoopbackAddress) {
+            try { client.close() } catch (_: Exception) {}
+            continue
+          }
           Thread({ serve(client) }, "beebeeb-stream-serve").apply {
             isDaemon = true
             start()
