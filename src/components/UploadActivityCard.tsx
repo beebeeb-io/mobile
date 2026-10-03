@@ -189,7 +189,7 @@ export const UploadActivityCard = React.memo(function UploadActivityCard({ uploa
   const line = useMemo(() => {
     if (done) return `Stored in ${upload.city} · key stayed here`;
     if (upload.stage === 3) return `Storing in ${upload.city}…`;
-    if (upload.stage === 1) return 'Encrypting on your device…';
+    if (upload.stage === 1) return 'Preparing on your device…';
     const parts: string[] = [];
     const crypto = formatRate(upload.cryptoBytesPerSec);
     if (crypto) parts.push(`AES ${crypto}`);

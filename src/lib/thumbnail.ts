@@ -300,24 +300,19 @@ export async function generateAndUploadThumbnail(
     const thumb = await generateThumbnailForMedia(sourceUri, mimeType, variant);
     if (!thumb) return false;
 
-    // Task 0552: encode a blurhash from the same source URI for the medium
-    // variant. Best-effort — null when the native binding isn't loaded.
-    // We intentionally do NOT block thumbnail upload on this; if encoding
-    // fails the placeholder gradient simply doesn't appear.
-    let blurhash: string | null = null;
-    if (variant === 'medium' && !isVideoMime(mimeType)) {
-      blurhash = await encodeBlurhashFromUri(sourceUri).catch(() => null);
+    // Persist both sizes: a freshly uploaded photo can render locally while
+    // the server thumbnail upload finishes. Blurhash reads this small WebP,
+    // never the full-resolution source (especially costly for camera RAW).
+    let previewPath: string | null = null;
+    try {
+      previewPath = await cacheThumbnail(fileId, thumb, variant);
+      if (variant === 'medium') thumbCache.set(fileId, previewPath);
+    } catch {
+      // Persist failure does not block the encrypted server thumbnail.
     }
-
-    // Cache the plaintext thumbnail in persistent storage for instant display
-    if (variant === 'medium') {
-      const b64 = bytesToBase64(thumb);
-      try {
-        const persistedPath = await cacheThumbnailBase64(fileId, b64, variant);
-        thumbCache.set(fileId, persistedPath);
-      } catch {
-        // Persist failed — still upload the thumbnail to server
-      }
+    let blurhash: string | null = null;
+    if (previewPath && variant === 'medium' && !isVideoMime(mimeType)) {
+      blurhash = await encodeBlurhashFromUri(previewPath).catch(() => null);
     }
 
     const fileKey = await getFileKeyBytes(fileId);

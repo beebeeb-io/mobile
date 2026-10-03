@@ -1,6 +1,7 @@
 import AVFoundation
 import ExpoModulesCore
 import Foundation
+import ImageIO
 import FileProvider
 import NaturalLanguage
 import PDFKit
@@ -48,6 +49,11 @@ private let fileProviderEnumeratorStatePrefix = "io.beebeeb.fileProvider.enumera
 // closure body never blocks main, consistent with PhotoBackupManager.
 private let beebeebCryptoPHKitCallbackQueue = DispatchQueue(
   label: "io.beebeeb.crypto.phkit-callback",
+  qos: .utility
+)
+
+private let beebeebDngThumbnailQueue = DispatchQueue(
+  label: "io.beebeeb.crypto.dng-thumbnail",
   qos: .utility
 )
 
@@ -4209,8 +4215,9 @@ public class BeebeebCryptoModule: Module {
     // generateVideoThumbnail: Uses AVAssetImageGenerator to extract a frame
     // from a local video file (MP4/MOV) and writes a WebP thumbnail to disk.
     //
-    // generateDngThumbnail: Loads a DNG via UIImage (which uses CoreImage
-    // under the hood to decode the embedded preview) and resizes to WebP.
+    // generateDngThumbnail: Asks ImageIO for a size-bounded DNG preview and
+    // resizes that preview to WebP. Keep this off Expo's default native queue:
+    // RAW preview extraction can be slow enough to delay following uploads.
 
     AsyncFunction("generateVideoThumbnail") { (localUri: String, maxSize: Int) throws -> String in
       let url = fileURL(fromURI: localUri)
@@ -4245,15 +4252,51 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("generateDngThumbnail") { (localUri: String, maxSize: Int) throws -> String in
       let url = fileURL(fromURI: localUri)
 
-      guard let image = UIImage(contentsOfFile: url.path) else {
+      let sourceOptions: CFDictionary = [
+        kCGImageSourceShouldCache: false,
+        kCGImageSourceShouldCacheImmediately: false
+      ] as CFDictionary
+
+      guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
         throw NSError(
           domain: "BeebeebThumbnail",
           code: 2,
-          userInfo: [NSLocalizedDescriptionKey: "Failed to load DNG image"]
+          userInfo: [NSLocalizedDescriptionKey: "Failed to open DNG image source"]
         )
       }
 
-      guard let webpData = ThumbnailGenerator.generate(from: image, config: .medium) else {
+      let safeMaxSize = max(256, min(maxSize, 1600))
+      let thumbnailOptions: CFDictionary = [
+        kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceShouldCache: false,
+        kCGImageSourceShouldCacheImmediately: true,
+        kCGImageSourceThumbnailMaxPixelSize: safeMaxSize
+      ] as CFDictionary
+
+      guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
+        throw NSError(
+          domain: "BeebeebThumbnail",
+          code: 2,
+          userInfo: [NSLocalizedDescriptionKey: "Failed to extract DNG preview"]
+        )
+      }
+
+      let image = UIImage(cgImage: cgImage)
+      let config: ThumbnailGenerator.Config
+      if maxSize >= 1200 {
+        // JS requests the large RAW thumbnail at 1600 px. Native's existing
+        // large ladder currently encodes at up to 1280 px/192 KB, so ImageIO
+        // may read a 1600 px preview while WebP output still follows that
+        // established native large policy.
+        config = .large
+      } else if maxSize <= 384 {
+        config = .small
+      } else {
+        config = .medium
+      }
+
+      guard let webpData = ThumbnailGenerator.generate(from: image, config: config) else {
         throw NSError(
           domain: "BeebeebThumbnail",
           code: 3,
@@ -4264,7 +4307,7 @@ public class BeebeebCryptoModule: Module {
       let outputPath = NSTemporaryDirectory() + "dng-thumb-\(UUID().uuidString).webp"
       try webpData.write(to: URL(fileURLWithPath: outputPath))
       return outputPath
-    }
+    }.runOnQueue(beebeebDngThumbnailQueue)
 
     // ── Native thumbnail pipeline ────────────────────────────────────────
     //

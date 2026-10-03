@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test';
 const files = new Map<string, number>(); // uri -> size
 const deletes: string[] = [];
 let nativePlaintextSize = 5000;
+let copyHook: null | (() => Promise<void>) = null;
 mock.module('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///cache/',
   getInfoAsync: async (uri) => {
@@ -19,6 +20,7 @@ mock.module('expo-file-system/legacy', () => ({
     return files.has(uri) ? { exists: true, size: files.get(uri), modificationTime: Date.now() / 1000 } : { exists: false };
   },
   makeDirectoryAsync: async () => {},
+  copyAsync: async ({from, to}) => { await copyHook?.(); files.set(to, files.get(from)); },
   readDirectoryAsync: async (dir) => [...files.keys()].filter((k) => k.startsWith(dir)).map((k) => k.slice(dir.length)),
   deleteAsync: async (uri) => {
     deletes.push(uri);
@@ -84,6 +86,7 @@ beforeEach(() => {
   deletes.length = 0;
   nativeCalls.length = 0;
   nativePlaintextSize = 5000;
+  copyHook = null;
   plaintextGate.open();
 });
 
@@ -129,4 +132,84 @@ describe('task 1687d — preview cache integrity', () => {
     expect(out).toBe('file:///cache/preview/t5.pdf');
     expect(deletes).toEqual([]);
   });
+});
+
+describe('1721 — freshly uploaded source seeds bounded preview cache', () => {
+  test('a 57 MB uploaded DNG opens without a download or key derivation', async () => {
+    const size = 57 * 1024 * 1024;
+    files.set('file:///upload.dng', size);
+    expect(await nd.cacheUploadedPreview('fresh', 'dng', 'file:///upload.dng', size)).toBe(true);
+    const out = await nd.decryptToTempFile('fresh', () => { throw new Error('must not derive'); }, 'dng', size, 57, 7);
+    expect(out).toBe('file:///cache/preview/fresh.dng');
+    expect(nativeCalls.length).toBe(0);
+    expect(files.get('file:///upload.dng')).toBe(size);
+    await nd.releasePreviewCopy('fresh', 'dng');
+  });
+  test('a truncated upload source cannot poison the preview cache', async () => {
+    files.set('file:///upload.dng', 2000);
+    expect(await nd.cacheUploadedPreview('short', 'dng', 'file:///upload.dng', 5000)).toBe(false);
+    expect(files.has('file:///cache/preview/short.dng')).toBe(false);
+  });
+  test('unknown or oversized sources are not retained', async () => {
+    files.set('file:///huge.dng', 600 * 1024 * 1024);
+    expect(await nd.cacheUploadedPreview('huge', 'dng', 'file:///huge.dng', 600 * 1024 * 1024)).toBe(false);
+    expect(await nd.cacheUploadedPreview('unknown', 'dng', 'file:///huge.dng', null)).toBe(false);
+  });
+  test('purge refuses new upload-cache writes', async () => {
+    files.set('file:///upload.dng', 5000);
+    await plaintextGate.purge(async () => {});
+    await expect(nd.cacheUploadedPreview('signedout', 'dng', 'file:///upload.dng', 5000)).rejects.toThrow();
+    expect(files.has('file:///cache/preview/signedout.dng')).toBe(false);
+  });
+  test('preview cache stays bounded by 24 items', async () => {
+    for (let i = 0; i < 30; i++) {
+      files.set(`file:///source-${i}`, 5000);
+      await nd.cacheUploadedPreview(`batch-${i}`, 'dng', `file:///source-${i}`, 5000);
+    }
+    expect([...files.keys()].filter(k => k.startsWith('file:///cache/preview/')).length).toBe(24);
+  });
+  test('an in-use preview is never overwritten by an uploaded version', async () => {
+    files.set('file:///cache/preview/leased.dng', 5000);
+    await nd.decryptToTempFile('leased', null, 'dng', 5000, 1, 7);
+    files.set('file:///new.dng', 6000);
+    expect(await nd.cacheUploadedPreview('leased', 'dng', 'file:///new.dng', 6000)).toBe(false);
+    expect(files.get('file:///cache/preview/leased.dng')).toBe(5000);
+    await nd.releasePreviewCopy('leased', 'dng');
+  });
+});
+
+test('1721 — preview joins upload-source copy without reading a partial file', async () => {
+  let finish!: () => void;
+  copyHook = () => new Promise(resolve => { finish = resolve; });
+  files.set('file:///source.dng', 5000);
+  const seed = nd.cacheUploadedPreview('joining', 'dng', 'file:///source.dng', 5000);
+  while (!finish) await tick();
+  const preview = nd.decryptToTempFile('joining', null, 'dng', 5000, 1, 7);
+  finish();
+  expect(await seed).toBe(true);
+  expect(await preview).toBe('file:///cache/preview/joining.dng');
+  expect(nativeCalls.length).toBe(0);
+  await nd.releasePreviewCopy('joining', 'dng');
+});
+test('1721 — sign-out racing an upload-source copy leaves no plaintext behind', async () => {
+  let finish!: () => void;
+  copyHook = () => new Promise(resolve => { finish = resolve; });
+  files.set('file:///source.dng', 5000);
+  const seed = nd.cacheUploadedPreview('purging', 'dng', 'file:///source.dng', 5000);
+  while (!finish) await tick();
+  const purge = plaintextGate.purge(async () => { files.delete('file:///cache/preview/purging.dng'); });
+  finish();
+  await expect(seed).rejects.toThrow();
+  await purge;
+  expect(files.has('file:///cache/preview/purging.dng')).toBe(false);
+});
+test('1721 — a batch cannot retain more than 512 MB of uploaded sources', async () => {
+  const size = 200 * 1024 * 1024;
+  for (let i = 0; i < 4; i++) {
+    files.set(`file:///large-${i}`, size);
+    await nd.cacheUploadedPreview(`large-${i}`, 'dng', `file:///large-${i}`, size);
+  }
+  const cached = [...files.entries()].filter(([uri]) => uri.startsWith('file:///cache/preview/'));
+  expect(cached.length).toBe(2);
+  expect(cached.reduce((sum, [, n]) => sum + n, 0)).toBeLessThanOrEqual(512 * 1024 * 1024);
 });
