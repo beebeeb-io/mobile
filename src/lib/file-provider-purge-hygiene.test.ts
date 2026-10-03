@@ -3232,6 +3232,57 @@ sqlite3_close(persistentCheck)
 // `cacheResetOk`. The marker exists to protect the domain-add decision that
 // was being refused; clearing it anyway defeated the whole point of f4's
 // wider marker-hold window.
+describe('task 1722: File Provider cache preserves JS-bridged file sizes', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('syncFileProviderCache normalizes size_bytes from JS bridge numbers before binding SQLite', () => {
+    const body = bracedBody(moduleSwift, 'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in');
+    expect(body).not.toContain('Int64(entry["size_bytes"] as? Int ?? 0)');
+    expect(body).toContain('sqlite3_bind_int64(stmt, 6, fileProviderCacheSizeBytes(entry["size_bytes"]))');
+  });
+
+  test('fileProviderCacheSizeBytes accepts native integer and integral floating bridge numbers, but rejects unsafe values', () => {
+    const helper = bracedBody(moduleSwift, 'private func fileProviderCacheSizeBytes(');
+    expect(helper).toMatch(/case let value as Int:/);
+    expect(helper).toMatch(/case let value as Int64:/);
+    expect(helper).toMatch(/case let value as Double:/);
+    expect(helper).toMatch(/case let value as NSNumber:/);
+    expect(helper).not.toMatch(/case let value as String:/);
+
+    const floatingHelper = bracedBody(moduleSwift, 'private func fileProviderCacheFloatingSizeBytes(');
+    expect(floatingHelper).toContain('value < Double(Int64.max)');
+    expect(floatingHelper).toContain('value.rounded(.towardZero) == value');
+
+    const dir = mkdtempSync(join(tmpdir(), 'bb-size-bridge-'));
+    const source = join(dir, 'SizeBridgeHarness.swift');
+    writeFileSync(source, `
+import Foundation
+
+${helper}
+
+${floatingHelper}
+
+func require(_ condition: @autoclosure () -> Bool, _ message: String) {
+  if !condition() { fatalError(message) }
+}
+
+require(fileProviderCacheSizeBytes(123 as Int) == 123, "Int failed")
+require(fileProviderCacheSizeBytes(Int64(456)) == 456, "Int64 failed")
+require(fileProviderCacheSizeBytes(789.0 as Double) == 789, "Double failed")
+require(fileProviderCacheSizeBytes(NSNumber(value: 321)) == 321, "NSNumber int failed")
+require(fileProviderCacheSizeBytes(NSNumber(value: 654.0)) == 654, "NSNumber double failed")
+require(fileProviderCacheSizeBytes(-1 as Int) == 0, "negative Int should clamp")
+require(fileProviderCacheSizeBytes(12.5 as Double) == 0, "fractional Double should reject")
+require(fileProviderCacheSizeBytes(NSNumber(value: true)) == 0, "NSNumber Bool should reject")
+require(fileProviderCacheSizeBytes(Double.nan) == 0, "NaN should reject")
+require(fileProviderCacheSizeBytes(Double(Int64.max)) == 0, "rounded overflow boundary should reject")
+require(fileProviderCacheSizeBytes(nil) == 0, "nil should reject")
+`);
+    execFileSync('swiftc', [source, '-o', join(dir, 'SizeBridgeHarness')], { stdio: 'pipe' });
+    execFileSync(join(dir, 'SizeBridgeHarness'), [], { stdio: 'pipe' });
+  });
+});
+
 describe('f5 (reviewer follow-up 1): a registration whose add is refused (purge pending, no reset — cacheResetOk=false) must NOT clear the marker; only a registration that actually reset the DB (or found nothing pending) may', () => {
   const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
   const body = bracedBody(
