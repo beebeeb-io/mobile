@@ -111,7 +111,7 @@ import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
 import DevicesSection from '../components/settings/DevicesSection';
 import { markUnlocked } from '../lib/lock-state';
-import { mountTrustedFileProvider, populateFileProviderCache, removeTrustedFileProvider } from '../lib/file-provider-mount';
+import { mountTrustedFileProvider, populateFileProviderCache, registerTrustedFileProviderDomain, removeTrustedFileProvider, resetTrustedFileProviderDomain } from '../lib/file-provider-mount';
 import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { DEFAULT_NOTIFICATION_PREFERENCES } from '../lib/notification-prefs';
@@ -916,8 +916,8 @@ export default function SettingsScreen() {
           // remove-then-add reset to get it back; otherwise re-register.
           const repaired =
             state.registered === false
-              ? await BeebeebCrypto.resetFileProviderDomain()
-              : await BeebeebCrypto.registerFileProviderDomain();
+              ? await resetTrustedFileProviderDomain()
+              : await registerTrustedFileProviderDomain();
           mounted =
             repaired.registered &&
             repaired.cacheDatabaseReady !== false &&

@@ -61,4 +61,21 @@ describe('share extension session/API keys match the shared-keychain writer', ()
     expect(src).not.toContain(DEAD_SESSION_TOKEN_KEY);
     expect(src).not.toContain(DEAD_API_URL_KEY);
   });
+
+
+  it('mirrorSessionToAppGroup reports shared File Provider credential write failures instead of swallowing them', () => {
+    const src = readSource(CRYPTO_MODULE);
+    const start = src.indexOf('AsyncFunction("mirrorSessionToAppGroup")');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const next = src.indexOf('AsyncFunction("mirrorBackupClientSession")', start);
+    expect(next).toBeGreaterThan(start);
+    const body = src.slice(start, next);
+
+    expect(body).not.toContain('try? BeebeebKeychainCore.storeString(token, key: sharedSessionTokenKey)');
+    expect(body).not.toContain('try? BeebeebKeychainCore.storeString(baseUrl, key: sharedAPIBaseURLKey)');
+    expect(body).toMatch(/try BeebeebKeychainCore\.storeString\(token, key: sharedSessionTokenKey\)/);
+    expect(body).toMatch(/try BeebeebKeychainCore\.storeString\(baseUrl, key: sharedAPIBaseURLKey\)/);
+    expect(body).toMatch(/fileprovider\.auth_mirror\.failed/);
+    expect((body.match(/return false/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
 });

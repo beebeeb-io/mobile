@@ -13,6 +13,58 @@ type MountTrustedFileProviderOptions = {
   vaultUnlocked?: boolean;
 };
 
+async function mirrorSessionForFileProvider(): Promise<void> {
+  const token = await getToken();
+  if (!token) {
+    throw new Error('Sign in before mounting Beebeeb in Files.');
+  }
+  let mirrored = false;
+  try {
+    mirrored = await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl());
+  } catch {
+    mirrored = false;
+  }
+  if (!mirrored) {
+    throw new Error('Could not save Beebeeb credentials for Files. Try signing in again, then mount Beebeeb in Files.');
+  }
+}
+
+export async function registerTrustedFileProviderDomain(): Promise<FileProviderDomainRegistrationResult> {
+  if (Platform.OS !== 'ios') {
+    return {
+      supported: false,
+      identifier: 'io.beebeeb.files',
+      displayName: 'Beebeeb',
+      registered: false,
+      added: false,
+      removedBeforeAdd: false,
+      domainCount: 0,
+      rootEnumerationSignaled: false,
+      workingSetEnumerationSignaled: false,
+    };
+  }
+  await mirrorSessionForFileProvider();
+  return BeebeebCrypto.registerFileProviderDomain();
+}
+
+export async function resetTrustedFileProviderDomain(): Promise<FileProviderDomainRegistrationResult> {
+  if (Platform.OS !== 'ios') {
+    return {
+      supported: false,
+      identifier: 'io.beebeeb.files',
+      displayName: 'Beebeeb',
+      registered: false,
+      added: false,
+      removedBeforeAdd: false,
+      domainCount: 0,
+      rootEnumerationSignaled: false,
+      workingSetEnumerationSignaled: false,
+    };
+  }
+  await mirrorSessionForFileProvider();
+  return BeebeebCrypto.resetFileProviderDomain();
+}
+
 export async function mountTrustedFileProvider(
   options: MountTrustedFileProviderOptions = {},
 ): Promise<FileProviderDomainRegistrationResult> {
@@ -44,12 +96,7 @@ export async function mountTrustedFileProvider(
     }
   }
 
-  const token = await getToken();
-  if (!token) {
-    throw new Error('Sign in before mounting Beebeeb in Files.');
-  }
-
-  await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl());
+  await mirrorSessionForFileProvider();
   const result = await BeebeebCrypto.mountFileProviderAccess();
   if (result.registered && result.cacheDatabaseReady === false) {
     throw new Error('Beebeeb mounted in iOS, but Files storage is not ready yet. Try again in a moment.');
