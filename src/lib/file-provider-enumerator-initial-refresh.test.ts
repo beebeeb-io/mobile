@@ -8,6 +8,21 @@ import { join } from 'node:path';
 const ROOT = join(import.meta.dir, '..', '..');
 const ENUMERATOR = join(ROOT, 'targets', 'file-provider', 'FileProviderEnumerator.swift');
 const SYNC_ENGINE = join(ROOT, 'targets', 'file-provider', 'SyncEngine.swift');
+const REQUIRE_NATIVE_SWIFT_HARNESSES = process.env.BB_REQUIRE_NATIVE_SWIFT_HARNESSES === '1';
+
+function nativeSwiftHarnessTest(name: string, fn: () => void, timeout?: number): void {
+  if (process.platform === 'darwin') {
+    test(name, fn, timeout);
+    return;
+  }
+  if (REQUIRE_NATIVE_SWIFT_HARNESSES) {
+    test(name, () => {
+      throw new Error('native Swift harnesses require macOS; run this in CI swift-gate');
+    }, timeout);
+    return;
+  }
+  test.skip(`${name} [macOS Swift harness; required in CI swift-gate]`, fn, timeout);
+}
 
 function bracedBody(source: string, signature: string): string {
   const start = source.indexOf(signature);
@@ -270,7 +285,7 @@ struct Main {
 `;
 
 describe('iOS File Provider initial enumeration refresh', () => {
-  test('actual Swift enumerator handles first-mount populated, true-empty, failed refresh, and cancel paths', () => {
+  nativeSwiftHarnessTest('actual Swift enumerator handles first-mount populated, true-empty, failed refresh, and cancel paths', () => {
     const dir = mkdtempSync(join(tmpdir(), 'beebeeb-file-provider-enumerator-'));
     const harness = join(dir, 'Harness.swift');
     const binary = join(dir, 'Harness');

@@ -66,6 +66,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - run: bun install --frozen-lockfile
       - name: Typecheck Share Extension (xcodeproj copy, targets/ source, sync check)
         run: bash scripts/swift-ci/typecheck-share-extension.sh
       - name: Share Extension guards can go red (self-test)
@@ -74,6 +76,11 @@ jobs:
       - name: Swift unit tests (scripts/swift-tests)
         if: ${{ !cancelled() }}
         run: bash scripts/swift-ci/run-swift-tests.sh
+      - name: Native Swift harnesses embedded in unit guards
+        if: ${{ !cancelled() }}
+        env:
+          BB_REQUIRE_NATIVE_SWIFT_HARNESSES: "1"
+        run: bun test src/lib/file-provider-purge-hygiene.test.ts src/lib/file-provider-enumerator-initial-refresh.test.ts
 
   # Task 1669: until this job nothing compiled the MAIN APP's Swift (swift-gate above covers
   # only the Share Extension, task 1671). Public repo, so macOS runners are free. Full unsigned

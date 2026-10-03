@@ -36,6 +36,25 @@ const FILE_PROVIDER_EXTENSION_SWIFT_PATH = join(
 const CONSTANTS_SWIFT_PATH = join(
   REPO_ROOT, 'targets', 'file-provider', 'Constants.swift',
 );
+const REQUIRE_NATIVE_SWIFT_HARNESSES = process.env.BB_REQUIRE_NATIVE_SWIFT_HARNESSES === '1';
+
+function nativeSwiftHarnessTest(name: string, fn: () => void, timeout?: number): void {
+  if (process.platform === 'darwin') {
+    test(name, fn, timeout);
+    return;
+  }
+  if (REQUIRE_NATIVE_SWIFT_HARNESSES) {
+    test(name, () => {
+      throw new Error('native Swift harnesses require macOS; run this in CI swift-gate');
+    }, timeout);
+    return;
+  }
+  test.skip(`${name} [macOS Swift harness; required in CI swift-gate]`, fn, timeout);
+}
+
+function runSwiftc(args: string[]): void {
+  execFileSync('xcrun', ['swiftc', ...args], { stdio: 'pipe' });
+}
 
 function functionBody(source: string, signature: string): string {
   const start = source.indexOf(signature);
@@ -3015,7 +3034,7 @@ describe('task 1722: forced Files mount retries transient cache-reset failure be
     expect(body).not.toMatch(/let cacheResetOk = resetFileProviderCacheDatabase\(at: dbUrl\)/);
   });
 
-  test('retryFileProviderCacheReset is the actual Swift helper and gives a transient live SQLite lock one second chance', () => {
+  nativeSwiftHarnessTest('retryFileProviderCacheReset is the actual Swift helper and gives a transient live SQLite lock one second chance', () => {
     const helper = bracedBody(moduleSwift, 'private func retryFileProviderCacheReset(');
     expect(helper).toMatch(/if reset\(\) \{\s*return true\s*\}/);
     expect(helper).toMatch(/usleep\(sleepMicros\)/);
@@ -3065,11 +3084,11 @@ if RuntimeTrace.events != [
   fatalError("unexpected failure events: \\(RuntimeTrace.events)")
 }
 `);
-    execFileSync('swiftc', [source, '-o', join(dir, 'RetryHarness')], { stdio: 'pipe' });
+    runSwiftc([source, '-o', join(dir, 'RetryHarness')]);
     execFileSync(join(dir, 'RetryHarness'), [], { stdio: 'pipe' });
   });
 
-  test('actual SQLite reset helper recovers from a transient live DB lock and still fails closed on a persistent lock', () => {
+  nativeSwiftHarnessTest('actual SQLite reset helper recovers from a transient live DB lock and still fails closed on a persistent lock', () => {
     const vacuumHelper = bracedBody(moduleSwift, 'private func vacuumRetryingOnceOnBusy(');
     const resetHelper = bracedBody(moduleSwift, 'private func resetFileProviderCacheDatabase(at url: URL) -> Bool {');
     const retryHelper = bracedBody(moduleSwift, 'private func retryFileProviderCacheReset(');
@@ -3216,7 +3235,7 @@ require(scalarInt(persistentCheck, "SELECT count(*) FROM file_cache") == 1, "per
 require(scalarInt(persistentCheck, "PRAGMA user_version") == 1, "persistent user_version should not bump on failed reset")
 sqlite3_close(persistentCheck)
 `);
-    execFileSync('swiftc', [source, '-o', join(dir, 'SQLiteResetHarness'), '-lsqlite3'], { stdio: 'pipe' });
+    runSwiftc([source, '-o', join(dir, 'SQLiteResetHarness'), '-lsqlite3']);
     execFileSync(join(dir, 'SQLiteResetHarness'), [], { stdio: 'pipe' });
   }, 20_000);
 });
@@ -3241,7 +3260,7 @@ describe('task 1722: File Provider cache preserves JS-bridged file sizes', () =>
     expect(body).toContain('sqlite3_bind_int64(stmt, 6, fileProviderCacheSizeBytes(entry["size_bytes"]))');
   });
 
-  test('fileProviderCacheSizeBytes accepts native integer and integral floating bridge numbers, but rejects unsafe values', () => {
+  nativeSwiftHarnessTest('fileProviderCacheSizeBytes accepts native integer and integral floating bridge numbers, but rejects unsafe values', () => {
     const helper = bracedBody(moduleSwift, 'private func fileProviderCacheSizeBytes(');
     expect(helper).toMatch(/case let value as Int:/);
     expect(helper).toMatch(/case let value as Int64:/);
@@ -3278,7 +3297,7 @@ require(fileProviderCacheSizeBytes(Double.nan) == 0, "NaN should reject")
 require(fileProviderCacheSizeBytes(Double(Int64.max)) == 0, "rounded overflow boundary should reject")
 require(fileProviderCacheSizeBytes(nil) == 0, "nil should reject")
 `);
-    execFileSync('swiftc', [source, '-o', join(dir, 'SizeBridgeHarness')], { stdio: 'pipe' });
+    runSwiftc([source, '-o', join(dir, 'SizeBridgeHarness')]);
     execFileSync(join(dir, 'SizeBridgeHarness'), [], { stdio: 'pipe' });
   });
 });

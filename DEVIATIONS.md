@@ -11,6 +11,27 @@ workspace CLAUDE.md's convention (`repos/mobile DEVIATIONS.md`, as instantiated 
 this repo for the first time); the earlier phase 3/4 references remain undocumented
 and are out of scope for this task.
 
+## Task 1723 CI-only native Swift harness routing
+
+**Design / CI contract:** Ubuntu `unit-tests` owns portable source guards and
+the count-shaped `isolated: N pass, 0 fail across F files` gate. The macOS
+`swift-gate` job owns native Swift compilation/runtime harnesses because Linux
+CI has no Swift/iOS frameworks.
+
+**What shipped:** the File Provider source guards still run in the Ubuntu unit
+suite. The four native Swift runtime harnesses embedded in
+`file-provider-purge-hygiene.test.ts` and
+`file-provider-enumerator-initial-refresh.test.ts` are explicitly macOS-only in
+those files and are required in the existing macOS `swift-gate` job with
+`BB_REQUIRE_NATIVE_SWIFT_HARNESSES=1`.
+
+**Why:** PR 163 introduced hostless Swift harnesses into the Bun unit suite.
+They were valid coverage, but running them unconditionally in Ubuntu made the
+portable unit job red for host/toolchain reasons rather than product reasons.
+This keeps source guards on every platform and moves the runtime Swift proof to
+the job that can actually compile and run it, without silently dropping the
+coverage.
+
 ## Task 1563 (mobile) — ⋯ menu replaces the Edit/Preview segmented control
 
 **Design:** `design/editor-1563.html`, screen 05 "IPHONE" — shows a segmented

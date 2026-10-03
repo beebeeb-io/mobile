@@ -13,6 +13,24 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
+print_failure_blocks() {
+  local log="$1"
+  awk '
+    /^={70}$/ { block = $0 "\n"; capture = 1; next }
+    capture {
+      block = block $0 "\n"
+      if ($0 ~ /^={70}$/ && block ~ /\n(FAIL|error|Error|panic|fatal error|COMPILE FAILED|TEST FAILED)/) {
+        printf "%s", block
+        block = ""
+        capture = 0
+        next
+      }
+      next
+    }
+    /^FAIL / { print }
+  ' "$log"
+}
+
 # check_log LOG EXIT_CODE -> prints the verdict, returns 0 (pass) / 1 (red)
 check_log() {
   local log="$1" code="$2" lines n fail files broken
@@ -73,6 +91,11 @@ case "${1:-}" in
     CODE=$?
     # keep the tail visible in the job log even when the gate passes
     tail -n 5 "$LOG"
+    if [ "$CODE" != "0" ]; then
+      echo
+      echo "UNIT SUITE FAILURE DETAILS:"
+      print_failure_blocks "$LOG"
+    fi
     check_log "$LOG" "$CODE"
     exit $?
     ;;
