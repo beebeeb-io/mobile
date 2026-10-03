@@ -108,7 +108,9 @@ import { loadNameCache, scheduleSaveNameCache, type NameCache } from '../lib/nam
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { offlineManager, type OfflineStatus } from '../lib/offline-manager';
 import { useOfflineVersion } from '../lib/use-offline';
-import { decryptToTempFile } from '../lib/native-decrypt';
+import { cacheUploadedPreview, decryptToTempFile } from '../lib/native-decrypt';
+import { extensionForRaw } from '../lib/raw-format';
+import { fileCategory as previewFileCategory } from '../lib/file-category';
 import { BBActionSheet, type ActionSheetRow, type ActionSheetFileHeader } from '../components/BBActionSheet';
 import { MenuView, type MenuAction, type NativeActionEvent } from '@react-native-menu/menu';
 import { useBackup } from '../lib/backup-context';
@@ -216,6 +218,49 @@ async function copyPhotoAssetToUploadCache(sourceUri: string, fileId: string, na
 async function discardUploadCacheCopy(copyUri: string, sourceUri: string): Promise<void> {
   if (copyUri === sourceUri) return;
   await FileSystem.deleteAsync(copyUri, { idempotent: true }).catch(() => {});
+}
+
+async function cacheRawUploadedPreview(
+  fileId: string,
+  name: string,
+  mimeType: string | null | undefined,
+  sourceUri: string,
+  sizeBytes: number | null | undefined,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  try {
+    const cached = await cacheUploadedPreview(fileId, extensionForRaw(name), sourceUri, sizeBytes);
+    recordRuntimeTrace('preview.upload_source.seed', {
+      fileId,
+      outcome: cached ? 'cached' : 'skipped',
+      elapsedMs: Date.now() - startedAt,
+      sizeBytes: sizeBytes ?? null,
+    });
+    return cached;
+  } catch (err) {
+    recordRuntimeTrace('preview.upload_source.seed', {
+      fileId,
+      outcome: 'failed',
+      elapsedMs: Date.now() - startedAt,
+      errorName: err instanceof Error ? err.name : typeof err,
+      message: err instanceof Error ? err.message : String(err),
+      sizeBytes: sizeBytes ?? null,
+    });
+    return false;
+  }
+}
+
+function queueRawUploadedPreview(
+  fileId: string,
+  name: string,
+  mimeType: string | null | undefined,
+  sourceUri: string,
+  sizeBytes: number | null | undefined,
+): Promise<boolean> {
+  if (previewFileCategory(mimeType ?? undefined, name) !== 'raw') return Promise.resolve(false);
+  // Share the upload-side bounded queue with thumbnail work so a large RAW batch
+  // cannot start unbounded post-upload plaintext copies.
+  return thumbnailUploadQueue.run(() => cacheRawUploadedPreview(fileId, name, mimeType, sourceUri, sizeBytes));
 }
 
 /**
@@ -2427,6 +2472,8 @@ export default function FilesScreen() {
         });
         const finalLoc = trustLocation(uploaded.storage_pool_id);
         setUpload({ fileName: display, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
+        const copyUri = info.sourceUri;
+        const seedPreview = queueRawUploadedPreview(uploaded.id, info.name, info.mimeType, copyUri, uploaded.size_bytes);
         setFiles((prev) => upsertFileEntry(prev, uploaded));
         indexFile(uploaded.id, toSearchIndexEntry(uploaded, info.name, currentFolder.id));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -2439,8 +2486,8 @@ export default function FilesScreen() {
         // Post-crash the thumbnail jobs never ran: regenerate both variants
         // through the bounded queue, then clean up the plaintext upload copy
         // (only the screen-owned `upload-*` cache file — never the picker's own).
-        const copyUri = info.sourceUri;
         void Promise.allSettled([
+          seedPreview,
           thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes)),
           thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes, 'large')),
         ]).then(() => {
@@ -2675,6 +2722,7 @@ export default function FilesScreen() {
         });
         const finalLoc = trustLocation(uploaded.storage_pool_id);
         setUpload({ fileName: uploadFileName, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
+        const seedPreview = queueRawUploadedPreview(uploaded.id, uploadFileName, asset.mimeType, asset.uri, uploaded.size_bytes);
         setFiles((prev) => upsertFileEntry(prev, uploaded));
         // Add to the encrypted search index so the new file is searchable
         // across the whole vault from the very next keystroke.
@@ -2684,6 +2732,7 @@ export default function FilesScreen() {
         // queue, so a burst of manual uploads can't stack unbounded full-image
         // decodes (the bulk-crash class of task 1669).
         void Promise.allSettled([
+          seedPreview,
           thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes)),
           thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes, 'large')),
         ]);
@@ -2884,8 +2933,11 @@ export default function FilesScreen() {
         // Task 1593 — the pre-encryption copy in Library/Caches (upload-*) is
         // plaintext: delete it once the upload and both thumbnails are done.
         let uploadUri: string | null = null;
+        const preparationStartedAt = Date.now();
+        recordRuntimeTrace('upload.photo.prepare_start', { fileId, batchIndex: i + 1, batchTotal: total, sizeBytes: asset.fileSize ?? null });
         try {
           uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
+          recordRuntimeTrace('upload.photo.source_ready', { fileId, elapsedMs: Date.now() - preparationStartedAt });
           const uploaded = await encryptedUpload({
             fileId,
             uri: uploadUri,
@@ -2918,6 +2970,10 @@ export default function FilesScreen() {
               });
             },
           });
+          // Retain the completed RAW source before publishing its row. Opening it
+          // immediately must not download the same 50–100 MB we just uploaded.
+          const copyUri = uploadUri;
+          const seedPreview = queueRawUploadedPreview(uploaded.id, name, asset.mimeType, copyUri, uploaded.size_bytes);
           lastLoc = trustLocation(uploaded.storage_pool_id);
           setFiles((prev) => upsertFileEntry(prev, uploaded));
           indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
@@ -2925,9 +2981,9 @@ export default function FilesScreen() {
           // Task 1685 fix 4 — bounded: per-variant jobs in the shared 2-slot queue
           // (≤2 concurrent full-image decodes process-wide; queued jobs are just
           // closures, so a 64-asset batch can no longer stack 128 decodes).
-          const copyUri = uploadUri;
           uploadUri = null;
           void Promise.allSettled([
+            seedPreview,
             thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes)),
             thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large')),
           ]).then(() => discardUploadCacheCopy(copyUri, asset.uri));

@@ -71,6 +71,7 @@ mock.module('./decrypt-to-file', () => ({
 }));
 mock.module('./api', () => ({
   ApiError: class extends Error {},
+  friendlyError: (err: unknown) => err instanceof Error ? err.message : String(err),
   getApiUrl: () => 'https://api.test',
   getDownloadUrl: (id) => `https://api.test/api/v1/files/${id}/download`,
   getToken: async () => 'tok',

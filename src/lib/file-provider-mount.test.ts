@@ -23,11 +23,28 @@ mock.module('react-native', () => ({
 }));
 
 const nativeCalls: Array<{ fn: string; args: unknown[] }> = [];
+let mirrorSessionOk = true;
+let mirrorSessionShouldThrow = false;
 let onSyncFileProviderCache: ((entries: unknown[], prune: boolean, pruneParents: unknown) => void) | null = null;
 
 mock.module('../../modules/beebeeb-crypto', () => ({
-  mirrorSessionToAppGroup: async () => {},
-  mountFileProviderAccess: async () => ({ registered: true, cacheDatabaseReady: true }),
+  mirrorSessionToAppGroup: async (token: string | null, baseUrl: string | null) => {
+    nativeCalls.push({ fn: 'mirrorSessionToAppGroup', args: [token, baseUrl] });
+    if (mirrorSessionShouldThrow) throw new Error('keychain write failed');
+    return mirrorSessionOk;
+  },
+  mountFileProviderAccess: async () => {
+    nativeCalls.push({ fn: 'mountFileProviderAccess', args: [] });
+    return { registered: true, cacheDatabaseReady: true };
+  },
+  registerFileProviderDomain: async () => {
+    nativeCalls.push({ fn: 'registerFileProviderDomain', args: [] });
+    return { registered: true, cacheDatabaseReady: true };
+  },
+  resetFileProviderDomain: async () => {
+    nativeCalls.push({ fn: 'resetFileProviderDomain', args: [] });
+    return { registered: true, cacheDatabaseReady: true };
+  },
   removeFileProviderAccess: async () => ({ registered: false }),
   removeFileProviderEntries: async () => 0,
   syncFileProviderCache: async (entries: unknown[], prune: boolean, pruneParents: unknown) => {
@@ -63,7 +80,7 @@ mock.module('./lock-state', () => ({
   wasRecentlyUnlocked: () => true,
 }));
 
-const { populateFileProviderCache, syncDecryptedEntriesToFileProvider } = await import('./file-provider-mount');
+const { mountTrustedFileProvider, registerTrustedFileProviderDomain, resetTrustedFileProviderDomain, populateFileProviderCache, syncDecryptedEntriesToFileProvider } = await import('./file-provider-mount');
 const { plaintextGate } = await import('./plaintext-gate');
 const decryptMetadata = async () => 'unused';
 
@@ -72,9 +89,43 @@ afterEach(() => {
   // next test (mirrors plaintext-gate's own "after a purge... until open()").
   if (!plaintextGate.isOpen()) plaintextGate.open();
   nativeCalls.length = 0;
+  mirrorSessionOk = true;
+  mirrorSessionShouldThrow = false;
   listAllFilesCalls.length = 0;
   listAllFilesPlan = {};
   onSyncFileProviderCache = null;
+});
+
+
+describe('File Provider auth mirror gate', () => {
+  test('mount mirrors shared credentials before native domain add', async () => {
+    await mountTrustedFileProvider({ vaultUnlocked: true });
+    expect(nativeCalls.map((c) => c.fn)).toEqual(['mirrorSessionToAppGroup', 'mountFileProviderAccess']);
+  });
+
+  test('mount refuses to add the domain when shared keychain mirroring returns false', async () => {
+    mirrorSessionOk = false;
+    await expect(mountTrustedFileProvider({ vaultUnlocked: true })).rejects.toThrow(/could not save.*Files/i);
+    expect(nativeCalls.map((c) => c.fn)).toEqual(['mirrorSessionToAppGroup']);
+  });
+
+  test('mount refuses to add the domain when shared keychain mirroring throws', async () => {
+    mirrorSessionShouldThrow = true;
+    await expect(mountTrustedFileProvider({ vaultUnlocked: true })).rejects.toThrow(/could not save.*Files/i);
+    expect(nativeCalls.map((c) => c.fn)).toEqual(['mirrorSessionToAppGroup']);
+  });
+
+  test('auto-register refuses native registration when shared keychain mirroring fails', async () => {
+    mirrorSessionOk = false;
+    await expect(registerTrustedFileProviderDomain()).rejects.toThrow(/could not save.*Files/i);
+    expect(nativeCalls.map((c) => c.fn)).toEqual(['mirrorSessionToAppGroup']);
+  });
+
+  test('repair reset refuses native reset when shared keychain mirroring fails', async () => {
+    mirrorSessionOk = false;
+    await expect(resetTrustedFileProviderDomain()).rejects.toThrow(/could not save.*Files/i);
+    expect(nativeCalls.map((c) => c.fn)).toEqual(['mirrorSessionToAppGroup']);
+  });
 });
 
 describe('syncDecryptedEntriesToFileProvider (task 1593 round 4)', () => {

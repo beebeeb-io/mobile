@@ -1,6 +1,7 @@
 import AVFoundation
 import ExpoModulesCore
 import Foundation
+import ImageIO
 import FileProvider
 import NaturalLanguage
 import PDFKit
@@ -48,6 +49,11 @@ private let fileProviderEnumeratorStatePrefix = "io.beebeeb.fileProvider.enumera
 // closure body never blocks main, consistent with PhotoBackupManager.
 private let beebeebCryptoPHKitCallbackQueue = DispatchQueue(
   label: "io.beebeeb.crypto.phkit-callback",
+  qos: .utility
+)
+
+private let beebeebDngThumbnailQueue = DispatchQueue(
+  label: "io.beebeeb.crypto.dng-thumbnail",
   qos: .utility
 )
 
@@ -1397,6 +1403,60 @@ private func vacuumRetryingOnceOnBusy(_ db: OpaquePointer?) -> Bool {
   return sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK
 }
 
+private func fileProviderCacheSizeBytes(_ raw: Any?) -> Int64 {
+  func nonNegative(_ value: Int64) -> Int64 { value < 0 ? 0 : value }
+  if let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() {
+    return 0
+  }
+
+  switch raw {
+  case is Bool:
+    return 0
+  case let value as Int:
+    return nonNegative(Int64(value))
+  case let value as Int64:
+    return nonNegative(value)
+  case let value as Double:
+    return fileProviderCacheFloatingSizeBytes(value)
+  case let value as Float:
+    return fileProviderCacheFloatingSizeBytes(Double(value))
+  case let value as NSNumber:
+    return fileProviderCacheFloatingSizeBytes(value.doubleValue)
+  default:
+    return 0
+  }
+}
+
+private func fileProviderCacheFloatingSizeBytes(_ value: Double) -> Int64 {
+  guard value.isFinite,
+        value >= 0,
+        value < Double(Int64.max),
+        value.rounded(.towardZero) == value else { return 0 }
+  return Int64(value)
+}
+
+/// A Files mount can race the extension's live SQLite connection. Give a
+/// failed reset one bounded retry while retaining the existing fail-closed
+/// domain-add gate. This protects against transient lock contention; it does
+/// not recover a non-force registration blocked by a stale purge marker.
+private func retryFileProviderCacheReset(
+  sleepMicros: useconds_t = 250_000,
+  reset: () -> Bool
+) -> Bool {
+  if reset() {
+    return true
+  }
+  RuntimeTrace.event("storage.purge.file_provider_cache_reset_retry", [:])
+  if sleepMicros > 0 {
+    usleep(sleepMicros)
+  }
+  let ok = reset()
+  if !ok {
+    RuntimeTrace.event("storage.purge.file_provider_cache_reset_failed", [:])
+  }
+  return ok
+}
+
 /// Task 1593 f3 (independent security review of eff81b7, item 2) — used to
 /// return a bare `Int` (files-removed count) that every caller either
 /// discarded (`removeMountedFileProviderDomain`'s
@@ -1441,7 +1501,9 @@ private func clearFileProviderCacheState(defaults: UserDefaults?) -> (removed: I
     // `ensureFileProviderCacheDatabase()` creates it fresh and empty.
     return (removed, true)
   }
-  let cacheResetOk = resetFileProviderCacheDatabase(at: dbUrl)
+  let cacheResetOk = retryFileProviderCacheReset {
+    resetFileProviderCacheDatabase(at: dbUrl)
+  }
   if cacheResetOk { removed += 1 }
   return (removed, cacheResetOk)
 }
@@ -2912,7 +2974,12 @@ public class BeebeebCryptoModule: Module {
           // never "still matches the previous owner record".
           BeebeebKeychainCore.deleteString(key: BeebeebKeychainCore.sessionUserIdKey)
         }
-        try? BeebeebKeychainCore.storeString(token, key: sharedSessionTokenKey)
+        do {
+          try BeebeebKeychainCore.storeString(token, key: sharedSessionTokenKey)
+        } catch {
+          RuntimeTrace.event("fileprovider.auth_mirror.failed", ["key": "sessionToken"])
+          return false
+        }
         try? KeychainManager.storeString(token, key: "io.beebeeb.backupToken")
       } else {
         BeebeebKeychainCore.deleteString(key: sharedSessionTokenKey)
@@ -2946,7 +3013,12 @@ public class BeebeebCryptoModule: Module {
         NativeBackupEngine.shared.clearOwnerUnconfirmedStopReasonOnNewAuthentication()
       }
       if let baseUrl, !baseUrl.isEmpty {
-        try? BeebeebKeychainCore.storeString(baseUrl, key: sharedAPIBaseURLKey)
+        do {
+          try BeebeebKeychainCore.storeString(baseUrl, key: sharedAPIBaseURLKey)
+        } catch {
+          RuntimeTrace.event("fileprovider.auth_mirror.failed", ["key": "apiBaseUrl"])
+          return false
+        }
         try? KeychainManager.storeString(baseUrl, key: "io.beebeeb.serverURL")
       } else {
         BeebeebKeychainCore.deleteString(key: sharedAPIBaseURLKey)
@@ -3406,7 +3478,7 @@ public class BeebeebCryptoModule: Module {
         if let mime = entry["mime_type"] as? String {
           sqlite3_bind_text(stmt, 5, (mime as NSString).utf8String, -1, transient)
         } else { sqlite3_bind_null(stmt, 5) }
-        sqlite3_bind_int64(stmt, 6, Int64(entry["size_bytes"] as? Int ?? 0))
+        sqlite3_bind_int64(stmt, 6, fileProviderCacheSizeBytes(entry["size_bytes"]))
         sqlite3_bind_int(stmt, 7, (entry["is_folder"] as? Bool ?? false) ? 1 : 0)
         if let createdAt = entry["created_at"] as? String {
           sqlite3_bind_text(stmt, 8, (createdAt as NSString).utf8String, -1, transient)
@@ -4209,8 +4281,9 @@ public class BeebeebCryptoModule: Module {
     // generateVideoThumbnail: Uses AVAssetImageGenerator to extract a frame
     // from a local video file (MP4/MOV) and writes a WebP thumbnail to disk.
     //
-    // generateDngThumbnail: Loads a DNG via UIImage (which uses CoreImage
-    // under the hood to decode the embedded preview) and resizes to WebP.
+    // generateDngThumbnail: Asks ImageIO for a size-bounded DNG preview and
+    // resizes that preview to WebP. Keep this off Expo's default native queue:
+    // RAW preview extraction can be slow enough to delay following uploads.
 
     AsyncFunction("generateVideoThumbnail") { (localUri: String, maxSize: Int) throws -> String in
       let url = fileURL(fromURI: localUri)
@@ -4245,15 +4318,51 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("generateDngThumbnail") { (localUri: String, maxSize: Int) throws -> String in
       let url = fileURL(fromURI: localUri)
 
-      guard let image = UIImage(contentsOfFile: url.path) else {
+      let sourceOptions: CFDictionary = [
+        kCGImageSourceShouldCache: false,
+        kCGImageSourceShouldCacheImmediately: false
+      ] as CFDictionary
+
+      guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
         throw NSError(
           domain: "BeebeebThumbnail",
           code: 2,
-          userInfo: [NSLocalizedDescriptionKey: "Failed to load DNG image"]
+          userInfo: [NSLocalizedDescriptionKey: "Failed to open DNG image source"]
         )
       }
 
-      guard let webpData = ThumbnailGenerator.generate(from: image, config: .medium) else {
+      let safeMaxSize = max(256, min(maxSize, 1600))
+      let thumbnailOptions: CFDictionary = [
+        kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceShouldCache: false,
+        kCGImageSourceShouldCacheImmediately: true,
+        kCGImageSourceThumbnailMaxPixelSize: safeMaxSize
+      ] as CFDictionary
+
+      guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
+        throw NSError(
+          domain: "BeebeebThumbnail",
+          code: 2,
+          userInfo: [NSLocalizedDescriptionKey: "Failed to extract DNG preview"]
+        )
+      }
+
+      let image = UIImage(cgImage: cgImage)
+      let config: ThumbnailGenerator.Config
+      if maxSize >= 1200 {
+        // JS requests the large RAW thumbnail at 1600 px. Native's existing
+        // large ladder currently encodes at up to 1280 px/192 KB, so ImageIO
+        // may read a 1600 px preview while WebP output still follows that
+        // established native large policy.
+        config = .large
+      } else if maxSize <= 384 {
+        config = .small
+      } else {
+        config = .medium
+      }
+
+      guard let webpData = ThumbnailGenerator.generate(from: image, config: config) else {
         throw NSError(
           domain: "BeebeebThumbnail",
           code: 3,
@@ -4264,7 +4373,7 @@ public class BeebeebCryptoModule: Module {
       let outputPath = NSTemporaryDirectory() + "dng-thumb-\(UUID().uuidString).webp"
       try webpData.write(to: URL(fileURLWithPath: outputPath))
       return outputPath
-    }
+    }.runOnQueue(beebeebDngThumbnailQueue)
 
     // ── Native thumbnail pipeline ────────────────────────────────────────
     //

@@ -46,7 +46,7 @@ import {
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { recordRuntimeTrace } from './runtime-trace';
 import { createInFlightShare } from './inflight-share';
-import { PLAINTEXT_DRAIN_TIMEOUT_MS, plaintextGate, withPlaintextLease } from './plaintext-gate';
+import { PLAINTEXT_DRAIN_TIMEOUT_MS, plaintextGate, withPlaintextLease, gatedPlaintextWrite } from './plaintext-gate';
 import { offlineManager, offlineFilePath } from './offline-manager';
 import { PARTIAL_DECRYPT_MESSAGE } from './preview-load-error';
 import NetInfo from '@react-native-community/netinfo';
@@ -182,30 +182,25 @@ async function prunePreviewCache(keepPath?: string): Promise<void> {
     );
 
     const now = Date.now();
-    let totalBytes = 0;
-    let kept = 0;
     const sorted = entries
       .filter((entry): entry is { uri: string; sizeBytes: number; modifiedAt: number } => entry != null)
       .sort((a, b) => b.modifiedAt - a.modifiedAt);
-
-    await Promise.all(
-      sorted.map(async (entry) => {
-        if (entry.uri === keepPath) {
-          totalBytes += entry.sizeBytes;
-          kept += 1;
-          return;
-        }
-
-        const expired = now - entry.modifiedAt >= PREVIEW_CACHE_TTL_MS;
+    // Reserve protected copies first, regardless of stat timestamp ties. Never
+    // evict a viewer's leased source or the file the current writer just made.
+    const protectedEntry = (uri: string) => uri === keepPath || (previewLeases.get(uri) ?? 0) > 0;
+    let totalBytes = sorted.filter(e => protectedEntry(e.uri)).reduce((sum, e) => sum + e.sizeBytes, 0);
+    let kept = sorted.filter(e => protectedEntry(e.uri)).length;
+    for (const entry of sorted) {
+      if (protectedEntry(entry.uri)) continue;
+      const expired = now - entry.modifiedAt >= PREVIEW_CACHE_TTL_MS;
+      if (expired || kept >= MAX_PREVIEW_CACHE_ITEMS || totalBytes + entry.sizeBytes > MAX_PREVIEW_CACHE_BYTES) {
+        previewLeases.delete(entry.uri);
+        await FileSystem.deleteAsync(entry.uri, { idempotent: true }).catch(() => {});
+      } else {
         totalBytes += entry.sizeBytes;
         kept += 1;
-
-        if (expired || kept > MAX_PREVIEW_CACHE_ITEMS || totalBytes > MAX_PREVIEW_CACHE_BYTES) {
-          previewLeases.delete(entry.uri);
-          await FileSystem.deleteAsync(entry.uri, { idempotent: true }).catch(() => {});
-        }
-      }),
-    );
+      }
+    }
   } catch {
     // Best-effort cleanup only.
   }
@@ -316,6 +311,39 @@ export async function decryptToTempFile(
       sharedListeners.delete(outputPath);
     }
   }
+}
+
+/** Retain a completed upload in the existing bounded, sign-out-purged preview cache.
+ * Share the output-path writer with downloads so no caller observes a partial copy.
+ * Call only after upload completion; never replace a copy a viewer is using.
+ */
+export async function cacheUploadedPreview(
+  fileId: string,
+  extension: string,
+  sourceUri: string,
+  plaintextSize: number | null | undefined,
+): Promise<boolean> {
+  if (!plaintextSize || plaintextSize > MAX_PREVIEW_CACHE_BYTES) return false;
+  const outputPath = previewCachePath(fileId, extension);
+  if ((previewLeases.get(outputPath) ?? 0) > 0) return false;
+  const { joined } = await previewDecrypts.run(outputPath, async (signal) => {
+    throwIfAborted(signal);
+    const info = await FileSystem.getInfoAsync(sourceUri);
+    if (!info.exists || info.size !== plaintextSize) throw new Error(PARTIAL_DECRYPT_MESSAGE);
+    await ensureCacheDir();
+    await gatedPlaintextWrite('uploaded preview copy', outputPath, FileSystem, () =>
+      FileSystem.copyAsync({ from: sourceUri, to: outputPath }),
+    );
+    throwIfAborted(signal);
+    await prunePreviewCache(outputPath);
+    recordRuntimeTrace('preview.upload_source.cached', { fileId, sizeBytes: plaintextSize });
+    return { path: outputPath, cacheHit: true };
+  }).catch((error) => {
+    if (error instanceof Error && error.message === PARTIAL_DECRYPT_MESSAGE) return { joined: false, value: null };
+    throw error;
+  });
+  const cached = await FileSystem.getInfoAsync(outputPath);
+  return !joined && cached.exists && cached.size === plaintextSize;
 }
 
 interface SharedListener {

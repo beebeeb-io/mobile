@@ -11,6 +11,27 @@ workspace CLAUDE.md's convention (`repos/mobile DEVIATIONS.md`, as instantiated 
 this repo for the first time); the earlier phase 3/4 references remain undocumented
 and are out of scope for this task.
 
+## Task 1723 CI-only native Swift harness routing
+
+**Design / CI contract:** Ubuntu `unit-tests` owns portable source guards and
+the count-shaped `isolated: N pass, 0 fail across F files` gate. The macOS
+`swift-gate` job owns native Swift compilation/runtime harnesses because Linux
+CI has no Swift/iOS frameworks.
+
+**What shipped:** the File Provider source guards still run in the Ubuntu unit
+suite. The four native Swift runtime harnesses embedded in
+`file-provider-purge-hygiene.test.ts` and
+`file-provider-enumerator-initial-refresh.test.ts` are explicitly macOS-only in
+those files and are required in the existing macOS `swift-gate` job with
+`BB_REQUIRE_NATIVE_SWIFT_HARNESSES=1`.
+
+**Why:** PR 163 introduced hostless Swift harnesses into the Bun unit suite.
+They were valid coverage, but running them unconditionally in Ubuntu made the
+portable unit job red for host/toolchain reasons rather than product reasons.
+This keeps source guards on every platform and moves the runtime Swift proof to
+the job that can actually compile and run it, without silently dropping the
+coverage.
+
 ## Task 1563 (mobile) — ⋯ menu replaces the Edit/Preview segmented control
 
 **Design:** `design/editor-1563.html`, screen 05 "IPHONE" — shows a segmented
@@ -712,3 +733,17 @@ escape are untouched.
 **Why:** a Guus ruling supersedes the (absent) artefact (precedent: task
 1357); recorded here because the shipped language intentionally diverges
 from the screen's previous heading.
+
+## 1721 — upload preparation wording (2026-10-03)
+Guus reports RAW uploads lingering before transfer. Stage 1 includes local copying,
+metadata encryption and session initialization; its label is now "Preparing on
+your device…". Live encryption throughput remains in stage 2. No design geometry changed.
+
+## 1723 — release preview regression repair (2026-10-03)
+
+The Android streaming merge regressed iOS preview behaviors already covered in
+the pre-PR `6ec146c` source: content-area swipe-to-close, locked-pager tap
+affordances, the partial-file error card, PhotoPage export/resource bounds and
+RAW EXIF keyed by file id. This repair restores those local PreviewScreen
+behaviors while preserving the merged streaming UI's buffered-video badge and
+single-file video streaming path. No design geometry changes.

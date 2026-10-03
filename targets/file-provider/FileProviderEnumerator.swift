@@ -1,5 +1,22 @@
 import FileProvider
 
+protocol FileProviderCacheReading {
+  func children(parent: String?) -> [CachedItem]
+  func syncState(key: String) -> String?
+}
+
+extension CacheManager: FileProviderCacheReading {}
+
+protocol FileProviderContainerRefreshing {
+  func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome
+}
+
+struct SyncEngineContainerRefresher: FileProviderContainerRefreshing {
+  func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome {
+    await SyncEngine.refreshContainer(containerId: containerId)
+  }
+}
+
 /// Enumerates the children of a container or the working-set delta.
 ///
 /// Strategy:
@@ -12,14 +29,30 @@ import FileProvider
 ///    only what's new since the caller's anchor.
 final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
   private let containerId: String
+  private let cache: FileProviderCacheReading
+  private let refresher: FileProviderContainerRefreshing
   private var refreshTask: Task<Void, Never>?
 
-  init(containerIdentifier: NSFileProviderItemIdentifier) {
+  convenience init(containerIdentifier: NSFileProviderItemIdentifier) {
+    self.init(
+      containerIdentifier: containerIdentifier,
+      cache: CacheManager.shared,
+      refresher: SyncEngineContainerRefresher()
+    )
+  }
+
+  init(
+    containerIdentifier: NSFileProviderItemIdentifier,
+    cache: FileProviderCacheReading,
+    refresher: FileProviderContainerRefreshing
+  ) {
     if containerIdentifier == .rootContainer || containerIdentifier == .workingSet {
       self.containerId = BeebeebConstants.rootContainerIdentifier
     } else {
       self.containerId = containerIdentifier.rawValue
     }
+    self.cache = cache
+    self.refresher = refresher
   }
 
   func invalidate() {
@@ -31,7 +64,26 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
 
   func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
     let parent = (containerId == BeebeebConstants.rootContainerIdentifier) ? nil : containerId
-    let rows = CacheManager.shared.children(parent: parent)
+    let rows = cache.children(parent: parent)
+    if rows.isEmpty {
+      refreshTask?.cancel()
+      refreshTask = Task { [containerId, cache, refresher] in
+        let outcome = await refresher.refreshContainer(containerId: containerId)
+        guard !Task.isCancelled else { return }
+        switch outcome {
+        case .success:
+          let refreshedRows = cache.children(parent: parent)
+          guard !Task.isCancelled else { return }
+          let refreshedItems = refreshedRows.map { FileProviderItem(cached: $0) as NSFileProviderItem }
+          observer.didEnumerate(refreshedItems)
+          observer.finishEnumerating(upTo: nil)
+        case .notAuthenticated, .serverUnreachable:
+          observer.finishEnumeratingWithError(outcome.fileProviderError)
+        }
+      }
+      return
+    }
+
     let items = rows.map { FileProviderItem(cached: $0) as NSFileProviderItem }
     observer.didEnumerate(items)
     observer.finishEnumerating(upTo: nil)
@@ -41,8 +93,8 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
     // cached listing, and any persistent failure (auth, offline) surfaces
     // through the main app.
     refreshTask?.cancel()
-    refreshTask = Task.detached { [containerId] in
-      await SyncEngine.refreshContainer(containerId: containerId)
+    refreshTask = Task.detached { [containerId, refresher] in
+      _ = await refresher.refreshContainer(containerId: containerId)
     }
   }
 
@@ -53,7 +105,7 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
   }
 
   func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
-    let raw = CacheManager.shared.syncState(key: "container.\(containerId).anchor") ?? "0"
+    let raw = cache.syncState(key: "container.\(containerId).anchor") ?? "0"
     completionHandler(NSFileProviderSyncAnchor(Data(raw.utf8)))
   }
 }

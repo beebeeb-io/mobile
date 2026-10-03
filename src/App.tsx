@@ -45,7 +45,7 @@ import { hydrateShareKeys, setPendingShareKey } from './lib/share-key-store';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import * as BeebeebCrypto from '../modules/beebeeb-crypto';
-import { populateFileProviderCache } from './lib/file-provider-mount';
+import { populateFileProviderCache, registerTrustedFileProviderDomain } from './lib/file-provider-mount';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
 import { purgeAllPlaintextCaches } from './lib/account-cleanup';
@@ -816,8 +816,7 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
     try {
       const token = await getToken();
       if (!token) return;
-      await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
-      const result = await BeebeebCrypto.registerFileProviderDomain();
+      const result = await registerTrustedFileProviderDomain();
       // "registered" is not "presented in Files". userVisibleRootError != null
       // means iOS could not surface the location (the user may have removed it),
       // so don't treat it as mounted.

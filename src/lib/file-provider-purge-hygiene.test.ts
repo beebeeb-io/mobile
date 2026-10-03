@@ -15,8 +15,10 @@
  * calls per mobile/CLAUDE.md "Tests".
  */
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 const REPO_ROOT = join(import.meta.dir, '..', '..');
 const REGISTRY_SWIFT_PATH = join(
@@ -34,6 +36,25 @@ const FILE_PROVIDER_EXTENSION_SWIFT_PATH = join(
 const CONSTANTS_SWIFT_PATH = join(
   REPO_ROOT, 'targets', 'file-provider', 'Constants.swift',
 );
+const REQUIRE_NATIVE_SWIFT_HARNESSES = process.env.BB_REQUIRE_NATIVE_SWIFT_HARNESSES === '1';
+
+function nativeSwiftHarnessTest(name: string, fn: () => void, timeout?: number): void {
+  if (process.platform === 'darwin') {
+    test(name, fn, timeout);
+    return;
+  }
+  if (REQUIRE_NATIVE_SWIFT_HARNESSES) {
+    test(name, () => {
+      throw new Error('native Swift harnesses require macOS; run this in CI swift-gate');
+    }, timeout);
+    return;
+  }
+  test.skip(`${name} [macOS Swift harness; required in CI swift-gate]`, fn, timeout);
+}
+
+function runSwiftc(args: string[]): void {
+  execFileSync('xcrun', ['swiftc', ...args], { stdio: 'pipe' });
+}
 
 function functionBody(source: string, signature: string): string {
   const start = source.indexOf(signature);
@@ -515,7 +536,7 @@ describe('C1 (round 7, P1): the File Provider extension refuses a write whose pu
   });
 
   test('SyncEngine.refreshContainer captures the epoch BEFORE the network fetch, not after', () => {
-    const body = bracedBody(syncEngineSwift, 'static func refreshContainer(containerId: String) async {');
+    const body = bracedBody(syncEngineSwift, 'static func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome {');
     const epochIdx = body.indexOf('CacheManager.shared.currentPurgeEpoch()');
     const fetchIdx = body.indexOf('ApiClient.shared.listFiles(parentId: parentId)');
     expect(epochIdx).toBeGreaterThan(-1);
@@ -524,9 +545,9 @@ describe('C1 (round 7, P1): the File Provider extension refuses a write whose pu
   });
 
   test('SyncEngine.refreshContainer passes that captured epoch to replaceChildren and discards on refusal', () => {
-    const body = bracedBody(syncEngineSwift, 'static func refreshContainer(containerId: String) async {');
+    const body = bracedBody(syncEngineSwift, 'static func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome {');
     expect(body).toMatch(/replaceChildren\(\s*parent: parentId, with: rowsToUpsert, expectedEpoch: epochAtStart\s*\)/);
-    expect(body).toMatch(/guard committed else \{[\s\S]*?return\s*\}/);
+    expect(body).toMatch(/guard committed else \{[\s\S]*?return \.serverUnreachable\s*\}/);
     // A discarded write must not update sync_state as if it had landed.
     const guardIdx = body.indexOf('guard committed else');
     const setSyncStateIdx = body.indexOf('setSyncState(');
@@ -2271,9 +2292,9 @@ describe('f3 (item 2): clearFileProviderCacheState surfaces whether the database
     expect(branch).toMatch(/return \(removed, false\)/);
   });
 
-  test('a database that exists reports cacheResetOk as EXACTLY resetFileProviderCacheDatabase\'s own return value — never hardcoded true', () => {
+  test('a database that exists reports cacheResetOk as the retried reset result — never hardcoded true', () => {
     const body = bracedBody(moduleSwift, SIGNATURE);
-    expect(body).toMatch(/let cacheResetOk = resetFileProviderCacheDatabase\(at: dbUrl\)/);
+    expect(body).toMatch(/let cacheResetOk = retryFileProviderCacheReset \{\s*\n\s*resetFileProviderCacheDatabase\(at: dbUrl\)\s*\n\s*\}/);
     expect(body).toMatch(/if cacheResetOk \{ removed \+= 1 \}/);
     expect(body).toMatch(/return \(removed, cacheResetOk\)/);
   });
@@ -3001,6 +3022,224 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
   });
 });
 
+describe('task 1722: forced Files mount retries transient cache-reset failure before refusing the domain add', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('clearFileProviderCacheState gates registration on a retried reset, not a single busy result', () => {
+    const body = bracedBody(
+      moduleSwift,
+      'private func clearFileProviderCacheState(defaults: UserDefaults?) -> (removed: Int, cacheResetOk: Bool) {',
+    );
+    expect(body).toMatch(/retryFileProviderCacheReset \{\s*\n\s*resetFileProviderCacheDatabase\(at: dbUrl\)\s*\n\s*\}/);
+    expect(body).not.toMatch(/let cacheResetOk = resetFileProviderCacheDatabase\(at: dbUrl\)/);
+  });
+
+  nativeSwiftHarnessTest('retryFileProviderCacheReset is the actual Swift helper and gives a transient live SQLite lock one second chance', () => {
+    const helper = bracedBody(moduleSwift, 'private func retryFileProviderCacheReset(');
+    expect(helper).toMatch(/if reset\(\) \{\s*return true\s*\}/);
+    expect(helper).toMatch(/usleep\(sleepMicros\)/);
+    expect(helper).toMatch(/let ok = reset\(\)/);
+    expect(helper).toMatch(/storage\.purge\.file_provider_cache_reset_retry/);
+    expect(helper).toMatch(/storage\.purge\.file_provider_cache_reset_failed/);
+
+    const dir = mkdtempSync(join(tmpdir(), 'bb-reset-retry-'));
+    const source = join(dir, 'RetryHarness.swift');
+    writeFileSync(source, `
+import Foundation
+
+enum RuntimeTrace {
+  static var events: [String] = []
+  static func event(_ name: String, _ payload: [String: Any]) {
+    events.append(name)
+  }
+}
+
+${helper}
+
+var attempts = 0
+let recovered = retryFileProviderCacheReset(sleepMicros: 0) {
+  attempts += 1
+  return attempts == 2
+}
+if !recovered || attempts != 2 {
+  fatalError("expected false-then-true recovery, got recovered=\\(recovered) attempts=\\(attempts)")
+}
+if RuntimeTrace.events != ["storage.purge.file_provider_cache_reset_retry"] {
+  fatalError("unexpected recovery events: \\(RuntimeTrace.events)")
+}
+
+attempts = 0
+RuntimeTrace.events = []
+let failed = retryFileProviderCacheReset(sleepMicros: 0) {
+  attempts += 1
+  return false
+}
+if failed || attempts != 2 {
+  fatalError("expected two failed attempts, got failed=\\(failed) attempts=\\(attempts)")
+}
+if RuntimeTrace.events != [
+  "storage.purge.file_provider_cache_reset_retry",
+  "storage.purge.file_provider_cache_reset_failed",
+] {
+  fatalError("unexpected failure events: \\(RuntimeTrace.events)")
+}
+`);
+    runSwiftc([source, '-o', join(dir, 'RetryHarness')]);
+    execFileSync(join(dir, 'RetryHarness'), [], { stdio: 'pipe' });
+  });
+
+  nativeSwiftHarnessTest('actual SQLite reset helper recovers from a transient live DB lock and still fails closed on a persistent lock', () => {
+    const vacuumHelper = bracedBody(moduleSwift, 'private func vacuumRetryingOnceOnBusy(');
+    const resetHelper = bracedBody(moduleSwift, 'private func resetFileProviderCacheDatabase(at url: URL) -> Bool {');
+    const retryHelper = bracedBody(moduleSwift, 'private func retryFileProviderCacheReset(');
+
+    const dir = mkdtempSync(join(tmpdir(), 'bb-reset-sqlite-'));
+    const source = join(dir, 'SQLiteResetHarness.swift');
+    writeFileSync(source, `
+import Foundation
+import SQLite3
+
+enum RuntimeTrace {
+  static var events: [String] = []
+  static func event(_ name: String, _ payload: [String: Any]) {
+    events.append(name)
+  }
+}
+
+${vacuumHelper}
+
+${resetHelper}
+
+${retryHelper}
+
+func require(_ condition: @autoclosure () -> Bool, _ message: String) {
+  if !condition() { fatalError(message) }
+}
+
+func execSQL(_ db: OpaquePointer?, _ sql: String) {
+  var error: UnsafeMutablePointer<Int8>?
+  let rc = sqlite3_exec(db, sql, nil, nil, &error)
+  if rc != SQLITE_OK {
+    let message = error.map { String(cString: $0) } ?? "unknown"
+    if let error { sqlite3_free(error) }
+    fatalError("sqlite rc=\\(rc): \\(message); sql=\\(sql)")
+  }
+}
+
+func openDb(_ url: URL) -> OpaquePointer? {
+  var db: OpaquePointer?
+  let rc = sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil)
+  require(rc == SQLITE_OK && db != nil, "open db failed rc=\\(rc)")
+  return db
+}
+
+func scalarInt(_ db: OpaquePointer?, _ sql: String) -> Int32 {
+  var stmt: OpaquePointer?
+  require(sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, "prepare failed: \\(sql)")
+  defer { sqlite3_finalize(stmt) }
+  require(sqlite3_step(stmt) == SQLITE_ROW, "no row: \\(sql)")
+  return sqlite3_column_int(stmt, 0)
+}
+
+func makeRuntimeSchemaDb(_ name: String) -> URL {
+  let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("bb-reset-sqlite-\\(UUID().uuidString)", isDirectory: true)
+  try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  let url = dir.appendingPathComponent(name)
+  let db = openDb(url)
+  defer { sqlite3_close(db) }
+  execSQL(db, """
+  CREATE TABLE file_cache (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT,
+    name_encrypted TEXT,
+    name_decrypted TEXT,
+    mime_type TEXT,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    is_folder INTEGER NOT NULL DEFAULT 0,
+    is_pinned INTEGER NOT NULL DEFAULT 0,
+    has_thumbnail INTEGER NOT NULL DEFAULT 0,
+    thumbnail_data BLOB,
+    thumbnail_nonce BLOB,
+    created_at TEXT,
+    updated_at TEXT,
+    sync_anchor INTEGER NOT NULL DEFAULT 0,
+    is_materialized INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_file_cache_parent ON file_cache(parent_id);
+  CREATE INDEX idx_file_cache_anchor ON file_cache(sync_anchor);
+  CREATE TABLE sync_state (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
+  CREATE TABLE upload_queue (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT,
+    local_path TEXT,
+    file_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL
+  );
+  PRAGMA user_version = 1;
+  INSERT INTO file_cache (id, parent_id, name_encrypted, size_bytes, is_folder) VALUES ('root-child', NULL, 'encrypted', 7, 0);
+  INSERT INTO sync_state (key, value) VALUES ('anchor', '1');
+  INSERT INTO upload_queue (id, parent_id, local_path, file_id, status, created_at) VALUES ('upload', NULL, '/tmp/local', NULL, 'pending', 'now');
+  """)
+  require(scalarInt(db, "SELECT count(*) FROM file_cache") == 1, "seed file_cache failed")
+  require(scalarInt(db, "PRAGMA user_version") == 1, "seed user_version failed")
+  return url
+}
+
+let transientUrl = makeRuntimeSchemaDb("transient.sqlite")
+let transientLock = openDb(transientUrl)
+execSQL(transientLock, "BEGIN EXCLUSIVE")
+var transientAttempts = 0
+RuntimeTrace.events = []
+let transientRecovered = retryFileProviderCacheReset(sleepMicros: 0) {
+  transientAttempts += 1
+  let ok = resetFileProviderCacheDatabase(at: transientUrl)
+  if transientAttempts == 1 {
+    execSQL(transientLock, "COMMIT")
+    sqlite3_close(transientLock)
+  }
+  return ok
+}
+require(transientRecovered, "transient lock should recover on retry")
+require(transientAttempts == 2, "transient retry count was \\(transientAttempts)")
+require(RuntimeTrace.events == ["storage.purge.file_provider_cache_reset_retry"], "unexpected transient events: \\(RuntimeTrace.events)")
+let transientCheck = openDb(transientUrl)
+require(scalarInt(transientCheck, "SELECT count(*) FROM file_cache") == 0, "transient file_cache not reset")
+require(scalarInt(transientCheck, "SELECT count(*) FROM sync_state") == 0, "transient sync_state not reset")
+require(scalarInt(transientCheck, "SELECT count(*) FROM upload_queue") == 0, "transient upload_queue not reset")
+require(scalarInt(transientCheck, "PRAGMA user_version") == 2, "transient user_version not bumped")
+sqlite3_close(transientCheck)
+
+let persistentUrl = makeRuntimeSchemaDb("persistent.sqlite")
+let persistentLock = openDb(persistentUrl)
+execSQL(persistentLock, "BEGIN EXCLUSIVE")
+var persistentAttempts = 0
+RuntimeTrace.events = []
+let persistentRecovered = retryFileProviderCacheReset(sleepMicros: 0) {
+  persistentAttempts += 1
+  return resetFileProviderCacheDatabase(at: persistentUrl)
+}
+execSQL(persistentLock, "COMMIT")
+sqlite3_close(persistentLock)
+require(!persistentRecovered, "persistent lock must fail closed")
+require(persistentAttempts == 2, "persistent retry count was \\(persistentAttempts)")
+require(RuntimeTrace.events == [
+  "storage.purge.file_provider_cache_reset_retry",
+  "storage.purge.file_provider_cache_reset_failed",
+], "unexpected persistent events: \\(RuntimeTrace.events)")
+let persistentCheck = openDb(persistentUrl)
+require(scalarInt(persistentCheck, "SELECT count(*) FROM file_cache") == 1, "persistent file_cache should remain when reset is unproven")
+require(scalarInt(persistentCheck, "PRAGMA user_version") == 1, "persistent user_version should not bump on failed reset")
+sqlite3_close(persistentCheck)
+`);
+    runSwiftc([source, '-o', join(dir, 'SQLiteResetHarness'), '-lsqlite3']);
+    execFileSync(join(dir, 'SQLiteResetHarness'), [], { stdio: 'pipe' });
+  }, 20_000);
+});
+
 // Task 1593 f5 (reviewer follow-up 1) — "a registration's bump clears the
 // purge marker even when the add is refused (purge pending + no reset ->
 // cacheResetOk=false)." Pin the actual bug this round fixes: BEFORE this
@@ -3012,6 +3251,57 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
 // `cacheResetOk`. The marker exists to protect the domain-add decision that
 // was being refused; clearing it anyway defeated the whole point of f4's
 // wider marker-hold window.
+describe('task 1722: File Provider cache preserves JS-bridged file sizes', () => {
+  const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
+
+  test('syncFileProviderCache normalizes size_bytes from JS bridge numbers before binding SQLite', () => {
+    const body = bracedBody(moduleSwift, 'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in');
+    expect(body).not.toContain('Int64(entry["size_bytes"] as? Int ?? 0)');
+    expect(body).toContain('sqlite3_bind_int64(stmt, 6, fileProviderCacheSizeBytes(entry["size_bytes"]))');
+  });
+
+  nativeSwiftHarnessTest('fileProviderCacheSizeBytes accepts native integer and integral floating bridge numbers, but rejects unsafe values', () => {
+    const helper = bracedBody(moduleSwift, 'private func fileProviderCacheSizeBytes(');
+    expect(helper).toMatch(/case let value as Int:/);
+    expect(helper).toMatch(/case let value as Int64:/);
+    expect(helper).toMatch(/case let value as Double:/);
+    expect(helper).toMatch(/case let value as NSNumber:/);
+    expect(helper).not.toMatch(/case let value as String:/);
+
+    const floatingHelper = bracedBody(moduleSwift, 'private func fileProviderCacheFloatingSizeBytes(');
+    expect(floatingHelper).toContain('value < Double(Int64.max)');
+    expect(floatingHelper).toContain('value.rounded(.towardZero) == value');
+
+    const dir = mkdtempSync(join(tmpdir(), 'bb-size-bridge-'));
+    const source = join(dir, 'SizeBridgeHarness.swift');
+    writeFileSync(source, `
+import Foundation
+
+${helper}
+
+${floatingHelper}
+
+func require(_ condition: @autoclosure () -> Bool, _ message: String) {
+  if !condition() { fatalError(message) }
+}
+
+require(fileProviderCacheSizeBytes(123 as Int) == 123, "Int failed")
+require(fileProviderCacheSizeBytes(Int64(456)) == 456, "Int64 failed")
+require(fileProviderCacheSizeBytes(789.0 as Double) == 789, "Double failed")
+require(fileProviderCacheSizeBytes(NSNumber(value: 321)) == 321, "NSNumber int failed")
+require(fileProviderCacheSizeBytes(NSNumber(value: 654.0)) == 654, "NSNumber double failed")
+require(fileProviderCacheSizeBytes(-1 as Int) == 0, "negative Int should clamp")
+require(fileProviderCacheSizeBytes(12.5 as Double) == 0, "fractional Double should reject")
+require(fileProviderCacheSizeBytes(NSNumber(value: true)) == 0, "NSNumber Bool should reject")
+require(fileProviderCacheSizeBytes(Double.nan) == 0, "NaN should reject")
+require(fileProviderCacheSizeBytes(Double(Int64.max)) == 0, "rounded overflow boundary should reject")
+require(fileProviderCacheSizeBytes(nil) == 0, "nil should reject")
+`);
+    runSwiftc([source, '-o', join(dir, 'SizeBridgeHarness')]);
+    execFileSync(join(dir, 'SizeBridgeHarness'), [], { stdio: 'pipe' });
+  });
+});
+
 describe('f5 (reviewer follow-up 1): a registration whose add is refused (purge pending, no reset — cacheResetOk=false) must NOT clear the marker; only a registration that actually reset the DB (or found nothing pending) may', () => {
   const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
   const body = bracedBody(
