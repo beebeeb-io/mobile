@@ -36,6 +36,13 @@ mock.module('react-native', () => ({
   // 'android' so persistCacheNow's iOS-only File Provider write-through
   // never fires — irrelevant to this test and not otherwise mocked.
   Platform: { OS: 'android' },
+  // Task 1686 — sync-client now imports AppState for the reconnect-pause
+  // seam. A no-op subscription; the tests drive setSyncClientAppState
+  // directly.
+  AppState: {
+    currentState: 'active',
+    addEventListener: () => ({ remove: () => {} }),
+  },
 }));
 
 mock.module('react-native-sse', () => ({

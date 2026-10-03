@@ -605,3 +605,110 @@ No design mock covers these states. They are recorded here so they get reviewed 
 - **needs_plan** (`screens/NeedsPlanScreen.tsx`): a full-screen overlay above the navigator, styled like `PhraseNotConfirmedScreen` (plain surface, brand mark, one amber primary). The primary is `Refresh`, the secondary is `Sign out`, and the copy is plain text pointing to beebeeb.io. The same switch adds an `Open beebeeb.io` link to `/choose-plan`.
 - **lapsed**: a persistent, non-dismissable amber banner at the top of Files (the storage-banner shape, with wrapping text so the deletion date is never cut off). Settings and Storage & Plan show a `READ-ONLY` badge and "Read-only · deleted on {date}". Neither has a purchase or manage link, because the app has no billing link-out anywhere.
 - **Trial with a payment mandate** (`trial_auto_converts`): "Trial ends {date} · continues automatically" under the existing `TRIAL` badge. A legacy no-card trial keeps "Trial ends {date}".
+
+## Task 1605 (mobile) — no "pay now" button; informational cap/cancel copy only
+
+The brief (`.claude/tasks/in-development/1605-trial-abuse-limits-cancel-readonly-retention-cap.md`,
+mirroring the web half) asks for a **"Pay now to unlock \<plan\> storage" button** on the trial
+card, calling `POST /billing/trial/pay-now` to charge the first period immediately. **Not shipped
+on mobile — no purchase/pay-now action exists in this app, on this screen or anywhere else.**
+
+**Why:** task 1400 (App Review 3.1.1(a), same rule `account-state.ts` and `StorageScreen.tsx`'s
+file headers already state) — this app has no In-App Purchase product configured, and neither a
+button nor a link to an external purchasing mechanism is allowed on this storefront.
+`POST /billing/trial/pay-now` charges real money; a tappable button that calls it is exactly the
+purchase call-to-action task 1400 removed everywhere else (`SHOW_PLAN_CATALOG = false`, no
+"Manage subscription" CTA, no signup screen, no lapsed-banner purchase link).
+
+**What shipped instead:** the same informational-only pattern as every other billing fact on this
+screen (`PLAN_MANAGEMENT_NOTE`):
+- Storage & Plan's status line reads "Uploads stopped · Access until \<date\> · Files deleted on
+  \<date\>" for a never-paid trial cancelled before its first charge (never "Access until" alone,
+  never "Renews") — `billing-status.ts`'s `billingStatusView`, task 1605 branch.
+- An active mandated trial under the 25 GB cap shows one line: "This account is on the 25 GB
+  trial storage cap until your first payment clears. Manage your plan from your account on the
+  web." — `billing-status.ts`'s `trialCapNote`. No button, no price emphasis beyond the cap size
+  itself, no "pay now" / "upgrade" wording (see the module's own test asserting this).
+- A 409 `trial_cancelled_read_only` upload/backup/share refusal and a 413 `quota_exceeded` with
+  `is_trial_cap: true` both get their own honest message via `account-state.ts`/`friendlyError()`
+  — "Resume your trial on the web" / "Manage your plan from your account on the web", never a
+  local purchase action.
+
+This is a deviation from the BRIEF, not from a design mock or a Guus ruling — recorded here per
+the same "flagged, never shipped silently" convention rather than silently dropping the button or
+silently adding one that would risk App Review rejection.
+
+## Task 1689 — PhotosScreen's 1322 "blur ALWAYS on" decision is amended (2026-10-02, bug-rel lane)
+
+Task 1322 deliberately mounted `ScrollEdgeBlur` UNCONDITIONALLY on PhotosScreen — the only such
+mount in the app — with two recorded reasons: Photos is permanently full-bleed, and `isScrolled`
+was permanently false on the shipping platform because the native grid never reported scroll.
+Task 1689 (light-mode "rare fade" at rest) changes this, and the change is a deviation from that
+recorded decision, recorded here per the same convention:
+
+- **What changed:** the mount is now gated `{isScrolled ? <ScrollEdgeBlur …/> : null}`, matching
+  every sibling screen (Files 4545, Settings 1826, Trash 386, Shared 737, Storage 403,
+  BackupInsights 629). The trigger was Guus's 2026-10-02 report: in light mode the 0.30-alpha
+  light tint (`glass-recipe.ts`'s derived `SCROLL_EDGE.lightTint`) renders as a visible
+  "plain-band fade" over the grid's paper background at rest — with `contentInsetTop` the first
+  row starts BELOW the header at rest, so the strip has nothing to make legible then.
+- **What did NOT change:** 1322's second reason (no scroll signal on iOS) still holds — the
+  native grid deliberately defers every bridge dispatch to rest positions. So `isScrolled` is
+  derived from the grid's own `onVisiblePhotoIdsChange` via a top-photo-visible heuristic rather
+  than a native scroll event; the FlatList fallback keeps its real `onScroll` derivation.
+- **Recorded trade-off:** during the drag itself (before the grid settles) the header rides over
+  unblurred content for the duration of the gesture — the same deferred-side-effect trade the
+  native grid already makes for thumbnail prefetch. At rest (the bug state) the fade is gone in
+  both schemes; while scrolled, the blur does exactly what 1322 wanted.
+
+## Task 1690 — share sheet: always ONE full link (split presentation removed)
+
+**Design:** the share-flow artefacts show the share result as two separate
+items — `design/hifi/flows-upload-share.jsx` ("Share B — Decryption key
+separate from URL", a bare URL plus a "Decryption key · send through a
+different channel" box) and web's `hifi-upload-share.jsx`. The shipped share
+sheet additionally badged the key box "SEND SEPARATELY" and copied the URL
+and the key as two separate clipboard items.
+
+**Ruling (Guus, verbatim, 2026-10-02):**
+> "Met delen voortaan altijd full link, er staat nu dat het los is maar is
+> eigenlijk alsnog 1 geheel. Maak er gewoon 1 geheel van."
+
+**What shipped instead (2026-10-02):** the share sheet always presents and
+copies ONE complete link — `/s/<token>#key=<K_c>` built by the new
+`src/lib/share-full-link.ts` `buildFullShareLink()`. The bare-URL + raw-key
+state pair, the "SEND SEPARATELY" badge, the 'link'/'key' copy targets and
+the "separate channels" copy are removed. The key still travels only in the
+URL fragment (1531 semantics untouched). The share link base now comes from
+`getWebAppUrl()` (EXPO_PUBLIC_APP_URL / extra.appUrl, derived from the API
+URL otherwise) — the same source LoginScreen/NeedsPlanScreen use — instead of
+a hardcoded production origin, so local QA builds produce localhost:5173
+links; production output is unchanged.
+
+**Why:** the ruling is dated after the artefact and explicitly supersedes it
+(precedent: task 1357, "a verbal ruling from Guus supersedes the artefact").
+
+## Task 1704 slice 3 (mobile) — RecoveryUnlockScreen heading: canonical "Vault locked"
+
+**Design:** no design artefact pins this screen's copy — `design/hifi/*.jsx`
+and `design/ios26-canvas/` contain no RecoveryUnlock heading/subheading entry.
+
+**Ruling (1684/1693, decision D-2026-10-02 option A — "net zoals in iOS"):
+** the locked vault state carries the canonical title `Vault locked` with a
+brief honest explanation and NO password form (1693 shipped exactly that on
+web: "canonical title `Vault locked` (iOS parity)"). Task 1704 slice 3's
+brief requires the post-reset / keychain-empty landing to use that same
+language and offer the 12-word phrase unlock.
+
+**What shipped (2026-10-02):** `RecoveryUnlockScreen`'s heading changed from
+"Unlock your vault" to the canonical `Vault locked`, and its subheading now
+states the two-tier story honestly (password unlocks the account; the
+12-word recovery phrase unlocks the vault). Copy lives in
+`src/lib/vault-locked-copy.ts`, pinned by `src/lib/vault-locked-copy.test.ts`
+(source-scan precedent: `sheet-sweep.test.ts`). Layout and styles unchanged;
+the screen's phrase input, retryable error banner and "Use another account"
+escape are untouched.
+
+**Why:** a Guus ruling supersedes the (absent) artefact (precedent: task
+1357); recorded here because the shipped language intentionally diverges
+from the screen's previous heading.

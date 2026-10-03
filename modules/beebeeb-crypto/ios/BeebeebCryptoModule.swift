@@ -18,8 +18,13 @@ private let fileProviderDomainSchemaKey = "io.beebeeb.fileProviderDomainSchema"
 private let fileProviderDomainSchemaVersion = "replicated-v6-cache-bootstrap"
 private let appGroupIdentifier = "group.io.beebeeb.shared"
 private let simulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProviderMasterKey"
-private let sharedSessionTokenKey = "io.beebeeb.sessionToken"
-private let sharedAPIBaseURLKey = "io.beebeeb.apiBaseUrl"
+// Task 1671: alias the canonical `BeebeebKeychainCore` constants rather than
+// re-typing the literals — the Share Extension reader was drifted onto
+// different, never-written keys for months because its own copy of this
+// string was typed independently. See BeebeebKeychainCore.swift's
+// `sessionTokenKey` / `apiBaseUrlKey` doc comment.
+private let sharedSessionTokenKey = BeebeebKeychainCore.sessionTokenKey
+private let sharedAPIBaseURLKey = BeebeebKeychainCore.apiBaseUrlKey
 private let fileProviderEnabledKey = "io.beebeeb.fileProvider.enabled"
 private let fileProviderTrustedMountKey = "io.beebeeb.fileProvider.trustedMountEnabled"
 private let fileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDeviceAuth"

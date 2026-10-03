@@ -80,11 +80,20 @@ let endSessionForAccountMismatchMock = mock(async () => {});
 mock.module('./account-state-context', () => ({
   useAccountState: () => ({ ready: true, gate: { kind: 'ok' }, subscription: null, refresh: async () => ({ kind: 'ok' }) }),
 }));
+// Task 1605 review round 3: BackupProvider's module-scope import of
+// getSubscription needs a binding to resolve (the poll effect itself is not
+// exercised here — see this file's header note — but the import must not
+// throw). runAccountRefusalPollTick's own tests below inject their own
+// fetchSubscription directly, so this default is never actually called by
+// anything in this file.
+let getSubscriptionMock = mock(async () => null);
+
 mock.module('./api', () => ({
   clearMobileIosBackupClientSession: (...args: unknown[]) => clearSessionMock(...args),
   ensureMobileIosBackupClientSession: async () => 'session-1',
   captureRequestAuthSnapshot: (...args: unknown[]) => captureRequestAuthSnapshotMock(...args),
   endSessionForAccountMismatch: (...args: unknown[]) => endSessionForAccountMismatchMock(...args),
+  getSubscription: (...args: unknown[]) => getSubscriptionMock(...args),
 }));
 
 mock.module('../services/BackupService', () => ({
@@ -124,6 +133,8 @@ const {
   isAccountMismatchGenerationCurrent,
   reduceAccountMismatchPoll,
   INITIAL_ACCOUNT_MISMATCH_POLL_STATE,
+  decideAccountRefusalResume,
+  runAccountRefusalPollTick,
 } = await import('./backup-context');
 
 const LEGACY_PHOTO_KEY = 'beebeeb_camera_backup';
@@ -762,5 +773,174 @@ describe('reduceAccountMismatchPoll (task 1599 followups round 3, P1 — sign-in
     expect(first.shouldEndSession).toBe(true);
     const second = reduceAccountMismatchPoll(first.state, { reason, generation: 1 });
     expect(second.shouldEndSession).toBe(false);
+  });
+});
+
+// Task 1605 review round 3 (P1): the trial-cap-pause-never-resumes bug.
+// `decideAccountRefusalResume`/`runAccountRefusalPollTick` are the fix's
+// entire testable surface — see their doc comments in backup-context.tsx
+// for the full mechanism. No React render harness needed (this file's own
+// header note): both are plain functions the real `useEffect` calls as a
+// thin `setInterval`/`AppState` driver.
+const OK_SUB = { account_state: 'ok', uploads_blocked_at: null, access_until: null, data_deletion_at: null };
+const CAPPED_TRIAL_SUB = { ...OK_SUB, trial_storage_cap_bytes: 25_000_000_000, used_bytes: 25_000_000_000 };
+const CAPPED_TRIAL_UNDER_CAP_SUB = { ...OK_SUB, trial_storage_cap_bytes: 25_000_000_000, used_bytes: 1_000_000 };
+const PAID_SUB = { ...OK_SUB, trial_storage_cap_bytes: null, used_bytes: 200_000_000_000 };
+const CANCELLED_READ_ONLY_SUB = {
+  account_state: 'ok',
+  uploads_blocked_at: '2026-09-29T10:00:00Z',
+  access_until: '2026-10-13T10:00:00Z',
+  data_deletion_at: '2026-10-27T10:00:00Z',
+};
+const LAPSED_SUB = { account_state: 'lapsed', uploads_blocked_at: null, access_until: null, data_deletion_at: '2026-10-27T10:00:00Z' };
+
+describe('decideAccountRefusalResume (task 1605 review round 3, P1)', () => {
+  test('no subscription (fetch failed / never fetched): not unblocked', () => {
+    const result = decideAccountRefusalResume(null, true);
+    expect(result.unblocked).toBe(false);
+    expect(result.shouldResumeCameraBackup).toBe(false);
+  });
+
+  test('still at the 25 GB trial cap (used >= cap): NOT unblocked — the exact stuck-paused scenario', () => {
+    const result = decideAccountRefusalResume(CAPPED_TRIAL_SUB, true);
+    expect(result.unblocked).toBe(false);
+    expect(result.shouldResumeCameraBackup).toBe(false);
+  });
+
+  test('trial cap cleared by paying (trial_storage_cap_bytes now null): unblocked', () => {
+    const result = decideAccountRefusalResume(PAID_SUB, true);
+    expect(result.unblocked).toBe(true);
+    expect(result.shouldResumeCameraBackup).toBe(true);
+  });
+
+  test('still capped, but used dropped back under the cap (e.g. the user deleted files): unblocked', () => {
+    const result = decideAccountRefusalResume(CAPPED_TRIAL_UNDER_CAP_SUB, true);
+    expect(result.unblocked).toBe(true);
+  });
+
+  test('unblocked but camera-roll backup is NOT the enabled category: unblocked, but no resume asked for', () => {
+    const result = decideAccountRefusalResume(PAID_SUB, false);
+    expect(result.unblocked).toBe(true);
+    expect(result.shouldResumeCameraBackup).toBe(false);
+  });
+
+  test('a real gate-based refusal (trial cancelled before first charge, read-only): NOT unblocked', () => {
+    const result = decideAccountRefusalResume(CANCELLED_READ_ONLY_SUB, true);
+    expect(result.unblocked).toBe(false);
+  });
+
+  test('the trial resumed on the web (uploads_blocked_at cleared, account_state back to ok): unblocked', () => {
+    const result = decideAccountRefusalResume(OK_SUB, true);
+    expect(result.unblocked).toBe(true);
+  });
+
+  test('lapsed (trial ended, never resumed/paid): NOT unblocked', () => {
+    const result = decideAccountRefusalResume(LAPSED_SUB, true);
+    expect(result.unblocked).toBe(false);
+  });
+});
+
+describe('runAccountRefusalPollTick (task 1605 review round 3, P1)', () => {
+  test('still capped: no resume, polling continues', async () => {
+    const onUnblocked = mock(() => {});
+    const resumeCameraBackup = mock(async () => {});
+    const result = await runAccountRefusalPollTick({
+      fetchSubscription: async () => CAPPED_TRIAL_SUB,
+      getIsPhotoBackupEnabled: () => true,
+      onUnblocked,
+      resumeCameraBackup,
+    });
+    expect(result.resumed).toBe(false);
+    expect(result.shouldStopPolling).toBe(false);
+    expect(onUnblocked.mock.calls.length).toBe(0);
+    expect(resumeCameraBackup.mock.calls.length).toBe(0);
+  });
+
+  test('quota lifted: resume called exactly once, polling told to stop', async () => {
+    const onUnblocked = mock(() => {});
+    const resumeCameraBackup = mock(async () => {});
+    const result = await runAccountRefusalPollTick({
+      fetchSubscription: async () => PAID_SUB,
+      getIsPhotoBackupEnabled: () => true,
+      onUnblocked,
+      resumeCameraBackup,
+    });
+    expect(result.resumed).toBe(true);
+    expect(result.shouldStopPolling).toBe(true);
+    expect(onUnblocked.mock.calls.length).toBe(1);
+    expect(onUnblocked.mock.calls[0][0]).toEqual({ kind: 'ok' });
+    expect(resumeCameraBackup.mock.calls.length).toBe(1);
+  });
+
+  test('unblocked but photo backup is off: reports resumed (stop polling), but never calls resumeCameraBackup', async () => {
+    const resumeCameraBackup = mock(async () => {});
+    const result = await runAccountRefusalPollTick({
+      fetchSubscription: async () => PAID_SUB,
+      getIsPhotoBackupEnabled: () => false,
+      onUnblocked: () => {},
+      resumeCameraBackup,
+    });
+    expect(result.resumed).toBe(true);
+    expect(result.shouldStopPolling).toBe(true);
+    expect(resumeCameraBackup.mock.calls.length).toBe(0);
+  });
+
+  test('fetch throws (transient network failure): does not resume, does not stop polling', async () => {
+    const onUnblocked = mock(() => {});
+    const resumeCameraBackup = mock(async () => {});
+    const result = await runAccountRefusalPollTick({
+      fetchSubscription: async () => {
+        throw new Error('network down');
+      },
+      getIsPhotoBackupEnabled: () => true,
+      onUnblocked,
+      resumeCameraBackup,
+    });
+    expect(result.resumed).toBe(false);
+    expect(result.shouldStopPolling).toBe(false);
+    expect(onUnblocked.mock.calls.length).toBe(0);
+    expect(resumeCameraBackup.mock.calls.length).toBe(0);
+  });
+
+  test('the full episode as a sequence of ticks: resume fires on exactly the tick that clears, and a driver honoring shouldStopPolling never polls again after', async () => {
+    // Mirrors the real effect's own loop shape (see backup-context.tsx): a
+    // driver that stops issuing further ticks once shouldStopPolling comes
+    // back true. Three simulated ticks: still capped, still capped,
+    // quota lifted — with a FOURTH entry in the queue that would ALSO
+    // report unblocked, proving the driver genuinely stops (never reads it)
+    // rather than happening to run out of ticks on its own.
+    const queue = [CAPPED_TRIAL_SUB, CAPPED_TRIAL_SUB, PAID_SUB, PAID_SUB];
+    let fetchCount = 0;
+    const resumeCameraBackup = mock(async () => {});
+    const onUnblocked = mock(() => {});
+
+    // Bounded (not `while (!stopped)`) on purpose: a mutation that breaks
+    // `shouldStopPolling` must fail on the `stopped` assertion below rather
+    // than hang the test suite forever — once the queue is exhausted,
+    // fetchSubscription keeps resolving null (decideAccountRefusalResume(null, …)
+    // is always `unblocked: false`), so an unbounded loop under that
+    // mutation would never terminate on its own.
+    let stopped = false;
+    let ticksRun = 0;
+    const MAX_TICKS = 10;
+    while (!stopped && ticksRun < MAX_TICKS) {
+      ticksRun += 1;
+      const result = await runAccountRefusalPollTick({
+        fetchSubscription: async () => {
+          fetchCount += 1;
+          return queue[fetchCount - 1] ?? null;
+        },
+        getIsPhotoBackupEnabled: () => true,
+        onUnblocked,
+        resumeCameraBackup,
+      });
+      if (result.shouldStopPolling) stopped = true;
+    }
+
+    expect(stopped).toBe(true); // the loop stopped ITSELF — not just hit MAX_TICKS
+    expect(ticksRun).toBe(3); // capped, capped, then the clearing tick
+    expect(fetchCount).toBe(3); // the 4th queue entry is never fetched — polling truly stopped
+    expect(resumeCameraBackup.mock.calls.length).toBe(1); // resume called exactly once
+    expect(onUnblocked.mock.calls.length).toBe(1);
   });
 });

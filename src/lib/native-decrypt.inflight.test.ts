@@ -81,6 +81,9 @@ mock.module('./api', () => ({
   getApiUrl: () => 'https://api.test',
   getDownloadUrl: (id) => `https://api.test/api/v1/files/${id}/download`,
   getToken: async () => 'tok',
+  // Task 1687d — native-decrypt now imports preview-load-error (for the
+  // partial-decrypt message), which needs friendlyError from this mock.
+  friendlyError: (err: unknown) => (err instanceof Error ? err.message : String(err)),
 }));
 mock.module('./rate-limited-fetch', () => ({ rateLimitedFetch: async () => { throw new Error('no js download in this test'); } }));
 mock.module('./runtime-trace', () => ({ recordRuntimeTrace: () => {} }));

@@ -19,6 +19,25 @@ jobs:
       - run: bun install
       - run: bunx tsc --noEmit
 
+  # Task 1669 round 2: nothing in CI ran the mobile unit suite (typecheck only). This job runs it
+  # exactly as CLAUDE.md "How we work" defines the truth line: `bun run test` must print
+  # `isolated: N pass, 0 fail across F files` with N > 0 and exit 0. A green with no count, N = 0 or
+  # any failing file is a RED (scripts/ci/unit-suite.sh; its --self-test proves each of those goes red).
+  unit-tests:
+    name: Unit tests (isolated suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - run: bun install --frozen-lockfile
+      - name: The suite gate can go red (self-test)
+        run: bash scripts/ci/unit-suite.sh --self-test
+      - name: Run the isolated unit suite and assert the truth line (N > 0, 0 fail)
+        run: bash scripts/ci/unit-suite.sh
+
   claims-guard:
     name: Claims guard
     runs-on: ubuntu-latest
@@ -33,3 +52,47 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run claims guard
         run: bash scripts/claims-guard/claims-guard.sh
+
+  # Task 1671: until this job NO Swift was compiled in CI. Public repo, so
+  # macOS runners are free. Typechecks the Share Extension exactly as the
+  # BeebeebShare target compiles it (file list read from project.pbxproj),
+  # against the iOS simulator SDK, for both ios/BeebeebShare/ and the
+  # targets/share-extension/ source of truth, checks the two stay
+  # byte-identical, then compiles and runs every scripts/swift-tests driver.
+  swift-gate:
+    name: Swift compile gate
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Typecheck Share Extension (xcodeproj copy, targets/ source, sync check)
+        run: bash scripts/swift-ci/typecheck-share-extension.sh
+      - name: Share Extension guards can go red (self-test)
+        if: ${{ !cancelled() }}
+        run: python3 scripts/swift-ci/share-extension-guards.py --self-test
+      - name: Swift unit tests (scripts/swift-tests)
+        if: ${{ !cancelled() }}
+        run: bash scripts/swift-ci/run-swift-tests.sh
+
+  # Task 1669: until this job nothing compiled the MAIN APP's Swift (swift-gate above covers
+  # only the Share Extension, task 1671). Public repo, so macOS runners are free. Full unsigned
+  # simulator build of the Beebeeb scheme, which compiles modules/beebeeb-crypto/ios/*.swift
+  # (NativeBackupEngine, BeebeebAppDelegate, ...). See scripts/swift-ci/build-ios-simulator.sh.
+  ios-build:
+    name: iOS app build (simulator, unsigned)
+    runs-on: macos-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      # BeebeebCore.xcframework's static libs are Git LFS objects (.gitattributes: *.a). Fetch only
+      # the simulator slice this job links (~34 MB) to keep LFS bandwidth down.
+      - name: Fetch the simulator slice of BeebeebCore.xcframework (Git LFS)
+        run: git lfs pull --include="ios/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/*"
+      - name: Build the iOS app for the simulator (unsigned)
+        env:
+          SWIFT_CI_LOG_DIR: ${{ runner.temp }}/ios-build
+        run: bash scripts/swift-ci/build-ios-simulator.sh

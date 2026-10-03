@@ -28,6 +28,10 @@ const SOURCE_FILES = [
   // the file's own doc comment). References `AccountMismatchDetection`
   // (below, in CRYPTO_SHARED_FILES) — must stay wired into the SAME target.
   'ShareUploadRequestPolicy.swift',
+  // Task 1671 round 2: the pure, Foundation-only recent-folders logic (ids-only
+  // persistence, resolve against the fetched list). Unit-tested by
+  // scripts/swift-tests/share-recent-folders-test.swift.
+  'ShareRecentFolders.swift',
   // Share-extension's keychain reader is the canonical `BeebeebKeychainCore`
   // (task 0436); the file at `targets/share-extension/BeebeebKeychainCore.swift`
   // is a symlink to `modules/beebeeb-crypto/ios/Shared/BeebeebKeychainCore.swift`,

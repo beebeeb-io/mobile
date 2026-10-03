@@ -45,6 +45,14 @@ export interface SubscriptionStatusFields {
   account_state?: string | null;
   data_deletion_at?: string | null;
   trial_auto_converts?: boolean | null;
+  /**
+   * Task 1605 (server PR #129). Set the instant a never-paid MANDATED trial
+   * is cancelled — `account_state` stays `ok` (the trial hasn't lapsed,
+   * it's cancelled early) but uploads/shares are refused immediately.
+   * `access_until` is when view/download ALSO stop working.
+   */
+  uploads_blocked_at?: string | null;
+  access_until?: string | null;
 }
 
 export type BillingBadgeKind = 'trial' | 'cancelling' | 'read_only' | null;
@@ -134,6 +142,18 @@ export function billingStatusView(sub: SubscriptionStatusFields | null | undefin
   }
 
   if (status === 'cancelling') {
+    // Task 1605 — a never-paid trial cancelled before its first charge is
+    // read-only for uploads/shares IMMEDIATELY, distinct from a paying
+    // customer's ordinary cancel (unchanged below, uploads keep working
+    // through the grace period). "Uploads stopped" first, never "Renews",
+    // matching web's cancelledCompactLine (billing.tsx / trial-limits-copy.ts).
+    if (sub?.uploads_blocked_at) {
+      const parts = ['Uploads stopped'];
+      const accessIso = sub?.access_until ?? sub?.current_period_end ?? null;
+      if (isValidIso(accessIso)) parts.push(`Access until ${formatBillingDate(accessIso)}`);
+      if (isValidIso(sub?.data_deletion_at)) parts.push(`Files deleted on ${formatBillingDate(sub.data_deletion_at)}`);
+      return { isFree, badgeKind: 'cancelling', statusLine: parts.join(' · ') };
+    }
     const dateIso = sub?.current_period_end ?? null;
     return {
       isFree,
@@ -148,4 +168,30 @@ export function billingStatusView(sub: SubscriptionStatusFields | null | undefin
     badgeKind: null,
     statusLine: dateIso ? `Renews ${formatBillingDate(dateIso)}` : null,
   };
+}
+
+export interface TrialCapFields {
+  status?: string | null;
+  trial_storage_cap_bytes?: number | null;
+}
+
+/**
+ * Task 1605 — informational note for the 25 GB trial cap. Non-null only
+ * while an active mandated trial has never had a successful charge; the
+ * server clears `trial_storage_cap_bytes` after the first payment settles.
+ *
+ * No purchase/pay-now call to action here, unlike web (task 1400, App
+ * Review 3.1.1(a) — this app has no In-App Purchase product configured, and
+ * neither a button nor a link to an external purchasing mechanism is
+ * allowed). Same informational tone as `PLAN_MANAGEMENT_NOTE`. See
+ * DEVIATIONS.md → "Task 1605" for the deviation from the web/server brief.
+ */
+export function trialCapNote(
+  sub: TrialCapFields | null | undefined,
+  formatBytes: (bytes: number) => string,
+): string | null {
+  if (!sub || (sub.status ?? '').toLowerCase() !== 'trialing') return null;
+  const cap = sub.trial_storage_cap_bytes;
+  if (typeof cap !== 'number' || cap <= 0) return null;
+  return `This account is on the ${formatBytes(cap)} trial storage cap until your first payment clears. Manage your plan from your account on the web.`;
 }

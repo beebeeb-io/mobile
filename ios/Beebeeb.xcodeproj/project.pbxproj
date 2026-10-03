@@ -19,6 +19,7 @@
 		308A606EECC4B1C5C67DE05B /* AccountMismatchDetection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C402BCEB2EA712FA4B8488B /* AccountMismatchDetection.swift */; };
 		30FEF7F7B3C6D78C7A457B87 /* ProvenanceHeaders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C68A4E414B8A7F5FBD26837F /* ProvenanceHeaders.swift */; };
 		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
+		D48B0C3E6A5F41729E8B1C0A /* ShareRecentFolders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C1E9A4D2B6F4058A3D1E5F7 /* ShareRecentFolders.swift */; };
 		42692AE763EC00F59E15FA12 /* ShareUploadRequestPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A75E21839302C70F1553CF5 /* ShareUploadRequestPolicy.swift */; };
 		45FFA32B1F8B979B50358DDC /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 613FA9088873D69615AF7702 /* XCTest.framework */; };
 		4BD40E619DD64E149B5274C6 /* BeebeebCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B7E8D1477F84A4584DDCD33 /* BeebeebCore.xcframework */; };
@@ -111,6 +112,7 @@
 		2C402BCEB2EA712FA4B8488B /* AccountMismatchDetection.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = AccountMismatchDetection.swift; path = "../targets/file-provider/AccountMismatchDetection.swift"; sourceTree = "<group>"; };
 		2E2A80DA7B259D17C9D6ED86 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SceneDelegate.swift; path = Beebeeb/SceneDelegate.swift; sourceTree = "<group>"; };
 		329117D739344957AE687286 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = BeebeebFileProvider/Info.plist; sourceTree = "<group>"; };
+		7C1E9A4D2B6F4058A3D1E5F7 /* ShareRecentFolders.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ShareRecentFolders.swift; path = BeebeebShare/ShareRecentFolders.swift; sourceTree = "<group>"; };
 		3A75E21839302C70F1553CF5 /* ShareUploadRequestPolicy.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ShareUploadRequestPolicy.swift; path = BeebeebShare/ShareUploadRequestPolicy.swift; sourceTree = "<group>"; };
 		3C14135685514A8EB4E55316 /* beebeeb_uniffi.swift */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.swift; name = beebeeb_uniffi.swift; path = Beebeeb/beebeeb_uniffi.swift; sourceTree = "<group>"; };
 		417BA060800D49C79AA801B4 /* BeebeebWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BeebeebWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -307,6 +309,7 @@
 				4BF94FAC43BB47A3A4E47658 /* BeebeebCryptoShim.swift */,
 				1DFF4D0CB90343F7A73E6379 /* ShareUploader.swift */,
 				3A75E21839302C70F1553CF5 /* ShareUploadRequestPolicy.swift */,
+				7C1E9A4D2B6F4058A3D1E5F7 /* ShareRecentFolders.swift */,
 				EE5BEDA2F02E40E7AA3E43EB /* BeebeebKeychainCore.swift */,
 				810E3E149C9E4D1AB7D2A38C /* FolderFetcher.swift */,
 				E9B7A14F2F464F1D89721EB9 /* beebeeb_uniffi.swift */,
@@ -793,6 +796,7 @@
 				219D9E3D6CAF43F6A78F6A4C /* BeebeebCryptoShim.swift in Sources */,
 				B31BB01EEE83480FA73DFB6D /* ShareUploader.swift in Sources */,
 				42692AE763EC00F59E15FA12 /* ShareUploadRequestPolicy.swift in Sources */,
+				D48B0C3E6A5F41729E8B1C0A /* ShareRecentFolders.swift in Sources */,
 				99F9418A850DC31F2D0ED15A /* AccountMismatchDetection.swift in Sources */,
 				89337F23BDAD4C75AB73EF81 /* BeebeebKeychainCore.swift in Sources */,
 				A0A3BFA5E3AA437992C186BB /* FolderFetcher.swift in Sources */,

@@ -11,9 +11,10 @@
  * Mirrors the web client's `src/pages/delete-account.tsx`: irreversibility
  * copy, a typed "DELETE" confirmation, an acknowledgement checkbox, then
  * step-up re-auth before the destructive call. On mobile, step-up re-auth is
- * `requestConfirmation()` (native password prompt → `confirmAction`,
- * already used by BiometricLockScreen) rather than a separate inline
- * password field — one password prompt, not two.
+ * `requestConfirmation()` (the app's own password-prompt sheet,
+ * `ConfirmActionPrompt` → `confirmAction`, already used by
+ * BiometricLockScreen) rather than a separate inline password field — one
+ * password prompt, not two.
  *
  * Voice: honest, no reassurance ("We can't recover this," not "your data is
  * safe"). No emojis. Danger styling matches PrivacyScreen's `ActionRow
@@ -90,7 +91,7 @@ export default function DeleteAccountScreen() {
       title: 'Confirm account deletion',
       message: 'Enter your password to permanently delete your account. This cannot be undone.',
     });
-    if (!token) return; // cancelled, or requestConfirmation already alerted
+    if (!token) return; // cancelled, or requestConfirmation's sheet already showed the error
 
     setLoading(true);
     try {
