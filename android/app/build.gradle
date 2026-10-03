@@ -113,6 +113,9 @@ android {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
             signingConfig signingConfigs.debug
+            // TEMP-DIAG 1683j (debuggable release for the run-as cache-wipe
+            // repro) REVERTED 2026-10-03 after verification — see
+            // verification-evidence/1683/1683j-timeline.txt.
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds

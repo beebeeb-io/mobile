@@ -103,4 +103,20 @@ class ModuleSurfaceProbeTest {
       def.asyncFunctions.containsKey("decryptLocalFileNative"),
     )
   }
+
+  // ── task 1683j — chunked streaming video playback ──────────────────────────
+  //
+  // Guus (2026-10-03): "download chunks and decrypt the chunks directly — a
+  // streaming effect". The module must expose streamVideoNative (the engine
+  // behind the per-chunk fetch + decrypt-ahead + loopback range server);
+  // cancel + progress ride the EXISTING 1683b surface asserted above.
+
+  @Test
+  fun exposesStreamVideoNative() {
+    val def = BeebeebCryptoModule().definition()
+    assertTrue(
+      "Android BeebeebCrypto must expose streamVideoNative (task 1683j)",
+      def.asyncFunctions.containsKey("streamVideoNative"),
+    )
+  }
 }

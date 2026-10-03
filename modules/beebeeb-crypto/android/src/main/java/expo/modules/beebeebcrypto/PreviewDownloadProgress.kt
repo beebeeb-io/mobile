@@ -26,6 +26,17 @@ internal class PreviewDownloadProgress(
   private val emit: (Map<String, Any?>) -> Unit,
 ) {
 
+  /**
+   * Task 1683j — optional extra teardown when JS cancels. The streaming
+   * session assigns itself here (`onCancelExtra = { session.cancelFromProgress() }`)
+   * so `cancelDownloadAndDecryptFileNative` (the existing cancel surface) also
+   * tears a video stream down; the plain download path leaves it null (its
+   * OkHttp call attachment already covers it). Volatile: assigned by the IO
+   * worker right after the session is built, read under `lock` by cancel().
+   */
+  @Volatile
+  var onCancelExtra: (() -> Unit)? = null
+
   private val lock = ReentrantLock()
   private var cancelled = false
   private var call: Call? = null
@@ -74,6 +85,7 @@ internal class PreviewDownloadProgress(
       call
     }
     toCancel?.cancel()
+    onCancelExtra?.invoke()
   }
 
   fun isCancelled(): Boolean = lock.withLock { cancelled }

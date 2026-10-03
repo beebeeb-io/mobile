@@ -31,6 +31,13 @@ import {
   isDecryptToFileReady,
 } from './decrypt-to-file';
 import {
+  isStreamableVideoExtension,
+  isLoopbackStreamUri,
+} from './video-stream';
+import {
+  streamVideoNative,
+} from '../../modules/beebeeb-crypto';
+import {
   ApiError,
   getApiUrl,
   getDownloadUrl,
@@ -62,6 +69,15 @@ export interface PreviewDecryptOptions {
    *               the fresh copy — "Prove it" deletes it after its 512-byte
    *               read in that case only).
    */
+  /**
+   * Task 1683j — the streaming session's progress events keep flowing AFTER
+   * this function resolves (the pump decrypts while the video plays). The
+   * shared-listener broadcaster above is torn down when the caller returns
+   * (`sharedListeners.delete(outputPath)`), so the stream wrapper needs the
+   * CALLER's own handler to keep receiving post-resolve events — the
+   * "Streaming · N% buffered" badge rides this sticky channel.
+   */
+  onStickyProgress?: (event: PreviewLoadProgressEvent) => void;
   onSource?: (source: PreviewDecryptSource) => void;
 }
 
@@ -259,6 +275,11 @@ export async function decryptToTempFile(
             onProgress: (event) => {
               sharedListeners.get(outputPath)?.forEach((l) => l.onProgress?.(event));
             },
+            // Task 1683j — the streaming wrapper outlives this job (the pump
+            // decrypts while the video plays); post-resolve events must reach
+            // the caller DIRECTLY — the broadcaster above is deleted when
+            // this job returns. Harmlessly double-delivers pre-resolve.
+            onStickyProgress: options.onProgress,
             onOfflineFallback: (event) => {
               sharedListeners.get(outputPath)?.forEach((l) => l.onOfflineFallback?.(event));
             },
@@ -466,6 +487,85 @@ async function decryptToTempFileUnshared(
         extension: ext,
         handleResolvedNatively: masterKeyHandleId == null,
       });
+
+      // ── Task 1683j — videos STREAM (decrypt-as-the-player-reads) ─────────
+      //
+      // ROUTING CALL (Guus asked for streaming; small-file carve-out left to
+      // my judgment): ALL videos route through the streaming engine when the
+      // native build carries it — no size heuristic. A 2 MB video's extra
+      // hop (loopback range server) costs milliseconds and keeps ONE code
+      // path; a size threshold would misfire on exactly the mid-size videos
+      // the heuristic was guessing about. The whole-file path below remains
+      // the FALLBACK (any pre-playable stream failure falls through to it)
+      // and still serves every non-video type.
+      //
+      // GATED ON A REAL MASTER-KEY HANDLE: the engine derives the file key
+      // from the master key natively; a null handle means either the
+      // relaunch race (1683h — the module would resolve the RIGHT key itself,
+      // fine) or a file-REQUEST upload (the content key C is NOT derivable
+      // from the master key — streaming would decrypt garbage and the
+      // fallback whole-file path would too). Request uploads pass a null
+      // handle deliberately — keep them off the stream path.
+      if (isStreamableVideoExtension(ext) && masterKeyHandleId != null) {
+        try {
+          recordRuntimeTrace('preview.decrypt.stream.request', {
+            fileId,
+            extension: ext,
+            sizeBytes: sizeBytes ?? null,
+            chunkCount: chunkCount ?? null,
+          });
+          const started = await streamVideoNative(
+            masterKeyHandleId,
+            getApiUrl(),
+            token,
+            fileId,
+            outputPath,
+            sizeBytes ?? null,
+            chunkCount ?? null,
+            {
+              onProgress: (event) => {
+                options.onProgress?.(event);
+                // Task 1683j — the sticky channel keeps the badge alive past
+                // resolve (the shared-listener broadcaster dies with this
+                // job's return; the pump runs on).
+                options.onStickyProgress?.(event);
+              },
+              signal: options.signal,
+            },
+          );
+          if (options.signal?.aborted) {
+            await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+            recordRuntimeTrace('preview.decrypt.stream.aborted_after_result', { fileId });
+            throw abortError();
+          }
+          await prunePreviewCache(outputPath);
+          recordRuntimeTrace('preview.decrypt.stream.playable', {
+            fileId,
+            extension: ext,
+            streamUri: started.streamUri,
+            plaintextSize: started.plaintextSize,
+            chunkCount: started.chunkCount,
+            elapsedMs: Date.now() - startedAt,
+          });
+          return started.streamUri;
+        } catch (error) {
+          // Never leave a partial plaintext behind (same contract as below).
+          await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+          const aborted = options.signal?.aborted === true ||
+            (error instanceof Error && error.name === 'AbortError');
+          if (aborted) {
+            throw error;
+          }
+          recordRuntimeTrace('preview.decrypt.stream.failed_fallback', {
+            fileId,
+            extension: ext,
+            elapsedMs: Date.now() - startedAt,
+            ...errorTraceFields(error),
+          });
+          // Fall through to the whole-file native path (the 1683b pipeline).
+        }
+      }
+
       const result = await downloadAndDecryptFileNative(
         masterKeyHandleId ?? null,
         getApiUrl(),
