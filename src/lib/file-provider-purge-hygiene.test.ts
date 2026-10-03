@@ -515,7 +515,7 @@ describe('C1 (round 7, P1): the File Provider extension refuses a write whose pu
   });
 
   test('SyncEngine.refreshContainer captures the epoch BEFORE the network fetch, not after', () => {
-    const body = bracedBody(syncEngineSwift, 'static func refreshContainer(containerId: String) async {');
+    const body = bracedBody(syncEngineSwift, 'static func refreshContainer(containerId: String) async -> Bool {');
     const epochIdx = body.indexOf('CacheManager.shared.currentPurgeEpoch()');
     const fetchIdx = body.indexOf('ApiClient.shared.listFiles(parentId: parentId)');
     expect(epochIdx).toBeGreaterThan(-1);
@@ -524,9 +524,9 @@ describe('C1 (round 7, P1): the File Provider extension refuses a write whose pu
   });
 
   test('SyncEngine.refreshContainer passes that captured epoch to replaceChildren and discards on refusal', () => {
-    const body = bracedBody(syncEngineSwift, 'static func refreshContainer(containerId: String) async {');
+    const body = bracedBody(syncEngineSwift, 'static func refreshContainer(containerId: String) async -> Bool {');
     expect(body).toMatch(/replaceChildren\(\s*parent: parentId, with: rowsToUpsert, expectedEpoch: epochAtStart\s*\)/);
-    expect(body).toMatch(/guard committed else \{[\s\S]*?return\s*\}/);
+    expect(body).toMatch(/guard committed else \{[\s\S]*?return false\s*\}/);
     // A discarded write must not update sync_state as if it had landed.
     const guardIdx = body.indexOf('guard committed else');
     const setSyncStateIdx = body.indexOf('setSyncState(');
