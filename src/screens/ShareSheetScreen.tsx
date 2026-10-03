@@ -19,11 +19,12 @@ import { BottomSheet, BottomSheetScrollView } from '../components/sheet/BottomSh
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
-import { ApiError, approveInvite, createInvite, createShare, friendlyError, resolveSharingContact } from '../lib/api';
+import { ApiError, approveInvite, createInvite, createShare, friendlyError, getWebAppUrl, resolveSharingContact } from '../lib/api';
 import type { Share as ShareLink } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
 import { formatBytes as formatSize } from '../lib/format';
 import { formatDateTime } from '../lib/date-format';
+import { buildFullShareLink } from '../lib/share-full-link';
 import {
   deriveShareKey,
   encryptChunk,
@@ -157,8 +158,10 @@ const OPENS_OPTIONS: OpensOption[] = [
   { label: 'Unlimited', value: null },
 ];
 
-// App URL for building share links locally (double-encrypted mode)
-const APP_URL = 'https://app.beebeeb.io';
+// Task 1690: the share link base is the web app origin for this build —
+// `EXPO_PUBLIC_APP_URL` / `extra.appUrl` when set, derived from the API URL
+// otherwise (api.ts getWebAppUrl(), the same source LoginScreen and
+// NeedsPlanScreen use). No hardcoded constant here anymore.
 
 // ---------------------------------------------------------------------------
 // Screen
@@ -183,12 +186,10 @@ export default function ShareSheetScreen() {
   // For double-encrypted shares, we build the URL locally and store it here.
   // For standard shares, we use share.url from the server.
   const [localShareUrl, setLocalShareUrl] = useState<string | null>(null);
-  // The URL without the #key= fragment, and the raw key — shown side-by-side
-  // so the recipient gets two distinct things to send through separate
-  // channels (maximum security).
-  const [shareUrlBase, setShareUrlBase] = useState<string | null>(null);
-  const [shareKey, setShareKey] = useState<string | null>(null);
-  const [copied, setCopied] = useState<'full' | 'link' | 'key' | null>(null);
+  // Task 1690: sharing yields ONE full link (URL + #key= fragment). The old
+  // split presentation (bare URL state + raw key state, "send separately"
+  // badge) is gone.
+  const [copied, setCopied] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const { showToast } = useToast();
 
@@ -243,16 +244,10 @@ export default function ShareSheetScreen() {
     urlBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.paper2, borderWidth: 1, borderColor: c.line, borderRadius: radii.md, paddingLeft: 12, paddingRight: 6, paddingVertical: 6, gap: 8 },
     urlText: { flex: 1, fontSize: 12, color: c.ink, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
     fieldLabel: { fontSize: 11, fontWeight: '600', color: c.ink2, marginBottom: 6, marginTop: 10 },
-    keyLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6, marginTop: 10 },
-    keyBadge: { backgroundColor: c.amberBg, borderWidth: 1, borderColor: c.amber, borderRadius: radii.sm, paddingHorizontal: 6, paddingVertical: 2 },
-    keyBadgeText: { fontSize: 9, fontWeight: '700', color: c.amberDeep, letterSpacing: 0.5 },
-    keyBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.amberBg, borderWidth: 1, borderColor: c.amber, borderRadius: radii.md, paddingLeft: 12, paddingRight: 6, paddingVertical: 6, gap: 8 },
-    keyText: { flex: 1, fontSize: 12, color: c.amberDeep, fontWeight: '600', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
     copyButton: { paddingHorizontal: 12, paddingVertical: 7, backgroundColor: c.ink, borderRadius: radii.sm },
     copyButtonText: { fontSize: 12, fontWeight: '600', color: c.amber },
     successDetails: { marginTop: 10, gap: 4 },
     successHint: { fontSize: 12, color: c.ink3 },
-    successHintEm: { fontWeight: '700', color: c.ink },
     buttonRow: { flexDirection: 'row', gap: 10, marginTop: spacing.xl },
     shareButton: { flex: 1, height: 44, backgroundColor: c.amber, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center' },
     shareButtonText: { fontSize: 14, fontWeight: '700', color: c.ink },
@@ -358,11 +353,9 @@ export default function ShareSheetScreen() {
 
       // Build the share URL locally so the fragment is always the client-side
       // decryption material. result.token echoes our client-supplied token (or
-      // the server-generated one for standard shares).
-      const shareBase = `${APP_URL}/s/${result.token}`;
-      setLocalShareUrl(`${shareBase}#key=${encodeURIComponent(keyForUrl)}`);
-      setShareUrlBase(shareBase);
-      setShareKey(keyForUrl);
+      // the server-generated one for standard shares). Task 1690: ONE full
+      // link — the fragment is part of the same string.
+      setLocalShareUrl(buildFullShareLink(getWebAppUrl(), result.token, keyForUrl));
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err) {
@@ -430,21 +423,18 @@ export default function ShareSheetScreen() {
   const displayUrl = localShareUrl ?? share?.url ?? '';
 
   const handleCopy = useCallback(
-    async (text: string, target: 'full' | 'link' | 'key', toastLabel: string) => {
+    async (text: string) => {
       if (!text) return;
       await Clipboard.setStringAsync(text);
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      setCopied(target);
-      showToast({ type: 'success', message: `${toastLabel} copied to clipboard` });
-      setTimeout(() => setCopied(null), 2000);
-      // Auto-clear clipboard after 60s for sensitive payloads (full link
-      // contains #key=, key is the raw decryption key). The bare URL is not
-      // sensitive on its own.
-      if (target === 'full' || target === 'key') {
-        setTimeout(() => {
-          Clipboard.setStringAsync('').catch(() => {});
-        }, 60_000);
-      }
+      setCopied(true);
+      showToast({ type: 'success', message: 'Full link copied to clipboard' });
+      setTimeout(() => setCopied(false), 2000);
+      // Auto-clear clipboard after 60s: the full link carries the #key=
+      // decryption key.
+      setTimeout(() => {
+        Clipboard.setStringAsync('').catch(() => {});
+      }, 60_000);
     },
     [showToast],
   );
@@ -496,7 +486,8 @@ export default function ShareSheetScreen() {
         testID="share-sheet-scroll"
       >
         {share ? (
-          /* ---- Share created — show URL + key as two distinct items ---- */
+          /* ---- Share created — ONE full link (task 1690): the URL with the
+             decryption key embedded as a #key= fragment ---- */
           <View style={styles.successCard}>
             <View style={styles.successHeaderRow}>
               <Text style={styles.successTitle}>End-to-end encrypted share</Text>
@@ -507,51 +498,27 @@ export default function ShareSheetScreen() {
               )}
             </View>
 
-            {/* Step 1 — the link (safe to send through most channels) */}
+            {/* Task 1690: the share is ONE full link — the old split view
+                (bare "Share link" box + separate key box with its
+                send-separately badge) was removed so every produced/copyable
+                share string is the whole link. */}
             <Text style={styles.fieldLabel}>Share link</Text>
             <View style={styles.urlBox}>
               <Text style={styles.urlText} numberOfLines={1} selectable>
-                {shareUrlBase ?? displayUrl}
+                {displayUrl}
               </Text>
               <TouchableOpacity
                 style={styles.copyButton}
-                onPress={() => handleCopy(shareUrlBase ?? displayUrl, 'link', 'Link')}
+                onPress={() => handleCopy(displayUrl)}
                 activeOpacity={0.8}
               >
-                <Text style={styles.copyButtonText}>{copied === 'link' ? 'Copied' : 'Copy'}</Text>
+                <Text style={styles.copyButtonText}>{copied ? 'Copied' : 'Copy'}</Text>
               </TouchableOpacity>
             </View>
 
-            {/* Step 2 — the decryption key (must travel via a different channel) */}
-            {shareKey && (
-              <>
-                <View style={styles.keyLabelRow}>
-                  <Text style={styles.fieldLabel}>Decryption key</Text>
-                  <View style={styles.keyBadge}>
-                    <Text style={styles.keyBadgeText}>SEND SEPARATELY</Text>
-                  </View>
-                </View>
-                <View style={styles.keyBox}>
-                  <Text style={styles.keyText} numberOfLines={1} selectable>
-                    {shareKey}
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.copyButton}
-                    onPress={() => handleCopy(shareKey, 'key', 'Key')}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.copyButtonText}>{copied === 'key' ? 'Copied' : 'Copy'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-
             <View style={styles.successDetails}>
               <Text style={styles.successHint}>
-                End-to-end encrypted — Beebeeb cannot decrypt this share. Send the link and the key through separate channels for maximum security.
-              </Text>
-              <Text style={styles.successHint}>
-                The recipient needs <Text style={styles.successHintEm}>both</Text> the link and the key to open the file.
+                End-to-end encrypted — Beebeeb cannot decrypt this share. The decryption key is embedded in the link and never reaches our servers.
               </Text>
               {share.expires_at && (
                 <Text style={styles.successHint}>
@@ -702,7 +669,7 @@ export default function ShareSheetScreen() {
                   <View style={styles.toggleInfo}>
                     <Text style={styles.toggleLabel}>End-to-end encrypted</Text>
                     <Text style={styles.toggleSub}>
-                      Beebeeb cannot decrypt this share. The recipient needs both the link and the key — send them through separate channels.
+                      Beebeeb cannot decrypt this share. The decryption key is embedded in the link and never reaches our servers.
                     </Text>
                     <View style={styles.zkBadge}>
                       <Text style={styles.zkBadgeText}>ACTIVE</Text>
@@ -754,7 +721,7 @@ export default function ShareSheetScreen() {
 
             <Text style={styles.fineprint}>
               {mode === 'link'
-                ? 'End-to-end encrypted — Beebeeb cannot decrypt. The recipient needs both the link and the key.'
+                ? 'End-to-end encrypted — Beebeeb cannot decrypt this share.'
                 : 'Email invites appear as pending until the recipient can accept them.'}
             </Text>
           </View>

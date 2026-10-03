@@ -48,6 +48,7 @@ import { recordRuntimeTrace } from './runtime-trace';
 import { createInFlightShare } from './inflight-share';
 import { PLAINTEXT_DRAIN_TIMEOUT_MS, plaintextGate, withPlaintextLease } from './plaintext-gate';
 import { offlineManager, offlineFilePath } from './offline-manager';
+import { PARTIAL_DECRYPT_MESSAGE } from './preview-load-error';
 import NetInfo from '@react-native-community/netinfo';
 
 const PREVIEW_CACHE_DIR = `${FileSystem.cacheDirectory}preview/`;
@@ -385,19 +386,38 @@ async function decryptToTempFileUnshared(
     hasFileKeyProvider: fileKey != null,
   });
 
-  // Check cache — return immediately if a non-empty file exists
+  // Check cache — but do not blindly trust it (task 1687d): a mid-write
+  // crash (process kill, battery death during a decrypt) can leave a
+  // TRUNCATED plaintext at outputPath, and the next open would otherwise
+  // serve that prefix as a cache hit and render the decodable part with no
+  // error — the "halve file" report. When the expected plaintext size is
+  // known, a mismatched cache entry is rejected: scrubbed here, then the
+  // normal cache-miss path below re-decrypts fresh.
   const cached = await FileSystem.getInfoAsync(outputPath);
+  const expectedSize = typeof sizeBytes === 'number' && sizeBytes > 0 ? sizeBytes : null;
   if (cached.exists && cached.size && cached.size > 0) {
-    throwIfAborted(options.signal);
-    recordRuntimeTrace('preview.decrypt.cache_hit', {
-      fileId,
-      extension: ext,
-      cachedSize: cached.size,
-      elapsedMs: Date.now() - startedAt,
-    });
-    options.onSource?.('cache');
-    options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
-    return outputPath;
+    if (expectedSize != null && cached.size !== expectedSize) {
+      recordRuntimeTrace('preview.decrypt.cache_size_mismatch', {
+        fileId,
+        extension: ext,
+        cachedSize: cached.size,
+        expectedSize,
+        elapsedMs: Date.now() - startedAt,
+      });
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+    } else {
+      throwIfAborted(options.signal);
+      recordRuntimeTrace('preview.decrypt.cache_hit', {
+        fileId,
+        extension: ext,
+        cachedSize: cached.size,
+        expectedSize,
+        elapsedMs: Date.now() - startedAt,
+      });
+      options.onSource?.('cache');
+      options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
+      return outputPath;
+    }
   }
   recordRuntimeTrace('preview.decrypt.cache_miss', {
     fileId,
@@ -558,6 +578,27 @@ async function decryptToTempFileUnshared(
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
         recordRuntimeTrace('preview.decrypt.native.aborted_after_result', { fileId });
         throw abortError();
+      }
+      // Task 1687d — a decrypt that produced FEWER plaintext bytes than the
+      // file's own metadata is a truncated result (crash mid-write inside
+      // the native writer), not a success. Serving it would render the
+      // decodable prefix of a half file with no explanation. Reject: the
+      // catch below scrubs outputPath, and the honest error tells the user
+      // what happened instead of leaving them with a silent "halve file".
+      if (
+        expectedSize != null &&
+        typeof result.plaintextSize === 'number' &&
+        result.plaintextSize > 0 &&
+        result.plaintextSize !== expectedSize
+      ) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        recordRuntimeTrace('preview.decrypt.native.size_mismatch', {
+          fileId,
+          extension: ext,
+          plaintextSize: result.plaintextSize,
+          expectedSize,
+        });
+        throw new Error(PARTIAL_DECRYPT_MESSAGE);
       }
       await prunePreviewCache(outputPath);
       recordRuntimeTrace('preview.decrypt.native.success', {

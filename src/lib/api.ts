@@ -19,7 +19,7 @@ import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgre
 import { getDeviceId } from './sync-client';
 import { deviceIdHeader } from './upload-device-header';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
-import { ACCOUNT_LAPSED_ERROR, PLAN_REQUIRED_ERROR, gateForRefusalCode, getCurrentAccountGate, readOnlyUploadMessage } from './account-state';
+import { ACCOUNT_LAPSED_ERROR, PLAN_REQUIRED_ERROR, TRIAL_CANCELLED_READ_ONLY_ERROR, gateForRefusalCode, getCurrentAccountGate, readOnlyUploadMessage } from './account-state';
 import { resolveWebAppUrl } from './web-links';
 import { normalizeNotificationPreferences, type NotificationPreferences } from './notification-prefs';
 // Task 1594 fix 4: the unlocked key's owner, sent on authenticated mutations.
@@ -280,6 +280,12 @@ export class ApiError extends Error {
      * 429's `Retry-After` header (task 1591). Undefined when absent.
      */
     public retryAfterSeconds?: number,
+    /**
+     * Task 1605 — true only for a 413 `quota_exceeded` hit against the
+     * never-paid-trial 25 GB cap (server's additive `is_trial_cap`), never
+     * the account's real plan quota. Undefined for every other error.
+     */
+    public isTrialCap?: boolean,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -348,10 +354,74 @@ export function formatAccountDeletedMessage(deletedAt: string, shredAfter: strin
   return `This account was deleted on ${dateOnly(deletedAt)}. Its encrypted data will be shredded on ${dateOnly(shredAfter)}. We can't recover it.`;
 }
 
+/**
+ * HTTP status phrases that leak into `err.message` when a response body is
+ * not the server's JSON error shape (`{"error": <statusText>}`) — never show
+ * them verbatim (task 1709).
+ */
+const HTTP_STATUS_PHRASES = new Set([
+  'unauthorized',
+  'forbidden',
+  'not found',
+  'bad request',
+  'conflict',
+  'gone',
+  'too many requests',
+  'payload too large',
+  'request timeout',
+  'unprocessable entity',
+  'internal server error',
+  'not implemented',
+  'service unavailable',
+  'bad gateway',
+  'gateway timeout',
+  'method not allowed',
+  'payment required',
+]);
+
+/**
+ * Task 1709 — decide whether a message is honest user-facing prose or a raw
+ * internal fragment that must never reach the UI: bare machine codes
+ * ("account_suspended", "key_binding_conflict"), lowercase internal
+ * fragments ("invalid base64 client_message"), HTTP status words
+ * ("forbidden", "Internal Server Error"), "404 …" prefixes, JSON dumps, or
+ * huge internal detail blobs. Short plain sentences (client-authored copy
+ * and the server's human `message` fields) pass unchanged. Mirrors the web
+ * client's `looksUserFriendly` heuristic (repos/web/src/lib/user-friendly-error.ts).
+ */
+function looksUserFacing(message: string): boolean {
+  const m = message.trim();
+  if (!m) return false;
+  if (m.length > 200) return false;
+  if (m.startsWith('{') || m.startsWith('[')) return false;
+  if (/^\d{3}\b/.test(m)) return false;
+  if (HTTP_STATUS_PHRASES.has(m.toLowerCase())) return false;
+  // One or more all-lowercase tokens with no sentence punctuation: a machine
+  // code or internal fragment, not prose.
+  if (!/[.!?]/.test(m) && /^(?:[a-z0-9_.:-]+(?:\s|$))+$/.test(m)) return false;
+  return true;
+}
+
+/**
+ * Show `message` only when it passes the prose check; anything else gets
+ * `fallback`. Task 1709.
+ */
+function displayFor(message: string | undefined, fallback: string): string {
+  return message && looksUserFacing(message) ? message : fallback;
+}
+
 /** Return a human-friendly message for common API errors. */
 export function friendlyError(err: unknown): string {
   if (err instanceof AccountDeletedError) {
     return formatAccountDeletedMessage(err.deletedAt, err.shredAfter);
+  }
+  // Task 1709 — typed client errors are mapped explicitly so their authored
+  // copy is the ONLY thing these classes can ever put on screen.
+  if (err instanceof NativeCryptoUnavailableError) {
+    return 'A required security component is missing. Update or reinstall the app to sign in.';
+  }
+  if (err instanceof IncorrectPasswordError) {
+    return 'Incorrect password. Please try again.';
   }
   if (err instanceof ApiError) {
     // Typed quota errors come back with a machine-readable `code` so we don't
@@ -368,6 +438,12 @@ export function friendlyError(err: unknown): string {
     const readOnly = refusal ? readOnlyUploadMessage(refusal) : null;
     if (readOnly) return readOnly;
     if (err.code === 'quota_exceeded') {
+      // Task 1605 — the 25 GB TRIAL cap, not the account's real plan quota.
+      // No purchase call to action here (task 1400, App Review 3.1.1(a)) —
+      // same informational tone as PLAN_MANAGEMENT_NOTE, never a button/link.
+      if (err.isTrialCap) {
+        return 'This account is on the 25 GB trial storage cap until your first payment. Manage your plan from your account on the web.';
+      }
       return 'Storage full. Free up space or upgrade your plan to keep uploading.';
     }
     if (err.status === 0) return 'Could not reach the server. Check your connection and try again.';
@@ -376,8 +452,40 @@ export function friendlyError(err: unknown): string {
       // authenticated requests => "Session expired".
       return err.message || 'Session expired. Please sign in again.';
     }
-    if (err.status === 409) return err.message || 'A resource with that name already exists.';
-    if (err.status === 422) return err.message || 'Invalid input. Please check your details.';
+    // Task 1709 — account-state codes that reach the client WITHOUT a human
+    // `message` field (403 `{"error":"account_suspended"}` from the server's
+    // auth extractor, or a stale server sending the bare code). Map them to
+    // the honest copy; where the server does send its own sentence, that
+    // passes through below unchanged.
+    if (err.code === 'account_suspended' || err.message === 'account_suspended') {
+      return 'This account has been suspended. Contact support if you believe this is a mistake.';
+    }
+    if (err.code === 'account_disabled' || err.message === 'account_disabled') {
+      return 'This account has been disabled. Contact support if you believe this is in error.';
+    }
+    if (err.code === 'email_unverified' || err.message === 'email_unverified') {
+      return 'Verify your email address to upload, share, or receive files. Check your inbox or request a new link.';
+    }
+    if (err.code === 'key_binding_conflict' || err.message === 'key_binding_conflict') {
+      return 'This account already has a different recovery phrase or sharing key bound. Log out and back in, then try again — if this persists, contact support.';
+    }
+    if (err.status === 403) {
+      // A 403 always means the request was refused, so the status line is an
+      // honest fallback for both a missing and a machine-shaped message.
+      return displayFor(err.message, "You don't have permission to do that.");
+    }
+    if (err.status === 404) return displayFor(err.message, 'Not found.');
+    if (err.status === 409) {
+      // A 409 is NOT always a name conflict (e.g. "upload already completed"),
+      // so a machine-shaped or missing message gets the generic line rather
+      // than guessing a cause.
+      return displayFor(err.message, 'Something went wrong. Please try again.');
+    }
+    if (err.status === 422) {
+      // A 422 means the request itself failed validation — the status line is
+      // honest for both a missing and a machine-shaped message.
+      return displayFor(err.message, 'Invalid input. Please check your details.');
+    }
     if (err.status === 429) {
       if (err.retryAfterSeconds != null && err.retryAfterSeconds > 0) {
         return `Too many attempts. Try again in ${formatRetryAfter(err.retryAfterSeconds)}.`;
@@ -388,10 +496,16 @@ export function friendlyError(err: unknown): string {
     // "all storage pools are full or unavailable" for the StorageUnavailable variant;
     // either way, the user just needs to retry shortly.
     if (err.status === 503) return 'Storage is temporarily unavailable. Please try again in a moment.';
-    return err.message || 'Something went wrong. Please try again.';
+    return displayFor(err.message, 'Something went wrong. Please try again.');
   }
   if (err instanceof TypeError) return 'Could not reach the server. Check your connection and try again.';
-  if (err instanceof Error) return err.message || 'Something went wrong. Please try again.';
+  if (err instanceof Error) {
+    // Task 1709 — a plain Error's message may be raw native (UniFFI) error
+    // text; only honest prose reaches the screen.
+    return err.message && looksUserFacing(err.message)
+      ? err.message
+      : 'Something went wrong. Please try again.';
+  }
   return 'Something went wrong. Please try again.';
 }
 
@@ -459,7 +573,7 @@ export async function endSessionForAccountMismatch(snapshot: RequestAuthSnapshot
  */
 async function throwUploadError(
   status: number,
-  err: { error?: string; message?: string },
+  err: { error?: string; message?: string; is_trial_cap?: boolean },
   fallbackMessage: string,
   authSnapshot: RequestAuthSnapshot,
 ): Promise<never> {
@@ -467,7 +581,7 @@ async function throwUploadError(
     await endSessionForAccountMismatch(authSnapshot);
     throw new ApiError(409, err.message ?? 'This session does not match the account of the vault key on this device.', 'account_mismatch');
   }
-  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error);
+  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error, undefined, err.is_trial_cap);
 }
 
 async function headers(auth = true, extra?: Record<string, string>): Promise<RequestHeaders> {
@@ -600,10 +714,14 @@ async function request<T>(
     throw new ApiError(
       res.status,
       err.message ?? err.error ?? res.statusText,
-      // Task 1037: keep the machine code for the account-refusal 409s (share
-      // creation) so friendlyError() and callers can recognise them. Other
-      // bodies stay code-less, as before.
-      err.error === PLAN_REQUIRED_ERROR || err.error === ACCOUNT_LAPSED_ERROR ? err.error : undefined,
+      // Task 1037/1605: keep the machine code for the account-refusal 409s
+      // (share creation) so friendlyError() and callers can recognise them.
+      // Other bodies stay code-less, as before.
+      err.error === PLAN_REQUIRED_ERROR ||
+        err.error === ACCOUNT_LAPSED_ERROR ||
+        err.error === TRIAL_CANCELLED_READ_ONLY_ERROR
+        ? err.error
+        : undefined,
       res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,
     );
   }
@@ -644,6 +762,12 @@ export interface User {
   email: string;
   email_verified: boolean;
   created_at: string;
+  /** `/api/v1/auth/me` always includes this (COALESCE'd false when no TOTP
+   *  row exists yet — `routes/auth.rs::me`) — never optional/undefined. Read
+   *  by SettingsScreen/TwoFactorSetupScreen to decide the 2FA entry point
+   *  (task 1610) instead of unconditionally routing an already-enabled
+   *  account into a bare setup call. */
+  totp_enabled: boolean;
 }
 
 // Account creation is web-only since task 1037: "Create account" points to
@@ -1418,6 +1542,13 @@ export async function uploadEncryptedChunked(params: {
   createdAt?: string
   plaintextSizeBytes: number
   resumeKey?: string
+  /**
+   * Task 1685 — written once per attempt into the per-file resume pointer so a
+   * post-crash placeholder row can re-run this exact attempt
+   * (api.ts → getUploadResumeForFile). `mimeType` is the CALLER's mime (it
+   * feeds the resumeKey hash and must round-trip exactly). Absent → no pointer.
+   */
+  resumeMeta?: { sourceUri: string; name: string; mimeType?: string | null }
   onProgress?: (p: UploadProgress) => void
   /** Called once per chunk index — must return nonce||ciphertext bytes */
   readEncryptedChunk: (index: number, chunkSizeBytes: number, fileId: string) => Promise<Uint8Array>
@@ -1456,6 +1587,7 @@ export async function uploadEncryptedChunked(params: {
     createdAt,
     plaintextSizeBytes,
     resumeKey,
+    resumeMeta,
     onProgress,
     readEncryptedChunk,
     versionReplace,
@@ -1574,17 +1706,27 @@ export async function uploadEncryptedChunked(params: {
     serverFileId = init.file_id
   }
 
-  saveUploadResumeStateSoon(resumeKey, {
-    protocol,
-    fileId: serverFileId,
-    uploadSessionId: uploadSessionId ?? null,
-    chunkSizeBytes,
-    chunkCount,
-    plaintextSizeBytes,
-    parentId: parentId ?? null,
-    mimeType: mimeType ?? null,
-    lastUploadedChunkIndex: startChunkIndex - 1,
-  })
+  // Task 1685 — one persist closure for the whole JS attempt (initial, per-chunk
+  // and post-re-init saves all had the identical shape), which ALSO records the
+  // per-file resume pointer exactly once per (fileId, resumeKey).
+  const persistResume = (lastUploadedChunkIndex: number): void => {
+    saveUploadResumeStateSoon(resumeKey, {
+      protocol,
+      fileId: serverFileId,
+      uploadSessionId: uploadSessionId ?? null,
+      chunkSizeBytes,
+      chunkCount,
+      plaintextSizeBytes,
+      parentId: parentId ?? null,
+      mimeType: mimeType ?? null,
+      lastUploadedChunkIndex,
+    })
+    saveUploadResumeIndexEntrySoon(serverFileId, resumeKey, resumeMeta, {
+      parentId,
+      plaintextSizeBytes,
+    })
+  }
+  persistResume(startChunkIndex - 1)
 
   // ── Steps 2+3: upload every chunk, then complete ────────────────────────
   // Task 1589: extracted so a swept v2 session (404, or the legacy 400 "not
@@ -1618,17 +1760,7 @@ export async function uploadEncryptedChunked(params: {
       }
 
       bytesUploaded += encBytes.length
-      saveUploadResumeStateSoon(resumeKey, {
-        protocol,
-        fileId: serverFileId,
-        uploadSessionId: uploadSessionId ?? null,
-        chunkSizeBytes,
-        chunkCount,
-        plaintextSizeBytes,
-        parentId: parentId ?? null,
-        mimeType: mimeType ?? null,
-        lastUploadedChunkIndex: i,
-      })
+      persistResume(i)
       onProgress?.({
         phase: 'uploading',
         chunksTotal: chunkCount,
@@ -1708,17 +1840,7 @@ export async function uploadEncryptedChunked(params: {
       chunkCount = reinit.chunk_count
       heartbeatIntervalSecs = reinit.heartbeat_interval_secs ?? DEFAULT_HEARTBEAT_INTERVAL_SECS
       leaseSeconds = reinit.lease_seconds
-      saveUploadResumeStateSoon(resumeKey, {
-        protocol: 'v2',
-        fileId: serverFileId,
-        uploadSessionId,
-        chunkSizeBytes,
-        chunkCount,
-        plaintextSizeBytes,
-        parentId: parentId ?? null,
-        mimeType: mimeType ?? null,
-        lastUploadedChunkIndex: -1,
-      })
+      persistResume(-1)
       stopHeartbeat = startUploadHeartbeatPulse(uploadSessionId, token, heartbeatIntervalSecs, leaseSeconds)
 
       try {
@@ -1786,7 +1908,12 @@ async function finalizeUpload(params: {
       }
     }
   }
-  if (shouldClearResumeState) clearUploadResumeStateSoon(resumeKey)
+  if (shouldClearResumeState) {
+    clearUploadResumeStateSoon(resumeKey)
+    // Task 1685 — the upload is complete: drop the per-file resume pointer so
+    // the row never offers a resume that has nothing to resume.
+    forgetUploadResumeSoon(serverFileId)
+  }
   return completed
 }
 
@@ -1813,6 +1940,8 @@ export async function uploadEncryptedFileNative(params: {
   createdAt?: string
   plaintextSizeBytes: number
   resumeKey?: string
+  /** Task 1685 — per-file resume pointer payload; see uploadEncryptedChunked. */
+  resumeMeta?: { sourceUri: string; name: string; mimeType?: string | null }
   onProgress?: (p: UploadProgress) => void
   /**
    * Task 1683f — trash-cancels-in-flight: forwarded into the native bridge's
@@ -1829,7 +1958,7 @@ export async function uploadEncryptedFileNative(params: {
   if (!isNativeUploadAvailable()) return null
   const {
     masterKeyHandleId, fileId, inputUri, nameEncrypted, v2InitNameEncrypted,
-    parentId, isMedia, createdAt, plaintextSizeBytes, resumeKey, onProgress, signal,
+    parentId, isMedia, createdAt, plaintextSizeBytes, resumeKey, resumeMeta, onProgress, signal,
   } = params
   // Task 1594 round 3 (T5): snapshot the session at this upload's own start —
   // see `endSessionForAccountMismatch`.
@@ -1892,17 +2021,25 @@ export async function uploadEncryptedFileNative(params: {
     protocol: 'v2',
   })
 
-  const persistResume = (lastUploadedChunkIndex: number) => saveUploadResumeStateSoon(resumeKey, {
-    protocol: 'v2',
-    fileId: serverFileId,
-    uploadSessionId,
-    chunkSizeBytes: plan.chunkSizeBytes,
-    chunkCount: plan.chunkCount,
-    plaintextSizeBytes,
-    parentId: parentId ?? null,
-    mimeType: null,
-    lastUploadedChunkIndex,
-  })
+  const persistResume = (lastUploadedChunkIndex: number) => {
+    saveUploadResumeStateSoon(resumeKey, {
+      protocol: 'v2',
+      fileId: serverFileId,
+      uploadSessionId,
+      chunkSizeBytes: plan.chunkSizeBytes,
+      chunkCount: plan.chunkCount,
+      plaintextSizeBytes,
+      parentId: parentId ?? null,
+      mimeType: null,
+      lastUploadedChunkIndex,
+    })
+    // Task 1685 — recorded once per (fileId, resumeKey); the per-chunk calls
+    // that follow are memoized no-ops.
+    saveUploadResumeIndexEntrySoon(serverFileId, resumeKey, resumeMeta, {
+      parentId,
+      plaintextSizeBytes,
+    })
+  }
   persistResume(startChunkIndex - 1)
   let lastPersistedChunk = startChunkIndex - 1
 
@@ -2383,6 +2520,97 @@ export function abortUploadForFile(fileId: string): boolean {
   uploadAbortRegistry.delete(fileId)
   controller.abort()
   return true
+}
+
+// ── Task 1685: durable resume VISIBILITY ─────────────────────────────────────
+// The primary resume state is keyed by hash(parentId|uri|name|mime|size) —
+// uncomputable after a relaunch, when neither the uri nor the name are known.
+// A second, per-file record (`beebeeb_upload_resume_file_<fileId>`, one
+// SecureStore read for a tapped placeholder row) stores everything needed to
+// re-run the interrupted attempt: the resumeKey itself plus the original
+// sourceUri/name/parent/mime/size. expo-secure-store cannot enumerate keys, so
+// lookup MUST be by fileId — which is exactly what the FilesScreen tap has.
+
+export interface UploadResumeInfo {
+  /** The server file id — the same id the placeholder row carries. */
+  fileId: string;
+  /** The primary resume-state key this entry points at. */
+  resumeKey: string;
+  /** Local file URI the interrupted attempt was reading from. */
+  sourceUri: string;
+  /** Plaintext filename of the interrupted attempt. */
+  name: string;
+  parentId: string | null;
+  mimeType: string | null;
+  plaintextSizeBytes: number;
+}
+
+const uploadResumeFileKey = (fileId: string) => `beebeeb_upload_resume_file_${fileId}`
+
+// One write per (fileId, resumeKey) attempt — the per-chunk persist calls
+// otherwise fire on every chunk, and SecureStore writes are Keychain writes.
+const resumeIndexWritten = new Set<string>();
+
+function saveUploadResumeIndexEntrySoon(
+  fileId: string | undefined,
+  resumeKey: string | undefined,
+  meta: { sourceUri?: string; name?: string; mimeType?: string | null } | undefined,
+  info: { parentId?: string | null; plaintextSizeBytes: number },
+): void {
+  if (!fileId || !resumeKey || !meta?.sourceUri || !meta.name) return;
+  const memoKey = `${fileId}:${resumeKey}`;
+  if (resumeIndexWritten.has(memoKey)) return;
+  resumeIndexWritten.add(memoKey);
+  const entry: UploadResumeInfo = {
+    fileId,
+    resumeKey,
+    sourceUri: meta.sourceUri,
+    name: meta.name,
+    parentId: info.parentId ?? null,
+    // The CALLER's mime type (encryptedUpload's opts.mimeType), NOT the
+    // chunked-level one (always undefined there — MIME is encrypted inside
+    // name_encrypted). The re-run hashes this value into the resumeKey, so it
+    // must round-trip exactly or the resume state is never found.
+    mimeType: meta.mimeType ?? null,
+    plaintextSizeBytes: info.plaintextSizeBytes,
+  };
+  void tokenStore.set(uploadResumeFileKey(fileId), JSON.stringify(entry)).catch(() => {});
+}
+
+/** Resume pointer for a pending-upload row, or null (never throws). */
+export async function getUploadResumeForFile(fileId: string): Promise<UploadResumeInfo | null> {
+  if (!fileId) return null;
+  try {
+    const raw = await tokenStore.get(uploadResumeFileKey(fileId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as UploadResumeInfo;
+    if (!parsed || typeof parsed !== 'object' || !parsed.sourceUri || !parsed.resumeKey) {
+      await tokenStore.remove(uploadResumeFileKey(fileId)).catch(() => {});
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Drop the resume pointer (upload completed / placeholder discarded). */
+export async function forgetUploadResume(fileId: string): Promise<void> {
+  if (!fileId) return;
+  await tokenStore.remove(uploadResumeFileKey(fileId)).catch(() => {});
+  // Also drop this fileId's once-per-attempt memo entries: a LATER attempt of
+  // the same file (same inputs → same resumeKey — e.g. a version-replace
+  // retry) must be able to re-record the pointer after it was forgotten, or a
+  // mid-upload failure of that retry would surface as unresumable.
+  const prefix = `${fileId}:`;
+  for (const memoKey of Array.from(resumeIndexWritten)) {
+    if (memoKey.startsWith(prefix)) resumeIndexWritten.delete(memoKey);
+  }
+}
+
+function forgetUploadResumeSoon(fileId: string | undefined): void {
+  if (!fileId) return;
+  void forgetUploadResume(fileId);
 }
 
 async function loadUploadResumeState(resumeKey: string): Promise<UploadResumeState | null> {
@@ -3121,6 +3349,19 @@ export interface Subscription {
   account_state?: string | null;
   data_deletion_at?: string | null;
   trial_auto_converts?: boolean | null;
+  /**
+   * Additive fields (task 1605, server PR #129). See account-state.ts's
+   * `AccountStateFields` doc for `uploads_blocked_at`/`access_until`.
+   *  - `trial_storage_cap_bytes`: non-null only while an active mandated
+   *    trial (`trial_auto_converts: true`) has never had a successful
+   *    charge — the quota is capped at this many bytes (25 GB) until then.
+   *    No in-app action to raise it early (task 1400, App Review 3.1.1(a) —
+   *    no IAP): informational only, same as every other plan fact on this
+   *    screen. See DEVIATIONS.md → "Task 1605".
+   */
+  uploads_blocked_at?: string | null;
+  access_until?: string | null;
+  trial_storage_cap_bytes?: number | null;
 }
 
 export async function getSubscription(): Promise<Subscription | null> {
@@ -3227,7 +3468,11 @@ export async function opaqueLoginStart(email: string, password: string): Promise
     ({ state, message } = await BeebeebCrypto.opaqueLoginStart(email, password));
   } catch (err) {
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginStart');
-    throw err;
+    // Task 1709 — the raw native (UniFFI) error text is internal and must not
+    // reach the sign-in screen. login-start never validates the password (the
+    // server mints a decoy challenge even for unknown emails), so this is
+    // never a wrong-password case — surface an honest client-side line.
+    throw new ApiError(500, 'Sign-in could not start. Please try again in a moment.');
   }
   let data: { server_message: string; server_state: string; ksf_version: number };
   try {
@@ -3269,7 +3514,13 @@ export async function opaqueLoginFinish(
     ({ message } = await BeebeebCrypto.opaqueLoginFinish(state, serverMessage, password, ksfVersion));
   } catch (err) {
     if (!BeebeebCrypto.isNativeAvailable) throw new NativeCryptoUnavailableError('opaqueLoginFinish');
-    throw err;
+    // Task 1709 — a WRONG password fails HERE, client-side, when the native
+    // finish verifies the server MAC; the raw UniFFI error text is internal.
+    // Map to the same 401 copy the server paths produce — exactly what
+    // confirmAction does for its own native finish (IncorrectPasswordError
+    // precedent). login-finish never reports anything else the user could
+    // act on differently.
+    throw new ApiError(401, 'Wrong email or password.');
   }
   let data: {
     session_token?: string;
@@ -3732,12 +3983,25 @@ export interface TotpSetup {
   backup_codes: string[];
 }
 
-/** POST /api/v1/auth/2fa/setup — generate secret + backup codes */
-export async function setupTotp(): Promise<TotpSetup> {
-  // Body {} (not empty): request() always sets Content-Type: application/json,
-  // and axum's Option<Json<SetupRequest>> on the server rejects a JSON-typed
-  // EMPTY body with 400 ("EOF while parsing") — the 1297 wizard dead-end.
-  return request<TotpSetup>('POST', '/api/v1/auth/2fa/setup', {});
+/**
+ * POST /api/v1/auth/2fa/setup — generate secret + backup codes.
+ *
+ * Body {} (not empty): request() always sets Content-Type: application/json,
+ * and axum's Option<Json<SetupRequest>> on the server rejects a JSON-typed
+ * EMPTY body with 400 ("EOF while parsing") — the 1297 wizard dead-end.
+ *
+ * When the account already has 2FA ON, the server requires step-up before
+ * replacing the live secret (`routes/totp.rs` `setup_step_up_validated_if_required`
+ * — task 1610): either the current TOTP/backup code as `opts.code`, or a
+ * step-up `X-Confirm-Token` (from `requestConfirmation()`, `confirm-action.ts`)
+ * as `opts.confirmToken`. Calling this bare against an enabled account 403s
+ * `confirmation_required` — callers MUST gate on `User.totp_enabled` first
+ * and offer one of the two paths for "set up again", never call it bare.
+ */
+export async function setupTotp(opts?: { code?: string; confirmToken?: string }): Promise<TotpSetup> {
+  const body = opts?.code ? { code: opts.code } : {};
+  const extraHeaders = opts?.confirmToken ? { 'X-Confirm-Token': opts.confirmToken } : undefined;
+  return request<TotpSetup>('POST', '/api/v1/auth/2fa/setup', body, true, extraHeaders);
 }
 
 /** POST /api/v1/auth/2fa/enable — verify code and activate TOTP */

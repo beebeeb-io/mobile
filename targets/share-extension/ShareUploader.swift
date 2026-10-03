@@ -22,7 +22,18 @@ final class ShareUploader {
     enum UploadError: LocalizedError {
         case fileReadFailed
         case cryptoUnavailable(String)
-        case uploadFailed(Int, String)
+        /// Task 1671 (Issue 2b): the server's error `detail` is intentionally
+        /// NOT part of this case — it is logged via `NSLog` at the throw site
+        /// (`send(_:)`/`initUpload`/etc.) instead, never surfaced to the user.
+        /// Showing the raw JSON response body (e.g. the full upload-init
+        /// payload: chunk_count, lease_expires_at, object_version_id,
+        /// storage_pool_id, tenant_id, upload_session_id, ...) as an alert is
+        /// both unreadable and leaks internal identifiers for no benefit —
+        /// exactly what Guus hit on TestFlight build 230.
+        case uploadFailed(Int)
+        /// A 2xx whose body could not be read (init only): the request
+        /// succeeded, so there is no honest HTTP status to show.
+        case unreadableResponse
         case networkError(Error)
         /// Task 1594 round 5: the server's typed 409 `account_mismatch` —
         /// the session's real account doesn't match the `X-Beebeeb-Expected-User`
@@ -36,7 +47,8 @@ final class ShareUploader {
             switch self {
             case .fileReadFailed: return "Could not read file data"
             case .cryptoUnavailable(let msg): return "Could not encrypt the file: \(msg). Open Beebeeb once, then try sharing again."
-            case .uploadFailed(let code, let msg): return "Upload failed (HTTP \(code)): \(msg)"
+            case .uploadFailed(let code): return "Upload failed (HTTP \(code)). Please try again."
+            case .unreadableResponse: return "Beebeeb got a reply it couldn't read. Please try again."
             case .networkError(let e): return "Network error: \(e.localizedDescription)"
             case .accountMismatch: return "This file belongs to a different account. Open Beebeeb, sign in again, then try sharing again."
             }
@@ -130,30 +142,39 @@ final class ShareUploader {
             chunkCount: Int(plan.chunkCount)
         )
 
-        onProgress(0.3, "Uploading...")
-        let chunkCount = max(1, Int(plan.chunkCount))
-        var uploaded = 0
-        while true {
-            let chunk: EncryptedChunkDto?
-            do {
-                // Read + encrypt one chunk; autoreleasepool releases the frame
-                // buffer between iterations so peak memory stays ~one chunk.
-                chunk = try autoreleasepool { try encryptor.nextChunk() }
-            } catch {
-                throw UploadError.cryptoUnavailable(error.localizedDescription)
+        // Task 1671 (Issue 2b): `initUpload` above already created the file
+        // row + upload session server-side. Any failure from here on must
+        // abandon that session (best-effort) before rethrowing, so a retry
+        // never piles up another stranded placeholder next to this one.
+        do {
+            onProgress(0.3, "Uploading...")
+            let chunkCount = max(1, Int(plan.chunkCount))
+            var uploaded = 0
+            while true {
+                let chunk: EncryptedChunkDto?
+                do {
+                    // Read + encrypt one chunk; autoreleasepool releases the frame
+                    // buffer between iterations so peak memory stays ~one chunk.
+                    chunk = try autoreleasepool { try encryptor.nextChunk() }
+                } catch {
+                    throw UploadError.cryptoUnavailable(error.localizedDescription)
+                }
+                guard let chunk else { break }
+                try await putChunk(uploadSessionId: session.upload_session_id, index: Int(chunk.index), frame: chunk.data)
+                uploaded += 1
+                let progress = min(0.9, 0.3 + 0.6 * Float(uploaded) / Float(chunkCount))
+                onProgress(progress, "Uploading... \(Int(progress * 100))%")
             }
-            guard let chunk else { break }
-            try await putChunk(uploadSessionId: session.upload_session_id, index: Int(chunk.index), frame: chunk.data)
-            uploaded += 1
-            let progress = min(0.9, 0.3 + 0.6 * Float(uploaded) / Float(chunkCount))
-            onProgress(progress, "Uploading... \(Int(progress * 100))%")
+
+            // Integrity guard (detects a source that shrank) before completing.
+            do { _ = try encryptor.finish() }
+            catch { throw UploadError.cryptoUnavailable(error.localizedDescription) }
+
+            try await completeUpload(uploadSessionId: session.upload_session_id)
+        } catch {
+            await abandonUpload(fileId: fileId)
+            throw error
         }
-
-        // Integrity guard (detects a source that shrank) before completing.
-        do { _ = try encryptor.finish() }
-        catch { throw UploadError.cryptoUnavailable(error.localizedDescription) }
-
-        try await completeUpload(uploadSessionId: session.upload_session_id)
         onProgress(1.0, "Done")
         return .uploaded(fileId: fileId)
     }
@@ -194,25 +215,31 @@ final class ShareUploader {
             chunkCount: Int(plan.chunkCount)
         )
 
-        onProgress(0.3, "Uploading...")
-        let chunkSize = Int(plan.chunkSizeBytes)
-        let chunkCount = Int(plan.chunkCount)
-        for index in 0..<chunkCount {
-            let start = index * chunkSize
-            let end = min(start + chunkSize, data.count)
-            let slice = start < end ? data.subdata(in: start..<end) : Data()
-            let frame: Data
-            do { frame = try encryptor.pushChunk(plaintext: slice).data }
+        // Task 1671 (Issue 2b) — see the matching comment in `uploadFile`.
+        do {
+            onProgress(0.3, "Uploading...")
+            let chunkSize = Int(plan.chunkSizeBytes)
+            let chunkCount = Int(plan.chunkCount)
+            for index in 0..<chunkCount {
+                let start = index * chunkSize
+                let end = min(start + chunkSize, data.count)
+                let slice = start < end ? data.subdata(in: start..<end) : Data()
+                let frame: Data
+                do { frame = try encryptor.pushChunk(plaintext: slice).data }
+                catch { throw UploadError.cryptoUnavailable(error.localizedDescription) }
+                try await putChunk(uploadSessionId: session.upload_session_id, index: index, frame: frame)
+                let progress = min(0.9, 0.3 + 0.6 * Float(index + 1) / Float(chunkCount))
+                onProgress(progress, "Uploading... \(Int(progress * 100))%")
+            }
+
+            do { _ = try encryptor.finish() }
             catch { throw UploadError.cryptoUnavailable(error.localizedDescription) }
-            try await putChunk(uploadSessionId: session.upload_session_id, index: index, frame: frame)
-            let progress = min(0.9, 0.3 + 0.6 * Float(index + 1) / Float(chunkCount))
-            onProgress(progress, "Uploading... \(Int(progress * 100))%")
+
+            try await completeUpload(uploadSessionId: session.upload_session_id)
+        } catch {
+            await abandonUpload(fileId: fileId)
+            throw error
         }
-
-        do { _ = try encryptor.finish() }
-        catch { throw UploadError.cryptoUnavailable(error.localizedDescription) }
-
-        try await completeUpload(uploadSessionId: session.upload_session_id)
         onProgress(1.0, "Done")
         return .uploaded(fileId: fileId)
     }
@@ -261,11 +288,20 @@ final class ShareUploader {
         if ShareUploadRequestPolicy.isAccountMismatchResponse(statusCode: statusCode, body: data) {
             throw UploadError.accountMismatch
         }
-        guard statusCode == 200 else {
-            throw UploadError.uploadFailed(statusCode, String(data: data, encoding: .utf8) ?? "init failed")
+        // Task 1671 (Issue 2b): `init_upload` (beebeeb-api/src/routes/uploads.rs:924)
+        // returns 201 Created, not 200 — accept the whole 2xx range like every
+        // other step, never a single hardcoded code.
+        guard ShareUploadRequestPolicy.isSuccessResponse(statusCode: statusCode) else {
+            Self.logUploadFailureDetail(step: "init", statusCode: statusCode, body: data)
+            throw UploadError.uploadFailed(statusCode)
         }
         guard let decoded = try? JSONDecoder().decode(InitResponse.self, from: data) else {
-            throw UploadError.uploadFailed(0, "Invalid init response")
+            NSLog("[Beebeeb] ShareUploader: init response failed to decode: \(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
+            // The 2xx means the file row + upload session already exist
+            // server-side; without the session id no chunk can be sent, so
+            // abandon it now (best-effort) instead of stranding a placeholder.
+            await abandonUpload(fileId: fileId)
+            throw UploadError.unreadableResponse
         }
         return decoded
     }
@@ -289,8 +325,9 @@ final class ShareUploader {
         if ShareUploadRequestPolicy.isAccountMismatchResponse(statusCode: statusCode, body: data) {
             throw UploadError.accountMismatch
         }
-        guard (200..<300).contains(statusCode) else {
-            throw UploadError.uploadFailed(statusCode, String(data: data, encoding: .utf8) ?? "chunk \(index) failed")
+        guard ShareUploadRequestPolicy.isSuccessResponse(statusCode: statusCode) else {
+            Self.logUploadFailureDetail(step: "chunk \(index)", statusCode: statusCode, body: data)
+            throw UploadError.uploadFailed(statusCode)
         }
     }
 
@@ -313,8 +350,35 @@ final class ShareUploader {
         if ShareUploadRequestPolicy.isAccountMismatchResponse(statusCode: statusCode, body: data) {
             throw UploadError.accountMismatch
         }
-        guard statusCode == 200 else {
-            throw UploadError.uploadFailed(statusCode, String(data: data, encoding: .utf8) ?? "complete failed")
+        guard ShareUploadRequestPolicy.isSuccessResponse(statusCode: statusCode) else {
+            Self.logUploadFailureDetail(step: "complete", statusCode: statusCode, body: data)
+            throw UploadError.uploadFailed(statusCode)
+        }
+    }
+
+    /// Task 1671 (Issue 2b): best-effort — mirrors `abandonTextFileUpload` in
+    /// `src/lib/text-file-save.ts`, which calls the SAME
+    /// `POST /api/v1/files/{id}/upload/abandon` endpoint
+    /// (`beebeeb-api/src/routes/files.rs:1119`/`:3546`) on any failure after
+    /// its own `init` succeeded, and swallows the result — "the server's
+    /// 7-day stale-upload sweep is the backstop". Called from `uploadFile`/
+    /// `uploadData` whenever a chunk PUT, `finish()`, or `complete` fails
+    /// AFTER `initUpload` already created the file row + upload session, so a
+    /// share-sheet retry never piles up another stranded placeholder next to
+    /// the one from the failed attempt.
+    private func abandonUpload(fileId: String) async {
+        guard let url = URL(string: "\(apiUrl)/api/v1/files/\(fileId)/upload/abandon") else { return }
+        var request = URLRequest(url: url)
+        ProvenanceHeaders.apply(to: &request)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        if ShareUploadRequestPolicy.shouldAttachExpectedUserHeader(expectedUser) {
+            request.setValue(expectedUser, forHTTPHeaderField: "X-Beebeeb-Expected-User")
+        }
+        do {
+            _ = try await URLSession.shared.data(for: request)
+        } catch {
+            NSLog("[Beebeeb] ShareUploader: best-effort abandon(\(fileId)) failed: \(error.localizedDescription)")
         }
     }
 
@@ -327,6 +391,15 @@ final class ShareUploader {
     }
 
     // MARK: - Helpers
+
+    /// Task 1671 (Issue 2b): logs the server's actual response body for
+    /// engineers (device log / Console.app) — this is the ONLY place that
+    /// detail is written down. `UploadError.uploadFailed` carries just the
+    /// status code, so `showError()` never renders a raw JSON blob again.
+    private static func logUploadFailureDetail(step: String, statusCode: Int, body: Data) {
+        let detail = String(data: body, encoding: .utf8) ?? "<non-utf8, \(body.count) bytes>"
+        NSLog("[Beebeeb] ShareUploader: \(step) failed (HTTP \(statusCode)): \(detail)")
+    }
 
     private static func isMedia(fileName: String) -> Bool {
         switch (fileName as NSString).pathExtension.lowercased() {

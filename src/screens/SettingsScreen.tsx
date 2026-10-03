@@ -19,7 +19,7 @@ import * as SecureStore from 'expo-secure-store';
 let LocalAuthentication: any = { hasHardwareAsync: async () => false, authenticateAsync: async () => ({ success: false }), isEnrolledAsync: async () => false };
 let StoreReview: any = { requestReview: async () => {} };
 let Notifications: any = { getPermissionsAsync: async () => ({ status: 'undetermined' }), requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
-let MediaLibrary: any = { requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
+let MediaLibrary: any = { getPermissionsAsync: async () => ({ status: 'undetermined' }), requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
 let Contacts: any = {
   getPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
   requestPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
@@ -53,6 +53,7 @@ import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { ensureCalendarPermission } from '../lib/calendar-permissions';
+import { ensurePhotoPermission } from '../lib/photo-permissions';
 import { formatBytes } from '../lib/format';
 import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
 import {
@@ -653,6 +654,7 @@ export default function SettingsScreen() {
     backupBlockedReason,
     accountMismatchReason,
     ownerUnconfirmedReason,
+    accountRefusalReason,
   } = useBackup();
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
@@ -1438,8 +1440,12 @@ export default function SettingsScreen() {
   const handleTogglePhotoBackup = useCallback(async () => {
     const enabling = !isPhotoBackupEnabled;
     if (enabling) {
-      const { status } = await MediaLibrary.requestPermissionsAsync();
-      if (status !== 'granted') {
+      // Task 1688 — get first: an already-granted library (full OR limited)
+      // must not be re-prompted by re-enabling the toggle; only a
+      // not-yet-granted one prompts, and only because the user just chose
+      // to enable backup (an explicit action).
+      const { granted } = await ensurePhotoPermission(MediaLibrary);
+      if (!granted) {
         Alert.alert(
           'Photo access needed',
           'Beebeeb needs access to your photo library to back up your camera roll. Open Settings and enable "Photos" access.',
@@ -1714,6 +1720,13 @@ export default function SettingsScreen() {
     account_state: subscription?.account_state ?? null,
     data_deletion_at: subscription?.data_deletion_at ?? null,
     trial_auto_converts: subscription?.trial_auto_converts ?? null,
+    // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLxE) — without these,
+    // this screen fell through to the ordinary "Access until …" cancelling
+    // copy instead of "Uploads stopped …", contradicting the immediate
+    // upload lock and StorageScreen's CurrentPlanCard, which already passes
+    // both (see above).
+    uploads_blocked_at: subscription?.uploads_blocked_at ?? null,
+    access_until: subscription?.access_until ?? null,
   } : null);
   const serverRegionLabel = serverRegion?.region ? regionDisplayName(serverRegion.region) : null;
   const cameraBackupActive =
@@ -1751,6 +1764,12 @@ export default function SettingsScreen() {
     // engine's OWN local ownership check refused to even attempt starting;
     // say so before any progress line, same as the two cases above.
     if (ownerUnconfirmedReason) return ownerUnconfirmedReason;
+    // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): same
+    // precedent again — the native engine paused itself after the server
+    // confirmed this account can't upload right now for a billing reason
+    // (never-paid trial cancelled, lapsed, no plan, or the 25 GB trial
+    // cap); say so before any progress line, same as the three cases above.
+    if (accountRefusalReason) return accountRefusalReason;
     if (backupPaused) {
       return `Paused · waiting for Wi-Fi${cameraTotalCount > 0 ? ` · ${cameraBackedUpCount.toLocaleString()} of ${cameraTotalCount.toLocaleString()} ${cameraItemLabel}` : ''}${cameraIssueSuffix}`;
     }
@@ -1776,7 +1795,7 @@ export default function SettingsScreen() {
 
     return 'Waiting for first scan';
   })();
-  const cameraRollSummaryColor = backupBlockedReason || accountMismatchReason || ownerUnconfirmedReason || (cameraIssueCount > 0 && !cameraBackupActive)
+  const cameraRollSummaryColor = backupBlockedReason || accountMismatchReason || ownerUnconfirmedReason || accountRefusalReason || (cameraIssueCount > 0 && !cameraBackupActive)
     ? c.red
     : c.ink3;
   const cameraRollStatusDotColor = backupPaused
@@ -2439,6 +2458,13 @@ export default function SettingsScreen() {
             )}
             <SettingsRow
               label="Two-Factor Authentication"
+              // Task 1610: show the live status inline, straight from
+              // useAuth().user (already fetched — /auth/me always includes
+              // totp_enabled) rather than making the user open the screen to
+              // find out. TwoFactorSetupScreen itself reads the same field to
+              // decide whether to open on the On state or the fresh-enrollment
+              // wizard — this row's onPress never branches on it.
+              value={user?.totp_enabled ? 'On' : undefined}
               icon="lock-closed-outline"
               onPress={() => navigation.navigate('TwoFactorSetup')}
               c={c}

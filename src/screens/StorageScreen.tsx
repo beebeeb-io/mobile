@@ -34,7 +34,7 @@ import {
   type Plan,
 } from '../lib/api';
 import { loadCachedBilling, saveCachedBilling } from '../lib/billing-cache';
-import { billingBadgeLabel, billingStatusView } from '../lib/billing-status';
+import { billingBadgeLabel, billingStatusView, trialCapNote } from '../lib/billing-status';
 import { effectivePlan, planDisplayName } from '../lib/effective-plan';
 import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
 import { accountGateFor, uploadsBlocked } from '../lib/account-state';
@@ -219,6 +219,9 @@ function CurrentPlanCard({
     account_state: subscription?.account_state ?? null,
     data_deletion_at: subscription?.data_deletion_at ?? null,
     trial_auto_converts: subscription?.trial_auto_converts ?? null,
+    // Task 1605.
+    uploads_blocked_at: subscription?.uploads_blocked_at ?? null,
+    access_until: subscription?.access_until ?? null,
   });
 
   return (
@@ -333,8 +336,11 @@ export default function StorageScreen() {
   // Storage usage is derived from the subscription payload (used_bytes +
   // quota_bytes are embedded there), so there is no separate usage round-trip.
   const usage = usageFromSubscription(subscription);
-  // Task 1037: needs_plan / lapsed. Missing account_state (older server) is ok.
+  // Task 1037/1605: needs_plan / lapsed / a never-paid trial cancelled
+  // before its first charge. Missing account_state (older server) is ok.
   const readOnly = uploadsBlocked(accountGateFor(subscription));
+  // Task 1605 — informational only, no purchase CTA (task 1400).
+  const trialCapMessage = trialCapNote(subscription, formatBytes);
 
   useEffect(() => {
     let cancelled = false;
@@ -467,6 +473,16 @@ export default function StorageScreen() {
             >
               {PLAN_MANAGEMENT_NOTE}
             </Text>
+            {/* Task 1605 — the 25 GB trial cap, informational only (no
+                purchase/pay-now action: task 1400, App Review 3.1.1(a)). */}
+            {trialCapMessage && (
+              <Text
+                style={[layout.noteText, { color: c.amberDeep }]}
+                testID="storage-trial-cap-note"
+              >
+                {trialCapMessage}
+              </Text>
+            )}
           </View>
 
           {/* Available plans — informational only, shown for free users or when

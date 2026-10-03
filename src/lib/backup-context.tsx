@@ -25,7 +25,7 @@ import { isVaultKeyMismatchError } from '../services/vault-key-mismatch';
 import { useCrypto } from './crypto-context';
 import { useAuth } from './auth';
 import { useAccountState } from './account-state-context';
-import { readOnlyUploadMessage } from './account-state';
+import { readOnlyUploadMessage, accountGateFor, uploadsBlocked, setCurrentAccountGate, type AccountGate } from './account-state';
 import { recordRuntimeTrace } from './runtime-trace';
 import { registerDevice } from './device-registration';
 import {
@@ -33,6 +33,8 @@ import {
   ensureMobileIosBackupClientSession,
   captureRequestAuthSnapshot,
   endSessionForAccountMismatch,
+  getSubscription,
+  type Subscription,
 } from './api';
 
 const BACKUP_PHOTO_KEY = 'beebeeb_camera_backup';
@@ -42,6 +44,12 @@ const BACKUP_INCLUDE_VIDEOS_KEY = 'beebeeb_camera_include_videos';
 const BACKUP_WIFI_ONLY_KEY = 'beebeeb_camera_wifi_only';
 const BACKUP_BG_UPLOAD_KEY = 'beebeeb_camera_bg_upload';
 const SESSION_TOKEN_KEY = 'beebeeb_session_token';
+// Task 1605 review round 3 (P1): how often to re-check the account with the
+// server while native reports `accountRefusalReason` — see
+// `runAccountRefusalPollTick` below. Bounded: the effect that drives this
+// only runs at all while that reason is set, and stops itself the instant a
+// tick reports the account unblocked.
+const ACCOUNT_REFUSAL_POLL_MS = 15_000;
 // Records which user id has already claimed the pre-1443 device-global
 // preference values during the one-time migration below. See
 // migrateLegacyBackupPrefs.
@@ -263,6 +271,22 @@ export interface BackupContextValue {
    * refusing to start for this reason.
    */
   ownerUnconfirmedReason: string | null;
+  /**
+   * Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): set when the
+   * NATIVE engine paused itself because the server confirmed (on a request
+   * it sent while this app may have been backgrounded) that this account
+   * cannot store data right now for a billing reason — a never-paid
+   * mandated trial cancelled before its first charge, a lapsed trial/plan,
+   * no plan at all, or the 25 GB trial cap. Distinct from
+   * `accountMismatchReason` above (which requires the SESSION to no longer
+   * match the account, and ends it) — this is the right account, just
+   * billing-blocked, same as `ownerUnconfirmedReason`'s "never ends the
+   * session" shape. Sourced from native's poll (`accountRefusalReason` on
+   * `NativeBackupProgress`) — see that field's doc comment for the resume
+   * path. The honest message to show; null when nothing is refusing to
+   * upload for this reason.
+   */
+  accountRefusalReason: string | null;
   // Legacy alias for components that used the old API
   isBackupEnabled: boolean;
   toggleBackup: () => Promise<void>;
@@ -297,6 +321,7 @@ export const BackupContext = createContext<BackupContextValue>({
   backupBlockedReason: null,
   accountMismatchReason: null,
   ownerUnconfirmedReason: null,
+  accountRefusalReason: null,
   isBackupEnabled: false,
   toggleBackup: async () => {},
 });
@@ -416,6 +441,157 @@ export function reduceAccountMismatchPoll(
   };
 }
 
+/**
+ * Task 1605 review round 3 (P1): the trial-cap-pause-never-resumes bug.
+ *
+ * `NativeBackupEngine.pause()` (via `handleConfirmedAccountRefusal` /
+ * `handleConfirmedTrialCapExceeded`) fires on FOUR server refusals. Three of
+ * them (`trial_cancelled_read_only`, `account_lapsed`, `plan_required`) move
+ * `accountGate.kind` off `'ok'`, so `accountBlockedMessage` below changes and
+ * the mount/warm-up effect (keyed on it) already re-fires `enableNativeBackup`
+ * once the gate returns to `'ok'` — that reaches native `start()`, which is
+ * the ONLY place that clears `accountRefusalStopReason` (its own doc comment
+ * in NativeBackupEngine.swift explains why: `resume()` skips that clear when
+ * `isRunning` was already true, which it always is here — `pause()` never
+ * flips `isRunning`).
+ *
+ * The FOURTH — the 25 GB trial cap (413 `quota_exceeded` + `is_trial_cap`) —
+ * never moves `accountGate.kind`: `account_state` stays `'ok'` for a merely-
+ * capped (not cancelled) trial, and `gateForRefusalCode('quota_exceeded',
+ * current)` in account-state.ts returns null for an otherwise-ok account by
+ * design (see that function's doc comment — "for an `ok` account it really
+ * is storage full", which used to be true before this task's 25 GB trial cap
+ * existed). So `accountBlockedMessage` never changes for this case, the
+ * mount effect never re-fires, and the app was stuck paused until a manual
+ * toggle or relaunch even after the user paid via the web.
+ *
+ * This function is the resume decision for BOTH: it always re-derives the
+ * gate from a freshly-fetched subscription (covers the three gate-based
+ * refusals too, without waiting on the separate mount-effect's own
+ * re-render), and separately checks the trial-cap headroom directly from
+ * the same payload (covers the fourth). Pure and exported for the same
+ * reason `reduceAccountMismatchPoll` above is — no React render harness in
+ * this codebase for `BackupProvider` (see this file's header note).
+ */
+export interface AccountRefusalResumeDecision {
+  /** True once the account itself allows uploads again (both conditions below). */
+  unblocked: boolean;
+  /** True when `unblocked` and camera-roll backup is the enabled category — the caller should call `enableNativeBackup('camera_roll', ...)`. */
+  shouldResumeCameraBackup: boolean;
+}
+
+export function decideAccountRefusalResume(
+  sub: Pick<Subscription, 'account_state' | 'uploads_blocked_at' | 'access_until' | 'data_deletion_at' | 'trial_storage_cap_bytes' | 'used_bytes'> | null,
+  isPhotoBackupEnabled: boolean,
+): AccountRefusalResumeDecision {
+  if (!sub) return { unblocked: false, shouldResumeCameraBackup: false };
+  const gate = accountGateFor(sub);
+  const stillTrialCapped =
+    sub.trial_storage_cap_bytes != null && (sub.used_bytes ?? 0) >= sub.trial_storage_cap_bytes;
+  const unblocked = !uploadsBlocked(gate) && !stillTrialCapped;
+  return { unblocked, shouldResumeCameraBackup: unblocked && isPhotoBackupEnabled };
+}
+
+/** What `decideAccountRefusalResume` needs computed alongside its verdict — the resolved gate, so the caller can mirror it without a second fetch. */
+export function accountRefusalResumeGate(sub: Parameters<typeof decideAccountRefusalResume>[0]): AccountGate {
+  return sub ? accountGateFor(sub) : { kind: 'ok' };
+}
+
+export interface AccountRefusalPollTickDeps {
+  fetchSubscription: () => Promise<Subscription | null>;
+  getIsPhotoBackupEnabled: () => boolean;
+  /** Mirror the freshly-resolved gate into the shared state (module-level copy + the canonical provider) — fired once, only on the tick that finds the account unblocked. */
+  onUnblocked: (gate: AccountGate) => void;
+  /** Call the native resume/start path. Only invoked when `shouldResumeCameraBackup` is true. */
+  resumeCameraBackup: () => Promise<void>;
+}
+
+export interface AccountRefusalPollTickResult {
+  /** True once this tick found uploads allowed again. */
+  resumed: boolean;
+  /** True once the caller should stop scheduling further ticks for this refusal episode — set together with `resumed`; a transient fetch failure or a still-blocked account does NOT stop polling (next tick retries). */
+  shouldStopPolling: boolean;
+}
+
+/**
+ * One tick of the bounded poll: fetch, decide, and (if unblocked) act.
+ * Extracted as a pure async function — same rationale as
+ * `decideAccountRefusalResume` above — so "resume called exactly once" and
+ * "polling stops once cleared" are testable as a plain sequence of calls,
+ * with no `setInterval`/`useEffect` involved. The component's own effect is
+ * a thin `setInterval` + `AppState` driver that calls this once per tick and
+ * clears its own interval when `shouldStopPolling` comes back true.
+ */
+export async function runAccountRefusalPollTick(
+  deps: AccountRefusalPollTickDeps,
+): Promise<AccountRefusalPollTickResult> {
+  let sub: Subscription | null;
+  try {
+    sub = await deps.fetchSubscription();
+  } catch {
+    return { resumed: false, shouldStopPolling: false }; // best-effort — next tick retries
+  }
+  const decision = decideAccountRefusalResume(sub, deps.getIsPhotoBackupEnabled());
+  if (!decision.unblocked) return { resumed: false, shouldStopPolling: false };
+  deps.onUnblocked(accountRefusalResumeGate(sub));
+  if (decision.shouldResumeCameraBackup) {
+    await deps.resumeCameraBackup();
+  }
+  return { resumed: true, shouldStopPolling: true };
+}
+
+/**
+ * Task 1686 (iOS idle heat) — field-by-field equality over the projected
+ * BackupProgress shape `applyNativeProgress` mirrors into state. The 5 s
+ * native poll previously called setState unconditionally, so an IDLE app
+ * re-rendered the tree ~12×/minute forever; with this guard a tick that
+ * read the same progress as the previous one becomes a no-op. Every
+ * mirrored field participates. `undefined` vs `null` vs a concrete value
+ * are pairwise distinct (`??` cannot express that — use explicit
+ * has/value checks): an old native build omitting a field, an explicitly
+ * cleared reason, and a set reason are three different mirror states, and
+ * collapsing any two of them would swallow a real transition.
+ */
+export function nativeProgressEquals(a: NativeBackupProgress, b: NativeBackupProgress): boolean {
+  // Preserve the undefined/null distinction: `undefined` (field absent —
+  // old native build) vs `null` (explicitly cleared) are different mirror
+  // states, so map undefined to a sentinel instead of null.
+  const MISSING = Symbol('missing');
+  const opt = <T,>(v: T | undefined): T | null | symbol => (v === undefined ? MISSING : v);
+  return (
+    a.total === b.total &&
+    a.completed === b.completed &&
+    a.inProgress === b.inProgress &&
+    opt(a.pending) === opt(b.pending) &&
+    opt(a.waitingToEncrypt) === opt(b.waitingToEncrypt) &&
+    opt(a.encryptedPendingUpload) === opt(b.encryptedPendingUpload) &&
+    opt(a.uploading) === opt(b.uploading) &&
+    opt(a.failed) === opt(b.failed) &&
+    opt(a.state) === opt(b.state) &&
+    opt(a.reason) === opt(b.reason) &&
+    opt(a.lastBackupAt) === opt(b.lastBackupAt) &&
+    opt(a.accountMismatchReason) === opt(b.accountMismatchReason) &&
+    opt(a.accountMismatchGeneration) === opt(b.accountMismatchGeneration) &&
+    opt(a.ownerUnconfirmedReason) === opt(b.ownerUnconfirmedReason) &&
+    opt(a.accountRefusalReason) === opt(b.accountRefusalReason)
+  );
+}
+
+/**
+ * Task 1686 (iOS idle heat) — whether the backup-progress poll (5 s) and the
+ * account-refusal poll (15 s) should pause for this AppState. 'inactive'
+ * (iOS app switcher / lock screen / call banner) counts as backgrounded:
+ * the screen is not usable, so neither live progress nor timely refusals
+ * matter until foreground. RN's other states ('extension', legacy 'unknown')
+ * pause too — anything that is not 'active'. An unrecognized/missing value
+ * fails OPEN (never pauses) — a missed 'active' event must never leave live
+ * progress frozen. The account-refusal poll's 15 s FOREGROUND semantics are
+ * unchanged — this only adds the background pause.
+ */
+export function shouldPauseBackupPolls(state: string | undefined | null): boolean {
+  return typeof state === 'string' && state !== 'active';
+}
+
 export function BackupProvider({ children }: { children: React.ReactNode }) {
   const { isUnlocked } = useCrypto();
   const { user } = useAuth();
@@ -440,7 +616,16 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // on `NativeBackupProgress`). Mirrored the same way `accountMismatchReason`
   // is: a single producer (the native poll), so no writer race.
   const [ownerUnconfirmedReason, setOwnerUnconfirmedReason] = useState<string | null>(null);
+  // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): a server-
+  // confirmed but non-session-ending refusal — same single-producer
+  // mirroring as the two above (the native poll is the only writer).
+  const [accountRefusalReason, setAccountRefusalReason] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Task 1686 (iOS idle heat) — the current RN AppState as a plain ref, read
+  // by both polls at tick time (shouldPauseBackupPolls) and written by the
+  // listener effect below. Defaults 'active': fail open until the first
+  // event says otherwise.
+  const appStateRef = useRef<string>('active');
   const includeVideosRef = useRef(true);
   // Task 1599 followups round 3 (P1): the running fold `reduceAccountMismatchPoll`
   // carries across poll ticks for THIS mount — reset to
@@ -448,13 +633,18 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // every fresh `BackupProvider` instance, which is exactly the per-mount
   // scoping the sign-in lockout fix needs (see that function's doc comment).
   const accountMismatchPollStateRef = useRef<AccountMismatchPollState>(INITIAL_ACCOUNT_MISMATCH_POLL_STATE);
+  // Task 1686 (iOS idle heat) — the last RAW native progress payload
+  // applyNativeProgress saw, for the equality early-return (an unchanged 5 s
+  // poll tick must not re-render the tree). Ref, not state: it is a
+  // comparison cache, never rendered directly.
+  const lastRawProgressRef = useRef<NativeBackupProgress | null>(null);
   // Task 1037: a needs_plan / lapsed account is refused every upload (409
   // plan_required / account_lapsed). Keep the native engines OFF while that
   // holds: they run on their own (including BGTask runs), and would otherwise
   // retry each asset against the server until it is dead-lettered. The user's
   // backup choices stay saved, and the engines start again once the account
   // can take uploads. Nothing starts before the first account read settles.
-  const { ready: accountReady, gate: accountGate } = useAccountState();
+  const { ready: accountReady, gate: accountGate, refresh: refreshAccountState } = useAccountState();
   const accountBlockedMessage = readOnlyUploadMessage(accountGate);
   const accountReadyRef = useRef(accountReady);
   const accountBlockedRef = useRef<string | null>(accountBlockedMessage);
@@ -462,6 +652,13 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   accountBlockedRef.current = accountBlockedMessage;
 
   const applyNativeProgress = useCallback((p: NativeBackupProgress) => {
+    // Task 1686 (iOS idle heat) — equality early-return. The 5 s poll used
+    // to setState unconditionally: an idle app re-rendered the whole tree
+    // ~12×/minute with byte-identical progress. A tick that read the same
+    // raw native payload as the last one (the overwhelmingly common case
+    // while idle/foregrounded) now does nothing at all.
+    if (lastRawProgressRef.current && nativeProgressEquals(lastRawProgressRef.current, p)) return;
+    lastRawProgressRef.current = p;
     const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
     const nativeState = p.state ?? (p.inProgress > 0 ? 'uploading' : pending > 0 ? 'idle' : 'complete');
     setBackupProgress({
@@ -508,6 +705,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     }
     setAccountMismatchReason(nextAccountMismatchReason);
     setOwnerUnconfirmedReason(p.ownerUnconfirmedReason ?? null);
+    setAccountRefusalReason(p.accountRefusalReason ?? null);
   }, []);
 
   const refreshNativeProgress = useCallback(async () => {
@@ -694,6 +892,78 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     }
   }, [userId, accountBlockedMessage, accountGate.kind]);
 
+  // Task 1605 review round 3 (P1): resume once native's accountRefusalReason
+  // clears — see `runAccountRefusalPollTick`'s doc comment above for why
+  // this is needed at all (the trial-cap refusal never moves
+  // `accountGate.kind`, so the mount/warm-up effect above has nothing to
+  // react to for it). Bounded: only runs while BOTH photo backup is enabled
+  // AND native has a refusal reason set; a tick that finds the account
+  // unblocked clears its own interval immediately (`shouldStopPolling`), and
+  // the whole effect tears down the instant either dependency goes false —
+  // this is never a standing poll.
+  useEffect(() => {
+    if (!userId || Platform.OS === 'web') return;
+    if (!isPhotoBackupEnabled || !accountRefusalReason) return;
+
+    let stopped = false;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const tick = async () => {
+      if (stopped) return;
+      // Task 1686 (iOS idle heat) — skip network work while the app is
+      // backgrounded/locked ('background' and 'inactive'). The foreground
+      // 15 s semantics are unchanged (the interval itself keeps running so
+      // the resume path and the effect contract stay identical); only the
+      // per-tick fetch is gated on visibility. A tick that returns early
+      // must NOT stop the poll — the account may unblock while backgrounded
+      // and the next foreground tick (below) catches it immediately.
+      if (shouldPauseBackupPolls(appStateRef.current)) return;
+      const result = await runAccountRefusalPollTick({
+        fetchSubscription: getSubscription,
+        getIsPhotoBackupEnabled: () => isPhotoBackupEnabled,
+        onUnblocked: (gate) => {
+          setCurrentAccountGate(gate);
+          void refreshAccountState().catch(() => {});
+        },
+        resumeCameraBackup: async () => {
+          // Bypass enableNativeBackup's own accountBlockedRef check: that
+          // ref mirrors the LAST render of the (separate)
+          // AccountStateProvider context, which the refreshAccountState()
+          // call above hasn't necessarily updated yet — but THIS tick's
+          // own fetch, just above, already proved the account unblocked,
+          // more freshly. Without this, a same-tick resume could bail out
+          // on a stale ref and only actually resume on the NEXT poll tick.
+          accountBlockedRef.current = null;
+          try {
+            await enableNativeBackup('camera_roll', { runNow: false });
+          } catch {
+            // best-effort — the next progress poll re-reads native state
+          }
+          await refreshNativeProgress().catch(() => {});
+        },
+      });
+      if (result.shouldStopPolling && intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
+
+    void tick();
+    intervalId = setInterval(() => { void tick(); }, ACCOUNT_REFUSAL_POLL_MS);
+    const refusalSub = AppState.addEventListener('change', (next) => {
+      // Task 1686: on foreground, refresh appStateRef FIRST so the next tick
+      // is unpaused, then tick immediately (preserves the pre-existing
+      // foreground-refresh behavior for active users).
+      appStateRef.current = next;
+      if (next === 'active') void tick();
+    });
+    return () => {
+      stopped = true;
+      if (intervalId) clearInterval(intervalId);
+      refusalSub.remove();
+    };
+  }, [userId, isPhotoBackupEnabled, accountRefusalReason, refreshAccountState, enableNativeBackup, refreshNativeProgress]);
+
   // Stop the native backup engines when this instance unmounts. CryptoProvider
   // is keyed by user id (`user?.user_id ?? 'signed-out'` in App.tsx), so BOTH
   // a sign-out AND a sign-in as a different user fully unmount this provider
@@ -710,11 +980,21 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Poll native backup progress every 5 s when photo backup is enabled
+  // Poll native backup progress every 5 s when photo backup is enabled.
+  // Task 1686 (iOS idle heat): the poll no longer does work (or setState)
+  // while the app is backgrounded/locked — RN timers keep (intermittently)
+  // firing in the background, so without the gate the poll read native
+  // progress all night. The interval keeps running; only the per-tick work
+  // is visibility-gated, and the existing foreground listener below already
+  // refreshes immediately on 'active', so live progress for an active user
+  // is unchanged.
   useEffect(() => {
     if (!isPhotoBackupEnabled || Platform.OS === 'web') return;
 
     const poll = async () => {
+      // Task 1686 — visibility gate. 'inactive' (app switcher / lock screen)
+      // counts as backgrounded. Fail open on anything unrecognized.
+      if (shouldPauseBackupPolls(appStateRef.current)) return;
       try {
         await refreshNativeProgress();
       } catch {
@@ -728,6 +1008,19 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [isPhotoBackupEnabled, refreshNativeProgress]);
+
+  // Task 1686 — track AppState for both polls. A ref (not state): polls read
+  // it at tick time without re-mounting the effects, and the listeners above
+  // also write it on 'change'. Synced from AppState.currentState at mount so
+  // a provider mounted while already backgrounded starts paused.
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    appStateRef.current = AppState.currentState;
+    const sub = AppState.addEventListener('change', (next) => {
+      appStateRef.current = next;
+    });
+    return () => sub.remove();
+  }, []);
 
   // Native state can legitimately say "open Beebeeb" after a background handoff.
   // If the user has already foregrounded the app, refresh immediately so Settings
@@ -916,6 +1209,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     backupBlockedReason,
     accountMismatchReason,
     ownerUnconfirmedReason,
+    accountRefusalReason,
     // Legacy alias
     isBackupEnabled: isPhotoBackupEnabled,
     toggleBackup: togglePhotoBackup,

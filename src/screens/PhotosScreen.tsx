@@ -36,6 +36,17 @@ import { GlassCircle, GlassSurface, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial, 
 import { ApiError, getAllImages, getFileIndex, friendlyError, trashFiles } from '../lib/api';
 import type { FileEntry } from '../lib/api';
 import { guessMimeType } from '../lib/media';
+// Task 1687c — the row-level Photos-tab media classification lives in
+// src/lib/photo-candidates.ts (unit-tested): an upload row that is already
+// a media candidate (`is_media`, decodable mime, or a thumbnail) appears in
+// the grid and pager the moment the row exists — `is_uploading` no longer
+// hides it. Folders and non-media rows stay out.
+import {
+  isVisibleMediaFile,
+  mediaMimeType,
+  photoCandidatesFromIndex,
+} from '../lib/photo-candidates';
+import { getPhotoPermission, photoPermissionGranted } from '../lib/photo-permissions';
 import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
@@ -87,77 +98,6 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-type MediaEntry = FileEntry & {
-  category?: string | null;
-  file_category?: string | null;
-  media_type?: string | null;
-  name?: string | null;
-  file_name?: string | null;
-  mime?: string | null;
-};
-
-function stringField(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
-function mediaCategory(entry: MediaEntry): string {
-  return (
-    stringField(entry.category) ??
-    stringField(entry.file_category) ??
-    stringField(entry.media_type) ??
-    ''
-  ).toLowerCase();
-}
-
-function filenameCandidates(entry: MediaEntry): string[] {
-  return [
-    stringField(entry.name),
-    stringField(entry.file_name),
-    stringField(entry.name_encrypted),
-  ].filter((value): value is string => !!value && !value.startsWith('{'));
-}
-
-function mediaMimeType(entry: FileEntry): string | null {
-  const mediaEntry = entry as MediaEntry;
-  const mime = (entry.mime_type ?? mediaEntry.mime ?? '').toLowerCase();
-  if (mime.startsWith('image/')) return entry.mime_type ?? mediaEntry.mime ?? 'image/jpeg';
-  if (mime.startsWith('video/')) return entry.mime_type ?? mediaEntry.mime ?? 'video/mp4';
-
-  const category = mediaCategory(mediaEntry);
-  if (category === 'image' || category === 'photo') return 'image/jpeg';
-  if (category === 'video') return 'video/mp4';
-
-  for (const name of filenameCandidates(mediaEntry)) {
-    const guessed = guessMimeType(name);
-    if (guessed?.startsWith('image/')) return guessed;
-    if (guessed?.startsWith('video/')) return guessed;
-  }
-
-  return entry.is_media ? 'image/jpeg' : null;
-}
-
-function isMediaFile(entry: FileEntry): boolean {
-  return mediaMimeType(entry) !== null;
-}
-
-function isEncryptedThumbnailCandidate(entry: FileEntry): boolean {
-  return !!entry.has_thumbnail && typeof entry.name_encrypted === 'string' && entry.name_encrypted.startsWith('{');
-}
-
-function isVisibleMediaFile(entry: FileEntry, decryptedMimeTypes: Record<string, string>): boolean {
-  const decryptedMime = decryptedMimeTypes[entry.id]?.toLowerCase();
-  if (decryptedMime) return decryptedMime.startsWith('image/') || decryptedMime.startsWith('video/');
-  return isMediaFile(entry) || isEncryptedThumbnailCandidate(entry);
-}
-
-function photoCandidatesFromIndex(files: FileEntry[]): FileEntry[] {
-  return files.filter((entry) => (
-    !entry.is_folder &&
-    !entry.is_uploading &&
-    (isMediaFile(entry) || isEncryptedThumbnailCandidate(entry))
-  ));
-}
-
 /**
  * Parse the decrypted metadata plaintext. The server may store the filename as
  * a bare string (legacy) or as `{"name":"...", "mime_type":"..."}` (current).
@@ -183,8 +123,12 @@ function parseDecryptedPhotoMetadata(plaintext: string): DecryptedPhotoMetadata 
 }
 
 function preparePhotoEntries(entries: FileEntry[]): FileEntry[] {
+  // Task 1687c — `is_uploading` no longer hides a media row here either:
+  // this sorts the output of photoCandidatesFromIndex for the grid/pager,
+  // and dropping uploading rows here would undo the candidate fix (a fresh
+  // photo would vanish again before this sort ran). Folders stay excluded.
   return entries
-    .filter((entry) => !entry.is_folder && !entry.is_uploading)
+    .filter((entry) => !entry.is_folder)
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
@@ -735,11 +679,17 @@ function DevicePhotosBanner() {
     let cancelled = false;
     (async () => {
       try {
-        const { status } = await MediaLibrary.requestPermissionsAsync();
-        if (status !== 'granted') {
-          if (!cancelled) setPermissionDenied(true);
+        // Task 1688 — GET only, never a request from a mount/focus: under
+        // iOS LIMITED access, `requestPermissionsAsync` re-presents the
+        // system "Select More Photos" sheet on EVERY relaunch (the reported
+        // re-prompt loop). A limited library counts as granted — the counts
+        // below already see exactly the assets the user selected.
+        const permission = await getPhotoPermission(MediaLibrary);
+        if (!cancelled && !photoPermissionGranted(permission)) {
+          setPermissionDenied(true);
           return;
         }
+        if (!cancelled) setPermissionDenied(false);
         const [photoAssets, videoAssets] = await Promise.all([
           MediaLibrary.getAssetsAsync({
             mediaType: MediaLibrary.MediaType.photo,
@@ -2187,6 +2137,22 @@ export default function PhotosScreen() {
       profile: performanceStorageProfile,
     });
     const visibleIds = new Set(nativeIds);
+    // Task 1689 — scroll-state derivation for the native grid (iOS), which
+    // has no scroll event of its own (it defers every bridge dispatch to
+    // rest positions — see NativePhotosGridView.scrollViewDidScroll). The
+    // topmost photo in display order leaving the visible set means the grid
+    // is scrolled away from the top; it re-entering means back at rest.
+    // Same ref-guard shape as handleGridScroll so the state only flips on
+    // an actual change. Empty ids (or an empty grid) keep the last state —
+    // there is nothing under the header to make legible either way.
+    const topPhotoId = flatPhotos[0]?.id;
+    if (topPhotoId) {
+      const nextIsScrolled = !visibleIds.has(topPhotoId);
+      if (nextIsScrolled !== isScrolledRef.current) {
+        isScrolledRef.current = nextIsScrolled;
+        setIsScrolled(nextIsScrolled);
+      }
+    }
     const thumbnailIds = collectThumbnailIdsForProfile(
       flatPhotos,
       visibleIds,
@@ -2241,16 +2207,30 @@ export default function PhotosScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.paper }]}>
-      {/* 1322 — the grid bleeds edge-to-edge, so the blur is ALWAYS on rather
-          than gated on scroll the way Drive's is. Two reasons. Photos is
-          permanently full-bleed — there is no resting state where content
-          genuinely starts below the header, so a gate would only ever be
-          wrong. And `isScrolled` cannot drive it here: `handleGridScroll` is
-          wired to the FlatList, which is the non-iOS fallback, so on the
-          platform we ship `isScrolled` has been permanently false since the
-          native grid landed — the hairline border it used to gate was dead
-          too. Without the blur the title is unreadable over bright photos. */}
-      <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} />
+      {/* 1322, AMENDED by task 1689 — the scroll-edge blur is gated on
+          `isScrolled` exactly like every sibling screen (Files 4545,
+          Settings 1826, Trash 386, Shared 737, Storage 403,
+          BackupInsights 629), because in light mode the 0.30-alpha light
+          tint renders as a visible "plain-band fade" over the grid's paper
+          background when nothing is scrolled — with `contentInsetTop` the
+          first row starts BELOW the header at rest, so the strip has
+          nothing to make legible. 1322's two original reasons for always
+          mounting it: (1) full-bleed content — still true WHILE scrolled
+          (the grid then runs under the header and the blur is doing real
+          work), and (2) `isScrolled` was permanently false on the shipping
+          platform because the native grid never reported scroll — solved
+          here by deriving scroll state from the native grid's own
+          `onVisiblePhotoIdsChange` events (the native grid deliberately
+          defers ALL bridge work to rest positions, so the blur switches
+          when the grid settles, not mid-drag): the topmost photo leaving
+          the visible set means scrolled; it re-entering means back at
+          rest. The FlatList fallback keeps its true `onScroll` derivation
+          (`handleGridScroll`). Trade-off recorded honestly: during the
+          drag itself (before the grid settles) the header rides over
+          unblurred content for the duration of the gesture — the same
+          deferred-side-effect trade the native grid already makes for
+          thumbnail prefetch. */}
+      {isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
       <View
         style={[styles.floatingHeader, { paddingTop: insets.top }]}
         onLayout={(e) => {

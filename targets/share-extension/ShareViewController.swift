@@ -14,10 +14,16 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Constants
 
+    // App Group UserDefaults is still used for `recentFoldersKey` — recent
+    // folder IDS ONLY, never names (names are E2EE plaintext once decrypted
+    // and that key is not backup-excluded; see `ShareRecentFolders`). The session token and API
+    // base URL moved to the shared Keychain in task 0447; this extension
+    // read them from these two UserDefaults keys until task 1671 — dead
+    // reads the main app had stopped writing to, which is why "Save to
+    // Beebeeb" always showed "Sign in to Beebeeb first" even right after a
+    // successful Face ID unlock. See `loadSharedConfig()` below.
     private static let appGroup = "group.io.beebeeb.shared"
     private static let recentFoldersKey = "beebeeb_share_recent_folders"
-    private static let sessionTokenKey = "beebeeb_session_token"
-    private static let apiUrlKey = "beebeeb_api_url"
     private static let defaultApiUrl = "https://api.beebeeb.io"
 
     // MARK: - Colors (dark theme)
@@ -42,7 +48,13 @@ final class ShareViewController: UIViewController {
     private var sessionToken: String?
     private var apiUrl: String = defaultApiUrl
     private var folders: [FolderFetcher.Folder] = []
-    private var recentFolders: [RecentFolder] = []
+    /// Recents as DISPLAY rows — resolved against the freshly fetched folder
+    /// list on every launch, never read from storage (task 1671 round 2).
+    private var recentFolders: [ShareRecentFolders.Resolved] = []
+    /// The persisted recent folder IDS (never names — see `ShareRecentFolders`).
+    private var storedRecentIds: [String] = []
+    /// Ids of the folders from the last SUCCESSFUL fetch; nil until then.
+    private var knownFolderIds: Set<String>? = nil
     private var selectedFolderId: String? = nil
     private var fileName: String = "File"
     private var fileSize: Int64 = 0
@@ -103,10 +115,17 @@ final class ShareViewController: UIViewController {
         return owner == signedInUser
     }
 
+    /// Task 1671: the session token + API base URL live in the shared
+    /// Keychain (`BeebeebKeychainCore`), written by the main app's
+    /// `mirrorSessionToAppGroup` — NOT in App Group UserDefaults. No
+    /// plaintext UserDefaults fallback here: task 0447 removed that storage
+    /// path for security, on purpose. `BeebeebKeychainCore.loadString`
+    /// already owns the one-time legacy-UserDefaults-to-Keychain migration
+    /// (same helper the main app and File Provider use) — this reader must
+    /// not re-implement a separate UserDefaults read next to it.
     private func loadSharedConfig() {
-        let defaults = UserDefaults(suiteName: Self.appGroup)
-        sessionToken = defaults?.string(forKey: Self.sessionTokenKey)
-        if let url = defaults?.string(forKey: Self.apiUrlKey), !url.isEmpty {
+        sessionToken = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.sessionTokenKey)
+        if let url = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.apiBaseUrlKey), !url.isEmpty {
             apiUrl = url
         }
         loadRecentFolders()
@@ -262,17 +281,30 @@ final class ShareViewController: UIViewController {
 
     private func fetchFolders(token: String) {
         Task {
-            let fetcher = FolderFetcher(sessionToken: token, apiUrl: apiUrl)
+            // Task 1671 (Issue 2a): pass the already-verified master key
+            // handle through so folder names are actually decrypted instead
+            // of always falling back to "Folder N" — this call used to omit
+            // `masterKey` entirely (defaulting to nil), which is the whole
+            // bug.
+            let fetcher = FolderFetcher(sessionToken: token, apiUrl: apiUrl, masterKey: masterKeyHandle)
             do {
                 let fetched = try await fetcher.fetchTopLevelFolders()
                 await MainActor.run {
                     self.folders = fetched
+                    self.knownFolderIds = Set(fetched.map { $0.id })
+                    self.recentFolders = ShareRecentFolders.resolve(
+                        self.storedRecentIds,
+                        against: fetched.map { (id: $0.id, name: $0.displayName) }
+                    )
                     self.selectDefaultFolder()
                     self.showFolderPicker()
                 }
             } catch {
                 await MainActor.run {
-                    // Show picker anyway with just recents (or empty)
+                    // No fetched folder list means no names to resolve the
+                    // stored recent ids against (names are never stored), so
+                    // no RECENT section: just the "My files" root row.
+                    self.recentFolders = []
                     self.selectDefaultFolder()
                     self.showFolderPicker()
                 }
@@ -281,12 +313,9 @@ final class ShareViewController: UIViewController {
     }
 
     private func selectDefaultFolder() {
-        if let recent = recentFolders.first {
-            selectedFolderId = recent.id
-        } else if let first = folders.first {
-            selectedFolderId = first.id
-        }
-        // nil = root (All Files)
+        // Most recent folder, else nil = the "My files" root row (row 0 of the
+        // FOLDERS section) — never `folders.first`.
+        selectedFolderId = ShareRecentFolders.defaultSelection(recents: recentFolders)
     }
 
     // MARK: - UI Setup
@@ -338,8 +367,15 @@ final class ShareViewController: UIViewController {
         fileNameLabel.translatesAutoresizingMaskIntoConstraints = false
         headerView.addSubview(fileNameLabel)
 
-        // File size
-        fileSizeLabel.text = formatFileSize(fileSize)
+        // File size — unknown until `extractSharedContent` runs (step 3 of
+        // `performSetup`, after the master-key + session-token gates).
+        // `updateFilePreview()` fills in the real size once extraction
+        // completes; showing `formatFileSize(fileSize)` here (fileSize == 0
+        // at this point) rendered a fake "0 B" — visible both briefly on
+        // every share, and indefinitely whenever setup stops at an earlier
+        // gate (task 1671: showError() leaves headerView on screen, so a
+        // "Sign in to Beebeeb first" error was shown next to a lying "0 B").
+        fileSizeLabel.text = "Preparing…"
         fileSizeLabel.font = UIFont.systemFont(ofSize: 13)
         fileSizeLabel.textColor = Self.textSecondary
         fileSizeLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -476,8 +512,21 @@ final class ShareViewController: UIViewController {
 
     private func showError(_ message: String) {
         DispatchQueue.main.async {
+            // Task 1671: hide the file-preview header too. It's only ever
+            // meaningful once extraction (step 3 of `performSetup`) has run;
+            // every error path here fires at or before step 2, so the name/
+            // size it would show is still the placeholder — showing it next
+            // to "Sign in to Beebeeb first" read as "this 0-byte file failed
+            // to sign in", not "we haven't looked at the file yet".
+            self.headerView.isHidden = true
             self.tableView.isHidden = true
             self.bottomBar.isHidden = true
+            // Task 1671 (Issue 2b): an upload failure calls `showError()`
+            // from AFTER `showProgress()` already showed `progressOverlay`
+            // (with "Encrypting..."/"Uploading... N%"). Without this, that
+            // overlay — and its label — stayed on screen underneath the new
+            // error text, rendering as visibly overlapping strings.
+            self.progressOverlay.isHidden = true
 
             let errorLabel = UILabel()
             errorLabel.text = message
@@ -635,42 +684,44 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Recents
 
+    /// Reads the persisted recent folder IDS. A legacy payload from builds
+    /// <= 230 also carries plaintext `name`s: they are ignored, and the store is
+    /// rewritten id-only right here (not only on the next share) so old names do
+    /// not sit in iCloud backups or survive sign-out.
     private func loadRecentFolders() {
         let defaults = UserDefaults(suiteName: Self.appGroup)
-        guard let data = defaults?.data(forKey: Self.recentFoldersKey),
-              let recents = try? JSONDecoder().decode([RecentFolder].self, from: data) else {
-            return
+        let loaded = ShareRecentFolders.load(from: defaults?.data(forKey: Self.recentFoldersKey))
+        storedRecentIds = loaded.ids
+        if let scrubbed = loaded.scrubbedPayload {
+            defaults?.set(scrubbed, forKey: Self.recentFoldersKey)
         }
-        recentFolders = recents
     }
 
     private func saveRecentFolder() {
         guard let folderId = selectedFolderId else { return }
-
-        // Find display name for this folder
-        let displayName: String
-        if let recent = recentFolders.first(where: { $0.id == folderId }) {
-            displayName = recent.name
-        } else if let folder = folders.first(where: { $0.id == folderId }) {
-            displayName = folder.displayName
-        } else {
-            displayName = "Folder"
-        }
-
-        // Remove existing entry for this folder, add to front
-        var recents = recentFolders.filter { $0.id != folderId }
-        recents.insert(RecentFolder(id: folderId, name: displayName), at: 0)
-
-        // Keep max 3
-        if recents.count > 3 {
-            recents = Array(recents.prefix(3))
-        }
-
-        recentFolders = recents
+        storedRecentIds = ShareRecentFolders.recording(
+            folderId,
+            in: storedRecentIds,
+            knownFolderIds: knownFolderIds
+        )
         let defaults = UserDefaults(suiteName: Self.appGroup)
-        if let encoded = try? JSONEncoder().encode(recents) {
+        if let encoded = ShareRecentFolders.encode(storedRecentIds) {
             defaults?.set(encoded, forKey: Self.recentFoldersKey)
         }
+    }
+
+    // MARK: - Folder picker rows
+
+    /// Task 1671 (Issue 2a): the FOLDERS section's rows — the drive root
+    /// ("My files", `id == nil`, matching the label used elsewhere in this
+    /// app for the same concept — see `CreateFileRequestScreen.tsx`'s
+    /// `{ id: null, name: 'My files' }`) followed by the fetched top-level
+    /// folders. Before this fix there was no row representing the root at
+    /// all: `selectedFolderId == nil` meant root internally, but a user
+    /// could never explicitly TAP it — only ever land there via the
+    /// no-recents-no-folders default in `selectDefaultFolder()`.
+    private var folderPickerRows: [(id: String?, name: String)] {
+        [(nil, "My files")] + folders.map { ($0.id, $0.displayName) }
     }
 
     // MARK: - Helpers
@@ -696,7 +747,7 @@ extension ShareViewController: UITableViewDelegate, UITableViewDataSource {
         if !recentFolders.isEmpty && section == 0 {
             return recentFolders.count
         }
-        return folders.count
+        return folderPickerRows.count
     }
 
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
@@ -727,7 +778,7 @@ extension ShareViewController: UITableViewDelegate, UITableViewDataSource {
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: FolderCell.reuseID, for: indexPath) as! FolderCell
 
-        let folderId: String
+        let folderId: String?
         let folderName: String
 
         if !recentFolders.isEmpty && indexPath.section == 0 {
@@ -735,9 +786,9 @@ extension ShareViewController: UITableViewDelegate, UITableViewDataSource {
             folderId = recent.id
             folderName = recent.name
         } else {
-            let folder = folders[indexPath.row]
-            folderId = folder.id
-            folderName = folder.displayName
+            let row = folderPickerRows[indexPath.row]
+            folderId = row.id
+            folderName = row.name
         }
 
         let isSelected = folderId == selectedFolderId
@@ -751,7 +802,7 @@ extension ShareViewController: UITableViewDelegate, UITableViewDataSource {
         if !recentFolders.isEmpty && indexPath.section == 0 {
             selectedFolderId = recentFolders[indexPath.row].id
         } else {
-            selectedFolderId = folders[indexPath.row].id
+            selectedFolderId = folderPickerRows[indexPath.row].id
         }
 
         tableView.reloadData()
@@ -789,6 +840,15 @@ private final class FolderCell: UITableViewCell {
 
         nameLabel.font = UIFont.systemFont(ofSize: 15, weight: .regular)
         nameLabel.textColor = .white
+        // Task 1671 (Issue 2a): explicit left alignment, and a
+        // content-hugging trailing constraint below (`.lessThanOrEqualTo`
+        // instead of `.equalTo`) so the label's frame sits right next to the
+        // folder icon instead of stretching all the way to the checkmark —
+        // on device this rendered as the icon at the far left and the name
+        // pinned against the checkmark at the far right, a huge gap between
+        // them.
+        nameLabel.textAlignment = .left
+        nameLabel.setContentHuggingPriority(.required, for: .horizontal)
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(nameLabel)
 
@@ -805,7 +865,11 @@ private final class FolderCell: UITableViewCell {
 
             nameLabel.leadingAnchor.constraint(equalTo: folderIcon.trailingAnchor, constant: 10),
             nameLabel.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
-            nameLabel.trailingAnchor.constraint(equalTo: checkmark.leadingAnchor, constant: -10),
+            // `.lessThanOrEqualTo`, not `.equalTo`: the label hugs its own
+            // text right after the icon (required content-hugging priority
+            // above) instead of being force-stretched to fill the row, which
+            // is what let the text render away from the icon.
+            nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: checkmark.leadingAnchor, constant: -10),
 
             checkmark.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
             checkmark.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
@@ -817,11 +881,4 @@ private final class FolderCell: UITableViewCell {
         checkmark.isHidden = !isSelected
         nameLabel.textColor = isSelected ? .white : UIColor(white: 0.8, alpha: 1)
     }
-}
-
-// MARK: - RecentFolder model
-
-struct RecentFolder: Codable {
-    let id: String
-    let name: String
 }

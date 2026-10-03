@@ -41,8 +41,16 @@ function headerWrapperTags(): string[] {
     const at = source.indexOf('onGestureEvent={onCloseGestureEvent}', from);
     if (at === -1) break;
     const open = source.lastIndexOf('<Animated.View', at);
-    const close = source.indexOf('>\n', source.indexOf('pointerEvents=', open));
-    tags.push(source.slice(open, close + 1));
+    // Task 1687b — bound the slice to the anchor's own OPEN tag (first
+    // '>\n'). The old slice searched for '>\n' after the next
+    // 'pointerEvents=', which for the new content-area pan (whose nearest
+    // preceding Animated.View is mediaRoot, itself pointerEvents-less)
+    // ran past mediaRoot and swallowed the chromeLayer wrapper's tag text,
+    // miscounting. The chromeLayer wrappers DO carry pointerEvents inside
+    // their open tag, so this preserves what the guard checks.
+    const close = source.indexOf('>\n', open);
+    const tag = source.slice(open, close + 1);
+    if (tag.includes('styles.chromeLayer')) tags.push(tag);
     from = at + 1;
   }
   return tags;
