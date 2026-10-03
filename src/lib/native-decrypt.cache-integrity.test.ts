@@ -33,6 +33,7 @@ mock.module('expo-file-system/legacy', () => ({
 const nativeCalls: number[] = [];
 mock.module('../../modules/beebeeb-crypto', () => ({
   isNativeAvailable: true,
+  streamVideoNative: async () => { throw new Error('streamVideoNative is not available in this native build'); },
   // task 1683d — the offline streaming decrypt (decryptLocalFileNative) lives
   // behind a typeof guard in native-decrypt.ts; this harness drives the
   // DOWNLOAD path, so a stub that throws (rather than silently succeeding) is
