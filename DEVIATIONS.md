@@ -712,3 +712,8 @@ escape are untouched.
 **Why:** a Guus ruling supersedes the (absent) artefact (precedent: task
 1357); recorded here because the shipped language intentionally diverges
 from the screen's previous heading.
+
+## 1721 — upload preparation wording (2026-10-03)
+Guus reports RAW uploads lingering before transfer. Stage 1 includes local copying,
+metadata encryption and session initialization; its label is now "Preparing on
+your device…". Live encryption throughput remains in stage 2. No design geometry changed.
