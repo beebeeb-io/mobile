@@ -1038,9 +1038,88 @@ class BeebeebCryptoModule : Module() {
       cancelPreviewDownload(requestId)
     }
 
-    // Function("getPreviewLoadProgress") { requestId: String ->
-    //   readPreviewProgress(requestId)
-    // }
+    // ─────────────── chunked streaming video playback (task 1683j) ───────────
+    //
+    // Guus (2026-10-03): "Can't we download chunks and decrypt the chunks
+    // directly? A streaming effect where the user doesn't download the whole
+    // 600 MB, decrypt 600 MB, then play." The whole-file path above must
+    // finish the ENTIRE download + decrypt before the player can start; the
+    // server's per-chunk endpoint (`GET /api/v1/files/{id}/chunks/{i}`,
+    // beebeeb-api routes/files.rs chunk_router) lets native fetch + decrypt
+    // chunk-by-chunk while ExoPlayer reads the decrypted output progressively.
+    //
+    // VideoStreamer.start: fetch chunk 0 (+ the response's X-Chunk-Count) to
+    // resolve the framing, decrypt ahead (tail-first — the MP4 moov lives at
+    // the END) into a sparse plaintext temp file, and serve that file to
+    // expo-video over a loopback-only HTTP server with proper 206/Range
+    // semantics; a range beyond the decrypted frontier BLOCKS while the
+    // needed chunks fetch + decrypt on demand (single-flight per chunk).
+    // Promise resolves once the head is playable (chunk 0 + the LAST chunk
+    // decrypted) with the loopback streamUri + the output path; the pump
+    // keeps filling in the background and the final plaintext lands at
+    // outputUri (the preview-cache copy) on completion.
+    //
+    // Progress + cancel ride the SAME surfaces as the whole-file path:
+    // `getPreviewLoadProgress(requestId)` snapshots (`decrypting` events carry
+    // `streaming: true` — the UI maps them to "Streaming · N% buffered") and
+    // `cancelDownloadAndDecryptFileNative(requestId)` (the session hooks
+    // PreviewDownloadProgress.onCancelExtra). Params map like
+    // decryptLocalFileNative — proven conversion surface for optional
+    // numbers (handleId nullable per 1683h).
+    AsyncFunction("streamVideoNative") { params: Map<String, Any?>, promise: Promise ->
+      scope.launch {
+        val requestId = params["requestId"] as? String
+        try {
+          val result = withContext(Dispatchers.IO) {
+            val master = resolveMasterKey((params["handleId"] as? Number)?.toInt())
+            val progress = PreviewDownloadProgress(requestId, params["fileId"] as? String ?: "") { body ->
+              storePreviewProgress(requestId ?: "", body)
+            }
+            if (!requestId.isNullOrEmpty()) {
+              storePreviewDownloadCancellation(progress, requestId)
+            }
+            try {
+              val started = VideoStreamer.start(
+                requestId = requestId,
+                master = master,
+                apiUrl = params["apiUrl"] as? String
+                  ?: throw CodedException("ERR_PARAMS", "streamVideoNative requires apiUrl", null),
+                token = params["token"] as? String
+                  ?: throw CodedException("ERR_PARAMS", "streamVideoNative requires token", null),
+                fileId = params["fileId"] as? String
+                  ?: throw CodedException("ERR_PARAMS", "streamVideoNative requires fileId", null),
+                outputUri = params["outputUri"] as? String
+                  ?: throw CodedException("ERR_PARAMS", "streamVideoNative requires outputUri", null),
+                declaredSizeBytes = (params["sizeBytes"] as? Number)?.toLong(),
+                declaredChunkCount = (params["chunkCount"] as? Number)?.toInt(),
+                cacheDir = reactContext.cacheDir,
+                clientVersion = clientVersion(),
+                progress = progress,
+                onTerminal = {
+                  if (!requestId.isNullOrEmpty()) {
+                    removePreviewDownloadCancellation(requestId)
+                    clearPreviewProgress(requestId)
+                  }
+                },
+              )
+              mapOf(
+                "streamUri" to started.streamUri,
+                "outputUri" to started.outputUri,
+                "outputPath" to started.outputPath,
+                "plaintextSize" to started.plaintextSize,
+                "chunkCount" to started.chunkCount,
+                "streamId" to started.streamId,
+              )
+            } catch (t: Throwable) {
+              throw t
+            }
+          }
+          promise.resolve(result)
+        } catch (t: Throwable) {
+          rejectUnexpected(promise, t)
+        }
+      }
+    }
     Function("getPreviewLoadProgress") { requestId: String? ->
       readPreviewProgress(requestId) ?: emptyMap()
     }
