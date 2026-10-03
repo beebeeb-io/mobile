@@ -9,7 +9,8 @@ import Foundation
 enum SyncEngine {
   /// Refresh the children of `containerId` from the API and signal the system
   /// when changes land.
-  static func refreshContainer(containerId: String) async {
+  @discardableResult
+  static func refreshContainer(containerId: String) async -> Bool {
     let parentId: String? = (containerId == BeebeebConstants.rootContainerIdentifier) ? nil : containerId
 
     // Task 1593 round 7 (C1) — read BEFORE the network fetch below, which
@@ -29,7 +30,7 @@ enum SyncEngine {
       entries = try await ApiClient.shared.listFiles(parentId: parentId)
     } catch {
       NSLog("[Beebeeb] refreshContainer(\(containerId)) failed: \(error)")
-      return
+      return false
     }
 
     // Prefer extension-local decryption so iOS Files can open any folder even
@@ -80,7 +81,7 @@ enum SyncEngine {
       // for an account that is (or is about to be) signed out; the next
       // enumeration after a fresh sign-in re-fetches this container anyway.
       NSLog("[Beebeeb] refreshContainer(\(containerId)) discarded — purge epoch changed during fetch")
-      return
+      return false
     }
     CacheManager.shared.setSyncState(
       key: "container.\(containerId).anchor",
@@ -93,12 +94,17 @@ enum SyncEngine {
     let itemIdentifier: NSFileProviderItemIdentifier = (containerId == BeebeebConstants.rootContainerIdentifier)
       ? .rootContainer
       : NSFileProviderItemIdentifier(containerId)
-    NSFileProviderManager.default.signalEnumerator(for: itemIdentifier) { error in
+    guard let manager = NSFileProviderManager(for: BeebeebConstants.fileProviderDomain) else {
+      NSLog("[Beebeeb] signalEnumerator(\(containerId)) failed: File Provider manager unavailable")
+      return true
+    }
+    manager.signalEnumerator(for: itemIdentifier) { error in
       if let error { NSLog("[Beebeeb] signalEnumerator(\(containerId)) failed: \(error)") }
     }
-    NSFileProviderManager.default.signalEnumerator(for: .workingSet) { error in
+    manager.signalEnumerator(for: .workingSet) { error in
       if let error { NSLog("[Beebeeb] signalEnumerator workingSet failed: \(error)") }
     }
+    return true
   }
 
   private static func bumpAnchor(_ prior: Int64?) -> Int64 {
