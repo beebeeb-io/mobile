@@ -140,7 +140,10 @@ private func fetch(_ url: String, range: String? = nil, method: String = "GET", 
   return result!
 }
 
+private var assertionCount = 0
+
 private func assert(_ condition: @autoclosure () -> Bool, _ message: String) {
+  assertionCount += 1
   if !condition() {
     fputs("FAIL: \(message)\n", stderr)
     exit(1)
@@ -254,6 +257,6 @@ private enum HarnessMain {
     try runEarlyRangeAndCancel()
     try runAuthFailure()
     try runCancelDrain()
-    print("native-video-streamer-harness: pass")
+    print("native-video-streamer-harness: assertions=\(assertionCount) failures=0")
   }
 }
