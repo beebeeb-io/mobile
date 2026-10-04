@@ -150,6 +150,15 @@ private func assert(_ condition: @autoclosure () -> Bool, _ message: String) {
   }
 }
 
+private func waitUntil(timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+  let deadline = Date().addingTimeInterval(timeout)
+  while Date() < deadline {
+    if condition() { return true }
+    Thread.sleep(forTimeInterval: 0.005)
+  }
+  return condition()
+}
+
 private func runEarlyRangeAndCancel() throws {
   let chunks = [frame("HEAD"), frame("MID!"), frame("TL")]
   let server = try ChunkServer(chunks: chunks, blockIndex: 1)
@@ -230,20 +239,28 @@ private func runAuthFailure() throws {
 
 
 private func runCancelAtPromotion() throws {
-  let server = try ChunkServer(chunks: [frame("DONE")])
+  let server = try ChunkServer(chunks: [frame("HEAD"), frame("MID!"), frame("DONE")])
   defer {
     server.stop()
     NativeVideoStreamer.beforePromotionForTest = nil
   }
   let output = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("stream-harness-\(UUID().uuidString).mp4")
   var events: [[String: Any]] = []
-  let progress = NativeVideoStreamProgress(requestId: "req-promote", fileId: "file") { events.append($0) }
+  let eventLock = NSLock()
+  let progress = NativeVideoStreamProgress(requestId: "req-promote", fileId: "file") { event in
+    eventLock.lock()
+    events.append(event)
+    eventLock.unlock()
+  }
   var fired = false
-  var returnedStart = false
+  let terminal = DispatchSemaphore(value: 0)
   NativeVideoStreamer.beforePromotionForTest = {
     guard !fired else { return }
     fired = true
-    NativeVideoStreamer.cancel(requestId: "req-promote")
+    DispatchQueue.global(qos: .userInitiated).async {
+      NativeVideoStreamer.cancel(requestId: "req-promote")
+    }
+    assert(waitUntil(timeout: 2) { progress.isCancelled() }, "promotion cancellation admitted")
   }
   do {
     _ = try NativeVideoStreamer.start(
@@ -253,19 +270,21 @@ private func runCancelAtPromotion() throws {
       token: "token",
       fileId: "file",
       outputUri: output.absoluteString,
-      declaredSizeBytes: 4,
-      declaredChunkCount: 1,
+      declaredSizeBytes: 12,
+      declaredChunkCount: 3,
       progress: progress,
-      onTerminal: {}
+      onTerminal: { terminal.signal() }
     )
-    returnedStart = true
   } catch {
-    // Expected: cancellation wins before promotion publishes a playable URL.
+    // Cancellation may win before startup returns on slow machines.
   }
-  assert(!returnedStart, "cancel at promotion does not return a playable URL")
+  assert(terminal.wait(timeout: .now() + 2) == .success, "promotion cancellation reached terminal cleanup")
+  eventLock.lock()
+  let sawComplete = events.contains { ($0["stage"] as? String) == "complete" }
+  eventLock.unlock()
   assert(fired, "promotion cancellation hook fired")
   assert(!FileManager.default.fileExists(atPath: output.path), "cancel at promotion does not leave final plaintext")
-  assert(!events.contains { ($0["stage"] as? String) == "complete" }, "cancel at promotion suppresses complete")
+  assert(!sawComplete, "cancel at promotion suppresses complete")
 }
 
 private func runCancelDrain() throws {

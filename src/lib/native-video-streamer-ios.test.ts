@@ -28,7 +28,7 @@ function bracedBody(source: string, signature: string): string {
 describe('iOS NativeVideoStreamer source contract', () => {
   test('exposes start plus request, stream, and global cancellation hooks for the bridge owner', () => {
     expect(STREAMER_SWIFT).toMatch(/static func start\(/);
-    expect(STREAMER_SWIFT).toContain('beforePromotionForTest');
+    expect(STREAMER_SWIFT).toContain('#if DEBUG\n  static var beforePromotionForTest');
     expect(STREAMER_SWIFT).toContain('PlaintextStorageProtection.isPurgePending()');
     expect(STREAMER_SWIFT).toMatch(/static func cancel\(requestId: String\) -> Bool/);
     expect(STREAMER_SWIFT).toMatch(/static func cancel\(streamId: String\) -> Bool/);
@@ -66,6 +66,7 @@ describe('iOS NativeVideoStreamer source contract', () => {
     expect(finalizeBody).toContain('terminal = true');
     expect(finalizeBody).toContain('ownsPromotedOutput = true');
     expect(STREAMER_SWIFT).toContain('Stream cancelled before it became playable');
+    expect(STREAMER_SWIFT).toContain('#if DEBUG\n    NativeVideoStreamer.beforePromotionForTest?()');
     const decryptBody = bracedBody(STREAMER_SWIFT, 'private func decryptChunkFromDisk(index: Int) throws -> Bool {');
     expect(decryptBody).toContain('if done >= count');
     expect(decryptBody).toContain('try finalizeSuccess()');

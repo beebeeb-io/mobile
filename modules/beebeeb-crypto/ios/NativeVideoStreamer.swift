@@ -68,7 +68,9 @@ final class NativeVideoStreamProgress: @unchecked Sendable {
 }
 
 enum NativeVideoStreamer {
+#if DEBUG
   static var beforePromotionForTest: (() -> Void)?
+#endif
 
   static func start(
     requestId: String,
@@ -453,6 +455,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
   }
 
   private func cancelAndDrain(errorMessage: String?, waitForQueues: Bool) {
+    progress.cancel()
     writerLock.lock()
     state.lock()
     if didTeardown {
@@ -470,7 +473,6 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     state.broadcast()
     state.unlock()
     writerLock.unlock()
-    progress.cancel()
     futures.forEach { $0.1.complete(false) }
     tasks.forEach { $0.cancel() }
     fetchQueue.cancelAllOperations()
@@ -763,7 +765,9 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
   }
 
   private func finalizeSuccess() throws {
+#if DEBUG
     NativeVideoStreamer.beforePromotionForTest?()
+#endif
     writerLock.lock()
     defer { writerLock.unlock() }
 
