@@ -169,6 +169,7 @@ final class PreviewChunkPipeline {
       at: outputDirectory,
       withIntermediateDirectories: true
     )
+    try NativePreviewWorkingStorage.prepare(cacheDirectory: outputDirectory)
     Self.protectPlaintextPath(outputDirectory)
     FileManager.default.createFile(atPath: tmpURL.path, contents: nil)
     Self.protectPlaintextPath(tmpURL)

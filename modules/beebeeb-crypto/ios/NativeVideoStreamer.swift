@@ -338,6 +338,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     fetchQueue.maxConcurrentOperationCount = 4
     decryptQueue.name = "beebeeb.stream.decrypt.\(fileId.prefix(8))"
     decryptQueue.maxConcurrentOperationCount = 1
+    try NativePreviewWorkingStorage.prepare(cacheDirectory: outputUrl.deletingLastPathComponent())
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
     _ = PlaintextStorageProtection.protect(tempDir)
     try FileManager.default.createDirectory(at: outputUrl.deletingLastPathComponent(), withIntermediateDirectories: true)
