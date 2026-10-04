@@ -861,3 +861,5 @@ Native pipelines own UUID hidden temporary files/directories beneath the registe
 Cancellation ordering: JS stops progress polling immediately on explicit cancel or abort so the UI settles, but the `terminal` promise stays pending until native cancellation returns. `native-decrypt` releases the writer gate from `terminal`, so resolving it before native drain would allow purge or another writer while the native stream could still be touching plaintext.
 
 Task1724 CI registration: register the new preview frame pipeline driver in the existing Swift test manifest and use its counted assertion format. Missing registration caused the CI gate to fail before publication could complete.
+
+Task1724 native CI: keep compiler flags nonempty for every driver so the runner supports system Bash3.2 with nounset, as used by GitHub macOS. RED reproduced flags[@] unbound after the stream driver; verify all5drivers with /bin/bash.

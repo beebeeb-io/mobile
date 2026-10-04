@@ -51,10 +51,10 @@ for entry in "${MANIFEST[@]}"; do
   tmp="$(mktemp -d)"
   cp "$driver" "$tmp/main.swift"
   echo "== $base  (sources: $srcs)"
-  flags=()
-  [ "$base" = "native-video-streamer-harness.swift" ] && flags=(-DDEBUG)
+  flags=(-swift-version 5 -O)
+  [ "$base" = "native-video-streamer-harness.swift" ] && flags+=(-DDEBUG)
   # shellcheck disable=SC2086
-  if ! xcrun swiftc -swift-version 5 -O "${flags[@]}" $srcs "$tmp/main.swift" -o "$tmp/t" >"$LOG_DIR/$base.build.log" 2>&1; then
+  if ! xcrun swiftc "${flags[@]}" $srcs "$tmp/main.swift" -o "$tmp/t" >"$LOG_DIR/$base.build.log" 2>&1; then
     cat "$LOG_DIR/$base.build.log"
     echo "COMPILE FAILED: $base"
     rc=1
