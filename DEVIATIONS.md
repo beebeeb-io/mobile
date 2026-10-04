@@ -824,3 +824,7 @@ playback remains a separate 1724 slice. Evidence logs:
 ## Task 1724 — video stream lifetime (2026-10-04, JS slice)
 
 Guus reports video playback still behaving like a whole-file download before useful playback. The streaming URI becoming playable is not a completed plaintext cache copy: JS now keeps a cache-path stream registry, joins duplicate opens to the same active partial stream, holds the plaintext gate lease until native terminal/cancel, and cancels the native stream on purge or last preview release. Runtime traces omit loopback capability URLs. This is a lifetime/security repair for the progressive stream path; native chunk scheduling and range-server behavior are owned by the native bridge slice.
+
+## Task1724 — iOS progressive playback bridge
+
+The bridge resolves a standard loopback byte-range source before the full video finishes buffering, preserving native opaque handles and authenticated chunk decryption. Native purge marks its pending gate first and cancels all streams before sweeping plaintext; handle/key release also closes capabilities. Terminal progress survives until polling reads it once. Streaming startup runs away from the UI executor. No keys, bearer tokens or capability URLs are exported to runtime logs.

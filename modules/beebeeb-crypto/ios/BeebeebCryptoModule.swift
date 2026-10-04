@@ -2053,6 +2053,7 @@ public class BeebeebCryptoModule: Module {
   private var nextHandleId: Int = 1
   private let previewDownloadLock = NSLock()
   private var previewDownloadCancellations: [String: PreviewDownloadProgress] = [:]
+  private var streamStartupCancellations: [String: NativeVideoStreamProgress] = [:]
   private let previewProgressLock = NSLock()
   private var previewProgressSnapshots: [String: [String: Any]] = [:]
   /// Live native manual uploads keyed by requestId (task 1310) — polled by JS.
@@ -2104,6 +2105,14 @@ public class BeebeebCryptoModule: Module {
     return cancellation != nil
   }
 
+  private func cancelAllPreviewStreams() {
+    previewDownloadLock.lock()
+    let starting = Array(streamStartupCancellations.values)
+    previewDownloadLock.unlock()
+    starting.forEach { $0.cancel() }
+    NativeVideoStreamer.cancelAll()
+  }
+
   private func storePreviewProgress(_ requestId: String, _ body: [String: Any]) {
     guard !requestId.isEmpty else { return }
     previewProgressLock.lock()
@@ -2115,6 +2124,11 @@ public class BeebeebCryptoModule: Module {
     guard !requestId.isEmpty else { return nil }
     previewProgressLock.lock()
     let snapshot = previewProgressSnapshots[requestId]
+    // A progressive writer outlives its start call. Keep its terminal snapshot
+    // until the poll consumes it, then retire it instead of retaining every job.
+    if let stage = snapshot?["stage"] as? String, stage == "complete" || stage == "error" {
+      previewProgressSnapshots.removeValue(forKey: requestId)
+    }
     previewProgressLock.unlock()
     return snapshot
   }
@@ -2202,7 +2216,7 @@ public class BeebeebCryptoModule: Module {
     //      that slips through both of the above (e.g. one already inside
     //      `CacheManager`'s serial queue, past the epoch check, when step 2
     //      ran) is still wiped by this final in-place reset.
-    AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in
+    AsyncFunction("purgePlaintextStorage") { [self] () -> [String: Int] in
       var failed = 0
       // Task 1593 f2 (lead design decision: MARKER FIRST) — mark pending
       // BEFORE this purge does ANYTHING else: before the consent reset,
@@ -2217,6 +2231,7 @@ public class BeebeebCryptoModule: Module {
       // is a real, counted purge failure: nothing this purge does from this
       // point on can prove an extension write is refused.
       let pendingNonce = PlaintextStorageProtection.markPurgePending()
+      self.cancelAllPreviewStreams()
       if pendingNonce == nil {
         RuntimeTrace.event("storage.purge.failed", ["stage": "pending_marker"])
         failed += 1
@@ -2718,6 +2733,7 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("releaseHandle") { [self] (handleId: Int) in
+      self.cancelAllPreviewStreams()
       self.masterKeyHandles.removeValue(forKey: handleId)
       if self.masterKeyHandles.isEmpty {
         BeebeebCryptoBridge.clearCachedMasterKey()
@@ -2876,7 +2892,8 @@ public class BeebeebCryptoModule: Module {
       return true
     }
 
-    AsyncFunction("deleteKeyFromKeychain") { () throws -> Bool in
+    AsyncFunction("deleteKeyFromKeychain") { [self] () throws -> Bool in
+      self.cancelAllPreviewStreams()
       KeychainManager.delete()
       // Task 1531 [P0] defense in depth: the app-wide in-process master-key
       // cache (`BeebeebCryptoBridge`) was previously cleared ONLY as a side
@@ -4162,8 +4179,58 @@ public class BeebeebCryptoModule: Module {
       ]
     }
 
+    // AVPlayer reads standard HTTP byte ranges from the capability-protected
+    // loopback source; Rust authenticates each chunk before it becomes readable.
+    AsyncFunction("streamVideoNative") { [self] (params: [String: Any]) async throws -> [String: Any] in
+      guard let handleNumber = params["handleId"] as? NSNumber,
+            let apiUrl = params["apiUrl"] as? String,
+            let token = params["token"] as? String,
+            let fileId = params["fileId"] as? String,
+            let outputUri = params["outputUri"] as? String,
+            let requestId = params["requestId"] as? String, !requestId.isEmpty,
+            !PlaintextStorageProtection.isPurgePending() else {
+        throw NSError(domain: "BeebeebVideoStream", code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "Invalid or unavailable video stream request"])
+      }
+      let master = try self.getHandle(handleNumber.intValue)
+      let size = (params["sizeBytes"] as? NSNumber)?.int64Value
+      let count = (params["chunkCount"] as? NSNumber)?.intValue
+      let progress = NativeVideoStreamProgress(requestId: requestId, fileId: fileId) { [weak self] body in
+        self?.storePreviewProgress(requestId, body)
+      }
+      // Register before scheduling the blocking startup so an immediate JS
+      // abort cannot miss a session that has not reached the native registry.
+      self.previewDownloadLock.lock()
+      self.streamStartupCancellations[requestId] = progress
+      self.previewDownloadLock.unlock()
+      defer {
+        self.previewDownloadLock.lock()
+        self.streamStartupCancellations.removeValue(forKey: requestId)
+        self.previewDownloadLock.unlock()
+      }
+      let result = try await Task.detached(priority: .userInitiated) {
+        try NativeVideoStreamer.start(requestId: requestId, master: master,
+          apiUrl: apiUrl, token: token, fileId: fileId, outputUri: outputUri,
+          declaredSizeBytes: size, declaredChunkCount: count,
+          progress: progress, onTerminal: {})
+      }.value
+      return ["streamUri": result.streamUri, "outputUri": result.outputUri,
+        "outputPath": result.outputPath, "plaintextSize": result.plaintextSize,
+        "chunkCount": result.chunkCount, "streamId": result.streamId]
+    }
+
+    AsyncFunction("cancelVideoStreamNative") { (streamId: String) -> Bool in
+      NativeVideoStreamer.cancel(streamId: streamId)
+    }
+
     AsyncFunction("cancelDownloadAndDecryptFileNative") { [self] (requestId: String) -> Bool in
-      self.cancelPreviewDownload(requestId: requestId)
+      self.previewDownloadLock.lock()
+      let startup = self.streamStartupCancellations[requestId]
+      self.previewDownloadLock.unlock()
+      startup?.cancel()
+      let stoppedStream = NativeVideoStreamer.cancel(requestId: requestId)
+      let stoppedDownload = self.cancelPreviewDownload(requestId: requestId)
+      return stoppedStream || stoppedDownload || startup != nil
     }
 
     Function("getPreviewLoadProgress") { [weak self] (requestId: String) -> [String: Any]? in
