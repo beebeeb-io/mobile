@@ -127,6 +127,31 @@ describe('1724 streaming preview lifetime', () => {
     await nd.releasePreviewCopy('vlease', 'mp4');
   });
 
+  test('terminal stream still cancels its native route on last consumer release', async () => {
+    const uri = await nd.decryptToTempFile('vterminalrelease', null, 'mp4', 5000, 4, 7);
+    expect(uri).toBe('http://127.0.0.1:41234/s/vterminalrelease/v.mp4');
+    streamCalls[0].finish();
+    await tick();
+    expect(plaintextGate.held()).toBe(0);
+
+    expect(await nd.releasePreviewCopy('vterminalrelease', 'mp4')).toBe(true);
+
+    expect(cancelCalls).toBe(1);
+    expect(files.has('file:///cache/preview/vterminalrelease.mp4')).toBe(false);
+  });
+
+  test('terminal stream still cancels its native route during purge', async () => {
+    await nd.decryptToTempFile('vterminalpurge', null, 'mp4', 5000, 4, 7);
+    streamCalls[0].finish();
+    await tick();
+    expect(plaintextGate.held()).toBe(0);
+
+    await plaintextGate.purge(() => nd.clearPreviewCache());
+
+    expect(cancelCalls).toBe(1);
+    expect(files.has('file:///cache/preview/vterminalpurge.mp4')).toBe(false);
+  });
+
   test('a second open joins the active partial stream instead of deleting it or starting a duplicate writer', async () => {
     const first = await nd.decryptToTempFile('vjoin', null, 'mp4', 5000, 4, 7);
     expect(files.get('file:///cache/preview/vjoin.mp4')).toBe(100);

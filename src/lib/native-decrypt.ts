@@ -366,36 +366,42 @@ interface ActivePreviewStream {
   extension: string;
   outputPath: string;
   streamUri: string;
-  lease: PlaintextLease;
+  writerLease: PlaintextLease | null;
   native: StreamVideoNativeResult;
-  settled: boolean;
+  terminal: boolean;
+  closed: boolean;
 }
 
 const activePreviewStreams = new Map<string, ActivePreviewStream>();
 
 function isActivePreviewStream(entry: ActivePreviewStream | undefined): entry is ActivePreviewStream {
-  return !!entry && !entry.settled;
+  return !!entry && !entry.closed;
 }
 
-async function settleActivePreviewStream(
-  entry: ActivePreviewStream,
-  deleteOutput: boolean,
-): Promise<void> {
-  if (entry.settled) return;
-  entry.settled = true;
+function markActivePreviewStreamTerminal(entry: ActivePreviewStream): void {
+  if (entry.closed || entry.terminal) return;
+  entry.terminal = true;
+  entry.writerLease?.release();
+  entry.writerLease = null;
+}
+
+async function closeActivePreviewStream(entry: ActivePreviewStream, deleteOutput: boolean): Promise<void> {
+  if (entry.closed) return;
+  entry.closed = true;
   if (activePreviewStreams.get(entry.outputPath) === entry) {
     activePreviewStreams.delete(entry.outputPath);
   }
-  entry.lease.release();
+  entry.writerLease?.release();
+  entry.writerLease = null;
   if (deleteOutput) {
     await FileSystem.deleteAsync(entry.outputPath, { idempotent: true }).catch(() => {});
   }
 }
 
 async function cancelActivePreviewStream(entry: ActivePreviewStream, deleteOutput: boolean): Promise<void> {
-  if (entry.settled) return;
+  if (entry.closed) return;
   await entry.native.cancel?.().catch(() => {});
-  await settleActivePreviewStream(entry, deleteOutput);
+  await closeActivePreviewStream(entry, deleteOutput);
 }
 
 async function cancelActivePreviewStreamForPath(path: string, deleteOutput: boolean): Promise<boolean> {
@@ -641,23 +647,35 @@ async function decryptToTempFileUnshared(
             throw abortError();
           }
           await prunePreviewCache(outputPath);
+          if (streamAbortController.signal.aborted) {
+            await started.cancel?.().catch(() => {});
+            await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+            recordRuntimeTrace('preview.decrypt.stream.aborted_after_prune', { fileId });
+            throw abortError();
+          }
           const activeEntry: ActivePreviewStream = {
             fileId,
             extension: ext,
             outputPath,
             streamUri: started.streamUri,
-            lease: streamLease,
+            writerLease: streamLease,
             native: started,
-            settled: false,
+            terminal: false,
+            closed: false,
           };
           if (forwardAbort) {
             options.signal?.removeEventListener('abort', forwardAbort);
             streamLease.signal.removeEventListener('abort', forwardAbort);
           }
           activePreviewStreams.set(outputPath, activeEntry);
+          if (streamAbortController.signal.aborted) {
+            await cancelActivePreviewStream(activeEntry, true);
+            recordRuntimeTrace('preview.decrypt.stream.aborted_after_register', { fileId });
+            throw abortError();
+          }
           started.terminal
-            ?.then(() => settleActivePreviewStream(activeEntry, false))
-            .catch(() => settleActivePreviewStream(activeEntry, false));
+            ?.then(() => markActivePreviewStreamTerminal(activeEntry))
+            .catch(() => markActivePreviewStreamTerminal(activeEntry));
           streamLease.signal.addEventListener(
             'abort',
             () => { void cancelActivePreviewStream(activeEntry, true); },
@@ -674,6 +692,7 @@ async function decryptToTempFileUnshared(
           return started.streamUri;
         } catch (error) {
           // Never leave a partial plaintext behind (same contract as below).
+          streamAbortController?.abort();
           streamLease?.release();
           await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
           const aborted = options.signal?.aborted === true ||

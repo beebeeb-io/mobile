@@ -1275,7 +1275,7 @@ export async function streamVideoNative(
     const ev = BeebeebCryptoModule.getPreviewLoadProgress?.(requestId)
     return ev && ev.requestId === requestId ? (ev as PreviewLoadProgressEvent) : null
   }
-  const cancelNative = async () => {
+  const cancelNativeOnly = async () => {
     if (streamId && typeof BeebeebCryptoModule.cancelVideoStreamNative === 'function') {
       await BeebeebCryptoModule.cancelVideoStreamNative(streamId).catch(() => {})
       return
@@ -1332,7 +1332,7 @@ export async function streamVideoNative(
 
   const abortListener = () => {
     finish()
-    void cancelNative()
+    void cancelNativeOnly()
   }
   if (options.signal?.aborted) {
     abortListener()
@@ -1355,7 +1355,10 @@ export async function streamVideoNative(
     return {
       ...result,
       requestId,
-      cancel: cancelNative,
+      cancel: async () => {
+        finish()
+        await cancelNativeOnly()
+      },
       terminal,
     }
   } catch (error) {
