@@ -3237,7 +3237,7 @@ sqlite3_close(persistentCheck)
 `);
     runSwiftc([source, '-o', join(dir, 'SQLiteResetHarness'), '-lsqlite3']);
     execFileSync(join(dir, 'SQLiteResetHarness'), [], { stdio: 'pipe' });
-  }, 20_000);
+  }, 60_000);
 });
 
 // Task 1593 f5 (reviewer follow-up 1) — "a registration's bump clears the

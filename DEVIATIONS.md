@@ -4,6 +4,18 @@ Per the workspace `CLAUDE.md` → "How we work" → "Design before code": where 
 design artefact and the shipped code disagree, the deviation is recorded HERE,
 in the same commit as the code, with the ruling that caused it.
 
+## Task 1723 PR163 CI — slow native SQLite harness gets a longer test budget only
+
+**Design:** no product design change. This is a CI-only repair for the Swift
+compile gate.
+
+**Ruling (Codex, 2026-10-04):** keep the File Provider reset behavior
+unchanged. The harness intentionally holds SQLite exclusive locks and executes
+two busy-timeout reset attempts; on GitHub's macOS runner, compiling and
+running that native harness exceeded the previous 20 second Bun test budget.
+The fix is to lengthen that one harness timeout, not relax the assertions or
+change product SQLite behavior.
+
 This file did not exist before task 1563 (mobile) — several earlier PreviewScreen.tsx
 comments reference "DEVIATIONS.md" for phases 3/4 of the doc-header/light-mode work,
 but no such file was ever actually committed in this repo. Created here per the
