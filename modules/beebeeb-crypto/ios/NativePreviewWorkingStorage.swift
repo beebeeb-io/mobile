@@ -3,32 +3,39 @@ import Foundation
 enum NativePreviewWorkingStorage {
   private static let lock = NSLock()
   private static var preparedCacheDirectories = Set<String>()
+#if DEBUG
+  static var beforeFirstSweepForTests: ((URL) -> Void)?
+#endif
 
   static func prepare(cacheDirectory: URL) throws {
     let directory = cacheDirectory.standardizedFileURL
-    let key = directory.path
+    let key = directory.resolvingSymlinksInPath().path
 
     lock.lock()
+    defer { lock.unlock() }
     if preparedCacheDirectories.contains(key) {
-      lock.unlock()
       return
     }
-    preparedCacheDirectories.insert(key)
-    lock.unlock()
 
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+#if DEBUG
+    beforeFirstSweepForTests?(directory)
+#endif
     guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else {
+      preparedCacheDirectories.insert(key)
       return
     }
     for name in names where shouldRemove(name: name, in: directory) {
       try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
     }
+    preparedCacheDirectories.insert(key)
   }
 
 #if DEBUG
   static func resetPreparedDirectoriesForTests() {
     lock.lock()
     preparedCacheDirectories.removeAll()
+    beforeFirstSweepForTests = nil
     lock.unlock()
   }
 #endif

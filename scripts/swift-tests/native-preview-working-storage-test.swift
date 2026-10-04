@@ -65,4 +65,67 @@ expect(exists(unknownDotFile), "fresh-process prepare removed unrecognized dot t
 expect(exists(unknownStreamDir), "fresh-process prepare removed unrecognized stream directory")
 expect(exists(plainHiddenFile), "fresh-process prepare removed plain hidden file")
 
+let raceCache = FileManager.default.temporaryDirectory
+  .appendingPathComponent("native-preview-working-storage-race-test-\(UUID().uuidString)", isDirectory: true)
+defer { try? FileManager.default.removeItem(at: raceCache) }
+let raceOldTemp = raceCache.appendingPathComponent(".old.jpg.550E8400-E29B-41D4-A716-446655440004.tmp")
+let raceLiveTemp = raceCache.appendingPathComponent(".live.jpg.550E8400-E29B-41D4-A716-446655440005.tmp")
+touchFile(raceOldTemp)
+let firstEntered = DispatchSemaphore(value: 0)
+let allowFirstSweep = DispatchSemaphore(value: 0)
+let secondFinished = DispatchSemaphore(value: 0)
+var secondPrepareReturned = false
+let secondStateLock = NSLock()
+NativePreviewWorkingStorage.resetPreparedDirectoriesForTests()
+NativePreviewWorkingStorage.beforeFirstSweepForTests = { directory in
+  guard directory.path == raceCache.standardizedFileURL.path else { return }
+  firstEntered.signal()
+  _ = allowFirstSweep.wait(timeout: .now() + 3)
+}
+DispatchQueue.global(qos: .userInitiated).async {
+  try? NativePreviewWorkingStorage.prepare(cacheDirectory: raceCache)
+}
+expect(firstEntered.wait(timeout: .now() + 2) == .success, "first prepare reached pre-sweep barrier")
+DispatchQueue.global(qos: .userInitiated).async {
+  try? NativePreviewWorkingStorage.prepare(cacheDirectory: raceCache)
+  touchFile(raceLiveTemp)
+  secondStateLock.lock()
+  secondPrepareReturned = true
+  secondStateLock.unlock()
+  secondFinished.signal()
+}
+Thread.sleep(forTimeInterval: 0.1)
+secondStateLock.lock()
+let returnedBeforeSweep = secondPrepareReturned
+secondStateLock.unlock()
+expect(!returnedBeforeSweep, "second prepare returned while first sweep was paused")
+allowFirstSweep.signal()
+expect(secondFinished.wait(timeout: .now() + 2) == .success, "second prepare did not finish after first sweep")
+expect(!exists(raceOldTemp), "first sweep did not remove stale race temp")
+expect(exists(raceLiveTemp), "live file created after first prepare was removed")
+try NativePreviewWorkingStorage.prepare(cacheDirectory: raceCache)
+expect(exists(raceLiveTemp), "later same-process prepare removed live race temp")
+NativePreviewWorkingStorage.resetPreparedDirectoriesForTests()
+
+let aliasTarget = FileManager.default.temporaryDirectory
+  .appendingPathComponent("native-preview-working-storage-alias-target-\(UUID().uuidString)", isDirectory: true)
+let aliasLink = FileManager.default.temporaryDirectory
+  .appendingPathComponent("native-preview-working-storage-alias-link-\(UUID().uuidString)", isDirectory: true)
+defer {
+  try? FileManager.default.removeItem(at: aliasLink)
+  try? FileManager.default.removeItem(at: aliasTarget)
+}
+try FileManager.default.createDirectory(at: aliasTarget, withIntermediateDirectories: true)
+try FileManager.default.createSymbolicLink(at: aliasLink, withDestinationURL: aliasTarget)
+let aliasOldTemp = aliasTarget.appendingPathComponent(".alias.jpg.550E8400-E29B-41D4-A716-446655440006.tmp")
+let aliasLiveTemp = aliasTarget.appendingPathComponent(".alias-live.jpg.550E8400-E29B-41D4-A716-446655440007.tmp")
+touchFile(aliasOldTemp)
+NativePreviewWorkingStorage.resetPreparedDirectoriesForTests()
+try NativePreviewWorkingStorage.prepare(cacheDirectory: aliasLink)
+expect(!exists(aliasOldTemp), "alias first prepare did not remove stale temp")
+touchFile(aliasLiveTemp)
+try NativePreviewWorkingStorage.prepare(cacheDirectory: aliasTarget)
+expect(exists(aliasLiveTemp), "canonicalized alias prepare removed live temp")
+NativePreviewWorkingStorage.resetPreparedDirectoriesForTests()
+
 print("native-preview-working-storage-test: \(assertionCount) assertions, 0 failed")
