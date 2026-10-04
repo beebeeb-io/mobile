@@ -17,6 +17,7 @@ cd "$(dirname "$0")/../.."
 
 # driver basename | space-separated sources under test
 MANIFEST=(
+  "native-video-streamer-harness.swift|scripts/swift-tests/native-video-streamer-stubs.swift modules/beebeeb-crypto/ios/NativeVideoStreamer.swift"
   "preview-chunk-pipeline-test.swift|modules/beebeeb-crypto/ios/PreviewChunkPipeline.swift"
   "account-refusal-detection-test.swift|modules/beebeeb-crypto/ios/AccountRefusalDetection.swift"
   "share-upload-request-policy-test.swift|targets/share-extension/ShareUploadRequestPolicy.swift targets/file-provider/AccountMismatchDetection.swift"
@@ -29,8 +30,8 @@ rc=0
 files=0
 assertions=0
 
-on_disk=$(ls scripts/swift-tests/*-test.swift | wc -l | tr -d ' ')
-for driver in scripts/swift-tests/*-test.swift; do
+on_disk=$(ls scripts/swift-tests/*-test.swift scripts/swift-tests/*-harness.swift | wc -l | tr -d ' ')
+for driver in scripts/swift-tests/*-test.swift scripts/swift-tests/*-harness.swift; do
   base="$(basename "$driver")"
   found=0
   for entry in "${MANIFEST[@]}"; do
@@ -50,8 +51,10 @@ for entry in "${MANIFEST[@]}"; do
   tmp="$(mktemp -d)"
   cp "$driver" "$tmp/main.swift"
   echo "== $base  (sources: $srcs)"
+  flags=()
+  [ "$base" = "native-video-streamer-harness.swift" ] && flags=(-DDEBUG)
   # shellcheck disable=SC2086
-  if ! xcrun swiftc -swift-version 5 -O $srcs "$tmp/main.swift" -o "$tmp/t" >"$LOG_DIR/$base.build.log" 2>&1; then
+  if ! xcrun swiftc -swift-version 5 -O "${flags[@]}" $srcs "$tmp/main.swift" -o "$tmp/t" >"$LOG_DIR/$base.build.log" 2>&1; then
     cat "$LOG_DIR/$base.build.log"
     echo "COMPILE FAILED: $base"
     rc=1

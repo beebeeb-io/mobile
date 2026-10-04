@@ -310,13 +310,14 @@ private func runCancelDrain() throws {
   assert(!FileManager.default.fileExists(atPath: output.path), "cancel before complete does not promote output")
 }
 
-@main
 private enum HarnessMain {
   static func main() throws {
     try runEarlyRangeAndCancel()
     try runAuthFailure()
     try runCancelAtPromotion()
     try runCancelDrain()
-    print("native-video-streamer-harness: assertions=\(assertionCount) failures=0")
+    print("native-video-streamer-harness: \(assertionCount) assertions, 0 failed")
   }
 }
+
+try HarnessMain.main()
