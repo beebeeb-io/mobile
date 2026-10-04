@@ -1,12 +1,14 @@
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { FileProviderDomainRegistrationResult } from '../../modules/beebeeb-crypto/src/BeebeebCrypto.types';
-import type { FileProviderCacheEntry } from '../../modules/beebeeb-crypto/src/BeebeebCrypto';
+import type { BatchNameItem, BatchNameResult, FileProviderCacheEntry } from '../../modules/beebeeb-crypto/src/BeebeebCrypto';
 import { getApiUrl, getToken, listAllFiles } from './api';
 import type { FileEntry } from './api';
 import { encryptedMetadataPayloadToBytes } from './encrypted-metadata';
 import { requestDeviceOwnerAuth } from './device-owner-auth';
 import { wasRecentlyUnlocked } from './lock-state';
+import { mapInBatches } from './async-batch';
+import { decryptNamesInBackground } from './background-name-decrypt';
 import { isPlaintextGateClosed, plaintextGate, withPlaintextLease } from './plaintext-gate';
 
 type MountTrustedFileProviderOptions = {
@@ -217,6 +219,10 @@ function parseDecryptedName(plaintext: string): string {
  */
 export async function populateFileProviderCache(
   decryptMetadata: (fileId: string, nonce: Uint8Array, ct: Uint8Array) => Promise<string>,
+  options: {
+    recursive?: boolean;
+    decryptNames?: (items: BatchNameItem[]) => Promise<BatchNameResult[]>;
+  } = {},
 ): Promise<number> {
   if (Platform.OS !== 'ios') return 0;
   let lease;
@@ -242,12 +248,22 @@ export async function populateFileProviderCache(
         const files = await listAllFiles(parentId);
         const names: Record<string, string> = {};
 
-        await Promise.all(files.map(async (file) => {
+        const encrypted = files.filter((file) => (file.name_encrypted ?? '').startsWith('{'));
+        if (options.decryptNames) {
+          await decryptNamesInBackground(
+            encrypted.map((file) => ({ fileId: file.id, nameEncrypted: file.name_encrypted ?? '' })),
+            options.decryptNames,
+            (item, result) => { if (result.name) names[item.fileId] = result.name; },
+            () => !lease.valid,
+          );
+        }
+        await mapInBatches(files, 12, async (file) => {
+          if (!lease.valid) return;
           try {
             const raw = file.name_encrypted ?? '';
             if (!raw.startsWith('{')) {
               if (raw && raw.length < 200) names[file.id] = raw;
-            } else {
+            } else if (!options.decryptNames) {
               const payload = encryptedMetadataPayloadToBytes(raw);
               if (payload) {
                 const plaintext = await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
@@ -258,7 +274,7 @@ export async function populateFileProviderCache(
           } catch {
             // skip individual decrypt failures
           }
-        }));
+        });
 
         // Re-check: the decrypt span above is async, and a purge may have
         // closed the gate while it ran.
@@ -272,7 +288,7 @@ export async function populateFileProviderCache(
         });
 
         for (const file of files) {
-          if (file.is_folder) queue.push(file.id);
+          if (options.recursive !== false && file.is_folder) queue.push(file.id);
         }
       } catch {
         // skip folders that fail to list

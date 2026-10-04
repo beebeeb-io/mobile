@@ -705,9 +705,7 @@ function BiometricGuard({
     if (token) {
       await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
     }
-    // Pre-populate FileProvider cache with decrypted names so iOS Files
-    // shows real names immediately without needing to open the Files tab first.
-    populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
+    // The domain registrar prewarms mounted Files roots after unlock.
     // Resume any thumbnail worker pool jobs that were paused during lock.
     if (Platform.OS === 'ios') {
       try { await BeebeebThumbnails.resumeWorkers(); } catch {}
@@ -825,7 +823,7 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
         result.cacheDatabaseReady !== false &&
         !result.userVisibleRootError;
       if (mounted) {
-        void populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
+        void populateFileProviderCache(crypto.decryptMetadata, { recursive: false, decryptNames: crypto.decryptNames }).catch(() => {});
       }
       if (__DEV__) {
         console.log('[FileProvider] domain registration', result);
@@ -837,7 +835,7 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
     } finally {
       registeringRef.current = false;
     }
-  }, [crypto.decryptMetadata, crypto.isUnlocked, enabled]);
+  }, [crypto.decryptMetadata, crypto.decryptNames, crypto.isUnlocked, enabled]);
 
   useEffect(() => {
     attemptedRef.current = false;

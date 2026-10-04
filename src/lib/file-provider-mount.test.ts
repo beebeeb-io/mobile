@@ -160,6 +160,53 @@ describe('populateFileProviderCache (task 1593 round 4 — walk holds ONE lease 
     expect(nativeCalls.length).toBe(0);
   });
 
+  test('root prewarm uses native batches instead of per-file metadata bridge calls', async () => {
+    listAllFilesPlan = {
+      root: Array.from({ length: 25 }, (_, index) => ({ id: `f${index}`, is_folder: false, name_encrypted: '{"nonce":"AA==","ciphertext":"AA=="}', parent_id: null })),
+    };
+    const sizes: number[] = [];
+    let individual = 0;
+    const count = await populateFileProviderCache(async () => { individual++; return 'unexpected'; }, {
+      recursive: false,
+      decryptNames: async (items) => {
+        sizes.push(items.length);
+        return items.map((item) => ({ name: item.fileId + '.jpg', mimeType: 'image/jpeg', error: null }));
+      },
+    });
+    expect(count).toBe(25);
+    expect(sizes).toEqual([12, 12, 1]);
+    expect(individual).toBe(0);
+    expect(nativeCalls[0].args[0][0].name_decrypted).toBe('f0.jpg');
+  });
+
+  test('purge during a native name batch prevents all cache writes', async () => {
+    listAllFilesPlan = { root: [{ id: 'f', is_folder: false, name_encrypted: '{"nonce":"AA==","ciphertext":"AA=="}', parent_id: null }] };
+    let purged: Promise<void> | null = null;
+    let swept = false;
+    const count = await populateFileProviderCache(decryptMetadata, {
+      recursive: false,
+      decryptNames: async () => {
+        purged = plaintextGate.purge(async () => { swept = true; });
+        return [{ name: 'private.jpg', mimeType: 'image/jpeg', error: null }];
+      },
+    });
+    await purged;
+    expect(count).toBe(0);
+    expect(nativeCalls.length).toBe(0);
+    expect(swept).toBe(true);
+  });
+
+  test('root-only prewarm does not wait for or decrypt unrelated subfolders', async () => {
+    listAllFilesPlan = {
+      root: [{ id: 'folderA', is_folder: true, name_encrypted: 'FolderA', parent_id: null }],
+      folderA: [{ id: 'leafA', is_folder: false, name_encrypted: 'leafA.txt', parent_id: 'folderA' }],
+    };
+    const count = await populateFileProviderCache(decryptMetadata, { recursive: false });
+    expect(count).toBe(1);
+    expect(listAllFilesCalls).toEqual(['root']);
+    expect(nativeCalls.length).toBe(1);
+  });
+
   test('baseline: an open gate walks every folder (proves the harness itself finds folders)', async () => {
     listAllFilesPlan = {
       root: [

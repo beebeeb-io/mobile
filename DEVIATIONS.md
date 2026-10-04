@@ -747,3 +747,9 @@ affordances, the partial-file error card, PhotoPage export/resource bounds and
 RAW EXIF keyed by file id. This repair restores those local PreviewScreen
 behaviors while preserving the merged streaming UI's buffered-video badge and
 single-file video streaming path. No design geometry changes.
+
+## Task 1724 — cold folder latency (2026-10-04, Guus ruling)
+
+Guus reports initial Files and every subfolder block for too long and asks for the delay to be fixed. Folder-specific paginated requests must start immediately and must not wait for the full vault index to hydrate, fetch, or persist. Persisted index rows are an optional temporary display; a late cache result cannot overwrite settled folder rows. Background search reconciliation uses bounded native batch decrypts and yields to visible browsing; no encryption or sync cursor checks are removed.
+
+File Provider registration/mount prewarms root only; opened subfolders refresh on demand using the existing extension Secure Enclave path. Remove the duplicate full-vault walk at biometric unlock to avoid competing with browsing. Purge leases/epoch checks remain in force.

@@ -22,7 +22,7 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
@@ -75,7 +75,7 @@ import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
 import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
-import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken, abortUploadForFile, abandonFileUpload, getUploadResumeForFile, forgetUploadResume } from '../lib/api';
+import { ApiError, listAllFiles, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken, abortUploadForFile, abandonFileUpload, getUploadResumeForFile, forgetUploadResume } from '../lib/api';
 import type { UploadResumeInfo } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { ensurePhotoPermission } from '../lib/photo-permissions';
@@ -103,6 +103,7 @@ import { abandonTextFileUpload } from '../lib/text-file-save';
 import NewFileSheet, { type NewFileRequest } from '../components/NewFileSheet';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
+import { decryptNamesInBackground } from '../lib/background-name-decrypt';
 import { onFilesDeleted } from '../lib/delete-cascade';
 import { loadNameCache, scheduleSaveNameCache, type NameCache } from '../lib/name-cache';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
@@ -117,7 +118,7 @@ import { useBackup } from '../lib/backup-context';
 import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
 import { donateSiriShortcut } from '../lib/siri-shortcuts';
 import { perfMark } from '../lib/perf-mark';
-import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
+import { loadCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
 import { formatBytes as formatSize } from '../lib/format';
 import { useAccountState } from '../lib/account-state-context';
 import {
@@ -131,6 +132,7 @@ import {
   appendFolderToBreadcrumbStack,
   filterSelfChildEntries,
   folderCacheKey,
+  loadFolderWithCachedRows,
   shouldApplyFilesForFolderToVisibleRows,
   shouldApplyFolderRequestToVisibleState,
   type BreadcrumbEntry,
@@ -1338,6 +1340,7 @@ const proofStyles = StyleSheet.create({
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function FilesScreen() {
+  const isFocused = useIsFocused();
   const navigation = useNavigation<Nav>();
   const route = useRoute<RouteProp<TabParamList, 'Files'>>();
   const insets = useSafeAreaInsets();
@@ -1630,7 +1633,7 @@ export default function FilesScreen() {
       searchReconciledRef.current = false;
       return;
     }
-    if (!searchIndexReady || !sync.ready || searchReconciledRef.current) return;
+    if (!isFocused || loading || !searchIndexReady || !sync.ready || searchReconciledRef.current) return;
     searchReconciledRef.current = true;
 
     let cancelled = false;
@@ -1641,47 +1644,41 @@ export default function FilesScreen() {
         .filter(
           (n) => !n.is_trashed && !indexed.has(n.id) && (n.name_encrypted ?? '').startsWith('{'),
         );
-      const BATCH = 12;
-      for (let i = 0; i < missing.length && !cancelled; i += BATCH) {
-        await Promise.all(
-          missing.slice(i, i + BATCH).map(async (node) => {
-            try {
-              const payload = encryptedMetadataPayloadToBytes(node.name_encrypted ?? '');
-              if (!payload) return;
-              const plaintext = await decryptMetadata(node.id, payload.nonce, payload.ciphertext);
-              const { name, mimeType } = parseDecryptedMetadata(plaintext);
-              if (cancelled || !name) return;
-              indexFile(node.id, {
-                name,
-                path: name,
-                // 1338b — was always '' for files (mimeType was parsed then
-                // discarded), so `searchResultToFileEntry` → `fileCategory`
-                // had no real mime for a vault-search result and the bottom
-                // bar's kind filter fell back to guessing from the filename
-                // extension for every reconciled node. Thread the real,
-                // already-decrypted type through — same field `toSearchIndexEntry`
-                // (above) already fills correctly for indexed-on-write nodes.
-                type: node.is_folder ? 'folder' : (mimeType ?? ''),
-                size: node.size_bytes ?? 0,
-                parent: node.parent_id,
-                starred: false,
-                created: '',
-                modified: '',
-                tags: [],
-              });
-            } catch {
-              // request-upload (content-key) or a transient decrypt failure — it
-              // gets indexed when its folder is opened. Non-fatal.
-            }
-          }),
+      const byId = new Map(missing.map((node) => [node.id, node]));
+      try {
+        await folderNamesReadyRef.current;
+        const applied = await decryptNamesInBackground(
+          missing.map((node) => ({ fileId: node.id, nameEncrypted: node.name_encrypted ?? '' })),
+          decryptNames,
+          (item, metadata) => {
+            const node = byId.get(item.fileId);
+            if (!node || !metadata.name) return;
+            indexFile(node.id, {
+              name: metadata.name,
+              path: metadata.name,
+              type: node.is_folder ? 'folder' : (metadata.mimeType ?? ''),
+              size: node.size_bytes ?? 0,
+              parent: node.parent_id,
+              starred: false,
+              created: '',
+              modified: '',
+              tags: [],
+            });
+          },
+          () => cancelled,
         );
+        recordRuntimeTrace('files.search_reconcile', { candidates: missing.length, applied, cancelled });
+      } catch {
+        // Search is best-effort; visible folders resolve their own names.
+        if (!cancelled) searchReconciledRef.current = false;
       }
     })();
 
     return () => {
       cancelled = true;
+      searchReconciledRef.current = false;
     };
-  }, [isUnlocked, searchIndexReady, sync, getIndexedIds, indexFile, decryptMetadata]);
+  }, [isUnlocked, isFocused, loading, currentFolder.id, searchIndexReady, sync.ready, sync.allNodes, getIndexedIds, indexFile, decryptNames]);
 
   // 0789 — Sort + "+" add menus are now the real iOS UIMenu pull-down (MenuView),
   // anchored under the button. Only the file-row long-press still routes through the
@@ -2099,11 +2096,13 @@ export default function FilesScreen() {
   // the destination folder's entries cached we render them immediately (instant,
   // then reconciled by the sync derive below); otherwise we clear to an empty
   // list under the loading skeleton until authoritative data arrives.
+  const folderFetchGenerationRef = useRef(0);
   const renderedFolderKeyRef = useRef(folderCacheKey(currentFolder.id));
   useLayoutEffect(() => {
     const key = folderCacheKey(currentFolder.id);
     if (renderedFolderKeyRef.current === key) return;
     renderedFolderKeyRef.current = key;
+    folderFetchGenerationRef.current += 1;
     filesFolderKeyRef.current = key;
     const cached = folderFilesCacheRef.current[key];
     if (cached && cached.length > 0) {
@@ -2125,7 +2124,9 @@ export default function FilesScreen() {
   // ------------------------------------------------------------------
 
   const fetchFiles = useCallback(async (parentId: string | null, isRefresh = false) => {
+    const generation = ++folderFetchGenerationRef.current;
     const isRequestStillVisible = () =>
+      generation === folderFetchGenerationRef.current &&
       shouldApplyFolderRequestToVisibleState(parentId, filesFolderKeyRef.current);
     const hasVisibleFiles = filesCountRef.current > 0;
     if (isRequestStillVisible()) {
@@ -2143,46 +2144,32 @@ export default function FilesScreen() {
       refresh: isRefresh,
     });
     let renderedCachedIndex = false;
+    const folderStartedAt = Date.now();
+    recordRuntimeTrace('files.folder_load.start', { parentId, generation, refresh: isRefresh });
 
     try {
-      const cachedIndex = await loadCachedFileIndex();
-      if (!isRefresh && !hasVisibleFiles && cachedIndex) {
-        const cachedFiles = filesForFolderFromIndex(cachedIndex, parentId);
-        if (cachedFiles.length > 0) {
-          renderedCachedIndex = true;
+      const result = await loadFolderWithCachedRows(
+        () => listAllFiles(parentId ?? undefined),
+        !isRefresh && !hasVisibleFiles
+          ? async () => {
+              const cacheStartedAt = Date.now();
+              const cachedIndex = await loadCachedFileIndex();
+              recordRuntimeTrace('files.folder_cache.loaded', { parentId, elapsedMs: Date.now() - cacheStartedAt, entries: cachedIndex?.files.length ?? 0 });
+              return cachedIndex ? filesForFolderFromIndex(cachedIndex, parentId) : null;
+            }
+          : null,
+        (cachedFiles) => {
+          if (!isRequestStillVisible()) return;
           if (applyFilesForFolder(parentId, cachedFiles, { preserveCachedOnEmpty: true })) {
+            renderedCachedIndex = true;
             setLoading(false);
             setRefreshing(true);
           }
-        }
-      }
-
-      try {
-        const index = await getFileIndex(cachedIndex?.hash);
-        const sourceIndex = !index.changed && cachedIndex
-          ? cachedIndex
-          : index.files
-            ? { hash: index.hash, files: index.files, storedAt: Date.now() }
-            : null;
-        if (index.files) {
-          await saveCachedFileIndex(index.hash, index.files);
-        }
-        if (sourceIndex) {
-          const result = filesForFolderFromIndex(sourceIndex, parentId);
-          const rendered = applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
-          endPerf({ count: result.length, source: 'index' });
-          if (rendered) setHasLoadedOnceTrue();
-          return;
-        }
-      } catch (err) {
-        if (!(err instanceof ApiError) || (err.status !== 400 && err.status !== 404 && err.status !== 405)) {
-          throw err;
-        }
-      }
-
-      const result = await listAllFiles(parentId ?? undefined);
-      const rendered = applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
+        },
+      );
+      const rendered = isRequestStillVisible() && applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: false });
       endPerf({ count: result.length, source: 'folder' });
+      recordRuntimeTrace('files.folder_load.complete', { parentId, generation, count: result.length, applied: rendered, elapsedMs: Date.now() - folderStartedAt });
       if (rendered) setHasLoadedOnceTrue();
     } catch (err) {
       endPerf({ error: true });
@@ -2256,6 +2243,7 @@ export default function FilesScreen() {
         const haveAuthoritativeData =
           liveNodes.length > 0 || (cachedFolderFiles?.length ?? 0) > 0 || folderResolvedInTree;
         if (haveAuthoritativeData) {
+          folderFetchGenerationRef.current += 1;
           applyFilesForFolder(
             currentFolder.id,
             liveNodes.map(syncNodeToFileEntry),
@@ -2286,6 +2274,7 @@ export default function FilesScreen() {
     if (lastLoadedFolderRef.current !== currentFolder.id) return;
     const liveNodes = sync.children(currentFolder.id).filter((n) => !n.is_trashed);
     if (liveNodes.length > 0) {
+      folderFetchGenerationRef.current += 1;
       applyFilesForFolder(
         currentFolder.id,
         liveNodes.map(syncNodeToFileEntry),
