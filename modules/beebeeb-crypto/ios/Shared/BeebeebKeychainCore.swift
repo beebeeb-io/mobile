@@ -10,7 +10,7 @@ import Security
 ///     writes (store/delete/access-control/string-storage). Uses
 ///     `BeebeebKeychainCore` for shared constants and read helpers.
 ///   - `targets/file-provider/BeebeebKeychainCore.swift` — symlink to this
-///     file. File Provider extension reads with `mode: .extensionOnly`.
+///     file. File Provider extension reads with `mode: .fileProviderOnly`.
 ///   - `targets/share-extension/BeebeebKeychainCore.swift` — symlink to this
 ///     file. Share Extension reads with `mode: .extensionThenPrimary`.
 ///
@@ -103,8 +103,11 @@ enum BeebeebKeychainCore {
         /// — Files.app and the share sheet can't surface a clean prompt.
         case primaryOnly
         /// Try the extension SE key (`.devicePasscode`, no biometric prompt)
-        /// only. File Provider uses this exclusively.
+        /// only. Kept for existing background consumers.
         case extensionOnly
+        /// Files runs without an authentication UI. Its separate wrapping
+        /// key requires an unlocked, passcode-equipped device, not a prompt.
+        case fileProviderOnly
         /// Try the extension SE key first; fall back to the primary key if
         /// the extension key is missing. Share Extension uses this so a user
         /// who has never run a backup (no extension key yet) can still
@@ -118,6 +121,8 @@ enum BeebeebKeychainCore {
     static let seKeyTagExt = "io.beebeeb.sekey.ext".data(using: .utf8)!
     static let wrappedKeyService = "io.beebeeb.masterkey"
     static let wrappedKeyServiceExt = "io.beebeeb.masterkey.ext"
+    static let seKeyTagFiles = "io.beebeeb.sekey.files.v1".data(using: .utf8)!
+    static let wrappedKeyServiceFiles = "io.beebeeb.masterkey.files.v1"
     static let eciesAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 
     /// Fully-qualified keychain access group. Team ID prefix is hardcoded
@@ -159,6 +164,16 @@ enum BeebeebKeychainCore {
         authContext: AnyObject?,
         decryptError: inout Unmanaged<CFError>?
     ) -> Data? {
+        if mode == .fileProviderOnly {
+            guard let key = findSEKey(tag: seKeyTagFiles),
+                  let wrapped = fetchWrappedBlob(service: wrappedKeyServiceFiles, label: label) else {
+                return nil
+            }
+            guard let plain = SecKeyCreateDecryptedData(key, eciesAlgorithm, wrapped as CFData, &decryptError) else {
+                return nil
+            }
+            return plain as Data
+        }
         // Extension SE key path (.devicePasscode, no Face ID prompt)
         if mode != .primaryOnly,
            let extKey = findSEKey(tag: seKeyTagExt),
@@ -196,6 +211,9 @@ enum BeebeebKeychainCore {
         if let key = loadMasterKey(label: label, mode: mode) {
             return key
         }
+        if mode == .fileProviderOnly {
+            throw findSEKey(tag: seKeyTagFiles) == nil ? LoadError.seKeyNotFound : LoadError.notFound
+        }
         // Determine which gate failed for a cleaner error
         let extKeyMissing = findSEKey(tag: seKeyTagExt) == nil
         let primaryKeyMissing = findSEKey(tag: seKeyTag) == nil
@@ -206,6 +224,8 @@ enum BeebeebKeychainCore {
             throw extKeyMissing ? LoadError.seKeyNotFound : LoadError.notFound
         case .extensionThenPrimary:
             throw (extKeyMissing && primaryKeyMissing) ? LoadError.seKeyNotFound : LoadError.notFound
+        case .fileProviderOnly:
+            throw LoadError.notFound
         }
     }
 

@@ -104,12 +104,13 @@ final class KeychainManager {
 
     // --- Extension SE key (.devicePasscode always — no biometric prompt from extensions) ---
     try storeExtensionWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
+    try storeFileProviderWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
     #endif
   }
 
   /// Encrypt the master key under the extension SE key and persist alongside
-  /// the primary blob. This is required: the File Provider intentionally never
-  /// falls back to the primary key because it may require Face ID from Files.app.
+  /// the primary blob for existing share/backup consumers. Files uses a
+  /// separate wrapped blob and never falls back to this key or the primary.
   private static func storeExtensionWrappedKey(masterKeyBytes: Data, label: String) throws {
     let extSEKey = try getOrCreateExtensionSEKey()
     guard let extPublicKey = SecKeyCopyPublicKey(extSEKey) else {
@@ -138,6 +139,37 @@ final class KeychainManager {
   }
 
   // MARK: - Load
+
+  /// Files has no authentication UI. Use a dedicated hardware wrapping key
+  /// available only on this unlocked, passcode-equipped device. The shared
+  /// backup/share wrapping key keeps its existing authentication policy.
+  private static func storeFileProviderWrappedKey(masterKeyBytes: Data, label: String) throws {
+    let key = try getOrCreateFileProviderSEKey()
+    guard let publicKey = SecKeyCopyPublicKey(key) else {
+      throw KeychainError.seKeyNotFound
+    }
+    var error: Unmanaged<CFError>?
+    guard let wrapped = SecKeyCreateEncryptedData(publicKey, BeebeebKeychainCore.eciesAlgorithm, masterKeyBytes as CFData, &error) else {
+      _ = error?.takeRetainedValue()
+      throw KeychainError.encryptionFailed
+    }
+    var attributes: [CFString: Any] = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: BeebeebKeychainCore.wrappedKeyServiceFiles,
+      kSecAttrAccount: label,
+    ]
+    if let group = BeebeebKeychainCore.accessGroup { attributes[kSecAttrAccessGroup] = group }
+    let values: [CFString: Any] = [
+      kSecAttrAccessible: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
+      kSecValueData: wrapped as Data,
+    ]
+    var status = SecItemUpdate(attributes as CFDictionary, values as CFDictionary)
+    if status == errSecItemNotFound {
+      attributes.merge(values) { _, new in new }
+      status = SecItemAdd(attributes as CFDictionary, nil)
+    }
+    guard status == errSecSuccess else { throw KeychainError.writeError(status) }
+  }
 
   /// Decrypt and return the master key. Returns nil if no key is stored.
   /// Triggers biometric/passcode prompt if the SE access control requires it.
@@ -180,7 +212,7 @@ final class KeychainManager {
     let authContext = try authenticateForPrimaryLoad(label: label)
 
     // Main app uses .primaryOnly — biometric/passcode prompt is acceptable
-    // here. Extensions use .extensionOnly / .extensionThenPrimary.
+    // here. Files uses .fileProviderOnly; Share uses .extensionThenPrimary.
     var decryptError: Unmanaged<CFError>?
     guard let plaintextData = BeebeebKeychainCore.loadMasterKey(
       label: label,
@@ -203,6 +235,7 @@ final class KeychainManager {
 
     // Keep the extension-wrapped blob in sync so backup extensions can read.
     try storeExtensionWrappedKey(masterKeyBytes: plaintextData, label: label)
+    try storeFileProviderWrappedKey(masterKeyBytes: plaintextData, label: label)
 
     // Idempotent re-store under the access group. If the read came from
     // legacy no-access-group storage, this migrates it forward; if it
@@ -422,6 +455,7 @@ final class KeychainManager {
     // an extension process and can cause repeated system prompts in Files.app.
     for item in plaintexts {
       try storeExtensionWrappedKey(masterKeyBytes: item.data, label: item.account)
+      try storeFileProviderWrappedKey(masterKeyBytes: item.data, label: item.account)
     }
     RuntimeTrace.event("keychain.manager.set_access_control.success", [
       "requireBiometric": requireBiometric,
@@ -580,11 +614,24 @@ final class KeychainManager {
     return try generateSEKey(tag: BeebeebKeychainCore.seKeyTagExt, flags: [.privateKeyUsage, .devicePasscode])
   }
 
+  private static func getOrCreateFileProviderSEKey() throws -> SecKey {
+    if let key = BeebeebKeychainCore.findSEKey(tag: BeebeebKeychainCore.seKeyTagFiles) { return key }
+    return try generateSEKey(
+      tag: BeebeebKeychainCore.seKeyTagFiles,
+      flags: [.privateKeyUsage],
+      protection: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
+    )
+  }
+
   /// Generate a Secure Enclave P-256 key with the given tag and access control flags.
-  private static func generateSEKey(tag: Data, flags: SecAccessControlCreateFlags) throws -> SecKey {
+  private static func generateSEKey(
+    tag: Data,
+    flags: SecAccessControlCreateFlags,
+    protection: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+  ) throws -> SecKey {
     guard let access = SecAccessControlCreateWithFlags(
       kCFAllocatorDefault,
-      kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+      protection,
       flags,
       nil
     ) else {
@@ -623,6 +670,7 @@ final class KeychainManager {
   private static func deleteSEKey() {
     deleteSEKey(tag: BeebeebKeychainCore.seKeyTag)
     deleteSEKey(tag: BeebeebKeychainCore.seKeyTagExt)
+    deleteSEKey(tag: BeebeebKeychainCore.seKeyTagFiles)
   }
 
   private static func deleteSEKey(tag: Data) {
@@ -645,6 +693,7 @@ final class KeychainManager {
   private static func deleteWrappedItems() {
     deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyService)
     deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceExt)
+    deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceFiles)
   }
 
   private static func deleteWrappedItems(service: String) {
