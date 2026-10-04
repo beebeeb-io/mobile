@@ -364,7 +364,7 @@ const previewDecrypts = createInFlightShare<{ path: string; cacheHit: boolean }>
 /** Per cache path: callers that asked for it since the file was last removed. */
 const previewLeases = new Map<string, number>();
 
-type ActivePreviewStreamState = 'pending' | 'success' | 'error';
+type ActivePreviewStreamState = 'pending' | 'success' | 'error' | 'cancelled';
 
 interface ActivePreviewStreamTerminal {
   state: ActivePreviewStreamState;
@@ -394,6 +394,7 @@ function isActivePreviewStream(entry: ActivePreviewStream | undefined): entry is
 }
 
 function streamTerminalError(status: StreamVideoTerminalStatus | undefined): Error | null {
+  if (status?.stage === 'cancelled') return abortError();
   if (status?.stage !== 'error') return null;
   return new Error(status.error || 'Video stream failed.');
 }
@@ -408,7 +409,7 @@ function settleActivePreviewStream(entry: ActivePreviewStream, status?: StreamVi
   entry.terminal = true;
   const error = streamTerminalError(status);
   if (error) {
-    entry.terminalState = 'error';
+    entry.terminalState = status?.stage === 'cancelled' ? 'cancelled' : 'error';
     entry.terminalError = error;
     releaseActivePreviewWriter(entry);
     entry.cleanupPromise = (async () => {
@@ -429,7 +430,7 @@ function settleActivePreviewStream(entry: ActivePreviewStream, status?: StreamVi
 
 async function ensureFailedActivePreviewStreamEvicted(path: string): Promise<void> {
   const entry = activePreviewStreams.get(path);
-  if (!isActivePreviewStream(entry) || entry.terminalState !== 'error') return;
+  if (!isActivePreviewStream(entry) || (entry.terminalState !== 'error' && entry.terminalState !== 'cancelled')) return;
   if (entry.cleanupPromise) await entry.cleanupPromise.catch(() => {});
   if (activePreviewStreams.get(path) === entry) {
     activePreviewStreams.delete(path);
@@ -512,8 +513,7 @@ export async function materializeVideoPreviewForExport(fileId: string, extension
     const active = activePreviewStreams.get(path);
     if (isActivePreviewStream(active)) {
       const outcome = await active.terminalOutcome;
-      if (outcome.state === 'error') {
-        if (active.cleanupPromise) await active.cleanupPromise.catch(() => {});
+      if (outcome.state === 'error' || outcome.state === 'cancelled') {
         throw outcome.error ?? new Error('Video stream failed.');
       }
     }

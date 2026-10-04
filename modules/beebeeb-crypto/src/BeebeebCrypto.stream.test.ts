@@ -138,6 +138,45 @@ describe('streamVideoNative JS wrapper cancellation contract', () => {
 
 
 
+
+  test('abort keeps terminalStatus cancelled when final snapshot is an error while native start settles', async () => {
+    let finishNativeCancel!: () => void;
+    let finishNativeStart!: (value: unknown) => void;
+    const controller = new AbortController();
+    nativeModule.streamVideoNative = async (params) => new Promise((resolve) => {
+      finishNativeStart = () => resolve({
+        streamUri: 'http://127.0.0.1:4444/s/secret-capability/v.mp4',
+        outputUri: params.outputUri,
+        outputPath: params.outputUri,
+        plaintextSize: 5000,
+        chunkCount: 4,
+        streamId: 'native-stream-id',
+      });
+    });
+    nativeModule.cancelDownloadAndDecryptFileNative = async () => new Promise<void>((resolve) => { finishNativeCancel = resolve; });
+    delete nativeModule.cancelVideoStreamNative;
+    nativeModule.getPreviewLoadProgress = (requestId) => ({
+      requestId,
+      fileId: 'video',
+      stage: 'error',
+      streaming: true,
+      error: 'late chunk auth failed',
+    });
+
+    const startPromise = crypto.streamVideoNative(7, 'https://api.test', 'tok', 'video', 'file:///cache/preview/video.mp4', 5000, 4, { signal: controller.signal });
+    controller.abort();
+    finishNativeStart({});
+    const started = await startPromise;
+    let terminalSettled = false;
+    started.terminal.then(() => { terminalSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(terminalSettled).toBe(false);
+    finishNativeCancel();
+    await expect(started.terminalStatus).resolves.toMatchObject({ stage: 'cancelled' });
+  });
+
+
   test('terminalStatus reports native background stream errors without rejecting terminal', async () => {
     nativeModule.getPreviewLoadProgress = (requestId) => ({
       requestId,

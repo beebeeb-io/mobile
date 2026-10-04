@@ -1302,6 +1302,7 @@ export async function streamVideoNative(
   let lastSeenStage: string | null = null
   let pollFinished = false
   let terminalFinished = false
+  let cancelTerminalPending = false
   let poll: ReturnType<typeof setInterval> | null = null
   const stopPoll = () => {
     if (poll) {
@@ -1335,6 +1336,8 @@ export async function streamVideoNative(
     options.signal?.removeEventListener('abort', abortListener)
   }
   const cancelAndFinishTerminal = async () => {
+    if (terminalFinished) return
+    cancelTerminalPending = true
     stopPollingForCancel()
     await cancelNativeOnly()
     finishTerminal(undefined, { stage: 'cancelled', event: lastTerminalEvent })
@@ -1405,12 +1408,16 @@ export async function streamVideoNative(
     // a resolved stream keeps pumping after playback started, so the poll
     // stays alive until its own terminal rule fires.
     const finalEv = readSnapshot()
+    let finalStatus: StreamVideoTerminalStatus | undefined
     if (finalEv) {
       options.onProgress?.(finalEv)
-      if (finalEv.stage === 'complete' || finalEv.stage === 'error') lastTerminalEvent = finalEv
+      if (finalEv.stage === 'complete' || finalEv.stage === 'error') {
+        lastTerminalEvent = finalEv
+        finalStatus = statusFromEvent(finalEv)
+      }
     }
-    if (!(finalEv && finalEv.stage === 'decrypting' && finalEv.streaming === true)) {
-      finishTerminal()
+    if (!cancelTerminalPending && !(finalEv && finalEv.stage === 'decrypting' && finalEv.streaming === true)) {
+      finishTerminal(undefined, finalStatus)
     }
   }
 }

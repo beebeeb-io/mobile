@@ -266,6 +266,28 @@ describe('1724 streaming preview lifetime', () => {
     await nd.releasePreviewCopy('vexporterror', 'mp4');
   });
 
+
+
+  test('a cancelled terminal evicts the loopback and export rejects before retry', async () => {
+    await nd.decryptToTempFile('vcancelled', null, 'mp4', 5000, 4, 7);
+    const releaseOldDelete = blockNextDelete('file:///cache/preview/vcancelled.mp4');
+
+    await streamCalls[0].cancel();
+    await until(() => deletes.includes('file:///cache/preview/vcancelled.mp4'));
+
+    await expect(nd.materializeVideoPreviewForExport('vcancelled', 'mp4')).rejects.toMatchObject({ name: 'AbortError' });
+    const retryPromise = nd.decryptToTempFile('vcancelled', null, 'mp4', 5000, 4, 7);
+    await tick();
+    expect(streamCalls.length).toBe(1);
+
+    releaseOldDelete();
+    const retry = await retryPromise;
+    expect(retry).toBe('http://127.0.0.1:41234/s/vcancelled/v.mp4');
+    expect(streamCalls.length).toBe(2);
+    await nd.releasePreviewCopy('vcancelled', 'mp4');
+    await nd.releasePreviewCopy('vcancelled', 'mp4');
+  });
+
   test('sign-out purge cancels a playable stream and removes the partial plaintext', async () => {
     await nd.decryptToTempFile('vpurge', null, 'mp4', 5000, 4, 7);
 
