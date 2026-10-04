@@ -173,6 +173,12 @@ const TextEditorView = React.lazy(async () => {
   return { default: m.TextEditorView };
 });
 
+// Preview's floating bottom bar sits at `Math.max(insets.bottom, 16) + 8` and
+// its glass content is roughly 68pt tall. expo-video draws native controls
+// inside the VideoView bounds, so the view itself needs this extra bottom
+// clearance or the playhead lands behind Beebeeb's bottom chrome.
+const PREVIEW_VIDEO_CONTROLS_BOTTOM_CLEARANCE = 84;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -1217,6 +1223,7 @@ export const PhotoPage = React.memo(function PhotoPage({
   onExifInfo,
   onZoomChange,
   onSingleTap,
+  videoControlsBottomInset,
 }: {
   entry: PhotoPageEntry;
   shouldLoadFull: boolean;
@@ -1252,6 +1259,7 @@ export const PhotoPage = React.memo(function PhotoPage({
   onZoomChange?: (zoomed: boolean) => void;
   /** Task 1579 — a single tap on a zoomable page (chrome toggle); see ZoomableImage. */
   onSingleTap?: () => void;
+  videoControlsBottomInset: number;
 }) {
   const { colors: c } = useTheme();
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
@@ -1830,7 +1838,7 @@ export const PhotoPage = React.memo(function PhotoPage({
             <View style={styles.mediaVideoStageWrap}>
               <PhotoPageVideo
                 uri={uri}
-                style={styles.photoPageImage}
+                style={[styles.videoControlsSurface, { bottom: videoControlsBottomInset }]}
                 onPictureInPictureStart={() => setPipActive(true)}
                 onPictureInPictureStop={() => setPipActive(false)}
               />
@@ -1991,6 +1999,14 @@ export default function PreviewScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
   const { showToast } = useToast();
+  const previewVideoControlsBottomInset = useMemo(
+    () => Math.max(insets.bottom, 16) + PREVIEW_VIDEO_CONTROLS_BOTTOM_CLEARANCE,
+    [insets.bottom],
+  );
+  const videoControlsBottomStyle = useMemo(
+    () => ({ bottom: previewVideoControlsBottomInset }),
+    [previewVideoControlsBottomInset],
+  );
   const {
     fileId,
     fileName,
@@ -4262,6 +4278,7 @@ export default function PreviewScreen() {
         onExifInfo={publishRawExif}
         onZoomChange={setMediaZoomed}
         onSingleTap={handleContentTap}
+        videoControlsBottomInset={previewVideoControlsBottomInset}
       />
     ),
     [
@@ -4274,6 +4291,7 @@ export default function PreviewScreen() {
       lockedFileIds,
       originalPhotoRequest,
       performanceStorageProfile,
+      previewVideoControlsBottomInset,
       publishRawExif,
       unlockingFileId,
     ],
@@ -4623,7 +4641,7 @@ export default function PreviewScreen() {
               <View style={styles.mediaVideoStageWrap}>
                 <VideoView
                   player={player}
-                  style={styles.mediaVideo}
+                  style={[styles.videoControlsSurface, videoControlsBottomStyle]}
                   contentFit="contain"
                   nativeControls
                   fullscreenOptions={{ enable: true }}
@@ -5268,7 +5286,7 @@ export default function PreviewScreen() {
             <View style={[styles.fullBleedFill, styles.imageBleedBg]}>
               <VideoView
                 player={player}
-                style={styles.video}
+                style={[styles.videoControlsSurface, videoControlsBottomStyle]}
                 contentFit="contain"
                 nativeControls
                 fullscreenOptions={{ enable: true }}
@@ -6038,10 +6056,18 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
+  videoControlsSurface: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
   mediaVideoStageWrap: {
     position: 'relative',
     width: '100%',
     height: '100%',
+    backgroundColor: '#000000',
   },
   streamBadgeLayer: {
     position: 'absolute',

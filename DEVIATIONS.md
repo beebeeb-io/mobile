@@ -4,6 +4,23 @@ Per the workspace `CLAUDE.md` → "How we work" → "Design before code": where 
 design artefact and the shipped code disagree, the deviation is recorded HERE,
 in the same commit as the code, with the ruling that caused it.
 
+## Task 1724 — native video controls reserve space below Preview's floating bottom bar
+
+**Design:** `design/preview-redesign-ios.html` section 01 treats photo/video
+media as full-bleed content with floating top and bottom chrome.
+
+**What shipped:** video previews still use the same black full-bleed stage,
+but the native `VideoView` itself is inset at the bottom by Preview's floating
+bottom bar clearance. This applies to the single-file media branch, the
+document-style video branch, and video pages inside the photo/video pager.
+
+**Why:** on iOS, `expo-video` draws the native transport controls inside the
+`VideoView` bounds. With the view occupying the whole screen, the playhead sat
+directly behind Preview's own Share/Save/Versions/Info bar. Tapping to reveal
+chrome also revealed the native controls, so both bars competed for the same
+touch area. Reserving the control clearance keeps the native playhead tappable
+while preserving the black media ground behind the floating chrome.
+
 This file did not exist before task 1563 (mobile) — several earlier PreviewScreen.tsx
 comments reference "DEVIATIONS.md" for phases 3/4 of the doc-header/light-mode work,
 but no such file was ever actually committed in this repo. Created here per the

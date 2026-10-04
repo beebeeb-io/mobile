@@ -1,4 +1,5 @@
 import React from 'react';
+import type { StyleProp, ViewStyle } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 
 /**
@@ -26,7 +27,7 @@ export function PhotoPageVideo({
   onPictureInPictureStop,
 }: {
   uri: string;
-  style: React.ComponentProps<typeof VideoView>['style'];
+  style: StyleProp<ViewStyle>;
   /**
    * expo-video 57 `VideoView` events (VideoView.types.ts): fired when this
    * player enters / leaves Picture in Picture. The pager uses them to keep a
