@@ -72,8 +72,10 @@ describe('streamVideoNative JS wrapper cancellation contract', () => {
     expect(cancelRequestCalls).toEqual([started.requestId]);
   });
 
-  test('returned cancel stops polling and resolves terminal immediately', async () => {
+  test('returned cancel stops polling immediately but keeps terminal pending until native cancel drains', async () => {
     let snapshotReads = 0;
+    let finishNativeCancel!: () => void;
+    nativeModule.cancelVideoStreamNative = async () => new Promise<void>((resolve) => { finishNativeCancel = resolve; });
     nativeModule.getPreviewLoadProgress = (requestId) => {
       snapshotReads += 1;
       return {
@@ -87,15 +89,51 @@ describe('streamVideoNative JS wrapper cancellation contract', () => {
     };
 
     const started = await crypto.streamVideoNative(7, 'https://api.test', 'tok', 'video', 'file:///cache/preview/video.mp4', 5000, 4);
-    await started.cancel();
-    await Promise.race([
-      started.terminal,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('terminal did not resolve')), 20)),
-    ]);
+    let terminalSettled = false;
+    started.terminal.then(() => { terminalSettled = true; });
+    const cancelPromise = started.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 250));
     const readsAfterCancel = snapshotReads;
     await new Promise((resolve) => setTimeout(resolve, 250));
 
     expect(snapshotReads).toBe(readsAfterCancel);
+    expect(terminalSettled).toBe(false);
+    finishNativeCancel();
+    await cancelPromise;
+    await started.terminal;
+    expect(terminalSettled).toBe(true);
+  });
+
+  test('abort signal stops polling immediately but keeps terminal pending until native cancel drains', async () => {
+    let snapshotReads = 0;
+    let finishNativeCancel!: () => void;
+    const controller = new AbortController();
+    nativeModule.cancelVideoStreamNative = async () => new Promise<void>((resolve) => { finishNativeCancel = resolve; });
+    nativeModule.getPreviewLoadProgress = (requestId) => {
+      snapshotReads += 1;
+      return {
+        requestId,
+        fileId: 'video',
+        stage: 'decrypting',
+        streaming: true,
+        chunksCompleted: 1,
+        chunksTotal: 4,
+      };
+    };
+
+    const started = await crypto.streamVideoNative(7, 'https://api.test', 'tok', 'video', 'file:///cache/preview/video.mp4', 5000, 4, { signal: controller.signal });
+    let terminalSettled = false;
+    started.terminal.then(() => { terminalSettled = true; });
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const readsAfterAbort = snapshotReads;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(snapshotReads).toBe(readsAfterAbort);
+    expect(terminalSettled).toBe(false);
+    finishNativeCancel();
+    await started.terminal;
+    expect(terminalSettled).toBe(true);
   });
 
   test('playable trace does not include the loopback stream URI capability', async () => {

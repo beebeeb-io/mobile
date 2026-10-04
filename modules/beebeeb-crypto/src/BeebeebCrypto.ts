@@ -1290,7 +1290,8 @@ export async function streamVideoNative(
   // safety cap.
   let lastKey = ''
   let lastSeenStage: string | null = null
-  let finished = false
+  let pollFinished = false
+  let terminalFinished = false
   let poll: ReturnType<typeof setInterval> | null = null
   const stopPoll = () => {
     if (poll) {
@@ -1298,13 +1299,25 @@ export async function streamVideoNative(
       poll = null
     }
   }
-  const finish = (synthetic?: PreviewLoadProgressEvent) => {
-    if (finished) return
-    finished = true
+  const finishTerminal = (synthetic?: PreviewLoadProgressEvent) => {
+    if (terminalFinished) return
+    terminalFinished = true
+    pollFinished = true
     stopPoll()
     options.signal?.removeEventListener('abort', abortListener)
     if (synthetic) options.onProgress?.(synthetic)
     terminalResolve()
+  }
+  const stopPollingForCancel = () => {
+    if (pollFinished) return
+    pollFinished = true
+    stopPoll()
+    options.signal?.removeEventListener('abort', abortListener)
+  }
+  const cancelAndFinishTerminal = async () => {
+    stopPollingForCancel()
+    await cancelNativeOnly()
+    finishTerminal()
   }
   const forward = (ev: PreviewLoadProgressEvent) => {
     const k = ev.stage + ':' + (ev.chunksCompleted ?? ev.bytesDownloaded ?? '')
@@ -1314,25 +1327,24 @@ export async function streamVideoNative(
     }
   }
   poll = setInterval(() => {
-    if (finished) return
+    if (pollFinished) return
     const ev = readSnapshot()
     if (!ev) {
       // Snapshot gone: the session's terminal cleanup cleared the registry.
       // Surface a synthetic completion (unless we saw an error) so the UI's
       // buffered badge retires, then stop.
       if (lastSeenStage && lastSeenStage !== 'error') {
-        finish({ requestId, fileId, stage: 'complete' })
+        finishTerminal({ requestId, fileId, stage: 'complete' })
       }
       return
     }
     lastSeenStage = ev.stage
     forward(ev)
-    if (ev.stage === 'complete' || ev.stage === 'error') finish()
+    if (ev.stage === 'complete' || ev.stage === 'error') finishTerminal()
   }, POLL_INTERVAL_MS)
 
   const abortListener = () => {
-    finish()
-    void cancelNativeOnly()
+    void cancelAndFinishTerminal()
   }
   if (options.signal?.aborted) {
     abortListener()
@@ -1355,10 +1367,7 @@ export async function streamVideoNative(
     return {
       ...result,
       requestId,
-      cancel: async () => {
-        finish()
-        await cancelNativeOnly()
-      },
+      cancel: cancelAndFinishTerminal,
       terminal,
     }
   } catch (error) {
@@ -1374,7 +1383,7 @@ export async function streamVideoNative(
     const finalEv = readSnapshot()
     if (finalEv) options.onProgress?.(finalEv)
     if (!(finalEv && finalEv.stage === 'decrypting' && finalEv.streaming === true)) {
-      finish()
+      finishTerminal()
     }
   }
 }
