@@ -28,6 +28,7 @@ function bracedBody(source: string, signature: string): string {
 describe('iOS NativeVideoStreamer source contract', () => {
   test('exposes start plus request, stream, and global cancellation hooks for the bridge owner', () => {
     expect(STREAMER_SWIFT).toMatch(/static func start\(/);
+    expect(STREAMER_SWIFT).toContain('beforePromotionForTest');
     expect(STREAMER_SWIFT).toContain('PlaintextStorageProtection.isPurgePending()');
     expect(STREAMER_SWIFT).toMatch(/static func cancel\(requestId: String\) -> Bool/);
     expect(STREAMER_SWIFT).toMatch(/static func cancel\(streamId: String\) -> Bool/);
@@ -60,6 +61,11 @@ describe('iOS NativeVideoStreamer source contract', () => {
   test('partial sparse plaintext never uses the final output path and promotes only after all chunks decrypt', () => {
     expect(STREAMER_SWIFT).toContain('decrypted.streaming');
     expect(STREAMER_SWIFT).toContain('try FileManager.default.moveItem(at: partialPlainUrl, to: outputUrl)');
+    const finalizeBody = bracedBody(STREAMER_SWIFT, 'private func finalizeSuccess() throws {');
+    expect(finalizeBody.indexOf('writerLock.lock()')).toBeLessThan(finalizeBody.indexOf('try FileManager.default.moveItem(at: partialPlainUrl, to: outputUrl)'));
+    expect(finalizeBody).toContain('terminal = true');
+    expect(finalizeBody).toContain('ownsPromotedOutput = true');
+    expect(STREAMER_SWIFT).toContain('Stream cancelled before it became playable');
     const decryptBody = bracedBody(STREAMER_SWIFT, 'private func decryptChunkFromDisk(index: Int) throws -> Bool {');
     expect(decryptBody).toContain('if done >= count');
     expect(decryptBody).toContain('try finalizeSuccess()');
@@ -77,7 +83,7 @@ describe('iOS NativeVideoStreamer source contract', () => {
     expect(drain).toContain('decryptQueue.cancelAllOperations()');
     expect(drain).toContain('fetchQueue.waitUntilAllOperationsAreFinished()');
     expect(drain).toContain('decryptQueue.waitUntilAllOperationsAreFinished()');
-    expect(drain).toContain('teardown(deletePartial: true, unregister: true)');
+    expect(drain).toContain('teardown(deletePartial: true, unregister: true, removePromotedOutput: !wasTerminalAtCancel)');
   });
 
   test('range handling rejects malformed or unsatisfiable ranges with 416', () => {

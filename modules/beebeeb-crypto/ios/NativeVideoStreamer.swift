@@ -68,6 +68,8 @@ final class NativeVideoStreamProgress: @unchecked Sendable {
 }
 
 enum NativeVideoStreamer {
+  static var beforePromotionForTest: (() -> Void)?
+
   static func start(
     requestId: String,
     master: MasterKeyHandle,
@@ -289,6 +291,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
   private var decrypted = Set<Int>()
   private var cancelled = false
   private var terminal = false
+  private var ownsPromotedOutput = false
   private var didTeardown = false
   private var terminalNotified = false
   private var fatal: Error?
@@ -378,6 +381,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     mutedDownloadProgress = true
     startPump()
     guard awaitChunk(resolvedChunkCount - 1) else { throw fatal ?? streamError("Stream failed before it became playable") }
+    guard !stopRequested() else { throw fatal ?? streamError("Stream cancelled before it became playable") }
     let streamUri = try NativeVideoStreamServer.shared.register(session: self)
     if !isTerminalSuccess() {
       progress.emitProgress(stage: "decrypting", chunksCompleted: decryptedCount(), chunksTotal: resolvedChunkCount, extra: ["streaming": true])
@@ -449,12 +453,15 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
   }
 
   private func cancelAndDrain(errorMessage: String?, waitForQueues: Bool) {
+    writerLock.lock()
     state.lock()
     if didTeardown {
       state.unlock()
+      writerLock.unlock()
       return
     }
     if let errorMessage { fatal = streamError(errorMessage) }
+    let wasTerminalAtCancel = terminal
     cancelled = true
     let connections = activeConnections
     let tasks = activeTasks
@@ -462,6 +469,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     inFlight.removeAll()
     state.broadcast()
     state.unlock()
+    writerLock.unlock()
     progress.cancel()
     futures.forEach { $0.1.complete(false) }
     tasks.forEach { $0.cancel() }
@@ -473,7 +481,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
       self.fetchQueue.waitUntilAllOperationsAreFinished()
       self.decryptQueue.waitUntilAllOperationsAreFinished()
       if let errorMessage { self.progress.onError(errorMessage) }
-      self.teardown(deletePartial: true, unregister: true)
+      self.teardown(deletePartial: true, unregister: true, removePromotedOutput: !wasTerminalAtCancel)
     }
     if waitForQueues {
       finish()
@@ -667,6 +675,12 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     return NativeVideoChunkFetchResult(bytesWritten: bodySize, chunkCount: responseChunkCount)
   }
 
+  private func clearFileKey() {
+    state.lock()
+    fileKey = nil
+    state.unlock()
+  }
+
   private func fileKeyHandle() throws -> FileKeyHandle {
     state.lock()
     if let fileKey {
@@ -749,43 +763,55 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
   }
 
   private func finalizeSuccess() throws {
+    NativeVideoStreamer.beforePromotionForTest?()
+    writerLock.lock()
+    defer { writerLock.unlock() }
+
     state.lock()
-    if terminal {
+    if terminal || cancelled || progress.isCancelled() || PlaintextStorageProtection.isPurgePending() {
       state.unlock()
       return
     }
-    state.unlock()
-
-    writerLock.lock()
-    defer { writerLock.unlock() }
-    if stopRequested() { return }
-    try? FileManager.default.removeItem(at: outputUrl)
-    try FileManager.default.moveItem(at: partialPlainUrl, to: outputUrl)
-    state.lock()
     terminal = true
+    ownsPromotedOutput = true
     state.broadcast()
     state.unlock()
+
+    do {
+      try? FileManager.default.removeItem(at: outputUrl)
+      try FileManager.default.moveItem(at: partialPlainUrl, to: outputUrl)
+    } catch {
+      state.lock()
+      terminal = false
+      ownsPromotedOutput = false
+      state.unlock()
+      throw error
+    }
     progress.onComplete()
     try? FileManager.default.removeItem(at: encryptedUrl)
-    fileKey = nil
+    clearFileKey()
     notifyTerminalOnce()
   }
 
-  private func teardown(deletePartial: Bool, unregister: Bool) {
+  private func teardown(deletePartial: Bool, unregister: Bool, removePromotedOutput: Bool = false) {
     state.lock()
     if didTeardown {
       state.unlock()
       return
     }
+    let shouldRemoveOutput = removePromotedOutput && ownsPromotedOutput
     didTeardown = true
     state.unlock()
     fetchQueue.cancelAllOperations()
     decryptQueue.cancelAllOperations()
-    fileKey = nil
+    clearFileKey()
     writerLock.lock()
     if deletePartial {
       try? FileManager.default.removeItem(at: partialPlainUrl)
       try? FileManager.default.removeItem(at: tempDir)
+      if shouldRemoveOutput {
+        try? FileManager.default.removeItem(at: outputUrl)
+      }
     } else {
       try? FileManager.default.removeItem(at: encryptedUrl)
     }

@@ -228,6 +228,46 @@ private func runAuthFailure() throws {
   }
 }
 
+
+private func runCancelAtPromotion() throws {
+  let server = try ChunkServer(chunks: [frame("DONE")])
+  defer {
+    server.stop()
+    NativeVideoStreamer.beforePromotionForTest = nil
+  }
+  let output = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("stream-harness-\(UUID().uuidString).mp4")
+  var events: [[String: Any]] = []
+  let progress = NativeVideoStreamProgress(requestId: "req-promote", fileId: "file") { events.append($0) }
+  var fired = false
+  var returnedStart = false
+  NativeVideoStreamer.beforePromotionForTest = {
+    guard !fired else { return }
+    fired = true
+    NativeVideoStreamer.cancel(requestId: "req-promote")
+  }
+  do {
+    _ = try NativeVideoStreamer.start(
+      requestId: "req-promote",
+      master: FakeMasterKey(noHandle: .init()),
+      apiUrl: server.baseUrl,
+      token: "token",
+      fileId: "file",
+      outputUri: output.absoluteString,
+      declaredSizeBytes: 4,
+      declaredChunkCount: 1,
+      progress: progress,
+      onTerminal: {}
+    )
+    returnedStart = true
+  } catch {
+    // Expected: cancellation wins before promotion publishes a playable URL.
+  }
+  assert(!returnedStart, "cancel at promotion does not return a playable URL")
+  assert(fired, "promotion cancellation hook fired")
+  assert(!FileManager.default.fileExists(atPath: output.path), "cancel at promotion does not leave final plaintext")
+  assert(!events.contains { ($0["stage"] as? String) == "complete" }, "cancel at promotion suppresses complete")
+}
+
 private func runCancelDrain() throws {
   let server = try ChunkServer(chunks: [frame("HEAD"), frame("MID!"), frame("TL")], blockIndex: 1)
   defer { server.stop() }
@@ -256,6 +296,7 @@ private enum HarnessMain {
   static func main() throws {
     try runEarlyRangeAndCancel()
     try runAuthFailure()
+    try runCancelAtPromotion()
     try runCancelDrain()
     print("native-video-streamer-harness: assertions=\(assertionCount) failures=0")
   }
