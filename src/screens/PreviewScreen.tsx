@@ -60,7 +60,7 @@ import {
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } from '../lib/text-file-save';
-import { decryptToTempFile, invalidatePreviewCache, releasePreviewCopy } from '../lib/native-decrypt';
+import { decryptToTempFile, invalidatePreviewCache, materializeVideoPreviewForExport, releasePreviewCopy } from '../lib/native-decrypt';
 import { isLoopbackStreamUri, streamBufferPctFromEvent } from '../lib/video-stream';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
@@ -192,6 +192,71 @@ type PreviewOptionAction = {
   destructive?: boolean;
   run: () => void;
 };
+
+type ExportUriResult = { uri: string; reusedPreview: boolean; release?: () => Promise<void> | void };
+
+type StreamExportMaterializer = (fileId: string, extension: string) => Promise<string>;
+
+export interface PreviewExportUriResolverInput {
+  isImage: boolean;
+  imageUri: string | null;
+  imagePreviewKind: ImagePreviewKind | null;
+  isVideo: boolean;
+  videoUri: string | null;
+  videoFileId: string;
+  videoExtension: string;
+  isPdf: boolean;
+  pdfUri: string | null;
+  fetchAndDecrypt: () => Promise<string>;
+  materializeStreamVideoForExport: StreamExportMaterializer;
+  signal?: AbortSignal;
+}
+
+function throwIfExportAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('Export cancelled.');
+  error.name = 'AbortError';
+  throw error;
+}
+
+export async function resolvePreviewExportUri({
+  isImage,
+  imageUri,
+  imagePreviewKind,
+  isVideo,
+  videoUri,
+  videoFileId,
+  videoExtension,
+  isPdf,
+  pdfUri,
+  fetchAndDecrypt,
+  materializeStreamVideoForExport,
+  signal,
+}: PreviewExportUriResolverInput): Promise<ExportUriResult> {
+  if (isImage && imageUri && imagePreviewKind === 'original') return { uri: imageUri, reusedPreview: true };
+  if (isVideo && videoUri) {
+    if (!isLoopbackStreamUri(videoUri)) return { uri: videoUri, reusedPreview: true };
+    const exportUri = await materializeStreamVideoForExport(videoFileId, videoExtension);
+    let ownsLease = true;
+    const release = async () => {
+      if (!ownsLease) return;
+      ownsLease = false;
+      await releasePreviewCopy(videoFileId, videoExtension);
+    };
+    try {
+      throwIfExportAborted(signal);
+      if (isLoopbackStreamUri(exportUri)) {
+        throw new Error('Cannot export this video yet. Wait until it finishes decrypting on this device.');
+      }
+      return { uri: exportUri, reusedPreview: true, release };
+    } catch (error) {
+      await release().catch(() => {});
+      throw error;
+    }
+  }
+  if (isPdf && pdfUri) return { uri: pdfUri, reusedPreview: true };
+  return { uri: await fetchAndDecrypt(), reusedPreview: false };
+}
 
 
 function formatDate(iso: string): string {
@@ -3246,12 +3311,34 @@ export default function PreviewScreen() {
     reloadNonce,
   ]);
 
-  const getExportUri = useCallback(async (): Promise<{ uri: string; reusedPreview: boolean }> => {
-    if (isImage && imageUri && imagePreviewKind === 'original') return { uri: imageUri, reusedPreview: true };
-    if (isVideo && videoUri) return { uri: videoUri, reusedPreview: true };
-    if (isPdf && pdfUri) return { uri: pdfUri, reusedPreview: true };
-    return { uri: await fetchAndDecrypt(), reusedPreview: false };
-  }, [fetchAndDecrypt, imagePreviewKind, imageUri, isImage, isPdf, isVideo, pdfUri, videoUri]);
+  const getExportUri = useCallback(async (signal?: AbortSignal): Promise<ExportUriResult> => {
+    return resolvePreviewExportUri({
+      isImage,
+      imageUri,
+      imagePreviewKind,
+      isVideo,
+      videoUri,
+      videoFileId: currentFileId,
+      videoExtension: previewDecryptExtension(currentMimeType, currentFileName),
+      isPdf,
+      pdfUri,
+      fetchAndDecrypt: () => fetchAndDecrypt({ signal }),
+      materializeStreamVideoForExport: materializeVideoPreviewForExport,
+      signal,
+    });
+  }, [
+    currentFileId,
+    currentFileName,
+    currentMimeType,
+    fetchAndDecrypt,
+    imagePreviewKind,
+    imageUri,
+    isImage,
+    isPdf,
+    isVideo,
+    pdfUri,
+    videoUri,
+  ]);
 
   const currentPhotoPageEntry = useMemo<PhotoPageEntry>(() => ({
     id: currentFileId,
@@ -3943,6 +4030,9 @@ export default function PreviewScreen() {
     }
     recordRuntimeTrace('preview.download_original.press', { fileId: currentFileId, category });
 
+    const exportController = new AbortController();
+    let releaseExportCopy: ExportUriResult['release'] | null = null;
+
     setDownloading(true);
     setDownloadProgress(0);
     setExportStatus('Preparing export options...');
@@ -3955,7 +4045,8 @@ export default function PreviewScreen() {
       }
 
       setExportStatus('Preparing a decrypted copy on this device...');
-      const { uri: shareUri, reusedPreview } = await getExportUri();
+      const { uri: shareUri, reusedPreview, release } = await getExportUri(exportController.signal);
+      releaseExportCopy = release ?? null;
       setExportStatus(
         reusedPreview
           ? 'Using the decrypted preview already on this device...'
@@ -3977,6 +4068,11 @@ export default function PreviewScreen() {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Download failed', friendlyError(err));
     } finally {
+      exportController.abort();
+      if (releaseExportCopy) {
+        await Promise.resolve(releaseExportCopy()).catch(() => {});
+        releaseExportCopy = null;
+      }
       setDownloading(false);
       setDownloadProgress(0);
       setExportStatus(null);
