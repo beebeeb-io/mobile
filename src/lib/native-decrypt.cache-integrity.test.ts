@@ -214,3 +214,13 @@ test('1721 — a batch cannot retain more than 512 MB of uploaded sources', asyn
   expect(cached.length).toBe(2);
   expect(cached.reduce((sum, [, n]) => sum + n, 0)).toBeLessThanOrEqual(512 * 1024 * 1024);
 });
+
+test('preview pruning preserves hidden native writer temporaries under cache pressure', async () => {
+  const nativeWorkingPath = 'file:///cache/preview/.video.mp4.writer-uuid.tmp';
+  files.set(nativeWorkingPath, 1024 * 1024 * 1024);
+  for (let i = 0; i < 25; i++) files.set(`file:///cache/preview/finished-${i}.jpg`, 100);
+  await nd.decryptToTempFile('prune-native-work', null, 'pdf', 5000, 1, 7);
+  expect(deletes).not.toContain(nativeWorkingPath);
+  expect(files.has(nativeWorkingPath)).toBe(true);
+  expect(deletes.some(uri => uri.includes('finished-'))).toBe(true);
+});

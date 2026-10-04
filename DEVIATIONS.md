@@ -853,3 +853,7 @@ Guus reports video playback still behaving like a whole-file download before use
 ## Task1724 — iOS progressive playback bridge
 
 The bridge resolves a standard loopback byte-range source before the full video finishes buffering, preserving native opaque handles and authenticated chunk decryption. Native purge marks its pending gate first and cancels all streams before sweeping plaintext; handle/key release also closes capabilities. Terminal progress survives until polling reads it once. Streaming startup runs away from the UI executor. No keys, bearer tokens or capability URLs are exported to runtime logs.
+
+## Task1724 — preview pruning excludes native working files
+
+Native pipelines own UUID hidden temporary files/directories beneath the registered preview cache. JS cache eviction handles finished public cache entries only: it must not unlink a live native writer's temporary resource. Native cancel/error owns temporary cleanup, while the existing account plaintext purge sweeps the entire cache.

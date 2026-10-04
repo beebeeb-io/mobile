@@ -168,7 +168,9 @@ async function prunePreviewCache(keepPath?: string): Promise<void> {
   try {
     const names = await FileSystem.readDirectoryAsync(PREVIEW_CACHE_DIR);
     const entries = await Promise.all(
-      names.map(async (name) => {
+      names.filter(name => !name.startsWith('.')).map(async (name) => {
+        // UUID hidden resources belong to native writers, whose cancel/error
+        // paths clean them. Evicting one here can corrupt an active stream.
         const uri = `${PREVIEW_CACHE_DIR}${name}`;
         const info = await FileSystem.getInfoAsync(uri);
         if (!info.exists) return null;

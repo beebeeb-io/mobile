@@ -2216,7 +2216,7 @@ public class BeebeebCryptoModule: Module {
     //      that slips through both of the above (e.g. one already inside
     //      `CacheManager`'s serial queue, past the epoch check, when step 2
     //      ran) is still wiped by this final in-place reset.
-    AsyncFunction("purgePlaintextStorage") { [self] () -> [String: Int] in
+    AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in
       var failed = 0
       // Task 1593 f2 (lead design decision: MARKER FIRST) — mark pending
       // BEFORE this purge does ANYTHING else: before the consent reset,
