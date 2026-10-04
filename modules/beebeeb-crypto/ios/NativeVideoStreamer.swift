@@ -108,7 +108,7 @@ enum NativeVideoStreamer {
       }
       return start
     } catch {
-      session.fail(error.localizedDescription)
+      session.failAndWait(error.localizedDescription)
       throw error
     }
   }
@@ -281,6 +281,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
   private let encryptedUrl: URL
   private let partialPlainUrl: URL
   private let state = NSCondition()
+  private let writerLock = NSLock()
   private let fetchQueue = OperationQueue()
   private let decryptQueue = OperationQueue()
   private var inFlight: [Int: ChunkFuture] = [:]
@@ -289,6 +290,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
   private var cancelled = false
   private var terminal = false
   private var didTeardown = false
+  private var terminalNotified = false
   private var fatal: Error?
   private var fileKey: FileKeyHandle?
   private var chunkCount = 0
@@ -435,38 +437,49 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
   }
 
   func cancel() {
-    state.lock()
-    guard !cancelled else {
-      state.unlock()
-      return
-    }
-    cancelled = true
-    let connections = activeConnections
-    let tasks = activeTasks
-    let futures = Array(inFlight.values)
-    state.broadcast()
-    state.unlock()
-    progress.cancel()
-    futures.forEach { $0.complete(false) }
-    tasks.forEach { $0.cancel() }
-    fetchQueue.cancelAllOperations()
-    decryptQueue.cancelAllOperations()
-    fetchQueue.waitUntilAllOperationsAreFinished()
-    decryptQueue.waitUntilAllOperationsAreFinished()
-    connections.forEach { $0.cancel() }
-    teardown(deletePartial: true, unregister: true)
+    cancelAndDrain(errorMessage: nil, waitForQueues: true)
   }
 
   func fail(_ message: String) {
-    progress.onError(message)
+    cancelAndDrain(errorMessage: message, waitForQueues: false)
+  }
+
+  func failAndWait(_ message: String) {
+    cancelAndDrain(errorMessage: message, waitForQueues: true)
+  }
+
+  private func cancelAndDrain(errorMessage: String?, waitForQueues: Bool) {
     state.lock()
-    fatal = streamError(message)
+    if didTeardown {
+      state.unlock()
+      return
+    }
+    if let errorMessage { fatal = streamError(errorMessage) }
     cancelled = true
-    state.broadcast()
     let connections = activeConnections
+    let tasks = activeTasks
+    let futures = inFlight.map { ($0.key, $0.value) }
+    inFlight.removeAll()
+    state.broadcast()
     state.unlock()
+    progress.cancel()
+    futures.forEach { $0.1.complete(false) }
+    tasks.forEach { $0.cancel() }
+    fetchQueue.cancelAllOperations()
+    decryptQueue.cancelAllOperations()
     connections.forEach { $0.cancel() }
-    teardown(deletePartial: true, unregister: true)
+    let finish = { [weak self] in
+      guard let self else { return }
+      self.fetchQueue.waitUntilAllOperationsAreFinished()
+      self.decryptQueue.waitUntilAllOperationsAreFinished()
+      if let errorMessage { self.progress.onError(errorMessage) }
+      self.teardown(deletePartial: true, unregister: true)
+    }
+    if waitForQueues {
+      finish()
+    } else {
+      DispatchQueue.global(qos: .utility).async(execute: finish)
+    }
   }
 
   private func ensureChunk(_ index: Int) -> ChunkFuture {
@@ -492,7 +505,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
         return
       }
       if self.stopRequested() {
-        future.complete(false)
+        self.completeFuture(index: index, future: future, value: false)
         return
       }
       do {
@@ -505,7 +518,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
             return
           }
           do {
-            future.complete(try self.decryptChunkFromDisk(index: index))
+            self.completeFuture(index: index, future: future, value: try self.decryptChunkFromDisk(index: index))
           } catch {
             self.completeFailure(index: index, error: error, future: future)
           }
@@ -519,11 +532,20 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
 
   private func completeFailure(index: Int, error: Error, future: ChunkFuture) {
     if stopRequested() {
-      future.complete(false)
+      completeFuture(index: index, future: future, value: false)
       return
     }
-    future.complete(false)
+    completeFuture(index: index, future: future, value: false)
     fail("chunk \(index) failed: \(error.localizedDescription)")
+  }
+
+  private func completeFuture(index: Int, future: ChunkFuture, value: Bool) {
+    state.lock()
+    if inFlight[index] === future {
+      inFlight.removeValue(forKey: index)
+    }
+    state.unlock()
+    future.complete(value)
   }
 
   private func fetchChunkToDisk(index: Int, encryptedOffset: Int64, expectedLength: Int64?) throws -> NativeVideoChunkFetchResult {
@@ -645,6 +667,26 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     return NativeVideoChunkFetchResult(bytesWritten: bodySize, chunkCount: responseChunkCount)
   }
 
+  private func fileKeyHandle() throws -> FileKeyHandle {
+    state.lock()
+    if let fileKey {
+      state.unlock()
+      return fileKey
+    }
+    state.unlock()
+
+    let derived = try master.deriveFileKey(fileId: Data(fileId.utf8))
+    state.lock()
+    if cancelled || progress.isCancelled() || PlaintextStorageProtection.isPurgePending() {
+      state.unlock()
+      throw streamError("Preview stream cancelled")
+    }
+    if fileKey == nil { fileKey = derived }
+    let value = fileKey ?? derived
+    state.unlock()
+    return value
+  }
+
   private func decryptChunkFromDisk(index: Int) throws -> Bool {
     if stopRequested() { return false }
     state.lock()
@@ -657,24 +699,27 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     }
     state.unlock()
 
-    if fileKey == nil {
-      fileKey = try master.deriveFileKey(fileId: Data(fileId.utf8))
-    }
+    let key = try fileKeyHandle()
     let encryptedSize = NativeVideoChunkMath.encryptedSize(index: index, chunkCount: count, plaintextChunkSize: chunkSize, originalSize: size)
     let encryptedOffset = NativeVideoChunkMath.encryptedOffset(index: index, chunkCount: count, plaintextChunkSize: chunkSize, originalSize: size)
     let encrypted = try readBytes(url: encryptedUrl, offset: encryptedOffset, count: Int(encryptedSize))
     let nonce = encrypted.subdata(in: 0..<NativeVideoChunkMath.nonceBytes)
     let ciphertext = encrypted.subdata(in: NativeVideoChunkMath.nonceBytes..<encrypted.count)
-    let plaintext = try fileKey!.decryptChunk(nonce: nonce, ciphertext: ciphertext)
+    let plaintext = try key.decryptChunk(nonce: nonce, ciphertext: ciphertext)
     if stopRequested() { return false }
     let expectedPlain = NativeVideoChunkMath.plaintextSize(index: index, chunkCount: count, plaintextChunkSize: chunkSize, originalSize: size)
     guard Int64(plaintext.count) == expectedPlain else {
       throw streamError("Chunk \(index) decrypted to \(plaintext.count) bytes, expected \(expectedPlain)")
     }
-    let out = try FileHandle(forWritingTo: partialPlainUrl)
-    defer { try? out.close() }
-    try out.seek(toOffset: UInt64(NativeVideoChunkMath.plainOffset(index: index, plaintextChunkSize: chunkSize)))
-    try out.write(contentsOf: plaintext)
+    writerLock.lock()
+    do {
+      defer { writerLock.unlock() }
+      if stopRequested() { return false }
+      let out = try FileHandle(forWritingTo: partialPlainUrl)
+      defer { try? out.close() }
+      try out.seek(toOffset: UInt64(NativeVideoChunkMath.plainOffset(index: index, plaintextChunkSize: chunkSize)))
+      try out.write(contentsOf: plaintext)
+    }
 
     state.lock()
     let inserted = decrypted.insert(index).inserted
@@ -693,12 +738,12 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
 
   private func startPump() {
     let count = chunkCount
-    var order = [count - 1]
-    if count > 1 { order.append(contentsOf: 0..<(count - 1)) }
     DispatchQueue.global(qos: .utility).async { [weak self] in
       guard let self else { return }
-      for index in order where !self.ensureChunk(index).wait() || self.stopRequested() {
-        return
+      if count > 1, !self.ensureChunk(count - 1).wait() { return }
+      guard count > 1 else { return }
+      for index in 0..<(count - 1) {
+        if !self.ensureChunk(index).wait() || self.stopRequested() { return }
       }
     }
   }
@@ -709,23 +754,21 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
       state.unlock()
       return
     }
+    state.unlock()
+
+    writerLock.lock()
+    defer { writerLock.unlock() }
+    if stopRequested() { return }
+    try? FileManager.default.removeItem(at: outputUrl)
+    try FileManager.default.moveItem(at: partialPlainUrl, to: outputUrl)
+    state.lock()
     terminal = true
     state.broadcast()
     state.unlock()
-    try? FileManager.default.removeItem(at: outputUrl)
-    try FileManager.default.moveItem(at: partialPlainUrl, to: outputUrl)
     progress.onComplete()
     try? FileManager.default.removeItem(at: encryptedUrl)
     fileKey = nil
-    onTerminal()
-    scheduleCompletedStreamIdleExpiry()
-  }
-
-  private func scheduleCompletedStreamIdleExpiry() {
-    let streamId = self.streamId
-    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 600) {
-      _ = NativeVideoStreamer.cancel(streamId: streamId)
-    }
+    notifyTerminalOnce()
   }
 
   private func teardown(deletePartial: Bool, unregister: Bool) {
@@ -739,16 +782,29 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     fetchQueue.cancelAllOperations()
     decryptQueue.cancelAllOperations()
     fileKey = nil
+    writerLock.lock()
     if deletePartial {
       try? FileManager.default.removeItem(at: partialPlainUrl)
       try? FileManager.default.removeItem(at: tempDir)
     } else {
       try? FileManager.default.removeItem(at: encryptedUrl)
     }
+    writerLock.unlock()
     if unregister {
       NativeVideoStreamRegistry.shared.unregister(streamId: streamId, requestId: requestId)
       NativeVideoStreamServer.shared.unregister(streamId: streamId)
     }
+    notifyTerminalOnce()
+  }
+
+  private func notifyTerminalOnce() {
+    state.lock()
+    if terminalNotified {
+      state.unlock()
+      return
+    }
+    terminalNotified = true
+    state.unlock()
     onTerminal()
   }
 
@@ -928,8 +984,13 @@ private final class NativeVideoStreamServer: @unchecked Sendable {
     }
     let method = parts[0].uppercased()
     let path = String(parts[1])
-    let streamId = path.replacingOccurrences(of: "/s/", with: "").split(separator: "/").first.map(String.init) ?? ""
-    guard !streamId.isEmpty, let session = NativeVideoStreamRegistry.shared.session(streamId: streamId) else {
+    let components = path.split(separator: "/").map(String.init)
+    guard components.count >= 3, components[0] == "s" else {
+      respondError(connection: connection, status: 404, message: "Unknown stream")
+      return
+    }
+    let streamId = components[1]
+    guard let session = NativeVideoStreamRegistry.shared.session(streamId: streamId) else {
       respondError(connection: connection, status: 404, message: "Unknown stream")
       return
     }
@@ -944,27 +1005,37 @@ private final class NativeVideoStreamServer: @unchecked Sendable {
     switch method {
     case "GET": serveGet(connection: connection, session: session, rangeHeader: rangeHeader)
     case "HEAD": serveHead(connection: connection, session: session, rangeHeader: rangeHeader)
-    default: respondError(connection: connection, status: 405, message: "Method not allowed")
+    default: respondError(connection: connection, status: 405, message: "Method not allowed", session: session)
     }
   }
 
   private func serveHead(connection: NWConnection, session: NativeVideoStreamSession, rangeHeader: String?) {
-    guard let plan = session.chunkPlan(), let range = resolveRange(rangeHeader, total: plan.originalSize) else {
-      respondError(connection: connection, status: 416, message: "Range not satisfiable")
+    guard let plan = session.chunkPlan() else {
+      respondError(connection: connection, status: 416, message: "Range not satisfiable", session: session)
       return
     }
-    sendAndClose(connection, Data(headers(status: 206, start: range.start, end: range.end, total: plan.originalSize, ext: session.outputUrl.pathExtension).utf8), session: session)
+    guard let range = resolveRange(rangeHeader, total: plan.originalSize) else {
+      respondRangeNotSatisfiable(connection: connection, total: plan.originalSize, session: session)
+      return
+    }
+    let status = rangeHeader == nil ? 200 : 206
+    sendAndClose(connection, Data(headers(status: status, start: range.start, end: range.end, total: plan.originalSize, ext: session.outputUrl.pathExtension).utf8), session: session)
   }
 
   private func serveGet(connection: NWConnection, session: NativeVideoStreamSession, rangeHeader: String?) {
-    guard let plan = session.chunkPlan(), let range = resolveRange(rangeHeader, total: plan.originalSize) else {
-      respondError(connection: connection, status: 416, message: "Range not satisfiable")
+    guard let plan = session.chunkPlan() else {
+      respondError(connection: connection, status: 416, message: "Range not satisfiable", session: session)
+      return
+    }
+    guard let range = resolveRange(rangeHeader, total: plan.originalSize) else {
+      respondRangeNotSatisfiable(connection: connection, total: plan.originalSize, session: session)
       return
     }
     let status = rangeHeader == nil ? 200 : 206
     let header = headers(status: status, start: range.start, end: range.end, total: plan.originalSize, ext: session.outputUrl.pathExtension)
     send(connection, Data(header.utf8)) { [weak self] ok in
       guard ok, let self else {
+        session.removeConnection(connection)
         connection.cancel()
         return
       }
@@ -1005,7 +1076,8 @@ private final class NativeVideoStreamServer: @unchecked Sendable {
 
   private func resolveRange(_ header: String?, total: Int64) -> (start: Int64, end: Int64)? {
     guard total > 0 else { return nil }
-    guard let header, header.hasPrefix("bytes=") else { return (0, total - 1) }
+    guard let header else { return (0, total - 1) }
+    guard header.hasPrefix("bytes=") else { return nil }
     let spec = header.dropFirst("bytes=".count)
     let pair = spec.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
     guard pair.count == 2 else { return nil }
@@ -1049,11 +1121,24 @@ private final class NativeVideoStreamServer: @unchecked Sendable {
     return lines.joined(separator: "\r\n")
   }
 
-  private func respondError(connection: NWConnection, status: Int, message: String) {
+  private func respondError(connection: NWConnection, status: Int, message: String, session: NativeVideoStreamSession? = nil) {
     let body = Data(message.utf8)
     var data = Data("HTTP/1.1 \(status) \(message)\r\nContent-Length: \(body.count)\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n".utf8)
     data.append(body)
-    sendAndClose(connection, data, session: nil)
+    sendAndClose(connection, data, session: session)
+  }
+
+  private func respondRangeNotSatisfiable(connection: NWConnection, total: Int64, session: NativeVideoStreamSession) {
+    let body = Data("Range not satisfiable".utf8)
+    var data = Data((
+      "HTTP/1.1 416 Range not satisfiable\r\n"
+        + "Content-Range: bytes */\(total)\r\n"
+        + "Content-Length: \(body.count)\r\n"
+        + "Content-Type: text/plain\r\n"
+        + "Connection: close\r\n\r\n"
+    ).utf8)
+    data.append(body)
+    sendAndClose(connection, data, session: session)
   }
 
   private func sendAndClose(_ connection: NWConnection, _ data: Data, session: NativeVideoStreamSession?) {

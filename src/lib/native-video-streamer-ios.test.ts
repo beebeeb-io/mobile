@@ -37,7 +37,8 @@ describe('iOS NativeVideoStreamer source contract', () => {
   test('uses per-chunk endpoints and existing opaque handle crypto, never a whole-file download', () => {
     expect(STREAMER_SWIFT).toContain('/api/v1/files/\\(fileId)/chunks/\\(index)');
     expect(STREAMER_SWIFT).toContain('master.deriveFileKey(fileId: Data(fileId.utf8))');
-    expect(STREAMER_SWIFT).toContain('fileKey!.decryptChunk(nonce: nonce, ciphertext: ciphertext)');
+    expect(STREAMER_SWIFT).toContain('key.decryptChunk(nonce: nonce, ciphertext: ciphertext)');
+    expect(STREAMER_SWIFT).not.toContain('fileKey!.decryptChunk');
     expect(STREAMER_SWIFT).toContain('URLSession.shared.downloadTask');
     expect(STREAMER_SWIFT).not.toContain('URLSession.shared.dataTask');
     expect(STREAMER_SWIFT).not.toContain('/download');
@@ -49,6 +50,7 @@ describe('iOS NativeVideoStreamer source contract', () => {
     expect(STREAMER_SWIFT).toMatch(/var bytes = \[UInt8\]\(repeating: 0, count: 16\)/);
     expect(STREAMER_SWIFT).toContain('http://127.0.0.1:\\(port)/s/\\(session.streamId)/');
     expect(STREAMER_SWIFT).toContain('parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(loopback), port: .any)');
+    expect(STREAMER_SWIFT).toContain('components.count >= 3, components[0] == "s"');
     const loopbackBody = bracedBody(STREAMER_SWIFT, 'private func isLoopbackEndpoint(_ endpoint: NWEndpoint) -> Bool {');
     expect(loopbackBody).toContain('127.0.0.1');
     expect(loopbackBody).toContain('::1');
@@ -69,21 +71,30 @@ describe('iOS NativeVideoStreamer source contract', () => {
     expect(cancelAll).toContain('sessions.forEach { $0.cancel() }');
     const sessionBody = bracedBody(STREAMER_SWIFT, 'private final class NativeVideoStreamSession: @unchecked Sendable {');
     const cancel = bracedBody(sessionBody, 'func cancel() {');
-    expect(cancel).toContain('fetchQueue.cancelAllOperations()');
-    expect(cancel).toContain('decryptQueue.cancelAllOperations()');
-    expect(cancel).toContain('teardown(deletePartial: true, unregister: true)');
+    expect(cancel).toContain('cancelAndDrain(errorMessage: nil, waitForQueues: true)');
+    const drain = bracedBody(sessionBody, 'private func cancelAndDrain(errorMessage: String?, waitForQueues: Bool) {');
+    expect(drain).toContain('fetchQueue.cancelAllOperations()');
+    expect(drain).toContain('decryptQueue.cancelAllOperations()');
+    expect(drain).toContain('fetchQueue.waitUntilAllOperationsAreFinished()');
+    expect(drain).toContain('decryptQueue.waitUntilAllOperationsAreFinished()');
+    expect(drain).toContain('teardown(deletePartial: true, unregister: true)');
   });
 
   test('range handling rejects malformed or unsatisfiable ranges with 416', () => {
     const serveGet = bracedBody(STREAMER_SWIFT, 'private func serveGet(connection: NWConnection, session: NativeVideoStreamSession, rangeHeader: String?) {');
-    expect(serveGet).toContain('respondError(connection: connection, status: 416');
+    const serveHead = bracedBody(STREAMER_SWIFT, 'private func serveHead(connection: NWConnection, session: NativeVideoStreamSession, rangeHeader: String?) {');
+    expect(serveGet).toContain('respondRangeNotSatisfiable(connection: connection, total: plan.originalSize, session: session)');
+    expect(serveHead).toContain('let status = rangeHeader == nil ? 200 : 206');
     const resolve = bracedBody(STREAMER_SWIFT, 'private func resolveRange(_ header: String?, total: Int64) -> (start: Int64, end: Int64)? {');
+    expect(resolve).toContain('guard header.hasPrefix("bytes=") else { return nil }');
     expect(resolve).toContain('guard let parsedEnd = Int64(endRaw) else { return nil }');
     expect(resolve).toContain('guard start >= 0, start <= end, start < total else { return nil }');
+    expect(STREAMER_SWIFT).toContain('Content-Range: bytes */');
   });
 
   test('read-ahead and progress accounting stay bounded for large chunk counts', () => {
     expect(STREAMER_SWIFT).not.toContain('for index in 0..<chunkCount {\n      total += NativeVideoChunkMath.encryptedSize');
-    expect(STREAMER_SWIFT).toContain('for index in order where !self.ensureChunk(index).wait() || self.stopRequested()');
+    expect(STREAMER_SWIFT).toContain('for index in 0..<(count - 1)');
+    expect(STREAMER_SWIFT).not.toContain('var order = [count - 1]');
   });
 });

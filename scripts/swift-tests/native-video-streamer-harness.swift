@@ -1,16 +1,20 @@
+import CryptoKit
 import Foundation
 import Network
+
+private let harnessKey = SymmetricKey(data: Data((0..<32).map { UInt8($0) }))
 
 private final class FakeFileKey: FileKeyHandle, @unchecked Sendable {
   override func decryptChunk(nonce: Data, ciphertext: Data) throws -> Data {
     guard nonce.count == 12, ciphertext.count >= 16 else {
       throw NSError(domain: "Harness", code: 1, userInfo: [NSLocalizedDescriptionKey: "bad frame"])
     }
-    let tag = ciphertext.suffix(16)
-    guard tag.allSatisfy({ $0 == 0xAA }) else {
-      throw NSError(domain: "Harness", code: 2, userInfo: [NSLocalizedDescriptionKey: "auth failed"])
-    }
-    return ciphertext.dropLast(16)
+    let sealed = try AES.GCM.SealedBox(
+      nonce: AES.GCM.Nonce(data: nonce),
+      ciphertext: ciphertext.dropLast(16),
+      tag: ciphertext.suffix(16)
+    )
+    return try AES.GCM.open(sealed, using: harnessKey)
   }
 }
 
@@ -101,22 +105,31 @@ private final class ChunkServer {
 }
 
 private func frame(_ plaintext: String, goodTag: Bool = true) -> Data {
-  var data = Data(repeating: 0x11, count: 12)
-  data.append(Data(plaintext.utf8))
-  data.append(Data(repeating: goodTag ? 0xAA : 0xEE, count: 16))
+  let plain = Data(plaintext.utf8)
+  var nonceBytes = Array(repeating: UInt8(0x11), count: 12)
+  nonceBytes[11] = UInt8(plain.count & 0xff)
+  let nonce = try! AES.GCM.Nonce(data: Data(nonceBytes))
+  let sealed = try! AES.GCM.seal(plain, using: harnessKey, nonce: nonce)
+  var data = Data(nonceBytes)
+  data.append(sealed.ciphertext)
+  var tag = Data(sealed.tag)
+  if !goodTag { tag[tag.index(before: tag.endIndex)] ^= 0x01 }
+  data.append(tag)
   return data
 }
 
-private func fetch(_ url: String, range: String? = nil, timeout: TimeInterval = 3) throws -> (Int, Data) {
+private func fetch(_ url: String, range: String? = nil, method: String = "GET", timeout: TimeInterval = 3) throws -> (Int, Data, [AnyHashable: Any]) {
   var request = URLRequest(url: URL(string: url)!)
+  request.httpMethod = method
   if let range { request.setValue(range, forHTTPHeaderField: "Range") }
   let sem = DispatchSemaphore(value: 0)
-  var result: (Int, Data)?
+  var result: (Int, Data, [AnyHashable: Any])?
   var thrown: Error?
   URLSession.shared.dataTask(with: request) { data, response, error in
     if let error { thrown = error }
     else {
-      result = ((response as? HTTPURLResponse)?.statusCode ?? 0, data ?? Data())
+      let http = response as? HTTPURLResponse
+      result = (http?.statusCode ?? 0, data ?? Data(), http?.allHeaderFields ?? [:])
     }
     sem.signal()
   }.resume()
@@ -155,6 +168,8 @@ private func runEarlyRangeAndCancel() throws {
   )
   assert(started.plaintextSize == 10, "inferred plaintext size")
   assert(server.requests.prefix(2).contains(0) && server.requests.prefix(2).contains(2), "head and tail fetched before startup")
+  let headMeta = try fetch(started.streamUri, method: "HEAD")
+  assert(headMeta.0 == 200 && (headMeta.2["Accept-Ranges"] as? String) == "bytes", "HEAD without range returns 200 with byte ranges")
   let head = try fetch(started.streamUri, range: "bytes=0-3")
   assert(head.0 == 206 && String(data: head.1, encoding: .utf8) == "HEAD", "head range is served")
 
@@ -178,7 +193,9 @@ private func runEarlyRangeAndCancel() throws {
   let badRange = try fetch(started.streamUri, range: "bytes=999-1000")
   assert(badRange.0 == 416, "invalid range is 416")
   let malformedRange = try fetch(started.streamUri, range: "bytes=4-nope")
-  assert(malformedRange.0 == 416, "malformed range is 416")
+  assert(malformedRange.0 == 416 && (malformedRange.2["Content-Range"] as? String) == "bytes */10", "malformed range is 416 with total content range")
+  let badUnit = try fetch(started.streamUri, range: "items=0-1")
+  assert(badUnit.0 == 416, "unsupported range unit is 416")
   NativeVideoStreamer.cancel(streamId: started.streamId)
   let afterCancel = try fetch(started.streamUri, range: "bytes=0-1")
   assert(afterCancel.0 == 404, "completed stream unregisters on explicit cancel")
