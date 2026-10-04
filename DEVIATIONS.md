@@ -782,3 +782,24 @@ single-file video streaming path. No design geometry changes.
 Guus reports initial Files and every subfolder block for too long and asks for the delay to be fixed. Folder-specific paginated requests must start immediately and must not wait for the full vault index to hydrate, fetch, or persist. Persisted index rows are an optional temporary display; a late cache result cannot overwrite settled folder rows. Background search reconciliation uses bounded native batch decrypts and yields to visible browsing; no encryption or sync cursor checks are removed.
 
 File Provider registration/mount prewarms root only; opened subfolders refresh on demand using the existing extension Secure Enclave path. Remove the duplicate full-vault walk at biometric unlock to avoid competing with browsing. Purge leases/epoch checks remain in force.
+## 1724 — native iOS preview decrypt pipeline (2026-10-04)
+
+Guus reported that iOS previews waited for the whole encrypted download before
+decrypting, which made photos and videos feel slow. The previous native bridge
+used `URLSessionDownloadTask`, wrote the full encrypted response, split it into
+chunk files, then handed the complete set to Rust. This task intentionally
+deviates from that whole-file staging model: `downloadAndDecryptFileNative`
+now parses the existing chunk metadata, decrypts each complete authenticated
+`nonce || ciphertext || tag` frame as it arrives, and promotes the preview
+plaintext only after every frame, byte count and final size has verified.
+
+Security constraints recorded with the change: partial plaintext lives under
+the already-registered `Library/Caches/preview/` plaintext cache, native also
+marks the directory/temp/final paths excluded from backup with
+`completeUntilFirstUserAuthentication`, failed/cancelled writers remove only
+their own UUID temp, and metadata is bounded with checked arithmetic. This
+slice improves whole-file preview latency; AVPlayer loopback progressive
+playback remains a separate 1724 slice. Evidence logs:
+`/tmp/bb-1724-pipeline/red-preview-chunk-pipeline.mutation.log`,
+`/tmp/bb-1724-pipeline/green-preview-chunk-pipeline.run.log`,
+`/tmp/bb-1724-pipeline/ios-build-gate-final-wrapper.log`.
