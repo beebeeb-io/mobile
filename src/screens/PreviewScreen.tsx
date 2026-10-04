@@ -60,7 +60,7 @@ import {
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } from '../lib/text-file-save';
-import { decryptToTempFile, invalidatePreviewCache, releasePreviewCopy } from '../lib/native-decrypt';
+import { decryptToTempFile, invalidatePreviewCache, materializeVideoPreviewForExport, releasePreviewCopy } from '../lib/native-decrypt';
 import { isLoopbackStreamUri, streamBufferPctFromEvent } from '../lib/video-stream';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
@@ -173,6 +173,12 @@ const TextEditorView = React.lazy(async () => {
   return { default: m.TextEditorView };
 });
 
+// Preview's floating bottom bar sits at `Math.max(insets.bottom, 16) + 8` and
+// its glass content is roughly 68pt tall. expo-video draws native controls
+// inside the VideoView bounds, so the view itself needs this extra bottom
+// clearance or the playhead lands behind Beebeeb's bottom chrome.
+const PREVIEW_VIDEO_CONTROLS_BOTTOM_CLEARANCE = 84;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -186,6 +192,71 @@ type PreviewOptionAction = {
   destructive?: boolean;
   run: () => void;
 };
+
+type ExportUriResult = { uri: string; reusedPreview: boolean; release?: () => Promise<void> | void };
+
+type StreamExportMaterializer = (fileId: string, extension: string) => Promise<string>;
+
+export interface PreviewExportUriResolverInput {
+  isImage: boolean;
+  imageUri: string | null;
+  imagePreviewKind: ImagePreviewKind | null;
+  isVideo: boolean;
+  videoUri: string | null;
+  videoFileId: string;
+  videoExtension: string;
+  isPdf: boolean;
+  pdfUri: string | null;
+  fetchAndDecrypt: () => Promise<string>;
+  materializeStreamVideoForExport: StreamExportMaterializer;
+  signal?: AbortSignal;
+}
+
+function throwIfExportAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('Export cancelled.');
+  error.name = 'AbortError';
+  throw error;
+}
+
+export async function resolvePreviewExportUri({
+  isImage,
+  imageUri,
+  imagePreviewKind,
+  isVideo,
+  videoUri,
+  videoFileId,
+  videoExtension,
+  isPdf,
+  pdfUri,
+  fetchAndDecrypt,
+  materializeStreamVideoForExport,
+  signal,
+}: PreviewExportUriResolverInput): Promise<ExportUriResult> {
+  if (isImage && imageUri && imagePreviewKind === 'original') return { uri: imageUri, reusedPreview: true };
+  if (isVideo && videoUri) {
+    if (!isLoopbackStreamUri(videoUri)) return { uri: videoUri, reusedPreview: true };
+    const exportUri = await materializeStreamVideoForExport(videoFileId, videoExtension);
+    let ownsLease = true;
+    const release = async () => {
+      if (!ownsLease) return;
+      ownsLease = false;
+      await releasePreviewCopy(videoFileId, videoExtension);
+    };
+    try {
+      throwIfExportAborted(signal);
+      if (isLoopbackStreamUri(exportUri)) {
+        throw new Error('Cannot export this video yet. Wait until it finishes decrypting on this device.');
+      }
+      return { uri: exportUri, reusedPreview: true, release };
+    } catch (error) {
+      await release().catch(() => {});
+      throw error;
+    }
+  }
+  if (isPdf && pdfUri) return { uri: pdfUri, reusedPreview: true };
+  return { uri: await fetchAndDecrypt(), reusedPreview: false };
+}
 
 
 function formatDate(iso: string): string {
@@ -1217,6 +1288,7 @@ export const PhotoPage = React.memo(function PhotoPage({
   onExifInfo,
   onZoomChange,
   onSingleTap,
+  videoControlsBottomInset,
 }: {
   entry: PhotoPageEntry;
   shouldLoadFull: boolean;
@@ -1252,6 +1324,7 @@ export const PhotoPage = React.memo(function PhotoPage({
   onZoomChange?: (zoomed: boolean) => void;
   /** Task 1579 — a single tap on a zoomable page (chrome toggle); see ZoomableImage. */
   onSingleTap?: () => void;
+  videoControlsBottomInset: number;
 }) {
   const { colors: c } = useTheme();
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
@@ -1291,6 +1364,13 @@ export const PhotoPage = React.memo(function PhotoPage({
   // below, mirroring `PreviewScreen`'s own `tempRawUriRef` for the single-file
   // case.
   const tempRawSourceUriRef = useRef<string | null>(null);
+  const previewCopyLeaseRef = useRef<{ fileId: string; extension: string } | null>(null);
+  const releasePreviewCopyLease = useCallback(() => {
+    const lease = previewCopyLeaseRef.current;
+    previewCopyLeaseRef.current = null;
+    if (!lease) return;
+    void releasePreviewCopy(lease.fileId, lease.extension).catch(() => {});
+  }, []);
   // Task 1669 round 2 (ruling 3): true while this page's video is in Picture in Picture (set by
   // expo-video's VideoView `onPictureInPictureStart` / `Stop` via `PhotoPageVideo`). A player in
   // PiP must not be released just because its page stopped being current.
@@ -1347,6 +1427,8 @@ export const PhotoPage = React.memo(function PhotoPage({
   }, [originalUri]);
 
   useEffect(() => {
+    releasePreviewCopyLease();
+    tempRawSourceUriRef.current = null;
     setUri(null);
     setUriKind(null);
     setError(null);
@@ -1361,7 +1443,7 @@ export const PhotoPage = React.memo(function PhotoPage({
     setOriginalCacheHit(false);
     setImageLoaded(false);
     sawOriginalProgressRef.current = false;
-  }, [entry.id]);
+  }, [entry.id, releasePreviewCopyLease]);
 
   useEffect(() => {
     // Task 1539 (finding 1, P0): this effect used to run unconditionally for
@@ -1467,7 +1549,15 @@ export const PhotoPage = React.memo(function PhotoPage({
             isRaw: isRawEntry,
             kind: loaded.kind,
           });
-          if (isRawEntry) tempRawSourceUriRef.current = loaded.uri;
+          if (isRawEntry) {
+            tempRawSourceUriRef.current = loaded.uri;
+            previewCopyLeaseRef.current = { fileId: entry.id, extension: extensionForRaw(entryFileName) };
+          } else if (isVideoEntry && isLoopbackStreamUri(loaded.uri)) {
+            previewCopyLeaseRef.current = {
+              fileId: entry.id,
+              extension: extensionForMime(entry.mime_type ?? undefined, 'video'),
+            };
+          }
           setUri(loaded.uri);
           setUriKind(loaded.kind);
         }
@@ -1521,6 +1611,7 @@ export const PhotoPage = React.memo(function PhotoPage({
     setOriginalCacheHit(false);
     setImageLoaded(false);
     sawOriginalProgressRef.current = false;
+    releasePreviewCopyLease();
     // Per-load refs: a released page that is visited again must behave like a
     // fresh one. `largePreviewAttemptRef` records `${entry.id}:${uri}` of the
     // last large-preview upgrade attempt; left set, a revisit that reloads the
@@ -1530,8 +1621,12 @@ export const PhotoPage = React.memo(function PhotoPage({
     // A RAW page's decrypted SOURCE temp file is otherwise deleted only on
     // unmount; now that a page can reload after release, delete it here too or
     // each return to the page would orphan the previous one on disk.
-    void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
-  }, [keepFull, uri]);
+    if (!isRawEntry) {
+      void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
+    } else {
+      tempRawSourceUriRef.current = null;
+    }
+  }, [keepFull, uri, isRawEntry, releasePreviewCopyLease]);
 
   // Delete this page's own decrypted RAW SOURCE temp file on unmount — same
   // pattern as `PreviewScreen`'s own `tempRawUriRef` cleanup for the
@@ -1539,9 +1634,14 @@ export const PhotoPage = React.memo(function PhotoPage({
   // extracted-preview temp file, not this one).
   useEffect(() => {
     return () => {
-      void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
+      releasePreviewCopyLease();
+      if (!isRawEntry) {
+        void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
+      } else {
+        tempRawSourceUriRef.current = null;
+      }
     };
-  }, []);
+  }, [isRawEntry, releasePreviewCopyLease]);
 
   useEffect(() => {
     if (!shouldLoadFull || !isCurrent) return;
@@ -1830,7 +1930,7 @@ export const PhotoPage = React.memo(function PhotoPage({
             <View style={styles.mediaVideoStageWrap}>
               <PhotoPageVideo
                 uri={uri}
-                style={styles.photoPageImage}
+                style={[styles.videoControlsSurface, { bottom: videoControlsBottomInset }]}
                 onPictureInPictureStart={() => setPipActive(true)}
                 onPictureInPictureStop={() => setPipActive(false)}
               />
@@ -1991,6 +2091,14 @@ export default function PreviewScreen() {
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
   const { showToast } = useToast();
+  const previewVideoControlsBottomInset = useMemo(
+    () => Math.max(insets.bottom, 16) + PREVIEW_VIDEO_CONTROLS_BOTTOM_CLEARANCE,
+    [insets.bottom],
+  );
+  const videoControlsBottomStyle = useMemo(
+    () => ({ bottom: previewVideoControlsBottomInset }),
+    [previewVideoControlsBottomInset],
+  );
   const {
     fileId,
     fileName,
@@ -3203,12 +3311,34 @@ export default function PreviewScreen() {
     reloadNonce,
   ]);
 
-  const getExportUri = useCallback(async (): Promise<{ uri: string; reusedPreview: boolean }> => {
-    if (isImage && imageUri && imagePreviewKind === 'original') return { uri: imageUri, reusedPreview: true };
-    if (isVideo && videoUri) return { uri: videoUri, reusedPreview: true };
-    if (isPdf && pdfUri) return { uri: pdfUri, reusedPreview: true };
-    return { uri: await fetchAndDecrypt(), reusedPreview: false };
-  }, [fetchAndDecrypt, imagePreviewKind, imageUri, isImage, isPdf, isVideo, pdfUri, videoUri]);
+  const getExportUri = useCallback(async (signal?: AbortSignal): Promise<ExportUriResult> => {
+    return resolvePreviewExportUri({
+      isImage,
+      imageUri,
+      imagePreviewKind,
+      isVideo,
+      videoUri,
+      videoFileId: currentFileId,
+      videoExtension: previewDecryptExtension(currentMimeType, currentFileName),
+      isPdf,
+      pdfUri,
+      fetchAndDecrypt: () => fetchAndDecrypt({ signal }),
+      materializeStreamVideoForExport: materializeVideoPreviewForExport,
+      signal,
+    });
+  }, [
+    currentFileId,
+    currentFileName,
+    currentMimeType,
+    fetchAndDecrypt,
+    imagePreviewKind,
+    imageUri,
+    isImage,
+    isPdf,
+    isVideo,
+    pdfUri,
+    videoUri,
+  ]);
 
   const currentPhotoPageEntry = useMemo<PhotoPageEntry>(() => ({
     id: currentFileId,
@@ -3900,6 +4030,9 @@ export default function PreviewScreen() {
     }
     recordRuntimeTrace('preview.download_original.press', { fileId: currentFileId, category });
 
+    const exportController = new AbortController();
+    let releaseExportCopy: ExportUriResult['release'] | null = null;
+
     setDownloading(true);
     setDownloadProgress(0);
     setExportStatus('Preparing export options...');
@@ -3912,7 +4045,8 @@ export default function PreviewScreen() {
       }
 
       setExportStatus('Preparing a decrypted copy on this device...');
-      const { uri: shareUri, reusedPreview } = await getExportUri();
+      const { uri: shareUri, reusedPreview, release } = await getExportUri(exportController.signal);
+      releaseExportCopy = release ?? null;
       setExportStatus(
         reusedPreview
           ? 'Using the decrypted preview already on this device...'
@@ -3934,6 +4068,11 @@ export default function PreviewScreen() {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Download failed', friendlyError(err));
     } finally {
+      exportController.abort();
+      if (releaseExportCopy) {
+        await Promise.resolve(releaseExportCopy()).catch(() => {});
+        releaseExportCopy = null;
+      }
       setDownloading(false);
       setDownloadProgress(0);
       setExportStatus(null);
@@ -4262,6 +4401,7 @@ export default function PreviewScreen() {
         onExifInfo={publishRawExif}
         onZoomChange={setMediaZoomed}
         onSingleTap={handleContentTap}
+        videoControlsBottomInset={previewVideoControlsBottomInset}
       />
     ),
     [
@@ -4274,6 +4414,7 @@ export default function PreviewScreen() {
       lockedFileIds,
       originalPhotoRequest,
       performanceStorageProfile,
+      previewVideoControlsBottomInset,
       publishRawExif,
       unlockingFileId,
     ],
@@ -4623,7 +4764,7 @@ export default function PreviewScreen() {
               <View style={styles.mediaVideoStageWrap}>
                 <VideoView
                   player={player}
-                  style={styles.mediaVideo}
+                  style={[styles.videoControlsSurface, videoControlsBottomStyle]}
                   contentFit="contain"
                   nativeControls
                   fullscreenOptions={{ enable: true }}
@@ -5268,7 +5409,7 @@ export default function PreviewScreen() {
             <View style={[styles.fullBleedFill, styles.imageBleedBg]}>
               <VideoView
                 player={player}
-                style={styles.video}
+                style={[styles.videoControlsSurface, videoControlsBottomStyle]}
                 contentFit="contain"
                 nativeControls
                 fullscreenOptions={{ enable: true }}
@@ -6038,10 +6179,18 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
+  videoControlsSurface: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
   mediaVideoStageWrap: {
     position: 'relative',
     width: '100%',
     height: '100%',
+    backgroundColor: '#000000',
   },
   streamBadgeLayer: {
     position: 'absolute',

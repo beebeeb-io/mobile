@@ -138,3 +138,23 @@ export function reduceVisibleFolderRequestState<T>(
       };
   }
 }
+
+/** Start the folder request immediately; the full-vault disk cache is optional. */
+export async function loadFolderWithCachedRows<T>(
+  loadFolder: () => Promise<T[]>,
+  loadCached: (() => Promise<T[] | null>) | null,
+  onCached: (rows: T[]) => void,
+): Promise<T[]> {
+  let settled = false;
+  const request = loadFolder();
+  if (loadCached) {
+    void loadCached().then((rows) => {
+      if (!settled && rows && rows.length > 0) onCached(rows);
+    }).catch(() => {});
+  }
+  try {
+    return await request;
+  } finally {
+    settled = true;
+  }
+}

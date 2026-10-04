@@ -1204,6 +1204,11 @@ export async function downloadAndDecryptFileNative(
   }
 }
 
+export type StreamVideoTerminalStatus =
+  | { stage: 'complete'; event?: PreviewLoadProgressEvent | null }
+  | { stage: 'error'; event?: PreviewLoadProgressEvent | null; error: string }
+  | { stage: 'cancelled'; event?: PreviewLoadProgressEvent | null }
+
 export interface StreamVideoNativeResult {
   /** The loopback URI the player reads (the streaming engine's range server). */
   streamUri: string
@@ -1213,6 +1218,14 @@ export interface StreamVideoNativeResult {
   plaintextSize: number
   chunkCount: number
   streamId: string
+  /** JS-generated request id used by progress polling and legacy cancellation. */
+  requestId: string
+  /** Cancels the native stream pump/range server. Idempotent. */
+  cancel: () => Promise<void>
+  /** Resolves when the native stream reaches complete/error/teardown or is cancelled. */
+  terminal: Promise<void>
+  /** Non-rejecting terminal outcome; consumers use this to avoid joining failed loopback routes. */
+  terminalStatus: Promise<StreamVideoTerminalStatus>
 }
 
 /** Progress-poll cadence — matches downloadAndDecryptFileNative's 200 ms. */
@@ -1243,8 +1256,9 @@ export function isStreamVideoNativeAvailable(): boolean {
  * stage, VANISHES (the session's teardown clears the registry — the reliable
  * completion signal after a long playback), or the caller aborts.
  *
- * Cancel: the existing `cancelDownloadAndDecryptFileNative(requestId)` — the
- * session hooks itself into that surface natively.
+ * Cancel: iOS builds may expose `cancelVideoStreamNative(streamId)` for the
+ * stream server. Older Android builds hook into the existing
+ * `cancelDownloadAndDecryptFileNative(requestId)` surface, so JS keeps both.
  */
 export async function streamVideoNative(
   handleId: number | null,
@@ -1261,9 +1275,24 @@ export async function streamVideoNative(
   }
 
   const requestId = `stream-${fileId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  let streamId: string | null = null
+  let terminalResolve!: () => void
+  let terminalStatusResolve!: (status: StreamVideoTerminalStatus) => void
+  const terminal = new Promise<void>((resolve) => { terminalResolve = resolve })
+  const terminalStatus = new Promise<StreamVideoTerminalStatus>((resolve) => { terminalStatusResolve = resolve })
+  let lastTerminalEvent: PreviewLoadProgressEvent | null = null
   const readSnapshot = (): PreviewLoadProgressEvent | null => {
     const ev = BeebeebCryptoModule.getPreviewLoadProgress?.(requestId)
     return ev && ev.requestId === requestId ? (ev as PreviewLoadProgressEvent) : null
+  }
+  const cancelNativeOnly = async () => {
+    if (streamId && typeof BeebeebCryptoModule.cancelVideoStreamNative === 'function') {
+      await BeebeebCryptoModule.cancelVideoStreamNative(streamId).catch(() => {})
+      return
+    }
+    if (typeof BeebeebCryptoModule.cancelDownloadAndDecryptFileNative === 'function') {
+      await BeebeebCryptoModule.cancelDownloadAndDecryptFileNative(requestId).catch(() => {})
+    }
   }
 
   // Long-lived progress pump (see doc comment): stops on a terminal stage,
@@ -1271,7 +1300,9 @@ export async function streamVideoNative(
   // safety cap.
   let lastKey = ''
   let lastSeenStage: string | null = null
-  let finished = false
+  let pollFinished = false
+  let terminalFinished = false
+  let cancelTerminalPending = false
   let poll: ReturnType<typeof setInterval> | null = null
   const stopPoll = () => {
     if (poll) {
@@ -1279,12 +1310,37 @@ export async function streamVideoNative(
       poll = null
     }
   }
-  const finish = (synthetic?: PreviewLoadProgressEvent) => {
-    if (finished) return
-    finished = true
+  const statusFromEvent = (event: PreviewLoadProgressEvent | null): StreamVideoTerminalStatus => {
+    if (event?.stage === 'error') {
+      return { stage: 'error', event, error: event.error || 'Video stream failed.' }
+    }
+    return { stage: 'complete', event }
+  }
+  const finishTerminal = (synthetic?: PreviewLoadProgressEvent, status?: StreamVideoTerminalStatus) => {
+    if (terminalFinished) return
+    terminalFinished = true
+    pollFinished = true
     stopPoll()
     options.signal?.removeEventListener('abort', abortListener)
-    if (synthetic) options.onProgress?.(synthetic)
+    if (synthetic) {
+      lastTerminalEvent = synthetic
+      options.onProgress?.(synthetic)
+    }
+    terminalStatusResolve(status ?? statusFromEvent(lastTerminalEvent))
+    terminalResolve()
+  }
+  const stopPollingForCancel = () => {
+    if (pollFinished) return
+    pollFinished = true
+    stopPoll()
+    options.signal?.removeEventListener('abort', abortListener)
+  }
+  const cancelAndFinishTerminal = async () => {
+    if (terminalFinished) return
+    cancelTerminalPending = true
+    stopPollingForCancel()
+    await cancelNativeOnly()
+    finishTerminal(undefined, { stage: 'cancelled', event: lastTerminalEvent })
   }
   const forward = (ev: PreviewLoadProgressEvent) => {
     const k = ev.stage + ':' + (ev.chunksCompleted ?? ev.bytesDownloaded ?? '')
@@ -1294,28 +1350,27 @@ export async function streamVideoNative(
     }
   }
   poll = setInterval(() => {
-    if (finished) return
+    if (pollFinished) return
     const ev = readSnapshot()
     if (!ev) {
       // Snapshot gone: the session's terminal cleanup cleared the registry.
       // Surface a synthetic completion (unless we saw an error) so the UI's
       // buffered badge retires, then stop.
       if (lastSeenStage && lastSeenStage !== 'error') {
-        console.info('[1683j-poll] vanish -> synthetic complete')
-        finish({ requestId, fileId, stage: 'complete' })
+        finishTerminal({ requestId, fileId, stage: 'complete' })
       }
       return
     }
     lastSeenStage = ev.stage
     forward(ev)
-    if (ev.stage === 'complete' || ev.stage === 'error') finish()
+    if (ev.stage === 'complete' || ev.stage === 'error') {
+      lastTerminalEvent = ev
+      finishTerminal()
+    }
   }, POLL_INTERVAL_MS)
 
   const abortListener = () => {
-    finish()
-    if (typeof BeebeebCryptoModule.cancelDownloadAndDecryptFileNative === 'function') {
-      void BeebeebCryptoModule.cancelDownloadAndDecryptFileNative(requestId).catch(() => {})
-    }
+    void cancelAndFinishTerminal()
   }
   if (options.signal?.aborted) {
     abortListener()
@@ -1334,7 +1389,14 @@ export async function streamVideoNative(
       sizeBytes: sizeBytes ?? null,
       chunkCount: chunkCount ?? null,
     })) as StreamVideoNativeResult
-    return result
+    streamId = result.streamId
+    return {
+      ...result,
+      requestId,
+      cancel: cancelAndFinishTerminal,
+      terminal,
+      terminalStatus,
+    }
   } catch (error) {
     if (options.signal?.aborted) {
       throw abortError()
@@ -1346,14 +1408,16 @@ export async function streamVideoNative(
     // a resolved stream keeps pumping after playback started, so the poll
     // stays alive until its own terminal rule fires.
     const finalEv = readSnapshot()
-    console.info('[1683j-poll] native settled; finalEv=' + JSON.stringify({
-      stage: finalEv?.stage, streaming: finalEv?.streaming,
-      chunks: finalEv?.chunksCompleted, requestId: requestId.slice(0, 24),
-    }))
-    if (finalEv) options.onProgress?.(finalEv)
-    if (!(finalEv && finalEv.stage === 'decrypting' && finalEv.streaming === true)) {
-      console.info('[1683j-poll] finally -> finish (poll stops)')
-      finish()
+    let finalStatus: StreamVideoTerminalStatus | undefined
+    if (finalEv) {
+      options.onProgress?.(finalEv)
+      if (finalEv.stage === 'complete' || finalEv.stage === 'error') {
+        lastTerminalEvent = finalEv
+        finalStatus = statusFromEvent(finalEv)
+      }
+    }
+    if (!cancelTerminalPending && !(finalEv && finalEv.stage === 'decrypting' && finalEv.streaming === true)) {
+      finishTerminal(undefined, finalStatus)
     }
   }
 }

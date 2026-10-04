@@ -4,6 +4,40 @@ Per the workspace `CLAUDE.md` → "How we work" → "Design before code": where 
 design artefact and the shipped code disagree, the deviation is recorded HERE,
 in the same commit as the code, with the ruling that caused it.
 
+## Task 1724 — native video controls reserve space below Preview's floating bottom bar
+
+**Design:** `design/preview-redesign-ios.html` section 01 treats photo/video
+media as full-bleed content with floating top and bottom chrome.
+
+**What shipped:** video previews still use the same black full-bleed stage,
+but the native `VideoView` itself is inset at the bottom by Preview's floating
+bottom bar clearance. This applies to the single-file media branch, the
+document-style video branch, and video pages inside the photo/video pager.
+
+**Why:** on iOS, `expo-video` draws the native transport controls inside the
+`VideoView` bounds. With the view occupying the whole screen, the playhead sat
+directly behind Preview's own Share/Save/Versions/Info bar. Tapping to reveal
+chrome also revealed the native controls, so both bars competed for the same
+touch area. Reserving the control clearance keeps the native playhead tappable
+while preserving the black media ground behind the floating chrome.
+
+## Task 1724 — File Provider known-empty folders and pager preview leases
+
+**Design:** Files should enumerate cached File Provider folders immediately
+while refreshing in the background, and preview plaintext cache ownership must
+flow through `releasePreviewCopy`.
+
+**What shipped:** an empty cached File Provider folder that already has a
+`container.<id>.anchor` now enumerates `[]` immediately and refreshes in the
+background. The cold, anchor-less case still waits for a typed refresh outcome.
+Photo pager pages now release the preview copy lease they render directly for
+RAW source files and loopback video streams when the page unloads or unmounts.
+
+**Why:** rows alone cannot distinguish "never synced" from "synced and empty".
+The anchor is the cache's durable synchronized marker. For Preview, deleting a
+RAW temp URI directly or clearing a loopback URI left the `decryptToTempFile`
+lease live, so purge/account cleanup could see stale ownership.
+
 ## Task 1723 PR163 CI — slow native SQLite harness gets a longer test budget only
 
 **Design:** no product design change. This is a CI-only repair for the Swift
@@ -22,6 +56,31 @@ but no such file was ever actually committed in this repo. Created here per the
 workspace CLAUDE.md's convention (`repos/mobile DEVIATIONS.md`, as instantiated in
 this repo for the first time); the earlier phase 3/4 references remain undocumented
 and are out of scope for this task.
+
+## Task 1724 iOS progressive video streaming
+
+**Design / security contract:** Native iOS video preview should match Android
+PR 162's progressive model: fetch encrypted `/chunks/{index}` blobs directly,
+authenticate/decrypt each chunk with the existing opaque `MasterKeyHandle`, and
+serve only verified plaintext bytes from a loopback Range server. The player may
+start after chunk 0 and the final chunk are verified, while the remaining chunks
+continue buffering in the background.
+
+**Local implementation boundary:** This slice adds the iOS streaming engine as a
+new native helper and intentionally does not wire `BeebeebCryptoModule.swift`,
+because another native lane owns the Expo bridge in task 1724. The bridge must
+call `NativeVideoStreamer.start(...)`, register cancellation through
+`NativeVideoStreamer.cancel(requestId:)`, expose
+`NativeVideoStreamer.cancel(streamId:)`, and call
+`NativeVideoStreamer.cancelAll()` before/inside plaintext purge and account
+switch flows.
+
+**Safety invariants:** stream URLs contain a random 128-bit capability segment,
+the server uses Apple's Network framework and accepts only loopback peers,
+partial sparse files stay under a `.streaming` path instead of the final preview
+cache path, cache promotion happens only after every chunk has been
+authenticated, and cancellation/account purge closes connections and deletes
+partials before another account can write or serve stale plaintext.
 
 ## Task 1723 CI-only native Swift harness routing
 
@@ -759,3 +818,58 @@ affordances, the partial-file error card, PhotoPage export/resource bounds and
 RAW EXIF keyed by file id. This repair restores those local PreviewScreen
 behaviors while preserving the merged streaming UI's buffered-video badge and
 single-file video streaming path. No design geometry changes.
+
+## Task 1724 — cold folder latency (2026-10-04, Guus ruling)
+
+Guus reports initial Files and every subfolder block for too long and asks for the delay to be fixed. Folder-specific paginated requests must start immediately and must not wait for the full vault index to hydrate, fetch, or persist. Persisted index rows are an optional temporary display; a late cache result cannot overwrite settled folder rows. Background search reconciliation uses bounded native batch decrypts and yields to visible browsing; no encryption or sync cursor checks are removed.
+
+File Provider registration/mount prewarms root only; opened subfolders refresh on demand using the existing extension Secure Enclave path. Remove the duplicate full-vault walk at biometric unlock to avoid competing with browsing. Purge leases/epoch checks remain in force.
+## 1724 — native iOS preview decrypt pipeline (2026-10-04)
+
+Guus reported that iOS previews waited for the whole encrypted download before
+decrypting, which made photos and videos feel slow. The previous native bridge
+used `URLSessionDownloadTask`, wrote the full encrypted response, split it into
+chunk files, then handed the complete set to Rust. This task intentionally
+deviates from that whole-file staging model: `downloadAndDecryptFileNative`
+now parses the existing chunk metadata, decrypts each complete authenticated
+`nonce || ciphertext || tag` frame as it arrives, and promotes the preview
+plaintext only after every frame, byte count and final size has verified.
+
+Security constraints recorded with the change: partial plaintext lives under
+the already-registered `Library/Caches/preview/` plaintext cache, native also
+marks the directory/temp/final paths excluded from backup with
+`completeUntilFirstUserAuthentication`, failed/cancelled writers remove only
+their own UUID temp, and metadata is bounded with checked arithmetic. This
+slice improves whole-file preview latency; AVPlayer loopback progressive
+playback remains a separate 1724 slice. Evidence logs:
+`/tmp/bb-1724-pipeline/red-preview-chunk-pipeline.mutation.log`,
+`/tmp/bb-1724-pipeline/green-preview-chunk-pipeline.run.log`,
+`/tmp/bb-1724-pipeline/ios-build-gate-final-wrapper.log`.
+
+## Task 1724 — video stream lifetime (2026-10-04, JS slice)
+
+Guus reports video playback still behaving like a whole-file download before useful playback. The streaming URI becoming playable is not a completed plaintext cache copy: JS now keeps a cache-path stream registry, joins duplicate opens to the same active partial stream, holds the plaintext gate lease until native terminal/cancel, and cancels the native stream on purge or last preview release. Runtime traces omit loopback capability URLs. This is a lifetime/security repair for the progressive stream path; native chunk scheduling and range-server behavior are owned by the native bridge slice.
+
+## Task1724 — iOS progressive playback bridge
+
+The bridge resolves a standard loopback byte-range source before the full video finishes buffering, preserving native opaque handles and authenticated chunk decryption. Native purge marks its pending gate first and cancels all streams before sweeping plaintext; handle/key release also closes capabilities. Terminal progress survives until polling reads it once. Streaming startup runs away from the UI executor. No keys, bearer tokens or capability URLs are exported to runtime logs.
+
+## Task1724 — preview pruning excludes native working files
+
+Native pipelines own UUID hidden temporary files/directories beneath the registered preview cache. JS cache eviction handles finished public cache entries only: it must not unlink a live native writer's temporary resource. Native cancel/error owns temporary cleanup, while the existing account plaintext purge sweeps the entire cache.
+
+Cancellation ordering: JS stops progress polling immediately on explicit cancel or abort so the UI settles, but the `terminal` promise stays pending until native cancellation returns. `native-decrypt` releases the writer gate from `terminal`, so resolving it before native drain would allow purge or another writer while the native stream could still be touching plaintext.
+
+Task1724 CI registration: register the new preview frame pipeline driver in the existing Swift test manifest and use its counted assertion format. Missing registration caused the CI gate to fail before publication could complete.
+
+Task1724 native CI: keep compiler flags nonempty for every driver so the runner supports system Bash3.2 with nounset, as used by GitHub macOS. RED reproduced flags[@] unbound after the stream driver; verify all5drivers with /bin/bash.
+
+Task1724 native working-storage cleanup: JS preview pruning intentionally skips native hidden working files to avoid unlinking live writers. Native now owns stale crash cleanup once per process per preview cache directory, before creating any new UUID temp file or stream directory. The cleanup only removes the two native-owned UUID patterns (`.<output>.<UUID>.tmp` and `.beebeeb-stream-<fileId>-<UUID>/`), preserves public cache entries and unrecognized dot files, and never repeats in the same process so a JS reload cannot delete files created by active native writers.
+Evidence logs: `/tmp/bb-1724-pipeline-p2/native-preview-working-storage.mutation.log`, `/tmp/bb-1724-pipeline-p2/native-preview-working-storage.run.log`, `/tmp/bb-1724-pipeline-p2/preview-chunk-pipeline.run.log`, `/tmp/bb-1724-pipeline-p2/native-video-streamer-harness.run.log`.
+Task1724 failed stream terminal/export helper: playable loopback success is now distinct from background terminal success. The JS wrapper exposes a non-rejecting `terminalStatus` union so the registry can evict a stream that later reports an authenticated chunk error instead of joining a dead capability URL. Failed entries release their writer lease, serialize their partial-output cleanup before retry, and preserve consumer lease accounting. `materializeVideoPreviewForExport(fileId, extension)` is the export/share bridge: it acquires an independent preview lease, waits for active stream terminal success, verifies the promoted local file exists, and returns only that file URI. Export/share callers must release the helper lease with `releasePreviewCopy(fileId, extension)` in their finally block.
+Race follow-up: the process-once prepared marker is written only after the first sweep completes while holding the helper lock. A DEBUG barrier test proves a second prepare cannot return and create a live UUID temp until the initial sweep has finished, so the first sweep cannot delete that live writer.
+The prepared key resolves symlinks as well as standardizing the URL, so an alias path to the same cache cannot trigger a second first-sweep in the same process. Evidence logs: `/tmp/bb-1724-pipeline-p2-race/native-preview-working-storage.race-mutation.log`, `/tmp/bb-1724-pipeline-p2-race/native-preview-working-storage.run.log`, `/tmp/bb-1724-pipeline-p2-race/preview-chunk-pipeline.run.log`, `/tmp/bb-1724-pipeline-p2-race/native-video-streamer-harness.run.log`.
+
+Task1724 video export: use materializeVideoPreviewForExport terminal-success contract for loopback previews, hold an independent exporter lease until Sharing.shareAsync finishes, and release on error/abort. Never pass a localhost capability to sharing. Export slice source88a2bc5 supersedes intermediate polling drafte233140.
+
+Task1724 terminal status cancellation precedence: a final native progress snapshot may already contain `error` while JS is cancelling or aborting the stream. Cancellation owns that terminal: the wrapper forwards the snapshot but waits for native cancel drain and resolves `terminalStatus` as `cancelled`. The registry treats `cancelled` like an AbortError failure, evicts the loopback capability, rejects export materialization, and makes retry wait for partial-output cleanup before starting a new writer.

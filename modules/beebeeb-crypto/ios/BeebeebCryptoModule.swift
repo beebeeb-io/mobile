@@ -289,7 +289,11 @@ private final class PreviewDownloadProgress: DownloadProgressCallback, FileProgr
   func setTask(_ task: URLSessionTask) {
     lock.lock()
     self.task = task
+    let shouldCancel = cancelled
     lock.unlock()
+    if shouldCancel {
+      task.cancel()
+    }
   }
 
   func cancel() {
@@ -390,22 +394,33 @@ private final class PreviewDownloadProgress: DownloadProgressCallback, FileProgr
   }
 }
 
-private final class PreviewEncryptedDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-  private var continuation: CheckedContinuation<(URL, HTTPURLResponse), Error>?
-  private var response: HTTPURLResponse?
+private final class PreviewStreamingDownloadDelegate: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate, @unchecked Sendable {
+  private var continuation: CheckedContinuation<PreviewChunkPipeline.Result, Error>?
   private var session: URLSession?
+  private var pipeline: PreviewChunkPipeline?
+  private var completed = false
+  private var receivedBytes: Int64 = 0
   private let progress: PreviewDownloadProgress
+  private let fileId: String
+  private let outputURL: URL
+  private let master: MasterKeyHandle
 
-  init(progress: PreviewDownloadProgress) {
+  init(progress: PreviewDownloadProgress, fileId: String, outputURL: URL, master: MasterKeyHandle) {
     self.progress = progress
+    self.fileId = fileId
+    self.outputURL = outputURL
+    self.master = master
   }
 
-  func download(request: URLRequest) async throws -> (URL, HTTPURLResponse) {
+  func download(request: URLRequest) async throws -> PreviewChunkPipeline.Result {
     try await withCheckedThrowingContinuation { continuation in
       self.continuation = continuation
-      let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+      let queue = OperationQueue()
+      queue.maxConcurrentOperationCount = 1
+      queue.qualityOfService = .utility
+      let session = URLSession(configuration: .default, delegate: self, delegateQueue: queue)
       self.session = session
-      let task = session.downloadTask(with: request)
+      let task = session.dataTask(with: request)
       progress.setTask(task)
       task.resume()
     }
@@ -413,56 +428,148 @@ private final class PreviewEncryptedDownloadDelegate: NSObject, URLSessionDownlo
 
   func urlSession(
     _ session: URLSession,
-    downloadTask: URLSessionDownloadTask,
-    didWriteData bytesWritten: Int64,
-    totalBytesWritten: Int64,
-    totalBytesExpectedToWrite: Int64
+    dataTask: URLSessionDataTask,
+    didReceive response: URLResponse,
+    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
   ) {
-    progress.emitDownload(bytesWritten: totalBytesWritten, bytesExpected: totalBytesExpectedToWrite)
-  }
-
-  func urlSession(
-    _ session: URLSession,
-    downloadTask: URLSessionDownloadTask,
-    didFinishDownloadingTo location: URL
-  ) {
-    response = downloadTask.response as? HTTPURLResponse
-    guard let response else {
-      continuation?.resume(throwing: NSError(
+    guard let http = response as? HTTPURLResponse else {
+      complete(.failure(NSError(
         domain: "BeebeebPreviewDownload",
-        code: 1,
+        code: 30,
         userInfo: [NSLocalizedDescriptionKey: "Missing download response"]
-      ))
-      continuation = nil
+      )))
+      completionHandler(.cancel)
+      return
+    }
+    guard http.statusCode >= 200 && http.statusCode < 300 else {
+      complete(.failure(NSError(
+        domain: "BeebeebPreviewDownload",
+        code: http.statusCode,
+        userInfo: [NSLocalizedDescriptionKey: "Download failed with HTTP \(http.statusCode)"]
+      )))
+      completionHandler(.cancel)
       return
     }
 
-    let target = FileManager.default.temporaryDirectory
-      .appendingPathComponent("beebeeb-preview-\(UUID().uuidString).enc")
     do {
-      try FileManager.default.moveItem(at: location, to: target)
-      continuation?.resume(returning: (target, response))
+      let encryptedSize = expectedLength(from: http, response: response)
+      let chunkCount = Int(http.value(forHTTPHeaderField: "X-Chunk-Count") ?? "") ?? 1
+      let originalSize = Int(http.value(forHTTPHeaderField: "X-Original-Size") ?? "")
+        ?? max(0, encryptedSize - PreviewChunkPlan.frameOverheadBytes)
+      let headerChunkSize = Int(http.value(forHTTPHeaderField: "X-Chunk-Size") ?? "")
+      let plaintextChunkSize = chunkCount <= 1
+        ? originalSize
+        : (headerChunkSize ?? (4 * 1024 * 1024))
+      let plan = try PreviewChunkPlan(
+        chunkCount: chunkCount,
+        originalSize: originalSize,
+        plaintextChunkSize: plaintextChunkSize
+      )
+      if encryptedSize > 0, encryptedSize != plan.expectedEncryptedSize {
+        throw NSError(
+          domain: "BeebeebPreviewDownload",
+          code: 32,
+          userInfo: [
+            NSLocalizedDescriptionKey:
+              "Encrypted payload size mismatch: expected \(plan.expectedEncryptedSize), got \(encryptedSize)"
+          ]
+        )
+      }
+      let decryptor = try ChunkDecryptorHandle.forPush(masterKey: master, fileId: fileId)
+      pipeline = try PreviewChunkPipeline(
+        plan: plan,
+        outputURL: outputURL,
+        decryptFrame: { frame in
+          try decryptor.pushFrame(frame: frame).data
+        },
+        onChunkDecrypted: { [progress] completed, total in
+          progress.onChunkDecrypted(chunkIndex: UInt32(completed), totalChunks: UInt32(total))
+        }
+      )
+      RuntimeTrace.event("preview.native_download.chunk_metadata", [
+        "fileId": fileId,
+        "encryptedSize": encryptedSize,
+        "originalSize": originalSize,
+        "expectedEncryptedSize": plan.expectedEncryptedSize,
+        "chunkCount": chunkCount,
+        "plaintextChunkSize": plaintextChunkSize,
+        "hasHeaderChunkSize": headerChunkSize != nil,
+        "streamingPipeline": true
+      ])
+      completionHandler(.allow)
     } catch {
+      complete(.failure(error))
+      completionHandler(.cancel)
+    }
+  }
+
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    guard !progress.isCancelled() else {
+      dataTask.cancel()
+      return
+    }
+    do {
+      receivedBytes += Int64(data.count)
+      let expected = dataTask.countOfBytesExpectedToReceive
+      progress.emitDownload(bytesWritten: receivedBytes, bytesExpected: expected)
+      try pipeline?.receive(data)
+    } catch {
+      complete(.failure(error))
+      dataTask.cancel()
+    }
+  }
+
+  func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    defer {
+      session.invalidateAndCancel()
+      self.session = nil
+    }
+    if completed { return }
+    if let error {
+      pipeline?.cleanup()
+      complete(.failure(error))
+      return
+    }
+    do {
+      guard let pipeline else {
+        throw NSError(
+          domain: "BeebeebPreviewDownload",
+          code: 31,
+          userInfo: [NSLocalizedDescriptionKey: "Download finished before metadata was received"]
+        )
+      }
+      guard !progress.isCancelled() else {
+        throw NSError(
+          domain: NSURLErrorDomain,
+          code: NSURLErrorCancelled,
+          userInfo: [NSLocalizedDescriptionKey: "Preview load cancelled."]
+        )
+      }
+      complete(.success(try pipeline.finish()))
+    } catch {
+      complete(.failure(error))
+    }
+  }
+
+  private func complete(_ result: Result<PreviewChunkPipeline.Result, Error>) {
+    guard !completed else { return }
+    completed = true
+    switch result {
+    case .success(let value):
+      continuation?.resume(returning: value)
+    case .failure(let error):
+      pipeline?.cleanup()
       continuation?.resume(throwing: error)
     }
     continuation = nil
   }
 
-  func urlSession(
-    _ session: URLSession,
-    task: URLSessionTask,
-    didCompleteWithError error: Error?
-  ) {
-    defer {
-      session.invalidateAndCancel()
-      self.session = nil
+  private func expectedLength(from http: HTTPURLResponse, response: URLResponse) -> Int {
+    if let header = Int(http.value(forHTTPHeaderField: "Content-Length") ?? "") {
+      return header
     }
-    if let error, continuation != nil {
-      continuation?.resume(throwing: error)
-      continuation = nil
-    }
+    return response.expectedContentLength > 0 ? Int(response.expectedContentLength) : 0
   }
-
 }
 
 @available(iOS 16.0, *)
@@ -1946,6 +2053,7 @@ public class BeebeebCryptoModule: Module {
   private var nextHandleId: Int = 1
   private let previewDownloadLock = NSLock()
   private var previewDownloadCancellations: [String: PreviewDownloadProgress] = [:]
+  private var streamStartupCancellations: [String: NativeVideoStreamProgress] = [:]
   private let previewProgressLock = NSLock()
   private var previewProgressSnapshots: [String: [String: Any]] = [:]
   /// Live native manual uploads keyed by requestId (task 1310) — polled by JS.
@@ -1997,6 +2105,14 @@ public class BeebeebCryptoModule: Module {
     return cancellation != nil
   }
 
+  private func cancelAllPreviewStreams() {
+    previewDownloadLock.lock()
+    let starting = Array(streamStartupCancellations.values)
+    previewDownloadLock.unlock()
+    starting.forEach { $0.cancel() }
+    NativeVideoStreamer.cancelAll()
+  }
+
   private func storePreviewProgress(_ requestId: String, _ body: [String: Any]) {
     guard !requestId.isEmpty else { return }
     previewProgressLock.lock()
@@ -2008,6 +2124,11 @@ public class BeebeebCryptoModule: Module {
     guard !requestId.isEmpty else { return nil }
     previewProgressLock.lock()
     let snapshot = previewProgressSnapshots[requestId]
+    // A progressive writer outlives its start call. Keep its terminal snapshot
+    // until the poll consumes it, then retire it instead of retaining every job.
+    if let stage = snapshot?["stage"] as? String, stage == "complete" || stage == "error" {
+      previewProgressSnapshots.removeValue(forKey: requestId)
+    }
     previewProgressLock.unlock()
     return snapshot
   }
@@ -2044,72 +2165,6 @@ public class BeebeebCryptoModule: Module {
     previewProgressLock.lock()
     previewProgressSnapshots.removeValue(forKey: requestId)
     previewProgressLock.unlock()
-  }
-
-  private func splitEncryptedPreviewFile(
-    encryptedUrl: URL,
-    outputDir: URL,
-    chunkCount: Int,
-    originalSize: Int,
-    plaintextChunkSize: Int
-  ) throws -> [String] {
-    guard chunkCount > 0 else {
-      throw NSError(
-        domain: "BeebeebPreviewDownload",
-        code: 2,
-        userInfo: [NSLocalizedDescriptionKey: "Invalid chunk count"]
-      )
-    }
-    guard originalSize > 0, plaintextChunkSize > 0 else {
-      throw NSError(
-        domain: "BeebeebPreviewDownload",
-        code: 3,
-        userInfo: [NSLocalizedDescriptionKey: "Invalid download size metadata"]
-      )
-    }
-
-    let chunkOverhead = 28
-    let handle = try FileHandle(forReadingFrom: encryptedUrl)
-    defer {
-      try? handle.close()
-    }
-
-    var paths: [String] = []
-    for index in 0..<chunkCount {
-      let isLast = index == chunkCount - 1
-      let plaintextSize = chunkCount == 1
-        ? originalSize
-        : (isLast ? originalSize - plaintextChunkSize * (chunkCount - 1) : plaintextChunkSize)
-      guard plaintextSize > 0 else {
-        throw NSError(
-          domain: "BeebeebPreviewDownload",
-          code: 4,
-          userInfo: [NSLocalizedDescriptionKey: "Invalid chunk size"]
-        )
-      }
-      let encryptedChunkSize = plaintextSize + chunkOverhead
-      let data = handle.readData(ofLength: encryptedChunkSize)
-      guard data.count == encryptedChunkSize else {
-        throw NSError(
-          domain: "BeebeebPreviewDownload",
-          code: 5,
-          userInfo: [NSLocalizedDescriptionKey: "Encrypted payload ended before chunk \(index)"]
-        )
-      }
-      let path = outputDir.appendingPathComponent("\(index).enc").path
-      try data.write(to: URL(fileURLWithPath: path))
-      paths.append(path)
-    }
-
-    let remaining = handle.readDataToEndOfFile()
-    if !remaining.isEmpty {
-      throw NSError(
-        domain: "BeebeebPreviewDownload",
-        code: 6,
-        userInfo: [NSLocalizedDescriptionKey: "Encrypted payload has trailing bytes"]
-      )
-    }
-    return paths
   }
 
   public func definition() -> ModuleDefinition {
@@ -2176,6 +2231,7 @@ public class BeebeebCryptoModule: Module {
       // is a real, counted purge failure: nothing this purge does from this
       // point on can prove an extension write is refused.
       let pendingNonce = PlaintextStorageProtection.markPurgePending()
+      self.cancelAllPreviewStreams()
       if pendingNonce == nil {
         RuntimeTrace.event("storage.purge.failed", ["stage": "pending_marker"])
         failed += 1
@@ -2677,6 +2733,7 @@ public class BeebeebCryptoModule: Module {
     }
 
     AsyncFunction("releaseHandle") { [self] (handleId: Int) in
+      self.cancelAllPreviewStreams()
       self.masterKeyHandles.removeValue(forKey: handleId)
       if self.masterKeyHandles.isEmpty {
         BeebeebCryptoBridge.clearCachedMasterKey()
@@ -2835,7 +2892,8 @@ public class BeebeebCryptoModule: Module {
       return true
     }
 
-    AsyncFunction("deleteKeyFromKeychain") { () throws -> Bool in
+    AsyncFunction("deleteKeyFromKeychain") { [self] () throws -> Bool in
+      self.cancelAllPreviewStreams()
       KeychainManager.delete()
       // Task 1531 [P0] defense in depth: the app-wide in-process master-key
       // cache (`BeebeebCryptoBridge`) was previously cleared ONLY as a side
@@ -4080,7 +4138,6 @@ public class BeebeebCryptoModule: Module {
       ])
       let master = try self.getHandle(handleId)
       let outputURL = fileURL(fromURI: outputUri)
-      let outputPath = outputURL.path
       let progress = PreviewDownloadProgress(requestId: requestId, fileId: fileId) { [weak self] body in
         self?.storePreviewProgress(requestId ?? "", body)
       }
@@ -4093,99 +4150,87 @@ public class BeebeebCryptoModule: Module {
         self.clearPreviewProgress(requestId ?? "")
       }
 
-      let tempDir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("beebeeb-preview-\(fileId)-\(UUID().uuidString)", isDirectory: true)
-      try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-      defer {
-        try? FileManager.default.removeItem(at: tempDir)
-      }
-
       let downloadUrl = URL(string: "\(apiUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/api/v1/files/\(fileId)/download")!
       var request = URLRequest(url: downloadUrl)
       ProvenanceHeaders.apply(to: &request)
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
       progress.emitProgress(stage: "downloading", bytesDownloaded: 0, bytesTotal: 0)
-      let delegate = PreviewEncryptedDownloadDelegate(progress: progress)
-      let (encryptedUrl, response) = try await delegate.download(request: request)
-      RuntimeTrace.event("preview.native_download.response", [
-        "fileId": fileId,
-        "status": response.statusCode,
-        "contentLength": Int(response.value(forHTTPHeaderField: "Content-Length") ?? "") ?? 0,
-        "chunkCountHeader": Int(response.value(forHTTPHeaderField: "X-Chunk-Count") ?? "") ?? 0,
-        "originalSizeHeader": Int(response.value(forHTTPHeaderField: "X-Original-Size") ?? "") ?? 0,
-        "chunkSizeHeader": Int(response.value(forHTTPHeaderField: "X-Chunk-Size") ?? "") ?? 0
-      ])
-      defer {
-        try? FileManager.default.removeItem(at: encryptedUrl)
-      }
-
-      guard response.statusCode >= 200 && response.statusCode < 300 else {
-        throw NSError(
-          domain: "BeebeebPreviewDownload",
-          code: response.statusCode,
-          userInfo: [NSLocalizedDescriptionKey: "Download failed with HTTP \(response.statusCode)"]
-        )
-      }
-
-      let encryptedSize = Int((try FileManager.default.attributesOfItem(atPath: encryptedUrl.path)[.size] as? NSNumber)?.intValue ?? 0)
-      let chunkCount = Int(response.value(forHTTPHeaderField: "X-Chunk-Count") ?? "")
-        ?? 1
-      let originalSize = Int(response.value(forHTTPHeaderField: "X-Original-Size") ?? "")
-        ?? max(0, encryptedSize - 28)
-      let headerChunkSize = Int(response.value(forHTTPHeaderField: "X-Chunk-Size") ?? "")
-      let plaintextChunkSize = chunkCount <= 1
-        ? originalSize
-        : (headerChunkSize ?? (4 * 1024 * 1024))
-      RuntimeTrace.event("preview.native_download.chunk_metadata", [
-        "fileId": fileId,
-        "encryptedSize": encryptedSize,
-        "originalSize": originalSize,
-        "chunkCount": chunkCount,
-        "plaintextChunkSize": plaintextChunkSize,
-        "hasHeaderChunkSize": headerChunkSize != nil
-      ])
-
-      let chunkPaths = try self.splitEncryptedPreviewFile(
-        encryptedUrl: encryptedUrl,
-        outputDir: tempDir,
-        chunkCount: chunkCount,
-        originalSize: originalSize,
-        plaintextChunkSize: plaintextChunkSize
-      )
-      RuntimeTrace.event("preview.native_download.split_complete", [
-        "fileId": fileId,
-        "chunks": chunkPaths.count
-      ])
-
-      progress.emitProgress(stage: "decrypting", chunksCompleted: 0, chunksTotal: chunkPaths.count)
-      RuntimeTrace.event("preview.native_download.decrypt_start", [
-        "fileId": fileId,
-        "chunks": chunkPaths.count
-      ])
-      let result = try master.decryptFile(
+      let delegate = PreviewStreamingDownloadDelegate(
+        progress: progress,
         fileId: fileId,
-        chunkPaths: chunkPaths,
-        outputPath: outputPath,
-        callback: progress
+        outputURL: outputURL,
+        master: master
       )
+      let result = try await delegate.download(request: request)
       progress.emitProgress(stage: "complete")
       RuntimeTrace.event("preview.native_download.decrypt_complete", [
         "fileId": fileId,
-        "totalBytes": result.totalBytes,
-        "chunksProcessed": result.chunksProcessed
+        "totalBytes": result.plaintextSize,
+        "chunksProcessed": result.chunksDecrypted,
+        "streamingPipeline": true
       ])
 
       return [
         "outputPath": result.outputPath,
         "outputUri": URL(fileURLWithPath: result.outputPath).absoluteString,
-        "plaintextSize": result.totalBytes,
-        "chunksDecrypted": result.chunksProcessed,
+        "plaintextSize": result.plaintextSize,
+        "chunksDecrypted": result.chunksDecrypted,
       ]
     }
 
+    // AVPlayer reads standard HTTP byte ranges from the capability-protected
+    // loopback source; Rust authenticates each chunk before it becomes readable.
+    AsyncFunction("streamVideoNative") { [self] (params: [String: Any]) async throws -> [String: Any] in
+      guard let handleNumber = params["handleId"] as? NSNumber,
+            let apiUrl = params["apiUrl"] as? String,
+            let token = params["token"] as? String,
+            let fileId = params["fileId"] as? String,
+            let outputUri = params["outputUri"] as? String,
+            let requestId = params["requestId"] as? String, !requestId.isEmpty,
+            !PlaintextStorageProtection.isPurgePending() else {
+        throw NSError(domain: "BeebeebVideoStream", code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "Invalid or unavailable video stream request"])
+      }
+      let master = try self.getHandle(handleNumber.intValue)
+      let size = (params["sizeBytes"] as? NSNumber)?.int64Value
+      let count = (params["chunkCount"] as? NSNumber)?.intValue
+      let progress = NativeVideoStreamProgress(requestId: requestId, fileId: fileId) { [weak self] body in
+        self?.storePreviewProgress(requestId, body)
+      }
+      // Register before scheduling the blocking startup so an immediate JS
+      // abort cannot miss a session that has not reached the native registry.
+      self.previewDownloadLock.lock()
+      self.streamStartupCancellations[requestId] = progress
+      self.previewDownloadLock.unlock()
+      defer {
+        self.previewDownloadLock.lock()
+        self.streamStartupCancellations.removeValue(forKey: requestId)
+        self.previewDownloadLock.unlock()
+      }
+      let result = try await Task.detached(priority: .userInitiated) {
+        try NativeVideoStreamer.start(requestId: requestId, master: master,
+          apiUrl: apiUrl, token: token, fileId: fileId, outputUri: outputUri,
+          declaredSizeBytes: size, declaredChunkCount: count,
+          progress: progress, onTerminal: {})
+      }.value
+      return ["streamUri": result.streamUri, "outputUri": result.outputUri,
+        "outputPath": result.outputPath, "plaintextSize": result.plaintextSize,
+        "chunkCount": result.chunkCount, "streamId": result.streamId]
+    }
+
+    AsyncFunction("cancelVideoStreamNative") { (streamId: String) -> Bool in
+      NativeVideoStreamer.cancel(streamId: streamId)
+    }
+
     AsyncFunction("cancelDownloadAndDecryptFileNative") { [self] (requestId: String) -> Bool in
-      self.cancelPreviewDownload(requestId: requestId)
+      self.previewDownloadLock.lock()
+      let startup = self.streamStartupCancellations[requestId]
+      self.previewDownloadLock.unlock()
+      startup?.cancel()
+      let stoppedStream = NativeVideoStreamer.cancel(requestId: requestId)
+      let stoppedDownload = self.cancelPreviewDownload(requestId: requestId)
+      return stoppedStream || stoppedDownload || startup != nil
     }
 
     Function("getPreviewLoadProgress") { [weak self] (requestId: String) -> [String: Any]? in

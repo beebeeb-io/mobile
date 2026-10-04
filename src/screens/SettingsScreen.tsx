@@ -1338,7 +1338,7 @@ export default function SettingsScreen() {
       setFileProviderSupported(result.supported);
       setFileProviderMounted(mounted);
       if (mounted && crypto.isUnlocked) {
-        void populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
+        void populateFileProviderCache(crypto.decryptMetadata, { recursive: false, decryptNames: crypto.decryptNames }).catch(() => {});
       }
       showToast({
         type: mounted || !enabled ? 'success' : 'info',

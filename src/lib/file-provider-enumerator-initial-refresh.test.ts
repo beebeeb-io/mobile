@@ -101,9 +101,11 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
 final class MockCache: FileProviderCacheReading {
   private let lock = NSLock()
   private var rowsByParent: [String: [CachedItem]]
+  private var anchors: [String: String]
 
-  init(rowsByParent: [String: [CachedItem]] = [:]) {
+  init(rowsByParent: [String: [CachedItem]] = [:], anchors: [String: String] = [:]) {
     self.rowsByParent = rowsByParent
+    self.anchors = anchors
   }
 
   func setRows(_ rows: [CachedItem], parent: String?) {
@@ -116,7 +118,10 @@ final class MockCache: FileProviderCacheReading {
     return rowsByParent[parent ?? "root"] ?? []
   }
 
-  func syncState(key: String) -> String? { nil }
+  func syncState(key: String) -> String? {
+    lock.lock(); defer { lock.unlock() }
+    return anchors[key]
+  }
 }
 
 final class MockRefresher: FileProviderContainerRefreshing {
@@ -208,10 +213,11 @@ struct Main {
   static func main() async {
     await populatedFirstMountRefreshesBeforeSuccess()
     await trueEmptyFolderSucceedsAfterRefresh()
+    await knownEmptyFolderReturnsImmediatelyAndRefreshesInBackground()
     await failedInitialRefreshReportsAuthError()
     await failedInitialRefreshReportsServerError()
     await cancellationDoesNotCompleteInvalidatedObserver()
-    print("swift-enumerator-harness: 5 pass")
+    print("swift-enumerator-harness: 6 pass")
   }
 
   static func makeEnumerator(cache: MockCache, refresher: MockRefresher) -> FileProviderEnumerator {
@@ -239,6 +245,25 @@ struct Main {
     let snapshot = observer.snapshot
     assert(snapshot.counts == [0], "true empty folder counts \(snapshot.counts)")
     assert(snapshot.error == nil, "true empty folder unexpected error")
+  }
+
+  static func knownEmptyFolderReturnsImmediatelyAndRefreshesInBackground() async {
+    let cache = MockCache(anchors: ["container.io.beebeeb.root.anchor": "synced-empty"])
+    let refresher = MockRefresher(
+      cache: cache,
+      outcome: .success,
+      rowsAfterSuccess: [item("late")],
+      delayNanos: 200_000_000
+    )
+    let observer = RecordingObserver()
+    makeEnumerator(cache: cache, refresher: refresher).enumerateItems(for: observer, startingAt: NSFileProviderPage(Data()))
+    assert(observer.wait(seconds: 0.05), "known empty folder waited for refresh")
+    let snapshot = observer.snapshot
+    assert(snapshot.counts == [0], "known empty folder counts \(snapshot.counts)")
+    assert(snapshot.error == nil, "known empty folder unexpected error")
+    try? await Task.sleep(nanoseconds: 350_000_000)
+    assert(refresher.callCount == 1, "known empty folder refresh count \(refresher.callCount)")
+    assert(cache.children(parent: nil).count == 1, "known empty folder background refresh did not update cache")
   }
 
   static func failedInitialRefreshReportsAuthError() async {
@@ -299,7 +324,7 @@ describe('iOS File Provider initial enumeration refresh', () => {
       '-o', binary,
     ], { stdio: 'pipe' });
     const output = execFileSync(binary, [], { encoding: 'utf8' });
-    expect(output).toContain('swift-enumerator-harness: 5 pass');
+    expect(output).toContain('swift-enumerator-harness: 6 pass');
   });
 
   test('an empty cached listing branches on typed refresh outcome before finishing', () => {
@@ -326,6 +351,25 @@ describe('iOS File Provider initial enumeration refresh', () => {
     const finishError = body.indexOf('observer.finishEnumeratingWithError(outcome.fileProviderError)', failure);
     expect(failure).toBeGreaterThan(switchOutcome);
     expect(finishError).toBeGreaterThan(failure);
+  });
+
+  test('an anchored empty cached listing finishes immediately and refreshes in the background', () => {
+    const src = readFileSync(ENUMERATOR, 'utf8');
+    const body = bracedBody(src, 'func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage)');
+
+    const anchorProbe = body.indexOf('cache.syncState(key: "container.\\(containerId).anchor")');
+    expect(anchorProbe).toBeGreaterThanOrEqual(0);
+
+    const knownEmpty = body.indexOf('if rows.isEmpty && hasCachedListing', anchorProbe);
+    expect(knownEmpty).toBeGreaterThan(anchorProbe);
+
+    const enumerateEmpty = body.indexOf('observer.didEnumerate([])', knownEmpty);
+    const finishEmpty = body.indexOf('observer.finishEnumerating(upTo: nil)', enumerateEmpty);
+    expect(enumerateEmpty).toBeGreaterThan(knownEmpty);
+    expect(finishEmpty).toBeGreaterThan(enumerateEmpty);
+
+    const backgroundRefresh = body.indexOf('Task.detached', finishEmpty);
+    expect(backgroundRefresh).toBeGreaterThan(finishEmpty);
   });
 
   test('extension refresh maps auth and transport failures to File Provider outcomes', () => {

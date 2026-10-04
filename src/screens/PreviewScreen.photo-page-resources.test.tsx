@@ -45,6 +45,7 @@ const ledger = {
   imageMounts: 0,
   rawTempCreated: new Set<string>(), // decrypted RAW source temp files written
   rawTempDeleted: new Set<string>(), // ...and deleted via FileSystem.deleteAsync
+  previewReleases: [] as Array<{ id: string; ext: string }>,
   // Per-file LOAD counters (what a swipe back must not repeat):
   imageLoads: new Map<string, number>(), // reads of the cached medium thumbnail (the page's image resource)
   rawDecrypts: new Map<string, number>(), // decryptToTempFile calls (a real decrypt of the RAW source)
@@ -139,7 +140,7 @@ const cryptoValue = {
 defineMock('../lib/crypto-context', () => ({ useCrypto: () => cryptoValue }));
 defineMock('../lib/photo-cache', () => ({
   // Video path: a cache hit returns the on-disk decrypted original immediately.
-  getCachedPhotoWithExtension: async (id: string) => `file:///cache/${id}.mp4`,
+  getCachedPhotoWithExtension: async (id: string) => (id.includes('stream') ? null : `file:///cache/${id}.mp4`),
   getCachedPhoto: async (id: string) => `file:///cache/${id}.jpg`,
   cachePhoto: async (_id: string, uri: string) => uri,
   cachePhotoWithExtension: async (_id: string, uri: string) => uri,
@@ -174,9 +175,27 @@ defineMock('expo-file-system/legacy', () => ({
 }));
 defineMock('../lib/native-decrypt', () => ({
   // RAW path: decryptToTempFile writes a per-session temp SOURCE file the page owns.
-  decryptToTempFile: async (id: string) => { bump(ledger.rawDecrypts, id); const u = `file:///tmp/${id}-${ledger.rawTempCreated.size}.dng`; ledger.rawTempCreated.add(u); return u; },
-  releasePreviewCopy: async () => true,
+  decryptToTempFile: async (id: string, _key: unknown, ext: string) => {
+    if (ext === 'mp4') return `http://127.0.0.1:49640/stream/${id}`;
+    bump(ledger.rawDecrypts, id);
+    const u = `file:///tmp/${id}-${ledger.rawTempCreated.size}.dng`;
+    ledger.rawTempCreated.add(u);
+    return u;
+  },
+  releasePreviewCopy: async (id: string, ext: string) => {
+    ledger.previewReleases.push({ id, ext });
+    if (ext === 'dng') {
+      for (const uri of ledger.rawTempCreated) {
+        if (uri.includes(`/${id}-`)) ledger.rawTempDeleted.add(uri);
+      }
+    }
+    return true;
+  },
   invalidatePreviewCache: async () => {},
+}));
+defineMock('../lib/video-stream', () => ({
+  isLoopbackStreamUri: (uri: string | null | undefined) => typeof uri === 'string' && uri.startsWith('http://127.0.0.1:'),
+  streamBufferPctFromEvent: () => undefined,
 }));
 defineMock('../lib/file-category', () => ({ fileCategory: (_m: unknown, name?: string) => (name?.endsWith('.dng') ? 'raw' : 'other') }));
 defineMock('../lib/raw-format', () => ({ extensionForRaw: () => 'dng', rawFormatLabel: () => 'DNG' }));
@@ -220,19 +239,23 @@ const { PhotoPage } = await import('./PreviewScreen');
 
 // ── harness ─────────────────────────────────────────────────────────────────
 const noopFn = () => {};
-function entryFor(i: number, kind: 'video' | 'image' | 'raw') {
+type PageKind = 'video' | 'streamVideo' | 'image' | 'raw';
+
+function entryFor(i: number, kind: PageKind) {
+  const isVideo = kind === 'video' || kind === 'streamVideo';
+  const id = kind === 'streamVideo' ? `file-stream-${i}` : `file-${i}`;
   return {
-    id: `file-${i}`,
+    id,
     name_encrypted: `n${i}`,
-    display_name: kind === 'video' ? `clip-${i}.mp4` : kind === 'raw' ? `shot-${i}.dng` : `photo-${i}.jpg`,
-    mime_type: kind === 'video' ? 'video/mp4' : kind === 'raw' ? 'image/x-adobe-dng' : 'image/jpeg',
+    display_name: isVideo ? `clip-${i}.mp4` : kind === 'raw' ? `shot-${i}.dng` : `photo-${i}.jpg`,
+    mime_type: isVideo ? 'video/mp4' : kind === 'raw' ? 'image/x-adobe-dng' : 'image/jpeg',
     size_bytes: 1000,
     chunk_count: 1,
     thumbnail_uri: null,
     local_asset_id: null,
   };
 }
-function Pager({ total, current, kinds }: { total: number; current: number; kinds: Array<'video' | 'image' | 'raw'> }) {
+function Pager({ total, current, kinds }: { total: number; current: number; kinds: PageKind[] }) {
   // Every page stays mounted (worst case for the pager's window). Which pages may load their full
   // resource is decided EXACTLY as PreviewScreen does: activePhotoPageIndices(current, total,
   // PHOTO_PAGE_LOAD_RADIUS) (a source test below pins that call site).
@@ -263,6 +286,7 @@ async function settle() {
 beforeEach(() => {
   ledger.playersCreated = 0; ledger.playersReleased = 0; ledger.liveImages.clear(); ledger.imageMounts = 0; ledger.rawTempCreated.clear(); ledger.rawTempDeleted.clear();
   ledger.imageLoads.clear(); ledger.rawDecrypts.clear(); ledger.largeRequests.clear(); ledger.videoViews.clear();
+  ledger.previewReleases.length = 0;
 });
 afterEach(() => { mock.restore?.(); });
 
@@ -411,6 +435,30 @@ describe('PhotoPage native-resource bound (real component)', () => {
     await act(async () => { r.update(React.createElement(Pager, { total, current: 0, kinds })); });
     await settle();
     expect(ledger.imageLoads.get('file-0')).toBe(2);
+    await act(async () => { r.unmount(); });
+  });
+
+  test('a RAW page releases the decryptToTempFile preview lease when it leaves the load window', async () => {
+    const total = 6;
+    const kinds = Array.from({ length: total }, () => 'raw' as const);
+    let r: TestRenderer.ReactTestRenderer;
+    await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 4, kinds })); });
+    await settle();
+    expect(ledger.previewReleases).toContainEqual({ id: 'file-0', ext: 'dng' });
+    await act(async () => { r.unmount(); });
+  });
+
+  test('a loopback video page releases its stream preview lease when it is unloaded', async () => {
+    const total = 4;
+    const kinds = Array.from({ length: total }, (_, i) => (i === 0 ? 'streamVideo' : 'video') as PageKind);
+    let r: TestRenderer.ReactTestRenderer;
+    await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total, current: 0, kinds })); });
+    await settle();
+    await act(async () => { r.update(React.createElement(Pager, { total, current: 1, kinds })); });
+    await settle();
+    expect(ledger.previewReleases).toContainEqual({ id: 'file-stream-0', ext: 'mp4' });
     await act(async () => { r.unmount(); });
   });
 
