@@ -57,6 +57,31 @@ workspace CLAUDE.md's convention (`repos/mobile DEVIATIONS.md`, as instantiated 
 this repo for the first time); the earlier phase 3/4 references remain undocumented
 and are out of scope for this task.
 
+## Task 1724 iOS progressive video streaming
+
+**Design / security contract:** Native iOS video preview should match Android
+PR 162's progressive model: fetch encrypted `/chunks/{index}` blobs directly,
+authenticate/decrypt each chunk with the existing opaque `MasterKeyHandle`, and
+serve only verified plaintext bytes from a loopback Range server. The player may
+start after chunk 0 and the final chunk are verified, while the remaining chunks
+continue buffering in the background.
+
+**Local implementation boundary:** This slice adds the iOS streaming engine as a
+new native helper and intentionally does not wire `BeebeebCryptoModule.swift`,
+because another native lane owns the Expo bridge in task 1724. The bridge must
+call `NativeVideoStreamer.start(...)`, register cancellation through
+`NativeVideoStreamer.cancel(requestId:)`, expose
+`NativeVideoStreamer.cancel(streamId:)`, and call
+`NativeVideoStreamer.cancelAll()` before/inside plaintext purge and account
+switch flows.
+
+**Safety invariants:** stream URLs contain a random 128-bit capability segment,
+the server uses Apple's Network framework and accepts only loopback peers,
+partial sparse files stay under a `.streaming` path instead of the final preview
+cache path, cache promotion happens only after every chunk has been
+authenticated, and cancellation/account purge closes connections and deletes
+partials before another account can write or serve stale plaintext.
+
 ## Task 1723 CI-only native Swift harness routing
 
 **Design / CI contract:** Ubuntu `unit-tests` owns portable source guards and
