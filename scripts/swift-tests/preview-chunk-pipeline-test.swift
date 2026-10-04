@@ -24,7 +24,6 @@ func expectThrows(_ message: String, _ body: () throws -> Void) {
   }
 }
 
-@main
 struct PreviewChunkPipelineTest {
   static func makeFrame(_ plaintext: Data) -> Data {
     var frame = Data(repeating: 0xA5, count: PreviewChunkPlan.frameOverheadBytes)
@@ -124,6 +123,8 @@ struct PreviewChunkPipelineTest {
     expect(emptyPlan.expectedEncryptedSize == PreviewChunkPlan.frameOverheadBytes, "empty-file encrypted size mismatch")
     expect(plan.expectedEncryptedSize == 94, "encrypted size calculation mismatch: \(plan.expectedEncryptedSize)")
 
-    print("preview-chunk-pipeline-test: PASS assertions=\(assertionCount)")
+    print("preview-chunk-pipeline-test: \(assertionCount) assertions, 0 failed")
   }
 }
+
+try PreviewChunkPipelineTest.main()

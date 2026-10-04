@@ -17,6 +17,7 @@ cd "$(dirname "$0")/../.."
 
 # driver basename | space-separated sources under test
 MANIFEST=(
+  "preview-chunk-pipeline-test.swift|modules/beebeeb-crypto/ios/PreviewChunkPipeline.swift"
   "account-refusal-detection-test.swift|modules/beebeeb-crypto/ios/AccountRefusalDetection.swift"
   "share-upload-request-policy-test.swift|targets/share-extension/ShareUploadRequestPolicy.swift targets/file-provider/AccountMismatchDetection.swift"
   "share-recent-folders-test.swift|targets/share-extension/ShareRecentFolders.swift"

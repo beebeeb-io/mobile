@@ -859,3 +859,5 @@ The bridge resolves a standard loopback byte-range source before the full video 
 Native pipelines own UUID hidden temporary files/directories beneath the registered preview cache. JS cache eviction handles finished public cache entries only: it must not unlink a live native writer's temporary resource. Native cancel/error owns temporary cleanup, while the existing account plaintext purge sweeps the entire cache.
 
 Cancellation ordering: JS stops progress polling immediately on explicit cancel or abort so the UI settles, but the `terminal` promise stays pending until native cancellation returns. `native-decrypt` releases the writer gate from `terminal`, so resolving it before native drain would allow purge or another writer while the native stream could still be touching plaintext.
+
+Task1724 CI registration: register the new preview frame pipeline driver in the existing Swift test manifest and use its counted assertion format. Missing registration caused the CI gate to fail before publication could complete.
