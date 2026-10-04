@@ -1,4 +1,5 @@
 import Foundation
+import FileProvider
 
 /// Shared identifiers and paths for the Beebeeb File Provider Extension.
 ///
@@ -60,6 +61,13 @@ enum BeebeebConstants {
 
   /// Logical root directory shown in the iOS Files app.
   static let rootContainerIdentifier = "io.beebeeb.root"
+
+  /// File Provider domain registered by the containing app.
+  static let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
+  static let fileProviderDisplayName = "Beebeeb"
+  static var fileProviderDomain: NSFileProviderDomain {
+    NSFileProviderDomain(identifier: fileProviderDomainIdentifier, displayName: fileProviderDisplayName)
+  }
 }
 
 /// URL helpers for the App Group container.

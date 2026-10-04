@@ -1,15 +1,36 @@
 import FileProvider
 import Foundation
 
+/// Result of refreshing a File Provider container. Initial empty-cache
+/// enumeration uses this to distinguish a genuinely empty folder from a
+/// provider that cannot authenticate or reach the server.
+enum FileProviderRefreshOutcome {
+  case success
+  case notAuthenticated
+  case serverUnreachable
+
+  var fileProviderError: Error {
+    switch self {
+    case .success:
+      return NSFileProviderError(.cannotSynchronize)
+    case .notAuthenticated:
+      return NSFileProviderError(.notAuthenticated)
+    case .serverUnreachable:
+      return NSFileProviderError(.serverUnreachable)
+    }
+  }
+}
+
 /// Synchronizes the local SQLite cache with the server.
 ///
-/// All methods are best-effort — failures are logged via NSLog and the system
-/// keeps showing whatever the cache already had. The Files app re-tries
-/// enumeration on its own cadence.
+/// Calls that already have cached rows can treat failures as best-effort.
+/// Initial empty-cache enumeration must inspect the returned outcome so Files
+/// does not cache an empty provider when auth or network refresh failed.
 enum SyncEngine {
   /// Refresh the children of `containerId` from the API and signal the system
   /// when changes land.
-  static func refreshContainer(containerId: String) async {
+  @discardableResult
+  static func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome {
     let parentId: String? = (containerId == BeebeebConstants.rootContainerIdentifier) ? nil : containerId
 
     // Task 1593 round 7 (C1) — read BEFORE the network fetch below, which
@@ -29,7 +50,7 @@ enum SyncEngine {
       entries = try await ApiClient.shared.listFiles(parentId: parentId)
     } catch {
       NSLog("[Beebeeb] refreshContainer(\(containerId)) failed: \(error)")
-      return
+      return mapRefreshError(error)
     }
 
     // Prefer extension-local decryption so iOS Files can open any folder even
@@ -80,7 +101,7 @@ enum SyncEngine {
       // for an account that is (or is about to be) signed out; the next
       // enumeration after a fresh sign-in re-fetches this container anyway.
       NSLog("[Beebeeb] refreshContainer(\(containerId)) discarded — purge epoch changed during fetch")
-      return
+      return .serverUnreachable
     }
     CacheManager.shared.setSyncState(
       key: "container.\(containerId).anchor",
@@ -93,12 +114,36 @@ enum SyncEngine {
     let itemIdentifier: NSFileProviderItemIdentifier = (containerId == BeebeebConstants.rootContainerIdentifier)
       ? .rootContainer
       : NSFileProviderItemIdentifier(containerId)
-    NSFileProviderManager.default.signalEnumerator(for: itemIdentifier) { error in
+    guard let manager = NSFileProviderManager(for: BeebeebConstants.fileProviderDomain) else {
+      NSLog("[Beebeeb] signalEnumerator(\(containerId)) failed: File Provider manager unavailable")
+      return .success
+    }
+    manager.signalEnumerator(for: itemIdentifier) { error in
       if let error { NSLog("[Beebeeb] signalEnumerator(\(containerId)) failed: \(error)") }
     }
-    NSFileProviderManager.default.signalEnumerator(for: .workingSet) { error in
+    manager.signalEnumerator(for: .workingSet) { error in
       if let error { NSLog("[Beebeeb] signalEnumerator workingSet failed: \(error)") }
     }
+    return .success
+  }
+
+  private static func mapRefreshError(_ error: Error) -> FileProviderRefreshOutcome {
+    if let apiError = error as? ApiError {
+      switch apiError {
+      case .notAuthenticated, .accountMismatch:
+        return .notAuthenticated
+      case .invalidResponse, .statusCode:
+        return .serverUnreachable
+      }
+    }
+    let nsError = error as NSError
+    if nsError.domain == NSURLErrorDomain {
+      return .serverUnreachable
+    }
+    if nsError.domain == NSFileProviderErrorDomain, nsError.code == NSFileProviderError.notAuthenticated.rawValue {
+      return .notAuthenticated
+    }
+    return .serverUnreachable
   }
 
   private static func bumpAnchor(_ prior: Int64?) -> Int64 {

@@ -40,6 +40,7 @@ let ignoreAbort = false;
 let nativeFailError: Error | null = null;
 mock.module('../../modules/beebeeb-crypto', () => ({
   isNativeAvailable: true,
+  streamVideoNative: async () => { throw new Error('streamVideoNative is not available in this native build'); },
   // task 1683d — the offline streaming decrypt lives behind a typeof guard in
   // native-decrypt.ts; this test drives the DOWNLOAD path, so a stub that
   // throws (rather than silently succeeding) is the honest mock here.
