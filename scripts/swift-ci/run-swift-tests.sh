@@ -17,8 +17,9 @@ cd "$(dirname "$0")/../.."
 
 # driver basename | space-separated sources under test
 MANIFEST=(
-  "native-video-streamer-harness.swift|scripts/swift-tests/native-video-streamer-stubs.swift modules/beebeeb-crypto/ios/NativeVideoStreamer.swift"
-  "preview-chunk-pipeline-test.swift|modules/beebeeb-crypto/ios/PreviewChunkPipeline.swift"
+  "native-preview-working-storage-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift"
+  "native-video-streamer-harness.swift|scripts/swift-tests/native-video-streamer-stubs.swift modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/NativeVideoStreamer.swift"
+  "preview-chunk-pipeline-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/PreviewChunkPipeline.swift"
   "account-refusal-detection-test.swift|modules/beebeeb-crypto/ios/AccountRefusalDetection.swift"
   "share-upload-request-policy-test.swift|targets/share-extension/ShareUploadRequestPolicy.swift targets/file-provider/AccountMismatchDetection.swift"
   "share-recent-folders-test.swift|targets/share-extension/ShareRecentFolders.swift"
@@ -52,7 +53,9 @@ for entry in "${MANIFEST[@]}"; do
   cp "$driver" "$tmp/main.swift"
   echo "== $base  (sources: $srcs)"
   flags=(-swift-version 5 -O)
-  [ "$base" = "native-video-streamer-harness.swift" ] && flags+=(-DDEBUG)
+  case "$base" in
+    native-video-streamer-harness.swift|native-preview-working-storage-test.swift) flags+=(-DDEBUG) ;;
+  esac
   # shellcheck disable=SC2086
   if ! xcrun swiftc "${flags[@]}" $srcs "$tmp/main.swift" -o "$tmp/t" >"$LOG_DIR/$base.build.log" 2>&1; then
     cat "$LOG_DIR/$base.build.log"
