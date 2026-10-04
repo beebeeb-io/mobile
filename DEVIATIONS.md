@@ -803,3 +803,7 @@ playback remains a separate 1724 slice. Evidence logs:
 `/tmp/bb-1724-pipeline/red-preview-chunk-pipeline.mutation.log`,
 `/tmp/bb-1724-pipeline/green-preview-chunk-pipeline.run.log`,
 `/tmp/bb-1724-pipeline/ios-build-gate-final-wrapper.log`.
+
+## Task 1724 — video stream lifetime (2026-10-04, JS slice)
+
+Guus reports video playback still behaving like a whole-file download before useful playback. The streaming URI becoming playable is not a completed plaintext cache copy: JS now keeps a cache-path stream registry, joins duplicate opens to the same active partial stream, holds the plaintext gate lease until native terminal/cancel, and cancels the native stream on purge or last preview release. Runtime traces omit loopback capability URLs. This is a lifetime/security repair for the progressive stream path; native chunk scheduling and range-server behavior are owned by the native bridge slice.

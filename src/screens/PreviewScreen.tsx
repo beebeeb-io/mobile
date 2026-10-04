@@ -1522,6 +1522,12 @@ export const PhotoPage = React.memo(function PhotoPage({
   // `loadFull` flips.
   useEffect(() => {
     if (keepFull || uri === null) return;
+    if (isVideoEntry) {
+      void releasePreviewCopy(entry.id, extensionForMime(entry.mime_type ?? undefined, 'video')).catch(() => {});
+    }
+    if (isRawEntry) {
+      void releasePreviewCopy(entry.id, extensionForRaw(entryFileName)).catch(() => {});
+    }
     setUri(null);
     setUriKind(null);
     setOriginalUri(null);
@@ -1539,17 +1545,22 @@ export const PhotoPage = React.memo(function PhotoPage({
     // unmount; now that a page can reload after release, delete it here too or
     // each return to the page would orphan the previous one on disk.
     void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
-  }, [keepFull, uri]);
+  }, [keepFull, uri, isVideoEntry, isRawEntry, entry.id, entry.mime_type, entryFileName]);
 
-  // Delete this page's own decrypted RAW SOURCE temp file on unmount — same
-  // pattern as `PreviewScreen`'s own `tempRawUriRef` cleanup for the
-  // single-file case (`RawRenderer` owns cleaning up its OWN separate
-  // extracted-preview temp file, not this one).
+  // Release this page's own decrypted preview-cache leases on unmount — same
+  // pattern as `PreviewScreen`'s single-file cleanup. `RawRenderer` owns
+  // cleaning up its OWN separate extracted-preview temp file, not this source.
   useEffect(() => {
     return () => {
+      if (isVideoEntry) {
+        void releasePreviewCopy(entry.id, extensionForMime(entry.mime_type ?? undefined, 'video')).catch(() => {});
+      }
+      if (isRawEntry) {
+        void releasePreviewCopy(entry.id, extensionForRaw(entryFileName)).catch(() => {});
+      }
       void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
     };
-  }, []);
+  }, [entry.id, entry.mime_type, entryFileName, isRawEntry, isVideoEntry]);
 
   useEffect(() => {
     if (!shouldLoadFull || !isCurrent) return;

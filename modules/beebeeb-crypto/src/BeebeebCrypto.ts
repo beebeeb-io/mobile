@@ -1213,6 +1213,12 @@ export interface StreamVideoNativeResult {
   plaintextSize: number
   chunkCount: number
   streamId: string
+  /** JS-generated request id used by progress polling and legacy cancellation. */
+  requestId: string
+  /** Cancels the native stream pump/range server. Idempotent. */
+  cancel: () => Promise<void>
+  /** Resolves when the native stream reaches complete/error/teardown or is cancelled. */
+  terminal: Promise<void>
 }
 
 /** Progress-poll cadence — matches downloadAndDecryptFileNative's 200 ms. */
@@ -1243,8 +1249,9 @@ export function isStreamVideoNativeAvailable(): boolean {
  * stage, VANISHES (the session's teardown clears the registry — the reliable
  * completion signal after a long playback), or the caller aborts.
  *
- * Cancel: the existing `cancelDownloadAndDecryptFileNative(requestId)` — the
- * session hooks itself into that surface natively.
+ * Cancel: iOS builds may expose `cancelVideoStreamNative(streamId)` for the
+ * stream server. Older Android builds hook into the existing
+ * `cancelDownloadAndDecryptFileNative(requestId)` surface, so JS keeps both.
  */
 export async function streamVideoNative(
   handleId: number | null,
@@ -1261,9 +1268,21 @@ export async function streamVideoNative(
   }
 
   const requestId = `stream-${fileId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  let streamId: string | null = null
+  let terminalResolve!: () => void
+  const terminal = new Promise<void>((resolve) => { terminalResolve = resolve })
   const readSnapshot = (): PreviewLoadProgressEvent | null => {
     const ev = BeebeebCryptoModule.getPreviewLoadProgress?.(requestId)
     return ev && ev.requestId === requestId ? (ev as PreviewLoadProgressEvent) : null
+  }
+  const cancelNative = async () => {
+    if (streamId && typeof BeebeebCryptoModule.cancelVideoStreamNative === 'function') {
+      await BeebeebCryptoModule.cancelVideoStreamNative(streamId).catch(() => {})
+      return
+    }
+    if (typeof BeebeebCryptoModule.cancelDownloadAndDecryptFileNative === 'function') {
+      await BeebeebCryptoModule.cancelDownloadAndDecryptFileNative(requestId).catch(() => {})
+    }
   }
 
   // Long-lived progress pump (see doc comment): stops on a terminal stage,
@@ -1285,6 +1304,7 @@ export async function streamVideoNative(
     stopPoll()
     options.signal?.removeEventListener('abort', abortListener)
     if (synthetic) options.onProgress?.(synthetic)
+    terminalResolve()
   }
   const forward = (ev: PreviewLoadProgressEvent) => {
     const k = ev.stage + ':' + (ev.chunksCompleted ?? ev.bytesDownloaded ?? '')
@@ -1301,7 +1321,6 @@ export async function streamVideoNative(
       // Surface a synthetic completion (unless we saw an error) so the UI's
       // buffered badge retires, then stop.
       if (lastSeenStage && lastSeenStage !== 'error') {
-        console.info('[1683j-poll] vanish -> synthetic complete')
         finish({ requestId, fileId, stage: 'complete' })
       }
       return
@@ -1313,9 +1332,7 @@ export async function streamVideoNative(
 
   const abortListener = () => {
     finish()
-    if (typeof BeebeebCryptoModule.cancelDownloadAndDecryptFileNative === 'function') {
-      void BeebeebCryptoModule.cancelDownloadAndDecryptFileNative(requestId).catch(() => {})
-    }
+    void cancelNative()
   }
   if (options.signal?.aborted) {
     abortListener()
@@ -1334,7 +1351,13 @@ export async function streamVideoNative(
       sizeBytes: sizeBytes ?? null,
       chunkCount: chunkCount ?? null,
     })) as StreamVideoNativeResult
-    return result
+    streamId = result.streamId
+    return {
+      ...result,
+      requestId,
+      cancel: cancelNative,
+      terminal,
+    }
   } catch (error) {
     if (options.signal?.aborted) {
       throw abortError()
@@ -1346,13 +1369,8 @@ export async function streamVideoNative(
     // a resolved stream keeps pumping after playback started, so the poll
     // stays alive until its own terminal rule fires.
     const finalEv = readSnapshot()
-    console.info('[1683j-poll] native settled; finalEv=' + JSON.stringify({
-      stage: finalEv?.stage, streaming: finalEv?.streaming,
-      chunks: finalEv?.chunksCompleted, requestId: requestId.slice(0, 24),
-    }))
     if (finalEv) options.onProgress?.(finalEv)
     if (!(finalEv && finalEv.stage === 'decrypting' && finalEv.streaming === true)) {
-      console.info('[1683j-poll] finally -> finish (poll stops)')
       finish()
     }
   }

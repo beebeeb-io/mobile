@@ -19,6 +19,8 @@ import {
   downloadAndDecryptFileNative,
   isNativeAvailable,
   type PreviewLoadProgressEvent,
+  streamVideoNative,
+  type StreamVideoNativeResult,
 } from '../../modules/beebeeb-crypto';
 import {
   CHUNK_SIZE,
@@ -35,9 +37,6 @@ import {
   isLoopbackStreamUri,
 } from './video-stream';
 import {
-  streamVideoNative,
-} from '../../modules/beebeeb-crypto';
-import {
   ApiError,
   getApiUrl,
   getDownloadUrl,
@@ -46,7 +45,7 @@ import {
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { recordRuntimeTrace } from './runtime-trace';
 import { createInFlightShare } from './inflight-share';
-import { PLAINTEXT_DRAIN_TIMEOUT_MS, plaintextGate, withPlaintextLease, gatedPlaintextWrite } from './plaintext-gate';
+import { PLAINTEXT_DRAIN_TIMEOUT_MS, plaintextGate, withPlaintextLease, gatedPlaintextWrite, type PlaintextLease } from './plaintext-gate';
 import { offlineManager, offlineFilePath } from './offline-manager';
 import { PARTIAL_DECRYPT_MESSAGE } from './preview-load-error';
 import NetInfo from '@react-native-community/netinfo';
@@ -362,6 +361,55 @@ const previewDecrypts = createInFlightShare<{ path: string; cacheHit: boolean }>
 /** Per cache path: callers that asked for it since the file was last removed. */
 const previewLeases = new Map<string, number>();
 
+interface ActivePreviewStream {
+  fileId: string;
+  extension: string;
+  outputPath: string;
+  streamUri: string;
+  lease: PlaintextLease;
+  native: StreamVideoNativeResult;
+  settled: boolean;
+}
+
+const activePreviewStreams = new Map<string, ActivePreviewStream>();
+
+function isActivePreviewStream(entry: ActivePreviewStream | undefined): entry is ActivePreviewStream {
+  return !!entry && !entry.settled;
+}
+
+async function settleActivePreviewStream(
+  entry: ActivePreviewStream,
+  deleteOutput: boolean,
+): Promise<void> {
+  if (entry.settled) return;
+  entry.settled = true;
+  if (activePreviewStreams.get(entry.outputPath) === entry) {
+    activePreviewStreams.delete(entry.outputPath);
+  }
+  entry.lease.release();
+  if (deleteOutput) {
+    await FileSystem.deleteAsync(entry.outputPath, { idempotent: true }).catch(() => {});
+  }
+}
+
+async function cancelActivePreviewStream(entry: ActivePreviewStream, deleteOutput: boolean): Promise<void> {
+  if (entry.settled) return;
+  await entry.native.cancel?.().catch(() => {});
+  await settleActivePreviewStream(entry, deleteOutput);
+}
+
+async function cancelActivePreviewStreamForPath(path: string, deleteOutput: boolean): Promise<boolean> {
+  const entry = activePreviewStreams.get(path);
+  if (!isActivePreviewStream(entry)) return false;
+  await cancelActivePreviewStream(entry, deleteOutput);
+  return true;
+}
+
+async function abortActivePreviewStreams(): Promise<void> {
+  const entries = Array.from(activePreviewStreams.values()).filter(isActivePreviewStream);
+  await Promise.allSettled(entries.map((entry) => cancelActivePreviewStream(entry, true)));
+}
+
 function dropLease(path: string): number {
   const left = (previewLeases.get(path) ?? 0) - 1;
   if (left > 0) previewLeases.set(path, left);
@@ -379,6 +427,7 @@ function dropLease(path: string): number {
 export async function releasePreviewCopy(fileId: string, extension: string): Promise<boolean> {
   const path = previewCachePath(fileId, extension);
   if (dropLease(path) > 0) return false;
+  if (await cancelActivePreviewStreamForPath(path, true)) return true;
   await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
   return true;
 }
@@ -405,6 +454,21 @@ async function decryptToTempFileUnshared(
 
   const ext = extension.replace(/^\./, '');
   const outputPath = `${PREVIEW_CACHE_DIR}${fileId}.${ext}`;
+  const activeStream = activePreviewStreams.get(outputPath);
+  if (isActivePreviewStream(activeStream)) {
+    throwIfAborted(options.signal);
+    recordRuntimeTrace('preview.decrypt.stream.join_active', {
+      fileId,
+      extension: ext,
+    });
+    options.onProgress?.({
+      requestId: activeStream.native.requestId,
+      fileId,
+      stage: 'decrypting',
+      streaming: true,
+    });
+    return activeStream.streamUri;
+  }
   recordRuntimeTrace('preview.decrypt.start', {
     fileId,
     extension: ext,
@@ -535,7 +599,16 @@ async function decryptToTempFileUnshared(
       // fallback whole-file path would too). Request uploads pass a null
       // handle deliberately — keep them off the stream path.
       if (isStreamableVideoExtension(ext) && masterKeyHandleId != null) {
+        let streamLease: PlaintextLease | null = null;
+        let streamAbortController: AbortController | null = null;
+        let forwardAbort: (() => void) | null = null;
         try {
+          streamLease = plaintextGate.acquire('preview video stream');
+          streamAbortController = new AbortController();
+          forwardAbort = () => streamAbortController?.abort();
+          if (options.signal?.aborted || streamLease.signal.aborted) streamAbortController.abort();
+          options.signal?.addEventListener('abort', forwardAbort, { once: true });
+          streamLease.signal.addEventListener('abort', forwardAbort, { once: true });
           recordRuntimeTrace('preview.decrypt.stream.request', {
             fileId,
             extension: ext,
@@ -558,19 +631,42 @@ async function decryptToTempFileUnshared(
                 // job's return; the pump runs on).
                 options.onStickyProgress?.(event);
               },
-              signal: options.signal,
+              signal: streamAbortController.signal,
             },
           );
-          if (options.signal?.aborted) {
+          if (streamAbortController.signal.aborted) {
+            await started.cancel?.().catch(() => {});
             await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
             recordRuntimeTrace('preview.decrypt.stream.aborted_after_result', { fileId });
             throw abortError();
           }
           await prunePreviewCache(outputPath);
+          const activeEntry: ActivePreviewStream = {
+            fileId,
+            extension: ext,
+            outputPath,
+            streamUri: started.streamUri,
+            lease: streamLease,
+            native: started,
+            settled: false,
+          };
+          if (forwardAbort) {
+            options.signal?.removeEventListener('abort', forwardAbort);
+            streamLease.signal.removeEventListener('abort', forwardAbort);
+          }
+          activePreviewStreams.set(outputPath, activeEntry);
+          started.terminal
+            ?.then(() => settleActivePreviewStream(activeEntry, false))
+            .catch(() => settleActivePreviewStream(activeEntry, false));
+          streamLease.signal.addEventListener(
+            'abort',
+            () => { void cancelActivePreviewStream(activeEntry, true); },
+            { once: true },
+          );
+          streamLease = null;
           recordRuntimeTrace('preview.decrypt.stream.playable', {
             fileId,
             extension: ext,
-            streamUri: started.streamUri,
             plaintextSize: started.plaintextSize,
             chunkCount: started.chunkCount,
             elapsedMs: Date.now() - startedAt,
@@ -578,6 +674,7 @@ async function decryptToTempFileUnshared(
           return started.streamUri;
         } catch (error) {
           // Never leave a partial plaintext behind (same contract as below).
+          streamLease?.release();
           await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
           const aborted = options.signal?.aborted === true ||
             (error instanceof Error && error.name === 'AbortError');
@@ -591,6 +688,11 @@ async function decryptToTempFileUnshared(
             ...errorTraceFields(error),
           });
           // Fall through to the whole-file native path (the 1683b pipeline).
+        } finally {
+          if (streamLease && forwardAbort) {
+            options.signal?.removeEventListener('abort', forwardAbort);
+            streamLease.signal.removeEventListener('abort', forwardAbort);
+          }
         }
       }
 
@@ -1194,7 +1296,10 @@ export async function clearPreviewCache(): Promise<void> {
   await remove();
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
-    previewDecrypts.abortAll(),
+    Promise.allSettled([
+      previewDecrypts.abortAll(),
+      abortActivePreviewStreams(),
+    ]).then(() => undefined),
     new Promise<void>((resolve) => {
       timer = setTimeout(resolve, PLAINTEXT_DRAIN_TIMEOUT_MS);
     }),
@@ -1221,8 +1326,10 @@ export async function clearPreviewCache(): Promise<void> {
 export async function invalidatePreviewCache(fileId: string, extension: string): Promise<void> {
   try {
     const ext = extension.replace(/^\./, '');
-    previewLeases.delete(`${PREVIEW_CACHE_DIR}${fileId}.${ext}`);
-    await FileSystem.deleteAsync(`${PREVIEW_CACHE_DIR}${fileId}.${ext}`, { idempotent: true });
+    const path = `${PREVIEW_CACHE_DIR}${fileId}.${ext}`;
+    previewLeases.delete(path);
+    await cancelActivePreviewStreamForPath(path, true);
+    await FileSystem.deleteAsync(path, { idempotent: true });
   } catch {
     // Best-effort — a failed delete just means the next open re-decrypts
     // into a fresh temp file's normal cache-miss path instead of reusing this one.
