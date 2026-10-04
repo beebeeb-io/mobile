@@ -65,6 +65,18 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
   func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
     let parent = (containerId == BeebeebConstants.rootContainerIdentifier) ? nil : containerId
     let rows = cache.children(parent: parent)
+    let hasCachedListing = cache.syncState(key: "container.\(containerId).anchor") != nil
+    if rows.isEmpty && hasCachedListing {
+      observer.didEnumerate([])
+      observer.finishEnumerating(upTo: nil)
+
+      refreshTask?.cancel()
+      refreshTask = Task.detached { [containerId, refresher] in
+        _ = await refresher.refreshContainer(containerId: containerId)
+      }
+      return
+    }
+
     if rows.isEmpty {
       refreshTask?.cancel()
       refreshTask = Task { [containerId, cache, refresher] in

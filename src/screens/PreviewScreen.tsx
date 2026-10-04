@@ -1299,6 +1299,13 @@ export const PhotoPage = React.memo(function PhotoPage({
   // below, mirroring `PreviewScreen`'s own `tempRawUriRef` for the single-file
   // case.
   const tempRawSourceUriRef = useRef<string | null>(null);
+  const previewCopyLeaseRef = useRef<{ fileId: string; extension: string } | null>(null);
+  const releasePreviewCopyLease = useCallback(() => {
+    const lease = previewCopyLeaseRef.current;
+    previewCopyLeaseRef.current = null;
+    if (!lease) return;
+    void releasePreviewCopy(lease.fileId, lease.extension).catch(() => {});
+  }, []);
   // Task 1669 round 2 (ruling 3): true while this page's video is in Picture in Picture (set by
   // expo-video's VideoView `onPictureInPictureStart` / `Stop` via `PhotoPageVideo`). A player in
   // PiP must not be released just because its page stopped being current.
@@ -1355,6 +1362,8 @@ export const PhotoPage = React.memo(function PhotoPage({
   }, [originalUri]);
 
   useEffect(() => {
+    releasePreviewCopyLease();
+    tempRawSourceUriRef.current = null;
     setUri(null);
     setUriKind(null);
     setError(null);
@@ -1369,7 +1378,7 @@ export const PhotoPage = React.memo(function PhotoPage({
     setOriginalCacheHit(false);
     setImageLoaded(false);
     sawOriginalProgressRef.current = false;
-  }, [entry.id]);
+  }, [entry.id, releasePreviewCopyLease]);
 
   useEffect(() => {
     // Task 1539 (finding 1, P0): this effect used to run unconditionally for
@@ -1475,7 +1484,15 @@ export const PhotoPage = React.memo(function PhotoPage({
             isRaw: isRawEntry,
             kind: loaded.kind,
           });
-          if (isRawEntry) tempRawSourceUriRef.current = loaded.uri;
+          if (isRawEntry) {
+            tempRawSourceUriRef.current = loaded.uri;
+            previewCopyLeaseRef.current = { fileId: entry.id, extension: extensionForRaw(entryFileName) };
+          } else if (isVideoEntry && isLoopbackStreamUri(loaded.uri)) {
+            previewCopyLeaseRef.current = {
+              fileId: entry.id,
+              extension: extensionForMime(entry.mime_type ?? undefined, 'video'),
+            };
+          }
           setUri(loaded.uri);
           setUriKind(loaded.kind);
         }
@@ -1522,12 +1539,6 @@ export const PhotoPage = React.memo(function PhotoPage({
   // `loadFull` flips.
   useEffect(() => {
     if (keepFull || uri === null) return;
-    if (isVideoEntry) {
-      void releasePreviewCopy(entry.id, extensionForMime(entry.mime_type ?? undefined, 'video')).catch(() => {});
-    }
-    if (isRawEntry) {
-      void releasePreviewCopy(entry.id, extensionForRaw(entryFileName)).catch(() => {});
-    }
     setUri(null);
     setUriKind(null);
     setOriginalUri(null);
@@ -1535,6 +1546,7 @@ export const PhotoPage = React.memo(function PhotoPage({
     setOriginalCacheHit(false);
     setImageLoaded(false);
     sawOriginalProgressRef.current = false;
+    releasePreviewCopyLease();
     // Per-load refs: a released page that is visited again must behave like a
     // fresh one. `largePreviewAttemptRef` records `${entry.id}:${uri}` of the
     // last large-preview upgrade attempt; left set, a revisit that reloads the
@@ -1544,23 +1556,27 @@ export const PhotoPage = React.memo(function PhotoPage({
     // A RAW page's decrypted SOURCE temp file is otherwise deleted only on
     // unmount; now that a page can reload after release, delete it here too or
     // each return to the page would orphan the previous one on disk.
-    void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
-  }, [keepFull, uri, isVideoEntry, isRawEntry, entry.id, entry.mime_type, entryFileName]);
+    if (!isRawEntry) {
+      void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
+    } else {
+      tempRawSourceUriRef.current = null;
+    }
+  }, [keepFull, uri, isRawEntry, releasePreviewCopyLease]);
 
-  // Release this page's own decrypted preview-cache leases on unmount — same
-  // pattern as `PreviewScreen`'s single-file cleanup. `RawRenderer` owns
-  // cleaning up its OWN separate extracted-preview temp file, not this source.
+  // Delete this page's own decrypted RAW SOURCE temp file on unmount — same
+  // pattern as `PreviewScreen`'s own `tempRawUriRef` cleanup for the
+  // single-file case (`RawRenderer` owns cleaning up its OWN separate
+  // extracted-preview temp file, not this one).
   useEffect(() => {
     return () => {
-      if (isVideoEntry) {
-        void releasePreviewCopy(entry.id, extensionForMime(entry.mime_type ?? undefined, 'video')).catch(() => {});
+      releasePreviewCopyLease();
+      if (!isRawEntry) {
+        void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
+      } else {
+        tempRawSourceUriRef.current = null;
       }
-      if (isRawEntry) {
-        void releasePreviewCopy(entry.id, extensionForRaw(entryFileName)).catch(() => {});
-      }
-      void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
     };
-  }, [entry.id, entry.mime_type, entryFileName, isRawEntry, isVideoEntry]);
+  }, [isRawEntry, releasePreviewCopyLease]);
 
   useEffect(() => {
     if (!shouldLoadFull || !isCurrent) return;

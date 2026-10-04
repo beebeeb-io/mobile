@@ -21,6 +21,23 @@ chrome also revealed the native controls, so both bars competed for the same
 touch area. Reserving the control clearance keeps the native playhead tappable
 while preserving the black media ground behind the floating chrome.
 
+## Task 1724 — File Provider known-empty folders and pager preview leases
+
+**Design:** Files should enumerate cached File Provider folders immediately
+while refreshing in the background, and preview plaintext cache ownership must
+flow through `releasePreviewCopy`.
+
+**What shipped:** an empty cached File Provider folder that already has a
+`container.<id>.anchor` now enumerates `[]` immediately and refreshes in the
+background. The cold, anchor-less case still waits for a typed refresh outcome.
+Photo pager pages now release the preview copy lease they render directly for
+RAW source files and loopback video streams when the page unloads or unmounts.
+
+**Why:** rows alone cannot distinguish "never synced" from "synced and empty".
+The anchor is the cache's durable synchronized marker. For Preview, deleting a
+RAW temp URI directly or clearing a loopback URI left the `decryptToTempFile`
+lease live, so purge/account cleanup could see stale ownership.
+
 ## Task 1723 PR163 CI — slow native SQLite harness gets a longer test budget only
 
 **Design:** no product design change. This is a CI-only repair for the Swift
