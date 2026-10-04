@@ -80,7 +80,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           BB_REQUIRE_NATIVE_SWIFT_HARNESSES: "1"
-        run: bun test src/lib/file-provider-purge-hygiene.test.ts src/lib/file-provider-enumerator-initial-refresh.test.ts src/lib/file-provider-auth-recovery.test.ts
+        run: bun test src/lib/file-provider-purge-hygiene.test.ts src/lib/file-provider-enumerator-initial-refresh.test.ts src/lib/file-provider-auth-recovery.test.ts src/lib/file-provider-key-policy.test.ts src/lib/file-provider-content-codec.test.ts
 
   # Task 1669: until this job nothing compiled the MAIN APP's Swift (swift-gate above covers
   # only the Share Extension, task 1671). Public repo, so macOS runners are free. Full unsigned

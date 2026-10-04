@@ -403,6 +403,7 @@ describe('iOS File Provider initial enumeration refresh', () => {
     const dir = mkdtempSync(join(tmpdir(), 'beebeeb-file-provider-enumerator-'));
     const harness = join(dir, 'Harness.swift');
     const binary = join(dir, 'Harness');
+    const outputPath = join(dir, 'output.log');
     writeFileSync(harness, swiftHarness);
     execFileSync('xcrun', [
       'swiftc',
@@ -412,9 +413,10 @@ describe('iOS File Provider initial enumeration refresh', () => {
       harness,
       '-o', binary,
     ], { stdio: 'pipe' });
-    const output = execFileSync(binary, [], { encoding: 'utf8' });
+    execFileSync('/bin/sh', ['-c', '"$1" > "$2" 2>&1', 'enumerator-harness', binary, outputPath], { timeout: 30_000 });
+    const output = readFileSync(outputPath, 'utf8');
     expect(output).toContain('swift-enumerator-harness: 11 pass');
-  });
+  }, 15_000);
 
   test('an empty cached listing branches on typed refresh outcome before finishing', () => {
     const src = readFileSync(ENUMERATOR, 'utf8');
