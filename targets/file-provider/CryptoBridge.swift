@@ -62,13 +62,12 @@ enum CryptoBridge {
     guard ownershipVerified() else {
       throw CryptoBridgeError.ownerUnverified
     }
-    // File Provider must NOT fall back to the primary SE key — that key may
-    // require Face ID, and Files.app can't surface a clean biometric prompt
-    // from an extension. `.extensionOnly` preserves that contract (task 0436,
-    // was previously `KeychainKeyLoader.loadMasterKey()`).
+    // Files must use its dedicated unlocked-device SE key. Never fall back
+    // to the primary or shared backup/share keys, which may require a prompt
+    // that this extension cannot present.
     var bytes = try BeebeebKeychainCore.loadMasterKeyThrowing(
       label: BeebeebConstants.masterKeyLabel,
-      mode: .extensionOnly
+      mode: .fileProviderOnly
     )
     defer {
       bytes.withUnsafeMutableBytes { buf in

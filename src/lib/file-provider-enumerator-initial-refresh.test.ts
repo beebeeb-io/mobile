@@ -191,6 +191,24 @@ final class RecordingObserver: NSObject, NSFileProviderEnumerationObserver {
   }
 }
 
+final class RecordingChangeObserver: NSObject, NSFileProviderChangeObserver {
+  var updatedCount = 0
+  var deletedCount = 0
+  var finishedAnchor: NSFileProviderSyncAnchor?
+  var error: NSError?
+  func didUpdate(_ updatedItems: [NSFileProviderItem]) { updatedCount += updatedItems.count }
+  func didDeleteItems(withIdentifiers deletedItemIdentifiers: [NSFileProviderItemIdentifier]) { deletedCount += deletedItemIdentifiers.count }
+  func finishEnumeratingChanges(upTo anchor: NSFileProviderSyncAnchor, moreComing: Bool) { finishedAnchor = anchor }
+  func finishEnumeratingWithError(_ error: Error) { self.error = error as NSError }
+}
+
+func readAnchor(_ enumerator: FileProviderEnumerator) -> NSFileProviderSyncAnchor {
+  var result: NSFileProviderSyncAnchor?
+  enumerator.currentSyncAnchor { result = $0 }
+  assert(result != nil, "current anchor missing")
+  return result!
+}
+
 func assert(_ condition: @autoclosure () -> Bool, _ message: String) {
   if !condition() {
     FileHandle.standardError.write(Data("FAIL: \(message)\n".utf8))
@@ -217,11 +235,82 @@ struct Main {
     await failedInitialRefreshReportsAuthError()
     await failedInitialRefreshReportsServerError()
     await cancellationDoesNotCompleteInvalidatedObserver()
-    print("swift-enumerator-harness: 6 pass")
+    cachedEmptyAnchorRequestsPopulatedRebuild()
+    unchangedSnapshotDoesNotRestartEnumeration()
+    deletionRequestsCompleteRebuild()
+    subfolderSnapshotTracksMetadataChanges()
+    cacheWriteAfterListingDoesNotAdvanceDeliveredAnchor()
+    print("swift-enumerator-harness: 11 pass")
   }
 
   static func makeEnumerator(cache: MockCache, refresher: MockRefresher) -> FileProviderEnumerator {
     FileProviderEnumerator(containerIdentifier: .rootContainer, cache: cache, refresher: refresher)
+  }
+
+  static func cachedEmptyAnchorRequestsPopulatedRebuild() {
+    let cache = MockCache(anchors: ["container.io.beebeeb.root.anchor": "stale-empty"])
+    let refresher = MockRefresher(cache: cache, outcome: .success, rowsAfterSuccess: [item("fresh")])
+    let enumerator = makeEnumerator(cache: cache, refresher: refresher)
+    cache.setRows([item("fresh")], parent: nil)
+    let observer = RecordingChangeObserver()
+    enumerator.enumerateChanges(for: observer, from: NSFileProviderSyncAnchor(Data("stale-empty".utf8)))
+    assertProviderError(observer.error, code: .syncAnchorExpired, "populated stale empty anchor")
+    assert(observer.finishedAnchor == nil, "stale empty anchor falsely finished up-to-date")
+    let listing = RecordingObserver()
+    enumerator.enumerateItems(for: listing, startingAt: NSFileProviderPage(Data()))
+    assert(listing.wait(seconds: 0.1), "rebuilt populated listing blocked")
+    assert(listing.snapshot.counts == [1], "rebuild missed cached row")
+    enumerator.invalidate()
+  }
+
+  static func unchangedSnapshotDoesNotRestartEnumeration() {
+    let cache = MockCache(rowsByParent: ["root": [item("stable")]])
+    let enumerator = makeEnumerator(cache: cache, refresher: MockRefresher(cache: cache, outcome: .success))
+    let anchor = readAnchor(enumerator)
+    let observer = RecordingChangeObserver()
+    enumerator.enumerateChanges(for: observer, from: anchor)
+    assert(observer.error == nil, "unchanged listing caused reload loop")
+    assert(observer.finishedAnchor == anchor, "unchanged listing did not finish at same anchor")
+    assert(observer.updatedCount == 0 && observer.deletedCount == 0, "unchanged listing emitted false delta")
+  }
+
+  static func deletionRequestsCompleteRebuild() {
+    let cache = MockCache(rowsByParent: ["root": [item("deleted")]])
+    let enumerator = makeEnumerator(cache: cache, refresher: MockRefresher(cache: cache, outcome: .success))
+    let anchor = readAnchor(enumerator)
+    cache.setRows([], parent: nil)
+    let observer = RecordingChangeObserver()
+    enumerator.enumerateChanges(for: observer, from: anchor)
+    assertProviderError(observer.error, code: .syncAnchorExpired, "removed item anchor")
+    assert(observer.finishedAnchor == nil, "removed item falsely reported current")
+  }
+
+  static func subfolderSnapshotTracksMetadataChanges() {
+    let old = CachedItem(id: "child", parentId: "folder", nameDecrypted: "before")
+    let cache = MockCache(rowsByParent: ["folder": [old]])
+    let enumerator = FileProviderEnumerator(containerIdentifier: NSFileProviderItemIdentifier("folder"), cache: cache, refresher: MockRefresher(cache: cache, outcome: .success))
+    let anchor = readAnchor(enumerator)
+    cache.setRows([CachedItem(id: "child", parentId: "folder", nameDecrypted: "after")], parent: "folder")
+    let observer = RecordingChangeObserver()
+    enumerator.enumerateChanges(for: observer, from: anchor)
+    assertProviderError(observer.error, code: .syncAnchorExpired, "renamed subfolder item")
+    assert(readAnchor(enumerator) != anchor, "subfolder metadata absent from anchor")
+  }
+
+  static func cacheWriteAfterListingDoesNotAdvanceDeliveredAnchor() {
+    let cache = MockCache(rowsByParent: ["root": [item("delivered")]])
+    let enumerator = makeEnumerator(cache: cache, refresher: MockRefresher(cache: cache, outcome: .serverUnreachable))
+    let baseline = readAnchor(enumerator)
+    let listing = RecordingObserver()
+    enumerator.enumerateItems(for: listing, startingAt: NSFileProviderPage(Data()))
+    assert(listing.wait(seconds: 0.1), "initial cached listing did not finish")
+    cache.setRows([item("delivered"), item("not-yet-delivered")], parent: nil)
+    let deliveredAnchor = readAnchor(enumerator)
+    assert(deliveredAnchor == baseline, "anchor advanced to rows not delivered to Files")
+    let change = RecordingChangeObserver()
+    enumerator.enumerateChanges(for: change, from: deliveredAnchor)
+    assertProviderError(change.error, code: .syncAnchorExpired, "cache write after listing")
+    enumerator.invalidate()
   }
 
   static func populatedFirstMountRefreshesBeforeSuccess() async {
@@ -314,6 +403,7 @@ describe('iOS File Provider initial enumeration refresh', () => {
     const dir = mkdtempSync(join(tmpdir(), 'beebeeb-file-provider-enumerator-'));
     const harness = join(dir, 'Harness.swift');
     const binary = join(dir, 'Harness');
+    const outputPath = join(dir, 'output.log');
     writeFileSync(harness, swiftHarness);
     execFileSync('xcrun', [
       'swiftc',
@@ -323,9 +413,10 @@ describe('iOS File Provider initial enumeration refresh', () => {
       harness,
       '-o', binary,
     ], { stdio: 'pipe' });
-    const output = execFileSync(binary, [], { encoding: 'utf8' });
-    expect(output).toContain('swift-enumerator-harness: 6 pass');
-  });
+    execFileSync('/bin/sh', ['-c', '"$1" > "$2" 2>&1', 'enumerator-harness', binary, outputPath], { timeout: 30_000 });
+    const output = readFileSync(outputPath, 'utf8');
+    expect(output).toContain('swift-enumerator-harness: 11 pass');
+  }, 15_000);
 
   test('an empty cached listing branches on typed refresh outcome before finishing', () => {
     const src = readFileSync(ENUMERATOR, 'utf8');

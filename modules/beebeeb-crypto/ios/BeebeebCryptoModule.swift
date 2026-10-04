@@ -1996,6 +1996,7 @@ private func registerMountedFileProviderDomainLocked(
   defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
   defaults?.synchronize()
 
+  await resumeFileProviderAuthenticationIfReady(domain: domain, defaults: defaults)
   let rootError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .rootContainer)
   let workingSetError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .workingSet)
   let manager = NSFileProviderManager(for: domain)
@@ -2017,6 +2018,34 @@ private func registerMountedFileProviderDomainLocked(
     rootEnumerationError: rootError,
     workingSetEnumerationError: workingSetError
   )
+}
+
+/// Files throttles operations after notAuthenticated until the containing app
+/// explicitly resolves it. Enumerator signals alone do not lift that throttle.
+/// This only requests a retry; the extension still enforces its own SE/owner
+/// and server-session checks on every operation.
+@available(iOS 16.0, *)
+private func resumeFileProviderAuthenticationIfReady(
+  domain: NSFileProviderDomain,
+  defaults: UserDefaults?
+) async {
+  guard defaults?.bool(forKey: fileProviderTrustedMountKey) == true,
+        sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey),
+        !PlaintextStorageProtection.isPurgePending(),
+        let token = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.sessionTokenKey), !token.isEmpty,
+        let owner = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.masterKeyOwnerKey), !owner.isEmpty,
+        let user = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.sessionUserIdKey), user == owner
+  else { return }
+  let unlocked = BeebeebCryptoBridge.cachedMasterKeySnapshot()
+  guard unlocked.handle != nil, unlocked.ownerId == user,
+        let manager = NSFileProviderManager(for: domain)
+  else { return }
+  do {
+    try await manager.signalErrorResolved(NSFileProviderError(.notAuthenticated))
+    RuntimeTrace.event("fileprovider.authentication_retry.resumed")
+  } catch {
+    RuntimeTrace.event("fileprovider.authentication_retry.failed")
+  }
 }
 
 @available(iOS 16.0, *)
