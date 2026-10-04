@@ -1204,6 +1204,11 @@ export async function downloadAndDecryptFileNative(
   }
 }
 
+export type StreamVideoTerminalStatus =
+  | { stage: 'complete'; event?: PreviewLoadProgressEvent | null }
+  | { stage: 'error'; event?: PreviewLoadProgressEvent | null; error: string }
+  | { stage: 'cancelled'; event?: PreviewLoadProgressEvent | null }
+
 export interface StreamVideoNativeResult {
   /** The loopback URI the player reads (the streaming engine's range server). */
   streamUri: string
@@ -1219,6 +1224,8 @@ export interface StreamVideoNativeResult {
   cancel: () => Promise<void>
   /** Resolves when the native stream reaches complete/error/teardown or is cancelled. */
   terminal: Promise<void>
+  /** Non-rejecting terminal outcome; consumers use this to avoid joining failed loopback routes. */
+  terminalStatus: Promise<StreamVideoTerminalStatus>
 }
 
 /** Progress-poll cadence — matches downloadAndDecryptFileNative's 200 ms. */
@@ -1270,7 +1277,10 @@ export async function streamVideoNative(
   const requestId = `stream-${fileId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
   let streamId: string | null = null
   let terminalResolve!: () => void
+  let terminalStatusResolve!: (status: StreamVideoTerminalStatus) => void
   const terminal = new Promise<void>((resolve) => { terminalResolve = resolve })
+  const terminalStatus = new Promise<StreamVideoTerminalStatus>((resolve) => { terminalStatusResolve = resolve })
+  let lastTerminalEvent: PreviewLoadProgressEvent | null = null
   const readSnapshot = (): PreviewLoadProgressEvent | null => {
     const ev = BeebeebCryptoModule.getPreviewLoadProgress?.(requestId)
     return ev && ev.requestId === requestId ? (ev as PreviewLoadProgressEvent) : null
@@ -1299,13 +1309,23 @@ export async function streamVideoNative(
       poll = null
     }
   }
-  const finishTerminal = (synthetic?: PreviewLoadProgressEvent) => {
+  const statusFromEvent = (event: PreviewLoadProgressEvent | null): StreamVideoTerminalStatus => {
+    if (event?.stage === 'error') {
+      return { stage: 'error', event, error: event.error || 'Video stream failed.' }
+    }
+    return { stage: 'complete', event }
+  }
+  const finishTerminal = (synthetic?: PreviewLoadProgressEvent, status?: StreamVideoTerminalStatus) => {
     if (terminalFinished) return
     terminalFinished = true
     pollFinished = true
     stopPoll()
     options.signal?.removeEventListener('abort', abortListener)
-    if (synthetic) options.onProgress?.(synthetic)
+    if (synthetic) {
+      lastTerminalEvent = synthetic
+      options.onProgress?.(synthetic)
+    }
+    terminalStatusResolve(status ?? statusFromEvent(lastTerminalEvent))
     terminalResolve()
   }
   const stopPollingForCancel = () => {
@@ -1317,7 +1337,7 @@ export async function streamVideoNative(
   const cancelAndFinishTerminal = async () => {
     stopPollingForCancel()
     await cancelNativeOnly()
-    finishTerminal()
+    finishTerminal(undefined, { stage: 'cancelled', event: lastTerminalEvent })
   }
   const forward = (ev: PreviewLoadProgressEvent) => {
     const k = ev.stage + ':' + (ev.chunksCompleted ?? ev.bytesDownloaded ?? '')
@@ -1340,7 +1360,10 @@ export async function streamVideoNative(
     }
     lastSeenStage = ev.stage
     forward(ev)
-    if (ev.stage === 'complete' || ev.stage === 'error') finishTerminal()
+    if (ev.stage === 'complete' || ev.stage === 'error') {
+      lastTerminalEvent = ev
+      finishTerminal()
+    }
   }, POLL_INTERVAL_MS)
 
   const abortListener = () => {
@@ -1369,6 +1392,7 @@ export async function streamVideoNative(
       requestId,
       cancel: cancelAndFinishTerminal,
       terminal,
+      terminalStatus,
     }
   } catch (error) {
     if (options.signal?.aborted) {
@@ -1381,7 +1405,10 @@ export async function streamVideoNative(
     // a resolved stream keeps pumping after playback started, so the poll
     // stays alive until its own terminal rule fires.
     const finalEv = readSnapshot()
-    if (finalEv) options.onProgress?.(finalEv)
+    if (finalEv) {
+      options.onProgress?.(finalEv)
+      if (finalEv.stage === 'complete' || finalEv.stage === 'error') lastTerminalEvent = finalEv
+    }
     if (!(finalEv && finalEv.stage === 'decrypting' && finalEv.streaming === true)) {
       finishTerminal()
     }

@@ -136,6 +136,26 @@ describe('streamVideoNative JS wrapper cancellation contract', () => {
     expect(terminalSettled).toBe(true);
   });
 
+
+
+  test('terminalStatus reports native background stream errors without rejecting terminal', async () => {
+    nativeModule.getPreviewLoadProgress = (requestId) => ({
+      requestId,
+      fileId: 'video',
+      stage: 'error',
+      streaming: true,
+      error: 'late chunk auth failed',
+    });
+
+    const started = await crypto.streamVideoNative(7, 'https://api.test', 'tok', 'video', 'file:///cache/preview/video.mp4', 5000, 4);
+
+    await started.terminal;
+    await expect(started.terminalStatus).resolves.toMatchObject({
+      stage: 'error',
+      error: 'late chunk auth failed',
+    });
+  });
+
   test('playable trace does not include the loopback stream URI capability', async () => {
     await crypto.streamVideoNative(7, 'https://api.test', 'tok', 'video', 'file:///cache/preview/video.mp4', 5000, 4);
 
