@@ -877,3 +877,5 @@ Task1724 terminal status cancellation precedence: a final native progress snapsh
 ## Task1722 — Files change enumeration recovery (2026-10-04)
 
 Guus reports Beebeeb is empty in iOS Files on build234. Existing signalEnumerator calls led to enumerateChanges returning an empty success without delivering cache updates. The cache has no persisted deletion journal. Derive an opaque anchor from stable current FileProviderItem identity/versions/display metadata instead of the extension-only sync_state timestamp. A mismatched or legacy anchor returns syncAnchorExpired, requesting a complete current folder enumeration; an identical snapshot returns no changes. This restores populated listings and deletions while avoiding a reload loop when background refresh signals unchanged rows. No session/key export or weaker extension authentication.
+
+- 2026-10-04, task1722 user physical authentication-loop evidence: trusted foreground registration must explicitly resolve Apple Files authentication throttling after verified shared credentials/unlocked ownership are ready. Keep extension authorization and Secure Enclave checks unchanged; no domain reset.
