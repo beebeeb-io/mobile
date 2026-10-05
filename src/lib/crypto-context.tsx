@@ -515,6 +515,7 @@ async function loadVerifiedMasterKeyHandle(): Promise<VaultLoadResult> {
 export type VaultUnlockSource =
   | 'unspecified'
   | 'recovery_phrase'
+  | 'new_account'
   | 'keychain'
   | 'backup_background'
   | 'already_unlocked'
@@ -597,7 +598,7 @@ interface CryptoContextValue {
    *   in the secure enclave for future unlocks.
    * - Without phrase: loads the master key from the secure enclave directly.
    */
-  unlock: (phrase?: string, source?: VaultUnlockSource) => Promise<void>
+  unlock: (phrase?: string, source?: VaultUnlockSource, freshMasterKey?: Uint8Array) => Promise<void>
   /** Latest vault unlock diagnostics for debug/export surfaces. */
   getUnlockDiagnostics: () => VaultUnlockDiagnostics
   /** Zero out the in-memory master key and mark vault as locked. */
@@ -774,8 +775,17 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const unlock = useCallback(async (phrase?: string, source: VaultUnlockSource = phrase != null ? 'recovery_phrase' : 'keychain') => {
-    const hasRecoveryPhrase = phrase != null
+  // `freshMasterKey` (task 1746): the master key of an account this device JUST
+  // created, handed over once by the signup ceremony (`SignupCeremony.accountCreated`,
+  // core). It takes exactly the recovery-phrase branch below (create handle, store
+  // key, mark persisted) with the key bytes in place of `recoverFromPhrase(phrase)`,
+  // so the signup path inherits every ownership/generation guarantee of the phrase
+  // path and adds no second way to adopt a key. The CALLER owns the buffer and the
+  // branch below zeroes it (`masterKey.fill(0)`) in its `finally`.
+  const unlock = useCallback(async (phrase?: string, sourceArg?: VaultUnlockSource, freshMasterKey?: Uint8Array) => {
+    const source: VaultUnlockSource =
+      sourceArg ?? (freshMasterKey != null ? 'new_account' : phrase != null ? 'recovery_phrase' : 'keychain')
+    const hasRecoveryPhrase = phrase != null || freshMasterKey != null
     // Task 1594 round 4 (Codex P1): the vault generation observed at the
     // START of this attempt. Passed to storeMasterKey so it can detect (and
     // undo) writing on behalf of an instance that gets disposed mid-write.
@@ -869,7 +879,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
           // Derive the master key from the recovery phrase. The raw bytes
           // are needed transiently to persist to keychain, but we immediately
           // load a handle and zero the raw bytes.
-          const result = await recoverFromPhrase(phrase)
+          const result = freshMasterKey != null ? { masterKey: freshMasterKey } : await recoverFromPhrase(phrase as string)
           const masterKey = result.masterKey
           let handleId: number | null = null
           let adopted = false

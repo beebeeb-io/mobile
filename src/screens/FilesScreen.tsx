@@ -125,6 +125,7 @@ import {
   READ_ONLY_TITLE,
   isAccountRefusalCode,
   lapsedBannerText,
+  trialEndedBannerText,
   readOnlyUploadMessage,
   requestAccountStateRefresh,
 } from '../lib/account-state';
@@ -4847,6 +4848,22 @@ export default function FilesScreen() {
           <Ionicons name="lock-closed-outline" size={16} color={c.amberDeep} style={styles.readOnlyBannerIcon} />
           <Text style={[styles.readOnlyBannerText, { color: c.ink }]}>
             {lapsedBannerText(accountGate.dataDeletionAt)}
+          </Text>
+        </View>
+      )}
+
+      {/* Task 1746: a no-card trial ended with usage above the allowance. Read-only
+          above the allowance; download, export, delete and empty-trash stay. Facts
+          only (task 1400): the server's sentence, no price, no purchase link. */}
+      {!selectMode && accountGate.kind === 'trial_ended' && (
+        <View
+          style={[styles.readOnlyBanner, { backgroundColor: c.amberBg, borderColor: c.amber }]}
+          accessibilityRole="alert"
+          testID="trial-ended-banner"
+        >
+          <Ionicons name="lock-closed-outline" size={16} color={c.amberDeep} style={styles.readOnlyBannerIcon} />
+          <Text style={[styles.readOnlyBannerText, { color: c.ink }]} testID="trial-ended-banner-text">
+            {trialEndedBannerText(accountGate)}
           </Text>
         </View>
       )}

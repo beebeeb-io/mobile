@@ -605,6 +605,199 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 /**
+ * k-anonymity breach check for one password. Core hashes and matches; **the app
+ * makes the HTTP call**, to the endpoint the onboarding document declares in
+ * `policy.password.breach_check.endpoint` (Beebeeb's own API, never a third
+ * party). Only `prefix()` (5 hex chars) may be sent. The rest of the digest
+ * stays in this handle and is zeroized when it is released.
+ *
+ * The handle is bound to the password it was made from and remembers the
+ * answer: pass it to `SignupCeremonyHandle.set_password`, which refuses a
+ * check made for a different password. A response body over 262144 bytes is
+ * treated as an outage, so stop reading the response at that size.
+ */
+public protocol BreachCheckHandleProtocol: AnyObject, Sendable {
+    
+    /**
+     * Record the answer and return the verdict for display. `body` is the
+     * response text of a 2xx answer, or `None` when the request failed
+     * (network error, timeout, non-2xx). An empty body counts as a failed
+     * request. `fail_open` is `policy.password.breach_check.fail_open` and
+     * only shapes this display value: the ceremony applies the value it was
+     * constructed with.
+     *
+     * `requested_prefix` is the prefix the request URL (or the cache entry)
+     * actually used. If it is not this password's prefix this throws
+     * `BreachPrefixMismatch` and records nothing: a body for another prefix
+     * would otherwise evaluate as clean.
+     */
+    func evaluate(requestedPrefix: String, body: String?, failOpen: Bool) throws  -> BreachVerdictDto
+    
+    /**
+     * The 5 upper-case hex characters to send to the server.
+     */
+    func prefix()  -> String
+    
+}
+/**
+ * k-anonymity breach check for one password. Core hashes and matches; **the app
+ * makes the HTTP call**, to the endpoint the onboarding document declares in
+ * `policy.password.breach_check.endpoint` (Beebeeb's own API, never a third
+ * party). Only `prefix()` (5 hex chars) may be sent. The rest of the digest
+ * stays in this handle and is zeroized when it is released.
+ *
+ * The handle is bound to the password it was made from and remembers the
+ * answer: pass it to `SignupCeremonyHandle.set_password`, which refuses a
+ * check made for a different password. A response body over 262144 bytes is
+ * treated as an outage, so stop reading the response at that size.
+ */
+open class BreachCheckHandle: BreachCheckHandleProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_beebeeb_uniffi_fn_clone_breachcheckhandle(self.handle, $0) }
+    }
+public convenience init(password: String) {
+    let handle =
+        try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_constructor_breachcheckhandle_new(
+        FfiConverterString.lower(password),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_beebeeb_uniffi_fn_free_breachcheckhandle(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Record the answer and return the verdict for display. `body` is the
+     * response text of a 2xx answer, or `None` when the request failed
+     * (network error, timeout, non-2xx). An empty body counts as a failed
+     * request. `fail_open` is `policy.password.breach_check.fail_open` and
+     * only shapes this display value: the ceremony applies the value it was
+     * constructed with.
+     *
+     * `requested_prefix` is the prefix the request URL (or the cache entry)
+     * actually used. If it is not this password's prefix this throws
+     * `BreachPrefixMismatch` and records nothing: a body for another prefix
+     * would otherwise evaluate as clean.
+     */
+open func evaluate(requestedPrefix: String, body: String?, failOpen: Bool)throws  -> BreachVerdictDto  {
+    return try  FfiConverterTypeBreachVerdictDto_lift(try rustCallWithError(FfiConverterTypeOnboardingError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_breachcheckhandle_evaluate(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(requestedPrefix),
+        FfiConverterOptionString.lower(body),
+        FfiConverterBool.lower(failOpen),$0
+    )
+})
+}
+    
+    /**
+     * The 5 upper-case hex characters to send to the server.
+     */
+open func prefix() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_breachcheckhandle_prefix(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBreachCheckHandle: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = BreachCheckHandle
+
+    public static func lift(_ handle: UInt64) throws -> BreachCheckHandle {
+        return BreachCheckHandle(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: BreachCheckHandle) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BreachCheckHandle {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: BreachCheckHandle, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBreachCheckHandle_lift(_ handle: UInt64) throws -> BreachCheckHandle {
+    return try FfiConverterTypeBreachCheckHandle.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBreachCheckHandle_lower(_ value: BreachCheckHandle) -> UInt64 {
+    return FfiConverterTypeBreachCheckHandle.lower(value)
+}
+
+
+
+
+
+
+/**
  * Stateful streaming decryptor handle. Single-consumer (see module note).
  */
 public protocol ChunkDecryptorHandleProtocol: AnyObject, Sendable {
@@ -2207,6 +2400,427 @@ public func FfiConverterTypeSearchIndexHandle_lift(_ handle: UInt64) throws -> S
 #endif
 public func FfiConverterTypeSearchIndexHandle_lower(_ value: SearchIndexHandle) -> UInt64 {
     return FfiConverterTypeSearchIndexHandle.lower(value)
+}
+
+
+
+
+
+
+/**
+ * The signup ceremony state machine, one per signup attempt. Single-consumer:
+ * drive it from one sequence (the `Mutex` is only the `Send + Sync` backstop
+ * UniFFI requires). Call `abandon()` when the flow is left (back, cancel,
+ * error): releasing the handle also wipes the password, phrase and master key
+ * it holds, but only when ARC or the GC gets round to it.
+ */
+public protocol SignupCeremonyHandleProtocol: AnyObject, Sendable {
+    
+    /**
+     * Abandon the signup: wipe the password, phrase and master key and return
+     * to a fresh ceremony. Call on back, cancel and error exits.
+     */
+    func abandon() 
+    
+    /**
+     * The server accepted `register-finish`. Returns the master key as a
+     * handle (the bytes never cross FFI); the ceremony wipes everything else.
+     */
+    func accountCreated() throws  -> MasterKeyHandle
+    
+    /**
+     * The user confirms they saved the phrase.
+     */
+    func acknowledgePhrase() throws 
+    
+    /**
+     * Generate the recovery phrase and master key (Argon2id, about a second).
+     * Idempotent.
+     */
+    func beginPhrase() throws 
+    
+    /**
+     * 1-based word positions to ask for, ascending, stable for this phrase.
+     */
+    func challengePositions() throws  -> [UInt32]
+    
+    /**
+     * `answers` in `challenge_positions` order. Throws `PhraseWordMismatch` /
+     * `PhraseAnswerCount`; retryable.
+     */
+    func confirmPhrase(answers: [String]) throws 
+    
+    /**
+     * The user changed the email address after it was verified: back to the
+     * code step, password and confirmed phrase kept.
+     */
+    func emailChanged() 
+    
+    /**
+     * The server reported the signup ticket expired: back to the code step,
+     * password and confirmed phrase kept.
+     */
+    func emailTicketInvalidated() 
+    
+    /**
+     * The server accepted the email code.
+     */
+    func emailVerified() 
+    
+    /**
+     * OPAQUE step 2, from the server's `register-start` response.
+     */
+    func finishRegistration(serverMessage: Data) throws  -> RegistrationFinishDto
+    
+    /**
+     * Every pending step in canonical order.
+     */
+    func pendingSteps()  -> [CeremonyStepDto]
+    
+    /**
+     * The phrase to show. Throws `PhraseUnavailable` before `begin_phrase` or
+     * after the phrase was confirmed (it is wiped then). The returned string
+     * is a plain copy owned by the host runtime and cannot be wiped: call this
+     * only while rendering the phrase and drop the reference afterwards.
+     */
+    func phrase() throws  -> String
+    
+    /**
+     * The server rejected `register-finish` in a retryable way.
+     */
+    func registrationFailed() 
+    
+    /**
+     * Validate and store the password. `breach` is the `BreachCheckHandle`
+     * made for **this** password, after `evaluate` recorded the endpoint's
+     * answer; pass `None` when the document declares no breach check. Throws
+     * `PasswordMismatch`, `PasswordTooShort`, `BreachCheckMissing`,
+     * `BreachCheckStale`, `PasswordBreached` or `BreachCheckBlocked`.
+     */
+    func setPassword(password: String, confirmation: String, breach: BreachCheckHandle?) throws  -> PasswordEvaluationDto
+    
+    /**
+     * OPAQUE step 1: the `RegistrationRequest` for `opaque/register-start`.
+     * Throws `StepNotDone` until every other required step is done.
+     */
+    func startRegistration() throws  -> Data
+    
+    /**
+     * First pending step, or `Done`.
+     */
+    func step()  -> CeremonyStepDto
+    
+}
+/**
+ * The signup ceremony state machine, one per signup attempt. Single-consumer:
+ * drive it from one sequence (the `Mutex` is only the `Send + Sync` backstop
+ * UniFFI requires). Call `abandon()` when the flow is left (back, cancel,
+ * error): releasing the handle also wipes the password, phrase and master key
+ * it holds, but only when ARC or the GC gets round to it.
+ */
+open class SignupCeremonyHandle: SignupCeremonyHandleProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_beebeeb_uniffi_fn_clone_signupceremonyhandle(self.handle, $0) }
+    }
+    /**
+     * `min_length` = `policy.password.min_length`; `email_verification_required`
+     * = the document lists a required `verify_email_code`; `verify_word_count`
+     * = `policy.recovery_phrase.verify_word_count`; `breach_check_required` =
+     * the document declares a breach check, with `breach_fail_open` =
+     * `policy.password.breach_check.fail_open` (applied by the ceremony, not
+     * by the caller).
+     */
+public convenience init(minLength: UInt32, emailVerificationRequired: Bool, verifyWordCount: UInt32, breachCheckRequired: Bool, breachFailOpen: Bool) {
+    let handle =
+        try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_constructor_signupceremonyhandle_new(
+        FfiConverterUInt32.lower(minLength),
+        FfiConverterBool.lower(emailVerificationRequired),
+        FfiConverterUInt32.lower(verifyWordCount),
+        FfiConverterBool.lower(breachCheckRequired),
+        FfiConverterBool.lower(breachFailOpen),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_beebeeb_uniffi_fn_free_signupceremonyhandle(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Abandon the signup: wipe the password, phrase and master key and return
+     * to a fresh ceremony. Call on back, cancel and error exits.
+     */
+open func abandon()  {try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_abandon(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * The server accepted `register-finish`. Returns the master key as a
+     * handle (the bytes never cross FFI); the ceremony wipes everything else.
+     */
+open func accountCreated()throws  -> MasterKeyHandle  {
+    return try  FfiConverterTypeMasterKeyHandle_lift(try rustCallWithError(FfiConverterTypeOnboardingError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_account_created(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * The user confirms they saved the phrase.
+     */
+open func acknowledgePhrase()throws   {try rustCallWithError(FfiConverterTypeOnboardingError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_acknowledge_phrase(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Generate the recovery phrase and master key (Argon2id, about a second).
+     * Idempotent.
+     */
+open func beginPhrase()throws   {try rustCallWithError(FfiConverterTypeOnboardingError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_begin_phrase(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * 1-based word positions to ask for, ascending, stable for this phrase.
+     */
+open func challengePositions()throws  -> [UInt32]  {
+    return try  FfiConverterSequenceUInt32.lift(try rustCallWithError(FfiConverterTypeOnboardingError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_challenge_positions(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * `answers` in `challenge_positions` order. Throws `PhraseWordMismatch` /
+     * `PhraseAnswerCount`; retryable.
+     */
+open func confirmPhrase(answers: [String])throws   {try rustCallWithError(FfiConverterTypeOnboardingError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_confirm_phrase(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceString.lower(answers),$0
+    )
+}
+}
+    
+    /**
+     * The user changed the email address after it was verified: back to the
+     * code step, password and confirmed phrase kept.
+     */
+open func emailChanged()  {try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_email_changed(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * The server reported the signup ticket expired: back to the code step,
+     * password and confirmed phrase kept.
+     */
+open func emailTicketInvalidated()  {try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_email_ticket_invalidated(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * The server accepted the email code.
+     */
+open func emailVerified()  {try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_email_verified(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * OPAQUE step 2, from the server's `register-start` response.
+     */
+open func finishRegistration(serverMessage: Data)throws  -> RegistrationFinishDto  {
+    return try  FfiConverterTypeRegistrationFinishDto_lift(try rustCallWithError(FfiConverterTypeOnboardingError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_finish_registration(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(serverMessage),$0
+    )
+})
+}
+    
+    /**
+     * Every pending step in canonical order.
+     */
+open func pendingSteps() -> [CeremonyStepDto]  {
+    return try!  FfiConverterSequenceTypeCeremonyStepDto.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_pending_steps(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * The phrase to show. Throws `PhraseUnavailable` before `begin_phrase` or
+     * after the phrase was confirmed (it is wiped then). The returned string
+     * is a plain copy owned by the host runtime and cannot be wiped: call this
+     * only while rendering the phrase and drop the reference afterwards.
+     */
+open func phrase()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeOnboardingError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_phrase(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * The server rejected `register-finish` in a retryable way.
+     */
+open func registrationFailed()  {try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_registration_failed(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Validate and store the password. `breach` is the `BreachCheckHandle`
+     * made for **this** password, after `evaluate` recorded the endpoint's
+     * answer; pass `None` when the document declares no breach check. Throws
+     * `PasswordMismatch`, `PasswordTooShort`, `BreachCheckMissing`,
+     * `BreachCheckStale`, `PasswordBreached` or `BreachCheckBlocked`.
+     */
+open func setPassword(password: String, confirmation: String, breach: BreachCheckHandle?)throws  -> PasswordEvaluationDto  {
+    return try  FfiConverterTypePasswordEvaluationDto_lift(try rustCallWithError(FfiConverterTypeOnboardingError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_set_password(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(password),
+        FfiConverterString.lower(confirmation),
+        FfiConverterOptionTypeBreachCheckHandle.lower(breach),$0
+    )
+})
+}
+    
+    /**
+     * OPAQUE step 1: the `RegistrationRequest` for `opaque/register-start`.
+     * Throws `StepNotDone` until every other required step is done.
+     */
+open func startRegistration()throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeOnboardingError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_start_registration(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * First pending step, or `Done`.
+     */
+open func step() -> CeremonyStepDto  {
+    return try!  FfiConverterTypeCeremonyStepDto_lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_step(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSignupCeremonyHandle: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = SignupCeremonyHandle
+
+    public static func lift(_ handle: UInt64) throws -> SignupCeremonyHandle {
+        return SignupCeremonyHandle(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: SignupCeremonyHandle) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SignupCeremonyHandle {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: SignupCeremonyHandle, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSignupCeremonyHandle_lift(_ handle: UInt64) throws -> SignupCeremonyHandle {
+    return try FfiConverterTypeSignupCeremonyHandle.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSignupCeremonyHandle_lower(_ value: SignupCeremonyHandle) -> UInt64 {
+    return FfiConverterTypeSignupCeremonyHandle.lower(value)
 }
 
 
@@ -3831,6 +4445,98 @@ public func FfiConverterTypeOpaqueStartResult_lower(_ value: OpaqueStartResult) 
 
 
 /**
+ * Result of evaluating a password against the server's policy. Contains no
+ * part of the password.
+ */
+public struct PasswordEvaluationDto: Equatable, Hashable {
+    public var length: UInt32
+    public var minLength: UInt32
+    public var missingCharacters: UInt32
+    public var meetsMinimum: Bool
+    public var hasMixedCase: Bool
+    public var hasNumberOrSymbol: Bool
+    public var strength: PasswordStrengthDto
+    /**
+     * Meter level 1 (too short) to 4 (strong).
+     */
+    public var level: UInt8
+    public var hint: PasswordHintDto
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(length: UInt32, minLength: UInt32, missingCharacters: UInt32, meetsMinimum: Bool, hasMixedCase: Bool, hasNumberOrSymbol: Bool, strength: PasswordStrengthDto, 
+        /**
+         * Meter level 1 (too short) to 4 (strong).
+         */level: UInt8, hint: PasswordHintDto) {
+        self.length = length
+        self.minLength = minLength
+        self.missingCharacters = missingCharacters
+        self.meetsMinimum = meetsMinimum
+        self.hasMixedCase = hasMixedCase
+        self.hasNumberOrSymbol = hasNumberOrSymbol
+        self.strength = strength
+        self.level = level
+        self.hint = hint
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PasswordEvaluationDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePasswordEvaluationDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PasswordEvaluationDto {
+        return
+            try PasswordEvaluationDto(
+                length: FfiConverterUInt32.read(from: &buf), 
+                minLength: FfiConverterUInt32.read(from: &buf), 
+                missingCharacters: FfiConverterUInt32.read(from: &buf), 
+                meetsMinimum: FfiConverterBool.read(from: &buf), 
+                hasMixedCase: FfiConverterBool.read(from: &buf), 
+                hasNumberOrSymbol: FfiConverterBool.read(from: &buf), 
+                strength: FfiConverterTypePasswordStrengthDto.read(from: &buf), 
+                level: FfiConverterUInt8.read(from: &buf), 
+                hint: FfiConverterTypePasswordHintDto.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PasswordEvaluationDto, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.length, into: &buf)
+        FfiConverterUInt32.write(value.minLength, into: &buf)
+        FfiConverterUInt32.write(value.missingCharacters, into: &buf)
+        FfiConverterBool.write(value.meetsMinimum, into: &buf)
+        FfiConverterBool.write(value.hasMixedCase, into: &buf)
+        FfiConverterBool.write(value.hasNumberOrSymbol, into: &buf)
+        FfiConverterTypePasswordStrengthDto.write(value.strength, into: &buf)
+        FfiConverterUInt8.write(value.level, into: &buf)
+        FfiConverterTypePasswordHintDto.write(value.hint, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePasswordEvaluationDto_lift(_ buf: RustBuffer) throws -> PasswordEvaluationDto {
+    return try FfiConverterTypePasswordEvaluationDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePasswordEvaluationDto_lower(_ value: PasswordEvaluationDto) -> RustBuffer {
+    return FfiConverterTypePasswordEvaluationDto.lower(value)
+}
+
+
+/**
  * Result of generating a recovery phrase.
  */
 public struct RecoveryPhraseResult: Equatable, Hashable {
@@ -3884,6 +4590,68 @@ public func FfiConverterTypeRecoveryPhraseResult_lift(_ buf: RustBuffer) throws 
 #endif
 public func FfiConverterTypeRecoveryPhraseResult_lower(_ value: RecoveryPhraseResult) -> RustBuffer {
     return FfiConverterTypeRecoveryPhraseResult.lower(value)
+}
+
+
+/**
+ * What `opaque/register-finish` takes from the client. No `Debug`: the
+ * recovery binding must not end up in a log line by accident.
+ */
+public struct RegistrationFinishDto: Equatable, Hashable {
+    public var upload: Data
+    public var x25519Public: Data
+    public var recoveryCheck: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(upload: Data, x25519Public: Data, recoveryCheck: Data) {
+        self.upload = upload
+        self.x25519Public = x25519Public
+        self.recoveryCheck = recoveryCheck
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RegistrationFinishDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRegistrationFinishDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RegistrationFinishDto {
+        return
+            try RegistrationFinishDto(
+                upload: FfiConverterData.read(from: &buf), 
+                x25519Public: FfiConverterData.read(from: &buf), 
+                recoveryCheck: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RegistrationFinishDto, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.upload, into: &buf)
+        FfiConverterData.write(value.x25519Public, into: &buf)
+        FfiConverterData.write(value.recoveryCheck, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegistrationFinishDto_lift(_ buf: RustBuffer) throws -> RegistrationFinishDto {
+    return try FfiConverterTypeRegistrationFinishDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegistrationFinishDto_lower(_ value: RegistrationFinishDto) -> RustBuffer {
+    return FfiConverterTypeRegistrationFinishDto.lower(value)
 }
 
 
@@ -4370,6 +5138,196 @@ public func FfiConverterTypeWrappedRequestPrivate_lower(_ value: WrappedRequestP
     return FfiConverterTypeWrappedRequestPrivate.lower(value)
 }
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Verdict of a breach check. `NotRequired` is constructed by the app when the
+ * onboarding document declares no breach check.
+ */
+
+public enum BreachVerdictDto: Equatable, Hashable {
+    
+    case clean
+    case breached(count: UInt64
+    )
+    case checkFailedAllowed
+    case checkFailedBlocked
+    case notRequired
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension BreachVerdictDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBreachVerdictDto: FfiConverterRustBuffer {
+    typealias SwiftType = BreachVerdictDto
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BreachVerdictDto {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .clean
+        
+        case 2: return .breached(count: try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        case 3: return .checkFailedAllowed
+        
+        case 4: return .checkFailedBlocked
+        
+        case 5: return .notRequired
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: BreachVerdictDto, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .clean:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .breached(count):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt64.write(count, into: &buf)
+            
+        
+        case .checkFailedAllowed:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .checkFailedBlocked:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .notRequired:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBreachVerdictDto_lift(_ buf: RustBuffer) throws -> BreachVerdictDto {
+    return try FfiConverterTypeBreachVerdictDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBreachVerdictDto_lower(_ value: BreachVerdictDto) -> RustBuffer {
+    return FfiConverterTypeBreachVerdictDto.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum CeremonyStepDto: Equatable, Hashable {
+    
+    case verifyEmail
+    case setPassword
+    case savePhrase
+    case confirmPhrase
+    case createAccount
+    case done
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CeremonyStepDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCeremonyStepDto: FfiConverterRustBuffer {
+    typealias SwiftType = CeremonyStepDto
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CeremonyStepDto {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .verifyEmail
+        
+        case 2: return .setPassword
+        
+        case 3: return .savePhrase
+        
+        case 4: return .confirmPhrase
+        
+        case 5: return .createAccount
+        
+        case 6: return .done
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CeremonyStepDto, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .verifyEmail:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .setPassword:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .savePhrase:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .confirmPhrase:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .createAccount:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .done:
+            writeInt(&buf, Int32(6))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCeremonyStepDto_lift(_ buf: RustBuffer) throws -> CeremonyStepDto {
+    return try FfiConverterTypeCeremonyStepDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCeremonyStepDto_lower(_ value: CeremonyStepDto) -> RustBuffer {
+    return FfiConverterTypeCeremonyStepDto.lower(value)
+}
+
+
 
 public enum CryptoError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
@@ -4501,6 +5459,353 @@ public func FfiConverterTypeCryptoError_lift(_ buf: RustBuffer) throws -> Crypto
 public func FfiConverterTypeCryptoError_lower(_ value: CryptoError) -> RustBuffer {
     return FfiConverterTypeCryptoError.lower(value)
 }
+
+
+/**
+ * Errors from the signup ceremony. Distinct from [`CryptoError`] so the UI can
+ * branch on the cause (too short, breached, wrong word) without parsing text.
+ */
+public enum OnboardingError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    case StepNotDone(action: String, blocking: CeremonyStepDto
+    )
+    case InvalidState(action: String, reason: String
+    )
+    case PasswordMismatch
+    case PasswordTooShort(length: UInt32, minLength: UInt32
+    )
+    case PasswordBreached(count: UInt64
+    )
+    case BreachCheckBlocked
+    case BreachCheckMissing
+    case BreachCheckStale
+    case BreachPrefixMismatch
+    case PhraseUnavailable
+    case PhraseAnswerCount(expected: UInt32, got: UInt32
+    )
+    case PhraseWordMismatch
+    case Crypto(detail: String
+    )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension OnboardingError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOnboardingError: FfiConverterRustBuffer {
+    typealias SwiftType = OnboardingError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OnboardingError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .StepNotDone(
+            action: try FfiConverterString.read(from: &buf), 
+            blocking: try FfiConverterTypeCeremonyStepDto.read(from: &buf)
+            )
+        case 2: return .InvalidState(
+            action: try FfiConverterString.read(from: &buf), 
+            reason: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .PasswordMismatch
+        case 4: return .PasswordTooShort(
+            length: try FfiConverterUInt32.read(from: &buf), 
+            minLength: try FfiConverterUInt32.read(from: &buf)
+            )
+        case 5: return .PasswordBreached(
+            count: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 6: return .BreachCheckBlocked
+        case 7: return .BreachCheckMissing
+        case 8: return .BreachCheckStale
+        case 9: return .BreachPrefixMismatch
+        case 10: return .PhraseUnavailable
+        case 11: return .PhraseAnswerCount(
+            expected: try FfiConverterUInt32.read(from: &buf), 
+            got: try FfiConverterUInt32.read(from: &buf)
+            )
+        case 12: return .PhraseWordMismatch
+        case 13: return .Crypto(
+            detail: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: OnboardingError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .StepNotDone(action,blocking):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(action, into: &buf)
+            FfiConverterTypeCeremonyStepDto.write(blocking, into: &buf)
+            
+        
+        case let .InvalidState(action,reason):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(action, into: &buf)
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case .PasswordMismatch:
+            writeInt(&buf, Int32(3))
+        
+        
+        case let .PasswordTooShort(length,minLength):
+            writeInt(&buf, Int32(4))
+            FfiConverterUInt32.write(length, into: &buf)
+            FfiConverterUInt32.write(minLength, into: &buf)
+            
+        
+        case let .PasswordBreached(count):
+            writeInt(&buf, Int32(5))
+            FfiConverterUInt64.write(count, into: &buf)
+            
+        
+        case .BreachCheckBlocked:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .BreachCheckMissing:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .BreachCheckStale:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .BreachPrefixMismatch:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .PhraseUnavailable:
+            writeInt(&buf, Int32(10))
+        
+        
+        case let .PhraseAnswerCount(expected,got):
+            writeInt(&buf, Int32(11))
+            FfiConverterUInt32.write(expected, into: &buf)
+            FfiConverterUInt32.write(got, into: &buf)
+            
+        
+        case .PhraseWordMismatch:
+            writeInt(&buf, Int32(12))
+        
+        
+        case let .Crypto(detail):
+            writeInt(&buf, Int32(13))
+            FfiConverterString.write(detail, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingError_lift(_ buf: RustBuffer) throws -> OnboardingError {
+    return try FfiConverterTypeOnboardingError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOnboardingError_lower(_ value: OnboardingError) -> RustBuffer {
+    return FfiConverterTypeOnboardingError.lower(value)
+}
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum PasswordHintDto: Equatable, Hashable {
+    
+    case none
+    case needMoreCharacters
+    case mixCaseAndAddNumberOrSymbol
+    case mixCase
+    case addNumberOrSymbol
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PasswordHintDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePasswordHintDto: FfiConverterRustBuffer {
+    typealias SwiftType = PasswordHintDto
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PasswordHintDto {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .none
+        
+        case 2: return .needMoreCharacters
+        
+        case 3: return .mixCaseAndAddNumberOrSymbol
+        
+        case 4: return .mixCase
+        
+        case 5: return .addNumberOrSymbol
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PasswordHintDto, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .none:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .needMoreCharacters:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .mixCaseAndAddNumberOrSymbol:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .mixCase:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .addNumberOrSymbol:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePasswordHintDto_lift(_ buf: RustBuffer) throws -> PasswordHintDto {
+    return try FfiConverterTypePasswordHintDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePasswordHintDto_lower(_ value: PasswordHintDto) -> RustBuffer {
+    return FfiConverterTypePasswordHintDto.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum PasswordStrengthDto: Equatable, Hashable {
+    
+    case tooShort
+    case fair
+    case good
+    case strong
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PasswordStrengthDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePasswordStrengthDto: FfiConverterRustBuffer {
+    typealias SwiftType = PasswordStrengthDto
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PasswordStrengthDto {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .tooShort
+        
+        case 2: return .fair
+        
+        case 3: return .good
+        
+        case 4: return .strong
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PasswordStrengthDto, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .tooShort:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .fair:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .good:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .strong:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePasswordStrengthDto_lift(_ buf: RustBuffer) throws -> PasswordStrengthDto {
+    return try FfiConverterTypePasswordStrengthDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePasswordStrengthDto_lower(_ value: PasswordStrengthDto) -> RustBuffer {
+    return FfiConverterTypePasswordStrengthDto.lower(value)
+}
+
 
 
 /**
@@ -5297,6 +6602,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeBreachCheckHandle: FfiConverterRustBuffer {
+    typealias SwiftType = BreachCheckHandle?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeBreachCheckHandle.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeBreachCheckHandle.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCachedFileEntryData: FfiConverterRustBuffer {
     typealias SwiftType = CachedFileEntryData?
 
@@ -5836,6 +7165,63 @@ fileprivate struct FfiConverterSequenceTypeShardRefDto: FfiConverterRustBuffer {
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCeremonyStepDto: FfiConverterRustBuffer {
+    typealias SwiftType = [CeremonyStepDto]
+
+    public static func write(_ value: [CeremonyStepDto], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCeremonyStepDto.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CeremonyStepDto] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CeremonyStepDto]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCeremonyStepDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+/**
+ * Whether the app may let the user continue with this password. `Breached`
+ * and `CheckFailedBlocked` stop it. Kept in core so apps do not re-derive it.
+ */
+public func breachVerdictAllowsProceeding(verdict: BreachVerdictDto) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_breach_verdict_allows_proceeding(
+        FfiConverterTypeBreachVerdictDto_lower(verdict),$0
+    )
+})
+}
+/**
+ * True when the corpus was not actually consulted (outage, either policy).
+ */
+public func breachVerdictCheckFailed(verdict: BreachVerdictDto) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_breach_verdict_check_failed(
+        FfiConverterTypeBreachVerdictDto_lower(verdict),$0
+    )
+})
+}
+/**
+ * The server step id a ceremony step belongs to (`save_recovery_phrase` for
+ * both phrase parts).
+ */
+public func ceremonyStepSpecId(step: CeremonyStepDto) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_ceremony_step_spec_id(
+        FfiConverterTypeCeremonyStepDto_lower(step),$0
+    )
+})
+}
 /**
  * Compute a recovery check value from a master key. Returns 32-byte check value.
  * This is stored server-side so we can verify a recovery phrase produces the
@@ -6164,6 +7550,18 @@ public func encryptName(masterKey: Data, fileId: String, filename: String, mimeT
         FfiConverterString.lower(fileId),
         FfiConverterString.lower(filename),
         FfiConverterOptionString.lower(mimeType),$0
+    )
+})
+}
+/**
+ * Evaluate a password against the server's `policy.password.min_length`
+ * (clamped up to the core floor of 12).
+ */
+public func evaluatePassword(password: String, minLength: UInt32) -> PasswordEvaluationDto  {
+    return try!  FfiConverterTypePasswordEvaluationDto_lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_evaluate_password(
+        FfiConverterString.lower(password),
+        FfiConverterUInt32.lower(minLength),$0
     )
 })
 }
@@ -6616,6 +8014,15 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_breach_verdict_allows_proceeding() != 57433) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_breach_verdict_check_failed() != 45507) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_ceremony_step_spec_id() != 23509) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_compute_recovery_check() != 28278) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6686,6 +8093,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_encrypt_name() != 54015) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_evaluate_password() != 50314) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_generate_recovery_pdf() != 58665) {
@@ -6791,6 +8201,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_x25519_shared_secret() != 52845) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_breachcheckhandle_evaluate() != 6329) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_breachcheckhandle_prefix() != 34418) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_next_chunk() != 20032) {
@@ -6913,6 +8329,57 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_upsert() != 22759) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_abandon() != 65431) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_account_created() != 6715) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_acknowledge_phrase() != 41460) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_begin_phrase() != 57511) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_challenge_positions() != 57102) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_confirm_phrase() != 37171) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_email_changed() != 2686) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_email_ticket_invalidated() != 40825) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_email_verified() != 10743) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_finish_registration() != 607) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_pending_steps() != 29905) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_phrase() != 55422) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_registration_failed() != 47031) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_set_password() != 30731) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_start_registration() != 11713) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_step() != 23549) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_breachcheckhandle_new() != 51691) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_for_push() != 48588) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6944,6 +8411,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_constructor_searchindexhandle_new() != 39475) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_signupceremonyhandle_new() != 22479) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_downloadprogresscallback_on_chunk_decrypted() != 37523) {

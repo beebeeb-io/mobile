@@ -1,5 +1,8 @@
 # path|token|evidence (evidence is mandatory and is what a reviewer reads)
 modules/beebeeb-crypto/android/src/main/java/uniffi/beebeeb_uniffi/beebeeb_uniffi.kt|mozilla.github.io|Generated UniFFI Kotlin documentation comments link configuration reference; no runtime request (task1723 source review)
+src/contracts/onboarding/schema.v1.json|json-schema.org|The JSON Schema $schema identifier URI of the vendored server contract; an identifier, never fetched at runtime (task 1746)
+src/lib/onboarding/parse.ts|host|Placeholder in the comment describing the accepted URL shape (https://host[/path]); not a host (task 1746)
+modules/beebeeb-crypto/ios/beebeeb_uniffi.swift|github.com|Generated UniFFI Swift comment on the new onboarding enums (BreachVerdictDto, CeremonyStepDto, PasswordHintDto, PasswordStrengthDto) links uniffi-rs issue 396; a source comment, no runtime request (task 1746 source review of lines 5142, 5237, 5642, 5730)
 modules/beebeeb-crypto/android/src/main/java/uniffi/beebeeb_uniffi/beebeeb_uniffi.kt|stackoverflow.com|Generated UniFFI Kotlin documentation comments cite Java finalize reachability explanation; no runtime request (task1723 source review)
 #
 # Phantom-region hits only (decision 1413, 2026-09-13): docs/canon/data-

@@ -19,8 +19,11 @@ import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgre
 import { getDeviceId } from './sync-client';
 import { deviceIdHeader } from './upload-device-header';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
-import { ACCOUNT_LAPSED_ERROR, PLAN_REQUIRED_ERROR, TRIAL_CANCELLED_READ_ONLY_ERROR, gateForRefusalCode, getCurrentAccountGate, readOnlyUploadMessage } from './account-state';
+import { ACCOUNT_LAPSED_ERROR, PLAN_REQUIRED_ERROR, TRIAL_CANCELLED_READ_ONLY_ERROR, TRIAL_ENDED_ERROR, gateForRefusalCode, getCurrentAccountGate, readOnlyUploadMessage } from './account-state';
 import { resolveWebAppUrl } from './web-links';
+import { ONBOARDING_SCHEMA_HEADER, isOnboardingErrorCode, sameOriginPath } from './onboarding/wire';
+import { describeApiEnvironment, type ApiEnvironment } from './api-environment';
+export type { ApiEnvironment, ApiEnvironmentKind } from './api-environment';
 import { normalizeNotificationPreferences, type NotificationPreferences } from './notification-prefs';
 // Task 1594 fix 4: the unlocked key's owner, sent on authenticated mutations.
 import { expectedUserHeaders, isMutatingMethod } from './expected-user';
@@ -55,30 +58,6 @@ const DEVICE_CONFIRMATION_SECRET_KEY = 'beebeeb_device_confirmation_secret';
 
 const MOBILE_IOS_BACKUP_CLIENT_SESSION_KEY = 'beebeeb_mobile_ios_backup_client_session_id';
 const MOBILE_IOS_BACKUP_SESSION_NAME = 'iPhone Camera Roll Backup';
-
-export type ApiEnvironmentKind = 'local' | 'production' | 'custom';
-
-export interface ApiEnvironment {
-  kind: ApiEnvironmentKind;
-  label: string;
-  baseUrl: string;
-}
-
-function describeApiEnvironment(baseUrl: string): ApiEnvironment {
-  if (
-    baseUrl === 'http://localhost:3001' ||
-    baseUrl === 'http://127.0.0.1:3001' ||
-    baseUrl === 'http://10.0.2.2:3001'
-  ) {
-    return { kind: 'local', label: 'Local', baseUrl };
-  }
-
-  if (baseUrl === 'https://api.beebeeb.io') {
-    return { kind: 'production', label: 'Production', baseUrl };
-  }
-
-  return { kind: 'custom', label: 'Custom', baseUrl };
-}
 
 const API_ENVIRONMENT = describeApiEnvironment(BASE_URL);
 
@@ -719,7 +698,9 @@ async function request<T>(
       // Other bodies stay code-less, as before.
       err.error === PLAN_REQUIRED_ERROR ||
         err.error === ACCOUNT_LAPSED_ERROR ||
-        err.error === TRIAL_CANCELLED_READ_ONLY_ERROR
+        err.error === TRIAL_CANCELLED_READ_ONLY_ERROR ||
+        err.error === TRIAL_ENDED_ERROR ||
+        isOnboardingErrorCode(err.error)
         ? err.error
         : undefined,
       res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,
@@ -3602,6 +3583,161 @@ export async function completeTwoFactor(
   // one. Trash device-owner auth will require a re-confirmation later.
   await setSessionCredentials(data.session_token, undefined);
   return { sessionToken: data.session_token };
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding document + native signup (task 1746)
+// Spec: docs/specs/2026-10-04-backend-driven-onboarding.md sections 5.2, 5.9
+// ---------------------------------------------------------------------------
+
+/**
+ * Headers every onboarding / signup call carries. `X-Beebeeb-Onboarding-Schema`
+ * is what lets a store build past the 403 `signup_web_only` product gate once the
+ * server's matrix row for `mobile-ios` is `native` (spec 5.8 rule 8); an old build
+ * without it keeps getting the 403. Self-declared, so a product gate, not a
+ * security control: account creation is protected by the ticket, limiter and
+ * pilot gate on the server regardless.
+ */
+function onboardingHeaders(extra?: Record<string, string>): Record<string, string> {
+  return {
+    ...(mobileClientHeaders() ?? {}),
+    ...(Platform.OS === 'ios' ? { 'X-Beebeeb-Client-OS': 'ios' } : {}),
+    'X-Beebeeb-Onboarding-Schema': ONBOARDING_SCHEMA_HEADER,
+    ...(extra ?? {}),
+  };
+}
+
+/**
+ * `GET /api/v1/onboarding`. Optional Bearer: without a session the server answers
+ * the `pre_account` form, with one the `account` form. Returns the raw JSON; the
+ * tolerant parser in `./onboarding/parse` decides what it means. Throws ApiError
+ * (404 on an old server: the caller falls back to the legacy account-state logic,
+ * spec 5.8 rule 6).
+ */
+export async function fetchOnboardingRaw(signedIn: boolean): Promise<unknown> {
+  return request<unknown>('GET', '/api/v1/onboarding', undefined, signedIn, onboardingHeaders());
+}
+
+/** Pilot access key header, only when the document says one is required. */
+function pilotHeader(pilotKey?: string): Record<string, string> | undefined {
+  return pilotKey ? { 'X-Beebeeb-Pilot-Key': pilotKey } : undefined;
+}
+
+/**
+ * `POST /api/v1/auth/signup/email-start`. Answers 202 identically for every
+ * address (anti-enumeration): a new address is mailed an 8-digit code, an existing
+ * one a "you already have an account" notice. The client cannot tell which, so it
+ * must never try to (spec 5.9).
+ */
+export async function signupEmailStart(email: string, pilotKey?: string): Promise<void> {
+  await request<unknown>('POST', '/api/v1/auth/signup/email-start', { email }, false, onboardingHeaders(pilotHeader(pilotKey)));
+}
+
+/** `POST /api/v1/auth/signup/email-verify`: the code for a single-use `signup_ticket`. */
+export async function signupEmailVerify(email: string, code: string): Promise<string> {
+  const data = await request<{ signup_ticket?: string }>('POST', '/api/v1/auth/signup/email-verify', { email, code }, false, onboardingHeaders());
+  if (typeof data?.signup_ticket !== 'string' || data.signup_ticket.length === 0) {
+    throw new ApiError(500, 'Server returned no signup ticket');
+  }
+  return data.signup_ticket;
+}
+
+/** `POST /api/v1/opaque/register-start`: OPAQUE round 1, from the ceremony. Returns the server message. */
+export async function signupRegisterStart(input: {
+  email: string;
+  ticket: string;
+  clientMessage: Uint8Array;
+  pilotKey?: string;
+}): Promise<Uint8Array> {
+  const data = await request<{ server_message: string }>(
+    'POST',
+    '/api/v1/opaque/register-start',
+    { email: input.email, client_message: uint8ToBase64(input.clientMessage), signup_ticket: input.ticket },
+    false,
+    onboardingHeaders(pilotHeader(input.pilotKey)),
+  );
+  return base64ToUint8(data.server_message);
+}
+
+/**
+ * `POST /api/v1/opaque/register-finish`: OPAQUE round 2 with the D12 recovery
+ * binding and the Terms version shown. 201 creates the account AND a session,
+ * which is stored here exactly like a login. `403 signup_ticket_invalid` (expired
+ * or spent ticket) is `ApiError.code`; the caller returns to the code step.
+ */
+export async function signupRegisterFinish(input: {
+  email: string;
+  ticket: string;
+  termsVersion: string;
+  upload: Uint8Array;
+  x25519Public: Uint8Array;
+  recoveryCheck: Uint8Array;
+  pilotKey?: string;
+}): Promise<{ userId: string; sessionToken: string }> {
+  const data = await request<{ user_id: string; session_token: string; device_confirmation_secret?: string }>(
+    'POST',
+    '/api/v1/opaque/register-finish',
+    {
+      email: input.email,
+      client_message: uint8ToBase64(input.upload),
+      x25519_public_key: uint8ToBase64(input.x25519Public),
+      recovery_check: uint8ToBase64(input.recoveryCheck),
+      signup_ticket: input.ticket,
+      terms_version: input.termsVersion,
+    },
+    false,
+    onboardingHeaders(pilotHeader(input.pilotKey)),
+  );
+  if (typeof data?.session_token !== 'string' || data.session_token.length === 0) {
+    throw new ApiError(500, 'Server returned no session token');
+  }
+  await setSessionCredentials(data.session_token, data.device_confirmation_secret);
+  return { userId: data.user_id, sessionToken: data.session_token };
+}
+
+/** `POST /api/v1/auth/verify-email`: the account-stage `verify_email` step. */
+export async function verifyAccountEmail(code: string): Promise<void> {
+  await request<unknown>('POST', '/api/v1/auth/verify-email', { code });
+}
+
+/** `POST /api/v1/auth/resend-verification`: a fresh code for the account-stage `verify_email` step (3 per hour). */
+export async function resendAccountVerification(): Promise<void> {
+  await request<unknown>('POST', '/api/v1/auth/resend-verification');
+}
+
+/** `POST /api/v1/account/terms-acceptance`: the account-stage `accept_terms` step (task 1740). */
+export async function acceptTermsVersion(version: string): Promise<void> {
+  await request<unknown>('POST', '/api/v1/account/terms-acceptance', { version });
+}
+
+const BREACH_TIMEOUT_MS = 6000;
+const BREACH_MAX_BODY_BYTES = 256 * 1024;
+
+/**
+ * The one HTTP call the breach check leaves to the host: `GET` the same-origin
+ * `policy.password.breach_check.endpoint` with the 5-hex-character prefix (never
+ * the password, never the rest of the digest), to Beebeeb's own API. Returns the
+ * response text of a 2xx answer, or null on ANY failure; core treats null as an
+ * outage and applies the document's `fail_open`. A body over 256 KiB is an outage.
+ */
+export async function fetchBreachRange(endpointTemplate: string, prefix: string): Promise<string | null> {
+  const path = sameOriginPath(endpointTemplate);
+  if (!path || !/^[0-9A-F]{5}$/.test(prefix)) return null;
+  const url = `${BASE_URL}${path.replace('{prefix}', prefix)}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BREACH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers: onboardingHeaders() });
+    if (!res.ok) return null;
+    const declared = Number(res.headers.get('content-length') ?? '0');
+    if (declared > BREACH_MAX_BODY_BYTES) return null;
+    const text = await res.text();
+    return text.length > BREACH_MAX_BODY_BYTES ? null : text;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------

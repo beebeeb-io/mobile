@@ -24,6 +24,8 @@ import {
   getWebAppUrl,
 } from '../lib/api';
 import { SIGNUP_PATH, WEB_ACCOUNT_LINKS_ENABLED, createAccountCopy, webAppLink } from '../lib/web-links';
+import { canSignUpNatively } from '../lib/onboarding/pre-account';
+import { usePreAccountDocument } from '../lib/onboarding/use-pre-account';
 import { consumeAccountDeletedNotice } from '../lib/account-deleted-notice';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/theme-context';
@@ -45,6 +47,10 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const createAccount = createAccountCopy(WEB_ACCOUNT_LINKS_ENABLED);
+  // Task 1746: the server decides whether this build may sign up natively. Any failure
+  // to ask (old server, offline, unknown schema) keeps the text-only line below.
+  const { state: preAccount } = usePreAccountDocument();
+  const nativeSignup = canSignUpNatively(preAccount);
 
   // Task 1405 — real path: a live session's account got deleted elsewhere.
   // App.tsx's account-deleted handler stashed the notice right before
@@ -247,6 +253,19 @@ export default function LoginScreen() {
         {/* Task 1037: accounts are created on the web, not in the app. With
             WEB_ACCOUNT_LINKS_ENABLED off (task 1400, App Review 3.1.1(a):
             web sign-up shows trial prices), this is one line of plain text. */}
+        {nativeSignup ? (
+          <TouchableOpacity
+            style={[styles.button, { backgroundColor: c.paper, borderWidth: 1, borderColor: c.line, marginTop: spacing.md }]}
+            onPress={() => navigation.navigate('Signup')}
+            disabled={loading}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Create account"
+            testID="create-account-button"
+          >
+            <Text style={[styles.buttonText, { color: c.ink }]}>Create account</Text>
+          </TouchableOpacity>
+        ) : (
         <View style={styles.footerRow} testID="create-account-note">
           {createAccount.linkLabel ? (
             <>
@@ -267,6 +286,7 @@ export default function LoginScreen() {
             <Text style={[styles.footerText, styles.footerNote]}>{createAccount.text}</Text>
           )}
         </View>
+        )}
 
         {/* Region */}
         <View style={styles.regionRow}>
