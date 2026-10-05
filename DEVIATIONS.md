@@ -4,6 +4,58 @@ Per the workspace `CLAUDE.md` → "How we work" → "Design before code": where 
 design artefact and the shipped code disagree, the deviation is recorded HERE,
 in the same commit as the code, with the ruling that caused it.
 
+## Task 1746 — native signup, first-run screen and account-stage screens (no canvas artboard)
+
+**Design:** `design/ios26-canvas/` has one auth artboard, Sign in. It has no artboard for
+account creation, the first-run screen, the signup steps, the account-stage steps
+(`verify_email`, `accept_terms`), the "version too old" screen or the account status card.
+Precedent: task 1037 (NeedsPlan) and the removed SignupScreen, which had none either.
+
+**What shipped:** the new screens are styled after their siblings (`LoginScreen`,
+`NeedsPlanScreen`): plain surface, brand mark, ONE amber primary per screen, JetBrains Mono for
+codes, counters and the recovery phrase, no emojis. Components: `src/components/onboarding/*`,
+`src/screens/WelcomeScreen.tsx`, `src/screens/SignupScreen.tsx`.
+
+**Why:** the screens are driven by the server's onboarding document (spec section 5), and the
+design lane has not drawn them. They are a first pass for review, not a design ruling; flow,
+copy and visuals belong to the design lane (task 1703 says the same of the first-run screen).
+
+### What the spec asks for and this build does differently
+
+1. **Server copy is not always rendered verbatim (spec 5.3).** The server writes ONE sentence per
+   account state, not per client: `copy.trial_end_over_allowance` ends "...unless you subscribe or
+   free up space." and is sent to an iOS account too (`beebeeb-api/src/onboarding/mod.rs`
+   `account_copy` takes no client context). A "subscribe" call to action inside the app is what
+   App Store 3.1.3 and task 1400 forbid. The app therefore renders server copy through
+   `noPurchaseCopy` (`src/lib/onboarding/account-summary.ts`): verbatim when it has no purchase
+   vocabulary, the known clause reduced to "...unless you free up space.", and anything else with
+   purchase vocabulary dropped for client-authored status text. **Server finding:** `account_copy`
+   should vary by `purchase.cta_allowed`; once it does, this reduction is a no-op.
+2. **The Files banner for `trial_ended` omits the sentence "Plans are managed from your account on
+   the web."** that spec 4b.7 puts in the banner. The spec itself flags it as untested with App
+   Review (open question 4) and names "drop that last sentence" as the more restrained fallback. The
+   sentence is on Storage & Plan (status card and the existing plan note). T17 (1754) decides.
+3. **No offer, no `offers`, no purchase steps at all.** The parser does not read `offers`; the
+   model has no field for it. `PurchaseInfo.ctaAllowed` is false for every surface not in
+   `COMPILED_PURCHASE_SURFACES`, which is empty in this binary (spec 5.1 principle 6). A required
+   purchase step (`choose_plan`, `start_trial`, ...) stops at a text-only screen.
+4. **`use_web` fallbacks are plain text while `WEB_ACCOUNT_LINKS_ENABLED` is off** (App Review
+   3.1.1(a), task 1400). `update_app` opens this app's App Store page, never a server-named URL.
+5. **Account-stage `accept_terms` is implemented** (the spec's 5.5 lists it for both stages). Every
+   account without a terms acceptance record, which is every account created before task 1740,
+   carries a required one, so without a screen all existing users would hit the "cannot do this
+   step" fallback on their first launch of this build.
+6. **The Welcome screen is shown once to a fresh install** and marked seen the moment any session
+   exists. It covers the "how it works" part of 1703 only; the Face ID opt-in and the design pass
+   are still 1703's.
+7. **`describeApiEnvironment`** treats any loopback port as `Local` (was :3001 only), so a lane on
+   its own port can show "API environment: Local" in Metro.
+8. **`CryptoProvider.unlock(phrase?, source?, freshMasterKey?)`** takes the new account's master key
+   from the signup ceremony through the same branch as a typed recovery phrase. No second way to
+   adopt a key was added.
+9. **The signup screen disables the swipe-back gesture** so an accidental swipe cannot drop a
+   phrase the person has already written down.
+
 ## Task 1724 — native video controls reserve space below Preview's floating bottom bar
 
 **Design:** `design/preview-redesign-ios.html` section 01 treats photo/video

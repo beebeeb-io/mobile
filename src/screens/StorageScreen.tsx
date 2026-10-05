@@ -38,6 +38,8 @@ import { billingBadgeLabel, billingStatusView, trialCapNote } from '../lib/billi
 import { effectivePlan, planDisplayName } from '../lib/effective-plan';
 import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
 import { accountGateFor, uploadsBlocked } from '../lib/account-state';
+import { useAccountState } from '../lib/account-state-context';
+import { AccountStatusCard } from '../components/onboarding/AccountStatusCard';
 import { useAuth } from '../lib/auth';
 
 type C = Colors;
@@ -332,13 +334,15 @@ export default function StorageScreen() {
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
+  // Task 1746: the account-stage onboarding document, as status text (no purchase UI).
+  const { document: accountDocument, gate: accountGate } = useAccountState();
 
   // Storage usage is derived from the subscription payload (used_bytes +
   // quota_bytes are embedded there), so there is no separate usage round-trip.
   const usage = usageFromSubscription(subscription);
   // Task 1037/1605: needs_plan / lapsed / a never-paid trial cancelled
   // before its first charge. Missing account_state (older server) is ok.
-  const readOnly = uploadsBlocked(accountGateFor(subscription));
+  const readOnly = accountDocument ? uploadsBlocked(accountGate) : uploadsBlocked(accountGateFor(subscription));
   // Task 1605 — informational only, no purchase CTA (task 1400).
   const trialCapMessage = trialCapNote(subscription, formatBytes);
 
@@ -456,6 +460,15 @@ export default function StorageScreen() {
               }
             </View>
           </View>
+
+          {/* Task 1746: the account's state in words, from the server's onboarding
+              document. Status only: nothing here is tappable (task 1400). */}
+          {accountDocument ? (
+            <View style={layout.section} testID="storage-account-status">
+              <SectionHeader title="Account status" c={c} />
+              <AccountStatusCard doc={accountDocument} />
+            </View>
+          ) : null}
 
           {/* Current plan */}
           <View style={layout.section}>

@@ -168,3 +168,48 @@ describe('isAccountRefusalCode — which upload errors should make the app re-ch
     expect(isAccountRefusalCode(undefined)).toBe(false);
   });
 });
+
+describe('task 1746 — trial_ended (no-card trial over the allowance, spec 4b.7)', () => {
+  test('the server code makes the app read-only, keeping a known deletion date and banner sentence', async () => {
+    const { gateForRefusalCode } = await import('./account-state');
+    expect(gateForRefusalCode('trial_ended', { kind: 'ok' })).toEqual({ kind: 'trial_ended', dataDeletionAt: null, bannerText: null });
+    const known = { kind: 'trial_ended', dataDeletionAt: '2026-11-01T09:00:00Z', bannerText: 'Your trial ended.' };
+    expect(gateForRefusalCode('trial_ended', known)).toEqual(known);
+  });
+
+  test('it makes uploads blocked and says why, without a purchase word', async () => {
+    const { readOnlyUploadMessage, uploadsBlocked } = await import('./account-state');
+    const gate = { kind: 'trial_ended', dataDeletionAt: null, bannerText: null };
+    expect(uploadsBlocked(gate)).toBe(true);
+    const msg = readOnlyUploadMessage(gate);
+    expect(msg).toMatch(/read-only/);
+    expect(msg).toMatch(/download and delete/);
+    expect(msg).not.toMatch(/subscribe|upgrade|buy|purchase|price|plan/i);
+  });
+
+  test('quota_exceeded while trial_ended keeps the trial_ended gate; the code is an account refusal', async () => {
+    const { gateForRefusalCode, isAccountRefusalCode } = await import('./account-state');
+    const gate = { kind: 'trial_ended', dataDeletionAt: null, bannerText: null };
+    expect(gateForRefusalCode('quota_exceeded', gate)).toEqual(gate);
+    expect(isAccountRefusalCode('trial_ended')).toBe(true);
+  });
+});
+
+describe('task 1746 — trialEndedBannerText (Files banner, facts only)', () => {
+  test('the server sentence wins when it passed the no-purchase filter', async () => {
+    const { trialEndedBannerText } = await import('./account-state');
+    expect(trialEndedBannerText({ dataDeletionAt: '2026-11-01T09:00:00Z', bannerText: 'Your trial ended. Files above 2 GB are read-only.' })).toBe('Your trial ended. Files above 2 GB are read-only.');
+  });
+  test('without it the client words it from the deletion date, or without one', async () => {
+    const { trialEndedBannerText } = await import('./account-state');
+    expect(trialEndedBannerText({ dataDeletionAt: '2026-11-01T12:00:00Z', bannerText: null })).toMatch(/^Your trial ended\. Files above your allowance are read-only and will be deleted on \w{3} \d{1,2}, 2026 unless you free up space\.$/);
+    expect(trialEndedBannerText({ dataDeletionAt: null, bannerText: null })).toBe('Your trial ended. Files above your allowance are read-only.');
+    expect(trialEndedBannerText({ dataDeletionAt: 'nonsense', bannerText: null })).toBe('Your trial ended. Files above your allowance are read-only.');
+  });
+  test('no purchase vocabulary and no web direction in the client wording', async () => {
+    const { trialEndedBannerText } = await import('./account-state');
+    for (const d of [null, '2026-11-01T12:00:00Z']) {
+      expect(trialEndedBannerText({ dataDeletionAt: d, bannerText: null })).not.toMatch(/subscribe|upgrade|buy|purchase|price|plans?\b|web|beebeeb\.io/i);
+    }
+  });
+});

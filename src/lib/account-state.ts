@@ -38,7 +38,14 @@ export type AccountGate =
   | { kind: 'ok' }
   | { kind: 'needs_plan' }
   | { kind: 'lapsed'; dataDeletionAt: string | null }
-  | { kind: 'trial_cancelled_read_only'; accessUntil: string | null; dataDeletionAt: string | null };
+  | { kind: 'trial_cancelled_read_only'; accessUntil: string | null; dataDeletionAt: string | null }
+  /**
+   * Task 1746 (onboarding document, spec 4b.7): a no-card trial ended and usage is
+   * above the allowance. Read-only above the allowance; download, export, delete
+   * and empty-trash stay. `bannerText` is the server's sentence (one that passed
+   * `noPurchaseCopy`), or null to use the client wording.
+   */
+  | { kind: 'trial_ended'; dataDeletionAt: string | null; bannerText: string | null };
 
 export function normalizeAccountState(raw: string | null | undefined): AccountState {
   if (raw === 'needs_plan' || raw === 'lapsed') return raw;
@@ -84,6 +91,20 @@ export function lapsedBannerText(dataDeletionAt: string | null | undefined): str
     : 'Your trial has ended. Your vault is read-only.';
 }
 
+/**
+ * Task 1746: the persistent Files banner for a `trial_ended` gate (spec 4b.7). The
+ * server's sentence when it passed `noPurchaseCopy`, else client wording from the
+ * deletion date. Facts only: the "Plans are managed..." sentence of the spec lives
+ * on Storage & Plan, not here (DEVIATIONS.md, task 1746).
+ */
+export function trialEndedBannerText(gate: { dataDeletionAt: string | null; bannerText: string | null }): string {
+  if (gate.bannerText) return gate.bannerText;
+  const date = formatDeletionDate(gate.dataDeletionAt);
+  return date
+    ? `Your trial ended. Files above your allowance are read-only and will be deleted on ${date} unless you free up space.`
+    : 'Your trial ended. Files above your allowance are read-only.';
+}
+
 export const READ_ONLY_TITLE = 'Your vault is read-only';
 
 /**
@@ -91,6 +112,9 @@ export const READ_ONLY_TITLE = 'Your vault is read-only';
  * reason) while uploads are refused. Null when uploads are allowed.
  */
 export function readOnlyUploadMessage(gate: AccountGate): string | null {
+  if (gate.kind === 'trial_ended') {
+    return 'Your trial has ended, so files above your allowance are read-only: uploads and backup are off. You can still browse, download and delete your files.';
+  }
   if (gate.kind === 'lapsed') {
     return 'Your trial has ended, so your vault is read-only: uploads and backup are off. You can still browse and download your files.';
   }
@@ -128,6 +152,8 @@ export const PLAN_REQUIRED_ERROR = 'plan_required';
 export const ACCOUNT_LAPSED_ERROR = 'account_lapsed';
 /** Task 1605 (server PR #129) — a never-paid trial cancelled before its first charge. */
 export const TRIAL_CANCELLED_READ_ONLY_ERROR = 'trial_cancelled_read_only';
+/** Task 1746 (spec 5.6): upload/share refused because a no-card trial ended over the allowance. */
+export const TRIAL_ENDED_ERROR = 'trial_ended';
 
 /**
  * The gate an error code proves, or null when the code is not an account
@@ -146,6 +172,13 @@ export function gateForRefusalCode(code: string | null | undefined, current: Acc
       dataDeletionAt: current.kind === 'trial_cancelled_read_only' ? current.dataDeletionAt : null,
     };
   }
+  if (code === TRIAL_ENDED_ERROR) {
+    return {
+      kind: 'trial_ended',
+      dataDeletionAt: current.kind === 'trial_ended' ? current.dataDeletionAt : null,
+      bannerText: current.kind === 'trial_ended' ? current.bannerText : null,
+    };
+  }
   if (code === 'quota_exceeded' && current.kind !== 'ok') return current;
   return null;
 }
@@ -156,6 +189,7 @@ export function isAccountRefusalCode(code: string | null | undefined): boolean {
     code === PLAN_REQUIRED_ERROR ||
     code === ACCOUNT_LAPSED_ERROR ||
     code === TRIAL_CANCELLED_READ_ONLY_ERROR ||
+    code === TRIAL_ENDED_ERROR ||
     code === 'quota_exceeded'
   );
 }

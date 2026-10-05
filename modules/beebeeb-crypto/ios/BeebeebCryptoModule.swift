@@ -2333,6 +2333,106 @@ public class BeebeebCryptoModule: Module {
       ]
     }
 
+    // ── Task 1746: onboarding (password policy, breach check, signup ceremony) ──
+    //
+    // Thin delegations to `OnboardingBridge` (OnboardingBridge.swift), which holds
+    // the UniFFI handles of `beebeeb_core::onboarding` (task 1744). JS only ever
+    // sees integer ids. Errors arrive as `ERR_ONBOARDING_<CODE>` exceptions.
+
+    AsyncFunction("onboardingEvaluatePassword") { (password: String, minLength: Int) -> [String: Any] in
+      OnboardingBridge.shared.evaluatePasswordForUI(password, minLength: minLength)
+    }
+
+    AsyncFunction("onboardingBreachNew") { (password: String) -> Int in
+      OnboardingBridge.shared.breachNew(password)
+    }
+
+    AsyncFunction("onboardingBreachPrefix") { (id: Int) throws -> String in
+      try OnboardingBridge.shared.breachPrefix(id)
+    }
+
+    AsyncFunction("onboardingBreachEvaluate") { (id: Int, requestedPrefix: String, body: String?, failOpen: Bool) throws -> [String: Any] in
+      try OnboardingBridge.shared.breachEvaluate(id, requestedPrefix: requestedPrefix, body: body, failOpen: failOpen)
+    }
+
+    AsyncFunction("onboardingBreachRelease") { (id: Int) in
+      OnboardingBridge.shared.breachRelease(id)
+    }
+
+    AsyncFunction("onboardingCeremonyNew") { (minLength: Int, emailVerificationRequired: Bool, verifyWordCount: Int, breachCheckRequired: Bool, breachFailOpen: Bool) -> Int in
+      OnboardingBridge.shared.ceremonyNew(
+        minLength: minLength,
+        emailVerificationRequired: emailVerificationRequired,
+        verifyWordCount: verifyWordCount,
+        breachCheckRequired: breachCheckRequired,
+        breachFailOpen: breachFailOpen
+      )
+    }
+
+    AsyncFunction("onboardingCeremonyEmailVerified") { (id: Int) throws in
+      try OnboardingBridge.shared.ceremonyEmailVerified(id)
+    }
+
+    AsyncFunction("onboardingCeremonyEmailChanged") { (id: Int) throws in
+      try OnboardingBridge.shared.ceremonyEmailChanged(id)
+    }
+
+    AsyncFunction("onboardingCeremonyEmailTicketInvalidated") { (id: Int) throws in
+      try OnboardingBridge.shared.ceremonyEmailTicketInvalidated(id)
+    }
+
+    AsyncFunction("onboardingCeremonyRegistrationFailed") { (id: Int) throws in
+      try OnboardingBridge.shared.ceremonyRegistrationFailed(id)
+    }
+
+    AsyncFunction("onboardingCeremonySetPassword") { (id: Int, password: String, confirmation: String, breachId: Int?) throws -> [String: Any] in
+      try OnboardingBridge.shared.ceremonySetPassword(id, password: password, confirmation: confirmation, breachId: breachId)
+    }
+
+    AsyncFunction("onboardingCeremonyBeginPhrase") { (id: Int) throws in
+      try OnboardingBridge.shared.ceremonyBeginPhrase(id)
+    }
+
+    AsyncFunction("onboardingCeremonyPhrase") { (id: Int) throws -> String in
+      try OnboardingBridge.shared.ceremonyPhrase(id)
+    }
+
+    AsyncFunction("onboardingCeremonyAcknowledgePhrase") { (id: Int) throws in
+      try OnboardingBridge.shared.ceremonyAcknowledgePhrase(id)
+    }
+
+    AsyncFunction("onboardingCeremonyChallengePositions") { (id: Int) throws -> [Int] in
+      try OnboardingBridge.shared.ceremonyChallengePositions(id)
+    }
+
+    AsyncFunction("onboardingCeremonyConfirmPhrase") { (id: Int, answers: [String]) throws in
+      try OnboardingBridge.shared.ceremonyConfirmPhrase(id, answers: answers)
+    }
+
+    AsyncFunction("onboardingCeremonyStartRegistration") { (id: Int) throws -> Data in
+      try OnboardingBridge.shared.ceremonyStartRegistration(id)
+    }
+
+    AsyncFunction("onboardingCeremonyFinishRegistration") { (id: Int, serverMessage: Data) throws -> [String: Data] in
+      try OnboardingBridge.shared.ceremonyFinishRegistration(id, serverMessage: serverMessage)
+    }
+
+    AsyncFunction("onboardingCeremonyStep") { (id: Int) throws -> String in
+      try OnboardingBridge.shared.ceremonyStep(id)
+    }
+
+    AsyncFunction("onboardingCeremonyAccountCreated") { (id: Int) throws -> Data in
+      try OnboardingBridge.shared.ceremonyAccountCreated(id)
+    }
+
+    AsyncFunction("onboardingCeremonyAbandon") { (id: Int) in
+      OnboardingBridge.shared.ceremonyAbandon(id)
+    }
+
+    AsyncFunction("onboardingCeremonyRelease") { (id: Int) in
+      OnboardingBridge.shared.ceremonyRelease(id)
+    }
+
     AsyncFunction("recoverFromPhrase") { (phrase: String) throws -> [String: Any] in
       let masterKey = try recoverFromPhrase(phrase: phrase)
       return ["masterKey": masterKey]
