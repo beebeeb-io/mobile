@@ -200,3 +200,34 @@ describe('links and request paths in the document are checked once, here', () =>
     expect(parseOnboardingDocument(raw).doc.policy.password.breachCheck.failOpen).toBe(false);
   });
 });
+
+describe('server-dictated values are bounded (1753 pass 2, finding 6)', () => {
+  const parseWith = (mutate) => {
+    const raw = JSON.parse(JSON.stringify(loadFixture('pre_account.ios')));
+    mutate(raw);
+    const r = parseOnboardingDocument(raw);
+    if (!r.ok) throw new Error('did not parse');
+    return r.doc;
+  };
+  test('terms, privacy and web links must be https on beebeeb.io or a subdomain; others are dropped', () => {
+    const d = parseWith((r) => {
+      r.policy.terms.url = 'https://evil.example/terms';
+      r.policy.terms.privacy_url = 'https://beebeeb.io.evil.example/privacy';
+      r.signup.web_url = 'https://evil.example/signup';
+    });
+    expect(d.policy.terms.url).toBeNull();
+    expect(d.policy.terms.privacyUrl).toBeNull();
+    expect(d.signup.webUrl).toBeNull();
+  });
+  test('a beebeeb.io subdomain link is kept', () => {
+    const d = parseWith((r) => {
+      r.policy.terms.url = 'https://www.beebeeb.io/terms';
+    });
+    expect(d.policy.terms.url).toBe('https://www.beebeeb.io/terms');
+  });
+  test('email code length is clamped to 4..12', () => {
+    expect(parseWith((r) => { r.policy.email_code.length = 10000; }).policy.emailCode.length).toBe(12);
+    expect(parseWith((r) => { r.policy.email_code.length = 1; }).policy.emailCode.length).toBe(4);
+    expect(parseWith((r) => { r.policy.email_code.length = 6; }).policy.emailCode.length).toBe(6);
+  });
+});

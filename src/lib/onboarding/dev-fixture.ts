@@ -26,23 +26,27 @@ export function setDevDocumentOverride(doc: OnboardingDocument | null): void {
 }
 
 function fixtureJson(name: string): unknown {
-  if (!__DEV__) return null;
-  switch (name) {
-    case 'account.allowance.ios':
-      return require('../../contracts/onboarding/fixtures/account.allowance.ios.json');
-    case 'account.trialing_no_card.desktop':
-      return require('../../contracts/onboarding/fixtures/account.trialing_no_card.desktop.json');
-    case 'account.trial_ended.ios':
-      return require('../../contracts/onboarding/fixtures/account.trial_ended.ios.json');
-    case 'account.lapsed.ios':
-      return require('../../contracts/onboarding/fixtures/account.lapsed.ios.json');
-    case 'account.needs_plan.ios':
-      return require('../../contracts/onboarding/fixtures/account.needs_plan.ios.json');
-    case 'client.update_required.ios':
-      return require('../../contracts/onboarding/fixtures/client.update_required.ios.json');
-    default:
-      return null;
+  // The requires live INSIDE the __DEV__ block so Metro folds the whole block away
+  // in a release build and the golden documents are not bundled at all.
+  if (__DEV__) {
+    switch (name) {
+      case 'account.allowance.ios':
+        return require('../../contracts/onboarding/fixtures/account.allowance.ios.json');
+      case 'account.trialing_no_card.desktop':
+        return require('../../contracts/onboarding/fixtures/account.trialing_no_card.desktop.json');
+      case 'account.trial_ended.ios':
+        return require('../../contracts/onboarding/fixtures/account.trial_ended.ios.json');
+      case 'account.lapsed.ios':
+        return require('../../contracts/onboarding/fixtures/account.lapsed.ios.json');
+      case 'account.needs_plan.ios':
+        return require('../../contracts/onboarding/fixtures/account.needs_plan.ios.json');
+      case 'client.update_required.ios':
+        return require('../../contracts/onboarding/fixtures/client.update_required.ios.json');
+      default:
+        return null;
+    }
   }
+  return null;
 }
 
 /** Parse a bundled fixture by name, or null (unknown name, release build, unparseable). */

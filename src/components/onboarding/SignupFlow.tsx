@@ -19,12 +19,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Linking, Text, TouchableOpacity, View } from 'react-native';
 import { usePreventScreenCapture } from 'expo-screen-capture';
+import { clampCodeLength, shownTermsVersion } from '../../lib/onboarding/limits';
+import { useAppSwitcherProtection, useCaptureGuard } from './screen-privacy';
 import { fonts, radii, spacing } from '../../theme';
 import { CeremonyError, type BreachCheck, type PasswordEvaluation, type SignupCeremony } from '../../../modules/beebeeb-crypto/src/BeebeebOnboarding';
 import { DigitCodeInput, type DigitCodeInputHandle } from '../DigitCodeInput';
 import { runBreachCheck } from '../../lib/onboarding/breach-step';
 import {
   TICKET_EXPIRED_NOTICE,
+  UNKNOWN_OUTCOME_MESSAGE,
+  VAULT_NOT_ADOPTED_MESSAGE,
   ceremonyMessage,
   createAccountMessage,
   emailStartMessage,
@@ -56,9 +60,11 @@ interface Session {
   ticket: string;
   /** When email-start last succeeded, for the "send a new code in m:ss" countdown. */
   emailSentAt: number | null;
+  /** The Terms version the person accepted (the version the accept_terms step showed); submitted at register-finish. */
+  termsVersion: string;
 }
 
-const freshSession = (): Session => ({ email: '', pilotKey: '', ticket: '', emailSentAt: null });
+const freshSession = (): Session => ({ email: '', pilotKey: '', ticket: '', emailSentAt: null, termsVersion: '' });
 
 interface Ctx {
   doc: OnboardingDocument;
@@ -196,7 +202,7 @@ function PilotKeyStep({ ctx }: { ctx: Ctx }) {
 function VerifyEmailCodeStep({ ctx }: { ctx: Ctx }) {
   const { policy, session, ports, screen } = ctx;
   const { s } = useOnboardingStyles();
-  const length = typeof screen.step.params.length === 'number' ? screen.step.params.length : policy.emailCode.length;
+  const length = clampCodeLength(typeof screen.step.params.length === 'number' ? screen.step.params.length : policy.emailCode.length);
   const codeRef = useRef<DigitCodeInputHandle>(null);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -357,7 +363,7 @@ export function TermsLinks({ terms }: { terms: { url: string | null; privacyUrl:
 
 function AcceptTermsStep({ ctx }: { ctx: Ctx }) {
   const { policy, screen } = ctx;
-  const version = typeof screen.step.params.version === 'string' ? (screen.step.params.version as string) : policy.terms.version;
+  const version = shownTermsVersion(screen.step.params, policy.terms.version);
   const [terms, setTerms] = useState(false);
   const [understood, setUnderstood] = useState(false);
   return (
@@ -370,7 +376,11 @@ function AcceptTermsStep({ ctx }: { ctx: Ctx }) {
         I understand that Beebeeb cannot recover my account if I lose both my password and my recovery phrase. We can't recover this.
       </CheckRow>
       <View style={{ marginTop: spacing.xl }}>
-        <PrimaryButton label="Continue" disabled={!terms || !understood} onPress={() => ctx.done('accept_terms')} testID="signup-terms-continue" />
+        <PrimaryButton label="Continue" disabled={!terms || !understood} onPress={() => {
+            // Record what was SHOWN; register-finish submits exactly this.
+            ctx.session.current.termsVersion = version;
+            ctx.done('accept_terms');
+          }} testID="signup-terms-continue" />
       </View>
     </OnboardingFrame>
   );
@@ -399,6 +409,9 @@ function SetPasswordStep({ ctx }: { ctx: CeremonyCtx }) {
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [show, setShow] = useState(false);
+  // While the password is readable on screen it must not be capturable.
+  useCaptureGuard('signup-show-password', show);
+  useAppSwitcherProtection(show);
   const [evaluation, setEvaluation] = useState<PasswordEvaluation | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -549,7 +562,8 @@ function SaveRecoveryPhraseStep({ ctx }: { ctx: CeremonyCtx }) {
   // Hide this screen from screenshots, screen recordings and the app switcher
   // while the words (or the confirmation of them) are on it.
   usePreventScreenCapture('signup-recovery-phrase');
-  const { ceremony, screen, policy } = ctx;
+  useAppSwitcherProtection();
+  const { ceremony, screen } = ctx;
   const { s, c } = useOnboardingStyles();
   const [phase, setPhase] = useState<'loading' | 'show' | 'confirm'>('loading');
   const [words, setWords] = useState<string[]>([]);
@@ -676,7 +690,7 @@ function SaveRecoveryPhraseStep({ ctx }: { ctx: CeremonyCtx }) {
   return (
     <OnboardingFrame
       title="Your recovery phrase"
-      subtitle={`These ${policy.recoveryPhrase.wordCount} words are the only way to recover your account. Write them down or save them in a password manager. We can't recover this for you.`}
+      subtitle={`${words.length > 0 ? `These ${words.length} words are` : 'These words are'} the only way to recover your account. Write them down or save them in a password manager. We can't recover this for you.`}
       position={screen.position}
       total={screen.total}
       testID="signup-step-save_recovery_phrase"
@@ -755,9 +769,14 @@ function SaveRecoveryPhraseStep({ ctx }: { ctx: CeremonyCtx }) {
 
 function CreateAccountStep({ ctx }: { ctx: CeremonyCtx }) {
   const { ceremony, session, ports, doc, screen, policy } = ctx;
+  const { s } = useOnboardingStyles();
   const [status, setStatus] = useState('Setting up account encryption');
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
+  // register-finish went out and no verdict came back: the account may exist.
+  const [unknown, setUnknown] = useState(false);
+  // The account exists but this device's vault did not adopt the key: tell them before moving on.
+  const [vaultNotice, setVaultNotice] = useState<Extract<CreateAccountOutcome, { kind: 'created' }> | null>(null);
   const running = useRef(-1);
 
   useEffect(() => {
@@ -765,16 +784,21 @@ function CreateAccountStep({ ctx }: { ctx: CeremonyCtx }) {
     running.current = attempt;
     (async () => {
       setError('');
+      // A document with no accept_terms step still has a Terms version to record.
+      if (!session.current.termsVersion) session.current.termsVersion = policy.terms.version;
       const outcome = await runCreateAccount({
         ceremony,
         ports,
         session: session.current,
-        termsVersion: policy.terms.version,
         onStatus: setStatus,
       });
       switch (outcome.kind) {
         case 'created':
-          ctx.onCreated(outcome);
+          if (outcome.vaultAdopted) ctx.onCreated(outcome);
+          else setVaultNotice(outcome);
+          return;
+        case 'unknown_outcome':
+          setUnknown(true);
           return;
         case 'ticket_invalid':
           ctx.setNotice(TICKET_EXPIRED_NOTICE);
@@ -793,7 +817,22 @@ function CreateAccountStep({ ctx }: { ctx: CeremonyCtx }) {
 
   return (
     <OnboardingFrame title="Creating your account" position={screen.position} total={screen.total} testID="signup-step-create_account">
-      {error ? (
+      {vaultNotice ? (
+        <>
+          <Text style={s.body} testID="signup-vault-notice">{VAULT_NOT_ADOPTED_MESSAGE}</Text>
+          <View style={{ marginTop: spacing.xl }}>
+            <PrimaryButton label="Continue" onPress={() => ctx.onCreated(vaultNotice)} testID="signup-vault-notice-continue" />
+          </View>
+        </>
+      ) : unknown ? (
+        <>
+          <ErrorLine testID="signup-create-unknown">{UNKNOWN_OUTCOME_MESSAGE}</ErrorLine>
+          <View style={{ flexDirection: 'row', gap: spacing.md, marginTop: spacing.xl }}>
+            <SecondaryButton label="Start over" onPress={ctx.startOver} testID="signup-unknown-start-over" style={{ flex: 0.8 }} />
+            <PrimaryButton label="Go to sign in" onPress={ctx.cancel} testID="signup-unknown-sign-in" style={{ flex: 1 }} />
+          </View>
+        </>
+      ) : error ? (
         <>
           <ErrorLine testID="signup-create-error">{error}</ErrorLine>
           <View style={{ flexDirection: 'row', gap: spacing.md, marginTop: spacing.xl }}>
@@ -851,7 +890,7 @@ export function renderTerminalScreen(
     case 'update_required':
       return <UpdateRequired screen={screen} onSignOut={opts.onSignOut} />;
     case 'unsupported_schema':
-      return <UnsupportedSchema screen={screen} />;
+      return <UnsupportedSchema screen={screen} onSignOut={opts.onSignOut} />;
     case 'signup_unavailable':
       return <SignupUnavailable screen={screen} onBack={opts.onBack} />;
     case 'fallback':

@@ -1,8 +1,11 @@
 # Native signup QA driver (task 1746)
 
 The Maestro driver the simulator rung of task 1746 was run with. It is a REFERENCE, not a CI job:
-paths are the lane's (`~/code/bb-worktrees/s1746/...`, a local API on :3146, Mailpit on :8025, sim
-UDID in `sim-udid.txt`); copy the folder and edit `lib.sh` before reuse.
+it needs `BB_WORKSPACE`, `BB_QA_UDID` (a simulator you created for the run, deleted afterwards) and
+`BB_QA_EVIDENCE` in the environment, a local API with Mailpit on :8025, and a `signout.yaml` of your own
+in the work directory. All generated flows, hierarchy dumps and the phrase/answer files live in a
+`mktemp -d` directory removed on exit; nothing that can contain a recovery phrase is written into the
+repo, and none may ever be committed.
 
 | File | What |
 |---|---|

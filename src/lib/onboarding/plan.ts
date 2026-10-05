@@ -30,6 +30,7 @@
  * the core ceremony in the components, never here.
  */
 
+import { phraseWordCountSupported } from './limits';
 import type { Fallback, OnboardingDocument, OnboardingStep, Stage } from './types';
 
 /** Where a document-less or fallback-less failure sends the person. Hard-coded on purpose (rule 5). */
@@ -220,6 +221,12 @@ export function planScreen(doc: OnboardingDocument, completed: ReadonlySet<strin
         reason: signup?.reason ?? null,
         webUrl: signup?.webUrl ?? doc.fallback?.url ?? HARD_CODED_WEB_FALLBACK.url,
       };
+    }
+    // The ceremony generates a fixed-length phrase. A document that declares another
+    // length is asking for something this build cannot deliver: refuse before any
+    // email is sent rather than show a number the phrase will not match.
+    if (doc.policy && !phraseWordCountSupported(doc.policy.recoveryPhrase.wordCount)) {
+      return unsupportedSchemaScreen();
     }
     const next = firstActionable(doc, completed);
     if (next === null) return { kind: 'created' };

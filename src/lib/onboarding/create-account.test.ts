@@ -26,8 +26,8 @@ function rig(opts = {}) {
     actions,
     adoptVault: async (k) => { log.push(['adoptVault', k.length, k[0]]); if (opts.adoptThrows) throw new Error('vault'); return opts.adopted ?? true; },
   };
-  const session = { email: 'a@beebeeb.io', pilotKey: '', ticket: 'T1' };
-  return { log, masterKey, session, run: (extra = {}) => runCreateAccount({ ceremony, ports, session, termsVersion: '2026-09-29', ...extra }) };
+  const session = { email: 'a@beebeeb.io', pilotKey: '', ticket: 'T1', termsVersion: opts.sessionTerms ?? '2026-09-29' };
+  return { log, masterKey, session, run: (extra = {}) => runCreateAccount({ ceremony, ports, session, ...extra }) };
 }
 
 describe('happy path', () => {
@@ -110,5 +110,41 @@ describe('after the account exists: never retry registration', () => {
 
   test('adoptVault returning false is created with vaultAdopted false', async () => {
     expect(await rig({ adopted: false }).run()).toEqual({ kind: 'created', vaultAdopted: false });
+  });
+});
+
+describe('terms version (1753 pass 2, finding 1)', () => {
+  test('register-finish submits exactly the version the person accepted, carried on the session', async () => {
+    const r = rig({ sessionTerms: '2026-10-01' });
+    await r.run();
+    const fin = r.log.find((l) => Array.isArray(l) && l[0] === 'registerFinish');
+    expect(fin[1]).toBe('2026-10-01');
+  });
+});
+
+describe('unknown outcome at register-finish (1753 pass 2, finding 4)', () => {
+  for (const code of ['network', 'register_finish_failed', 'unknown']) {
+    test(`${code} at register-finish: the account may exist, so no retry and no "nothing stored"`, async () => {
+      const r = rig({ finishThrows: new ActionError(code, 'x') });
+      const out = await r.run();
+      expect(out).toEqual({ kind: 'unknown_outcome' });
+      expect(r.log).not.toContain('registrationFailed');
+      expect(r.log).not.toContain('accountCreated');
+    });
+  }
+  test('a plain Error thrown by register-finish (token store failure) is the same', async () => {
+    const r = rig({ finishThrows: new Error('keychain write failed') });
+    expect(await r.run()).toEqual({ kind: 'unknown_outcome' });
+    expect(r.log).not.toContain('registrationFailed');
+  });
+  test('a definite server verdict at register-finish is still retryable', async () => {
+    const r = rig({ finishThrows: new ActionError('terms_version_stale', 'x') });
+    expect((await r.run()).kind).toBe('failed_before_account');
+    expect(r.log).toContain('registrationFailed');
+  });
+  test('a network failure at register-START stored nothing: retryable', async () => {
+    const r = rig({ startThrows: new ActionError('network', 'x') });
+    expect(await r.run()).toEqual({ kind: 'failed_before_account', rateLimited: false, code: 'network' });
+    expect(r.log).toContain('registrationFailed');
   });
 });

@@ -80,7 +80,15 @@ export function UpdateRequired({
   );
 }
 
-export function UnsupportedSchema({ screen }: { screen: UnsupportedSchemaScreen }) {
+export function UnsupportedSchema({
+  screen,
+  onSignOut,
+}: {
+  screen: UnsupportedSchemaScreen;
+  /** Supplied only where a session can exist: like UpdateRequired, this screen may block everything EXCEPT Sign out. */
+  onSignOut?: () => Promise<void>;
+}) {
+  const [signingOut, setSigningOut] = useState(false);
   return (
     <OnboardingFrame
       title="Update to continue"
@@ -88,6 +96,19 @@ export function UnsupportedSchema({ screen }: { screen: UnsupportedSchemaScreen 
       testID="unsupported-schema-screen"
     >
       <FallbackBlock fallback={{ kind: 'update_app', url: screen.fallback.url }} testID="unsupported-schema-action" />
+      {onSignOut ? (
+        <View style={{ marginTop: spacing.md }}>
+          <SecondaryButton
+            label="Sign out"
+            disabled={signingOut}
+            testID="unsupported-schema-sign-out"
+            onPress={() => {
+              setSigningOut(true);
+              onSignOut().finally(() => setSigningOut(false));
+            }}
+          />
+        </View>
+      ) : null}
     </OnboardingFrame>
   );
 }

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-source ~/code/bb-worktrees/s1746/flows/lib.sh
-FL=~/code/bb-worktrees/s1746/flows
-PW='Tr1ckyPassw0rd-Beebeeb!x'
-sed -i '' 's/^- tapOn:\n    id: "welcome-create-account"//' $FL/mkphaseA.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# A throwaway password per run, never a literal in the repo.
+PW=${BB_QA_PASSWORD:-"$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 18)-Aa1!"}
 phaseA() { # EMAIL NAME
-  cd $FL && ./mkphaseA.sh "$1" $E "$2" && python3 - "$2" <<'PY'
+  cd $FL && $HERE/mkphaseA.sh "$1" $E "$2" && python3 - "$2" <<'PY'
 import sys
 n=sys.argv[1]; p=f'phaseA-{n}.yaml'; s=open(p).read()
 s=s.replace('- tapOn:\n    id: "welcome-create-account"\n    optional: true','- tapOn:\n    id: "welcome-create-account"\n    optional: true\n- tapOn:\n    id: "create-account-button"\n    optional: true',1)
@@ -37,16 +36,16 @@ Y
 readwords() { # NAME
   hier $FL/hier-phrase-$1.json
   python3 - $1 <<'PY'
-import json,re,sys
+import json,os,re,sys
 n=sys.argv[1]
-raw=open(f'/Users/guuslangelaar/code/bb-worktrees/s1746/flows/hier-phrase-{n}.json').read(); d=json.loads(raw[raw.index('{'):])
+raw=open(os.path.join(os.environ['FL'],f'hier-phrase-{n}.json')).read(); d=json.loads(raw[raw.index('{'):])
 w={}
 def walk(x):
     a=x.get('attributes',{}); m=re.match(r'signup-phrase-word-(\d+)',a.get('resource-id',''))
     if m: w[int(m.group(1))]=a.get('text') or a.get('accessibilityText')
     for c in x.get('children',[]): walk(c)
 walk(d)
-open(f'/Users/guuslangelaar/code/bb-worktrees/s1746/flows/words-{n}.txt','w').write(' '.join(w[k] for k in sorted(w)))
+open(os.path.join(os.environ['FL'],f'words-{n}.txt'),'w').write(' '.join(w[k] for k in sorted(w)))
 print(len(w),'words read')
 PY
 }
@@ -66,8 +65,8 @@ Y
   mae test $FL/phaseC.yaml | /usr/bin/grep -E "FAILED|Error" | head -2
   hier $FL/hier-confirm-$1.json
   python3 - $1 <<'PY'
-import json,re,sys
-n=sys.argv[1]; base='/Users/guuslangelaar/code/bb-worktrees/s1746/flows/'
+import json,os,re,sys
+n=sys.argv[1]; base=os.environ['FL']+'/'
 raw=open(base+f'hier-confirm-{n}.json').read(); d=json.loads(raw[raw.index('{'):])
 pos=[]
 def walk(x):

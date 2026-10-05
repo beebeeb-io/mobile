@@ -26,6 +26,7 @@
  * Pure: no React, no native modules, no `URL` global (Hermes' is partial).
  */
 
+import { clampCodeLength, isBeebeebHttpsUrl } from './limits';
 import {
   CAPABILITY_NAMES,
   COMPILED_PURCHASE_SURFACES,
@@ -79,6 +80,11 @@ const HTTPS_URL_RE = /^https:\/\/[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:\d{1,5
 export function safeHttpsUrl(v: unknown): string | null {
   if (typeof v !== 'string') return null;
   return HTTPS_URL_RE.test(v) ? v : null;
+}
+
+/** A link the person will be sent to as OURS (terms, privacy, web sign-up): https on beebeeb.io or a subdomain. */
+export function ownHttpsUrl(v: unknown): string | null {
+  return safeHttpsUrl(v) !== null && isBeebeebHttpsUrl(v) ? (v as string) : null;
 }
 
 const API_PATH_RE = /^\/api\/v1\/[A-Za-z0-9._~\-/{}]*$/;
@@ -145,7 +151,7 @@ function parseSignup(v: unknown): SignupInfo | null {
     allowed: v.allowed === true,
     mode,
     reason: str(v.reason),
-    webUrl: safeHttpsUrl(v.web_url),
+    webUrl: ownHttpsUrl(v.web_url),
   };
 }
 
@@ -178,9 +184,9 @@ function parsePolicy(v: unknown): SignupPolicy | null {
       wordCount: int(rp.word_count) ?? 12,
       verifyWordCount: int(rp.verify_word_count) ?? 3,
     },
-    terms: { version: termsVersion, url: safeHttpsUrl(terms.url), privacyUrl: safeHttpsUrl(terms.privacy_url) },
+    terms: { version: termsVersion, url: ownHttpsUrl(terms.url), privacyUrl: ownHttpsUrl(terms.privacy_url) },
     emailCode: {
-      length: int(ec.length) ?? 8,
+      length: clampCodeLength(int(ec.length) ?? 8),
       ttlSeconds: int(ec.ttl_seconds) ?? 900,
       resendAfterSeconds: int(ec.resend_after_seconds) ?? 60,
       ticketTtlSeconds: int(ec.ticket_ttl_seconds) ?? 1800,

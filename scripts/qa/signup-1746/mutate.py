@@ -1,5 +1,6 @@
 import subprocess,sys,shutil,re,os
-os.chdir('/Users/guuslangelaar/code/bb-worktrees/mobile-1746')
+# Run from the mobile worktree root (or set BB_MOBILE_WORKTREE).
+os.chdir(os.environ.get('BB_MOBILE_WORKTREE') or os.getcwd())
 M=[
  ("M1 parse: ignore COMPILED_PURCHASE_SURFACES","src/lib/onboarding/parse.ts","ctaAllowed: v.cta_allowed === true && COMPILED_PURCHASE_SURFACES.includes(surface),","ctaAllowed: v.cta_allowed === true,","src/lib/onboarding/parse.test.ts"),
  ("M2 parse: accept http URLs","src/lib/onboarding/parse.ts","/^https:\\/\\/","/^https?:\\/\\/","src/lib/onboarding/parse.test.ts"),

@@ -1,0 +1,6 @@
+# Anything that can hold a recovery phrase must never be committed.
+words-*.txt
+answers-*.txt
+hier-*.json
+phaseD-*.yaml
+*.words

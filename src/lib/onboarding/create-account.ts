@@ -8,6 +8,8 @@
  *   1. BEFORE the account exists: register-start, the OPAQUE finish in core,
  *      register-finish. A failure here stored nothing, so the ceremony is put
  *      back (`registrationFailed`) and the person may try again or start over.
+ *      EXCEPT a register-finish that was sent and got no server verdict
+ *      (`unknown_outcome`): the account may exist.
  *
  *   2. AFTER register-finish succeeded the account AND a session exist on the
  *      server, and the session token is already stored. A later failure (the
@@ -25,6 +27,8 @@ export interface CreateAccountSession {
   email: string;
   pilotKey: string;
   ticket: string;
+  /** The Terms version the person was shown and accepted at the accept_terms step; submitted verbatim. */
+  termsVersion: string;
 }
 
 export type CreateAccountOutcome =
@@ -37,6 +41,12 @@ export type CreateAccountOutcome =
   | { kind: 'ticket_invalid' }
   /** The address gained an account between the code and the finish (409 account_exists, ticket kept). */
   | { kind: 'account_exists' }
+  /**
+   * register-finish was sent but its answer is unusable (no response, or the session
+   * could not be stored): the server may have committed. Never retry; never say
+   * "nothing was stored". The person checks by signing in.
+   */
+  | { kind: 'unknown_outcome' }
   /** Nothing was stored. Retry or start over is safe. */
   | { kind: 'failed_before_account'; rateLimited: boolean; code: string };
 
@@ -47,9 +57,17 @@ export interface CreateAccountDeps {
   >;
   ports: Pick<SignupPorts, 'actions' | 'adoptVault'>;
   session: CreateAccountSession;
-  /** `policy.terms.version`: the version the person was shown and accepted. */
-  termsVersion: string;
   onStatus?: (status: string) => void;
+}
+
+/**
+ * Codes that are a server verdict ("no account was created"). `network`, the
+ * port's fallback and a non-API error (the token store) are not: the server may
+ * have committed before the answer was lost.
+ */
+const NO_VERDICT_CODES = new Set(['network', 'register_finish_failed', 'unknown']);
+function isDefiniteRejection(code: string): boolean {
+  return !NO_VERDICT_CODES.has(code);
 }
 
 export async function runCreateAccount(deps: CreateAccountDeps): Promise<CreateAccountOutcome> {
@@ -57,6 +75,7 @@ export async function runCreateAccount(deps: CreateAccountDeps): Promise<CreateA
   const status = deps.onStatus ?? (() => {});
 
   // Phase 1: the account does not exist yet.
+  let finishSent = false;
   try {
     status('Setting up account encryption');
     const clientMessage = await ceremony.startRegistration();
@@ -69,11 +88,12 @@ export async function runCreateAccount(deps: CreateAccountDeps): Promise<CreateA
     status('Generating encryption keys');
     const fin = await ceremony.finishRegistration(serverMessage);
     status('Registering with the server');
+    finishSent = true;
     await ports.actions.registerFinish({
       email: s.email,
       ticket: s.ticket,
       pilotKey: s.pilotKey,
-      termsVersion: deps.termsVersion,
+      termsVersion: s.termsVersion,
       upload: fin.upload,
       x25519Public: fin.x25519Public,
       recoveryCheck: fin.recoveryCheck,
@@ -93,6 +113,12 @@ export async function runCreateAccount(deps: CreateAccountDeps): Promise<CreateA
     }
     if (code === 'account_exists') {
       return { kind: 'account_exists' };
+    }
+    if (finishSent && !isDefiniteRejection(code)) {
+      // The request left this device and no server verdict came back. The account
+      // may exist, so registration must not be offered again and the ceremony is
+      // NOT put back (that would invite a second registration).
+      return { kind: 'unknown_outcome' };
     }
     try {
       await ceremony.registrationFailed();

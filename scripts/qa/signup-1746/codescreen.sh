@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # usage: codescreen.sh EMAIL TAG
-source ~/code/bb-worktrees/s1746/flows/lib2.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib2.sh"
 cat > $FL/cs-$2.yaml <<Y
 appId: io.beebeeb.app
 ---

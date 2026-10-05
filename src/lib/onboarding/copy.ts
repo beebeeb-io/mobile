@@ -83,3 +83,14 @@ export const TICKET_EXPIRED_NOTICE =
 
 export const ACCOUNT_EXISTS_MESSAGE =
   'An account with this address already exists. Sign in instead. Nothing was changed.';
+
+/**
+ * register-finish was sent and no server verdict came back (or the session could not
+ * be stored): the account may exist. Never "Nothing was stored", never "try again".
+ */
+export const UNKNOWN_OUTCOME_MESSAGE =
+  'We could not confirm whether your account was created. Check by signing in; if the account exists, use your recovery phrase.';
+
+/** The account exists but this device's vault did not adopt the key: name the phrase they just wrote down. */
+export const VAULT_NOT_ADOPTED_MESSAGE =
+  'Your account was created, but this device could not unlock your vault. Next, enter the recovery phrase you just wrote down.';

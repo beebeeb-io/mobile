@@ -191,3 +191,16 @@ describe('account stage', () => {
     expect(s.stepId).toBe('confirm_phone_number');
   });
 });
+
+describe('recovery phrase length the server declares (1753 pass 2, finding 3)', () => {
+  test('a word_count core does not generate is refused up front, as a schema this build does not understand', () => {
+    const d = doc('pre_account.ios', (raw) => { raw.policy.recovery_phrase.word_count = 24; });
+    const s = planScreen(d, new Set());
+    expect(s.kind).toBe('unsupported_schema');
+    // refused at every step, not only at the phrase screen: no email is sent for a signup that cannot finish
+    expect(planScreen(d, new Set(['enter_email', 'verify_email_code'])).kind).toBe('unsupported_schema');
+  });
+  test('the count core generates (12) proceeds as before', () => {
+    expect(planScreen(doc('pre_account.ios'), new Set()).kind).toBe('step');
+  });
+});

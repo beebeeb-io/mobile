@@ -41,7 +41,7 @@ export function AccountOnboardingOverlay() {
       body = <UpdateRequired screen={screen} onSignOut={signOut} />;
       break;
     case 'unsupported_schema':
-      body = <UnsupportedSchema screen={screen} />;
+      body = <UnsupportedSchema screen={screen} onSignOut={signOut} />;
       break;
     case 'fallback':
       body = <StepFallback screen={screen} onSignOut={signOut} />;
