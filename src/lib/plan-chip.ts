@@ -55,7 +55,17 @@ export function accountChip(input: {
 
   if (doc?.account) {
     const own = slug && slug !== 'none' && slug !== 'free' ? planDisplayName(slug) : null;
-    return planCardFromDocument(doc, { planName: own, activeLine: billing.statusLine });
+    // The document is authoritative (PR #169 P2): a billing line is only used for an active
+    // card when the row itself is active, never a stale lapsed / needs_plan / ended-trial line.
+    const rowInactive =
+      !subscription ||
+      subscription.account_state === 'lapsed' ||
+      subscription.account_state === 'needs_plan' ||
+      subscription.account_state === 'trial_ended' ||
+      !!subscription.uploads_blocked_at ||
+      !!subscription.data_deletion_at ||
+      billing.badgeKind === 'read_only';
+    return planCardFromDocument(doc, { planName: own, activeLine: rowInactive ? null : billing.statusLine });
   }
   if (!slug) return null;
   return { label: planDisplayName(slug), badge: billingBadgeLabel(billing.badgeKind), statusLine: billing.statusLine };

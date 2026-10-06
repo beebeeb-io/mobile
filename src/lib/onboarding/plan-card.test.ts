@@ -52,6 +52,19 @@ describe('planCardFromDocument: one chip per account.state', () => {
     expect(c).toEqual({ label: 'Trial ended', badge: null, statusLine: 'Files kept · 2 GB allowance' });
   });
 
+  test('trial_ended without explicit evidence: no "Files kept" (missing storage, null over_allowance)', () => {
+    const noStorage = card('account.trial_ended.ios', {}, (raw) => {
+      delete raw.account.storage;
+      raw.account.lifecycle.data_deletion_at = null;
+    });
+    expect(noStorage).toEqual({ label: 'Trial ended', badge: null, statusLine: 'Read-only' });
+    const nullOver = card('account.trial_ended.ios', {}, (raw) => {
+      raw.account.storage.over_allowance = null;
+      raw.account.lifecycle.data_deletion_at = null;
+    });
+    expect(nullOver).toEqual({ label: 'Trial ended', badge: null, statusLine: 'Read-only' });
+  });
+
   test('trial_cancelling: "Trial" with a CANCELLED chip and the access date', () => {
     const c = card('account.trial_cancelling.web');
     expect(c.label).toBe('Trial');
@@ -161,5 +174,18 @@ describe('accountChip: document first, subscription row as fallback', () => {
 
   test('no document and no subscription: no chip', () => {
     expect(accountChip({ doc: null, subscription: null })).toBeNull();
+  });
+});
+
+describe('accountChip: an active document is not mixed with a stale billing line (PR #169 P2)', () => {
+  test('active document + lapsed row: no Read-only / Uploads are off status line', () => {
+    const stale = { plan: 'none', status: 'canceled', account_state: 'lapsed', data_deletion_at: '2026-11-01T00:00:00Z' };
+    const c = accountChip({ doc: doc('account.active.web'), subscription: stale });
+    expect(c.statusLine).toBeNull();
+    expect(c.label).not.toBe('Trial ended');
+  });
+  test('active document + needs_plan row: no "Uploads are off"', () => {
+    const stale = { plan: 'none', status: null, account_state: 'needs_plan' };
+    expect(accountChip({ doc: doc('account.active.web'), subscription: stale }).statusLine).toBeNull();
   });
 });

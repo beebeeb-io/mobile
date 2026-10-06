@@ -14,7 +14,7 @@
  *
  * Pure: no React, no network.
  */
-import { formatDay, formatSize, summarizeAccount } from './account-summary';
+import { formatDay, formatSize, summarizeAccount, trialEndedFilesKept } from './account-summary';
 import type { OnboardingDocument } from './types';
 
 export interface PlanCardView {
@@ -60,8 +60,8 @@ export function planCardFromDocument(doc: OnboardingDocument, opts: PlanCardOpti
     case 'trial_cancelling':
       return { label: 'Trial', badge: 'CANCELLED', statusLine: trialEnd ? `Access until ${trialEnd}` : summary.lines[0] ?? null };
     case 'trial_ended': {
-      const over = usage?.overAllowance === true || deletion !== null;
-      if (over) return { label: 'Trial ended', badge: null, statusLine: deletion ? `Read-only · deleted on ${deletion}` : 'Read-only' };
+      // Files are "kept" only on explicit evidence (PR #169 P1); anything else is read-only.
+      if (!trialEndedFilesKept(doc)) return { label: 'Trial ended', badge: null, statusLine: deletion ? `Read-only · deleted on ${deletion}` : 'Read-only' };
       return {
         label: 'Trial ended',
         badge: null,
