@@ -9,9 +9,9 @@ import { parseOnboardingDocument, safeHttpsUrl, sameOriginApiPath } from './pars
 import { COMPILED_PURCHASE_SURFACES, SUPPORTED_SCHEMA } from './types';
 
 describe('contract fixtures', () => {
-  test('there are 19 fixtures and every one parses (count asserted, not "ok")', () => {
+  test('there are 20 fixtures and every one parses (count asserted, not "ok")', () => {
     const names = fixtureNames();
-    expect(names.length).toBe(19);
+    expect(names.length).toBe(20);
     for (const name of names) {
       const r = parseOnboardingDocument(loadFixture(name));
       expect(r.ok, `${name} must parse`).toBe(true);

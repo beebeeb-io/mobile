@@ -25,6 +25,8 @@ describe('every account fixture', () => {
     'account.lapsed.ios': 'lapsed',
     'account.legacy_free.web': 'ok',
     'account.needs_plan.ios': 'needs_plan',
+    // Task 1814: the web coupon fixture is a plain needs_plan account here (offers are never read).
+    'account.needs_plan.web.coupon': 'needs_plan',
     'account.past_due.web': 'ok',
     'account.read_only.web': 'lapsed',
     'account.trial_cancelling.web': 'trial_cancelled_read_only',
@@ -33,7 +35,7 @@ describe('every account fixture', () => {
     'account.trialing_no_card.desktop': 'ok',
   };
 
-  test('the table covers all 14 account fixtures (a fixture added without a row is a red)', () => {
+  test('the table covers all 15 account fixtures (a fixture added without a row is a red)', () => {
     const names = fixtureNames().filter((n) => n.startsWith('account.'));
     expect(names.sort()).toEqual(Object.keys(expected).sort());
   });

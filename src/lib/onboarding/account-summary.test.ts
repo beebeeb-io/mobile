@@ -21,8 +21,8 @@ const ACCOUNT_FIXTURES = fixtureNames().filter((n) => n.startsWith('account.'));
 const PURCHASE_VOCABULARY = /subscribe|upgrade|\bbuy\b|purchase|checkout|\bprices?\b|pricing|€|\$|per (month|year)|\/(mo|yr)\b|start (a |the |your )?(\d+-day )?trial|choose (a|your) plan|see plans|add (a )?card|pay now/i;
 
 describe('every account fixture summarises', () => {
-  test('there are 14 account fixtures covering all 12 states, and each one summarises with a headline', () => {
-    expect(ACCOUNT_FIXTURES.length).toBe(14);
+  test('there are 15 account fixtures covering all 12 states, and each one summarises with a headline', () => {
+    expect(ACCOUNT_FIXTURES.length).toBe(15);
     const states = new Set();
     for (const name of ACCOUNT_FIXTURES) {
       const s = summarizeAccount(doc(name), 'UTC');
@@ -33,7 +33,7 @@ describe('every account fixture summarises', () => {
     expect(states.size).toBe(12);
   });
 
-  test('NO purchase vocabulary in any generated or server sentence, for ALL 14 account fixtures', () => {
+  test('NO purchase vocabulary in any generated or server sentence, for ALL 15 account fixtures', () => {
     let sentences = 0;
     for (const name of ACCOUNT_FIXTURES) {
       const s = summarizeAccount(doc(name), 'UTC');
