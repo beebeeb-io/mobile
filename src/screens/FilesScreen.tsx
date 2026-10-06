@@ -84,7 +84,6 @@ import { FileIcon } from '../components/FileIcon';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
-import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import { loadRegionCity } from '../lib/storage-region';
 import { storageLocationLabel } from '../lib/preview-info';
@@ -4892,7 +4891,7 @@ export default function FilesScreen() {
             activeOpacity={0.7}
             onPress={() => Alert.alert(
               isFull ? 'Storage full' : 'Storage almost full',
-              `Free up space by deleting files. ${PLAN_MANAGEMENT_NOTE}`,
+              'Free up space by deleting files.',
             )}
             style={[
               styles.storageBanner,

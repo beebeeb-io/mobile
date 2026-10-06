@@ -55,7 +55,6 @@ import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { ensureCalendarPermission } from '../lib/calendar-permissions';
 import { ensurePhotoPermission } from '../lib/photo-permissions';
 import { formatBytes } from '../lib/format';
-import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
 import {
   DEFAULT_BACKUP_NOTIFICATION_SETTINGS,
   type BackupNotificationSettings,
@@ -79,8 +78,8 @@ import {
   type Region,
   type MobileNotificationPreferences,
 } from '../lib/api';
-import { billingBadgeLabel, billingStatusView } from '../lib/billing-status';
-import { effectivePlan, planDisplayName } from '../lib/effective-plan';
+import { accountChip } from '../lib/plan-chip';
+import { useAccountState } from '../lib/account-state-context';
 import {
   loadRegionsData,
   selectRegion,
@@ -698,6 +697,7 @@ export default function SettingsScreen() {
   // Account
   const [displayName, setDisplayNameState] = useState<string>('');
   const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const { document: accountDocument } = useAccountState();
   const [serverRegion, setServerRegion] = useState<Region | null>(null);
 
   // Data residency preference
@@ -735,7 +735,7 @@ export default function SettingsScreen() {
       recordRuntimeTrace('settings.screen.focus', {
         sections: [
           'Account',
-          'Storage & plan',
+          'Storage',
           'Backup',
           'Devices',
           'Files',
@@ -847,19 +847,12 @@ export default function SettingsScreen() {
         if (tier > lastQuotaAlertRef.current) {
           lastQuotaAlertRef.current = tier;
           if (tier === 100) {
-            // Task 1540 findings 5, 8: the previous copy here named an
-            // in-app action that doesn't exist. Free space or manage the
-            // plan on the web (see PLAN_MANAGEMENT_NOTE) are the two things
-            // a user can actually do.
-            //
-            // Codex review on PR #108: naming plan management without
-            // saying where it happens still reads as an in-app action.
-            // PLAN_MANAGEMENT_NOTE spells out "on the web", same as
-            // FilesScreen's storage-full Alert and StorageScreen's
-            // disclaimer.
-            showToast({ type: 'error', message: `Storage full — uploads will fail until you free space. ${PLAN_MANAGEMENT_NOTE}` });
+            // Task 1540 findings 5, 8 + task 1821: freeing space is the one
+            // thing the app can do, so it is the only thing the toast says
+            // (no plan management hint, App Store 3.1.1 / 3.1.3).
+            showToast({ type: 'error', message: 'Storage full — uploads will fail until you free space.' });
           } else if (tier === 90) {
-            showToast({ type: 'error', message: `Storage 90% full — free up space. ${PLAN_MANAGEMENT_NOTE}` });
+            showToast({ type: 'error', message: 'Storage 90% full — free up space.' });
           } else if (tier === 75) {
             showToast({ type: 'info', message: 'Storage 75% full.' });
           }
@@ -1704,30 +1697,11 @@ export default function SettingsScreen() {
   // the fallback for when `/subscription` itself failed to load; it is not
   // touched by this task's server-side fix, so it can still lag briefly in
   // that one failure case.
-  const planNameRaw = subscription ? effectivePlan(subscription) : usage?.plan_name ?? null;
-  const planName = planNameRaw ? planDisplayName(planNameRaw) : null;
-  // Task 1540 findings 1, 2, 4, 6: read subscription.status, not just the
-  // plan slug — a status='cancelling' or 'trialing' subscription must not
-  // say "Renews {date}" (see src/lib/billing-status.ts for the full server
-  // evidence). Shared with StorageScreen.tsx's CurrentPlanCard so the two
-  // can't drift apart again.
-  const billingView = billingStatusView(planNameRaw ? {
-    plan: planNameRaw,
-    status: subscription?.status ?? null,
-    current_period_end: subscription?.current_period_end ?? null,
-    trial_ends_at: subscription?.trial_ends_at ?? null,
-    // Task 1037: lapsed / needs_plan and trial auto-conversion.
-    account_state: subscription?.account_state ?? null,
-    data_deletion_at: subscription?.data_deletion_at ?? null,
-    trial_auto_converts: subscription?.trial_auto_converts ?? null,
-    // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLxE) — without these,
-    // this screen fell through to the ordinary "Access until …" cancelling
-    // copy instead of "Uploads stopped …", contradicting the immediate
-    // upload lock and StorageScreen's CurrentPlanCard, which already passes
-    // both (see above).
-    uploads_blocked_at: subscription?.uploads_blocked_at ?? null,
-    access_until: subscription?.access_until ?? null,
-  } : null);
+  // Task 1821: the chip reads the server's onboarding document (allowance / trialing /
+  // trial_ended / lapsed / active), so "BASIC TRIAL" for a trial, a stale "TRIAL" after it
+  // ended and "No plan plan" cannot happen. Without a document it falls back to the
+  // subscription row (billing-status.ts, which guards a stale `trialing`).
+  const chip = accountChip({ doc: accountDocument, subscription, fallbackPlanSlug: usage?.plan_name ?? null });
   const serverRegionLabel = serverRegion?.region ? regionDisplayName(serverRegion.region) : null;
   const cameraBackupActive =
     ['preparing', 'encrypting', 'uploading'].includes(backupProgress.state) ||
@@ -1892,7 +1866,7 @@ export default function SettingsScreen() {
               </View>
             </View>
 
-            {planName && (
+            {chip && (
               <>
                 <RowDivider c={c} />
                 <View style={layout.row}>
@@ -1905,7 +1879,7 @@ export default function SettingsScreen() {
                   <View style={{ flex: 1 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
-                        Subscription
+                        Account
                       </Text>
                       <View style={{
                         backgroundColor: c.amberBg,
@@ -1916,10 +1890,10 @@ export default function SettingsScreen() {
                         borderRadius: 4,
                       }}>
                         <Text style={{ fontSize: 10, fontWeight: '700' as const, color: c.amberDeep, letterSpacing: 0.3 }}>
-                          {planName.toUpperCase()}
+                          {chip.label.toUpperCase()}
                         </Text>
                       </View>
-                      {billingView.badgeKind && (
+                      {chip.badge && (
                         <View style={{
                           backgroundColor: c.amberBg,
                           borderColor: c.amber,
@@ -1929,14 +1903,14 @@ export default function SettingsScreen() {
                           borderRadius: 4,
                         }}>
                           <Text style={{ fontSize: 10, fontWeight: '700' as const, color: c.amberDeep, letterSpacing: 0.3 }}>
-                            {billingBadgeLabel(billingView.badgeKind)}
+                            {chip.badge}
                           </Text>
                         </View>
                       )}
                     </View>
-                    {billingView.statusLine && (
+                    {chip.statusLine && (
                       <Text style={{ fontSize: 11, color: c.ink3, marginTop: 3 }}>
-                        {billingView.statusLine}
+                        {chip.statusLine}
                       </Text>
                     )}
                   </View>
@@ -1952,9 +1926,9 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* ---- Storage & plan ---- */}
+        {/* ---- Storage ---- */}
         <View style={layout.section}>
-          <SectionHeader title="Storage & plan" c={c} />
+          <SectionHeader title="Storage" c={c} />
           <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             {loadingUsage ? (
               <View style={layout.loadingRow}>

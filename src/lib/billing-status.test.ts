@@ -194,9 +194,9 @@ describe('billingStatusView — task 1037: trial with a payment mandate, lapsed,
     expect(view).toEqual({ isFree: false, badgeKind: 'read_only', statusLine: 'Read-only' });
   });
 
-  test('needs_plan: no badge, "No plan yet"', () => {
+  test('needs_plan: no badge, "Uploads are off"', () => {
     const view = billingStatusView({ plan: 'none', status: null, account_state: 'needs_plan' });
-    expect(view).toEqual({ isFree: false, badgeKind: null, statusLine: 'No plan yet' });
+    expect(view).toEqual({ isFree: false, badgeKind: null, statusLine: 'Uploads are off' });
   });
 
   test("account_state 'ok' changes nothing (grandfathered Free stays Free)", () => {

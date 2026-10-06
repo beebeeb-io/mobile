@@ -19,6 +19,7 @@ import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgre
 import { getDeviceId } from './sync-client';
 import { deviceIdHeader } from './upload-device-header';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
+import { isTrialRefusalCode, trialCapMessage, trialRefusalMessage } from './trial-refusals';
 import { ACCOUNT_LAPSED_ERROR, PLAN_REQUIRED_ERROR, TRIAL_CANCELLED_READ_ONLY_ERROR, TRIAL_ENDED_ERROR, gateForRefusalCode, getCurrentAccountGate, readOnlyUploadMessage } from './account-state';
 import { resolveWebAppUrl } from './web-links';
 import { ONBOARDING_SCHEMA_HEADER, isOnboardingErrorCode, sameOriginPath } from './onboarding/wire';
@@ -265,6 +266,12 @@ export class ApiError extends Error {
      * the account's real plan quota. Undefined for every other error.
      */
     public isTrialCap?: boolean,
+    /**
+     * Task 1820 — the cap the server enforced (`limit_bytes` on a 413
+     * `quota_exceeded`), so a trial-cap message names the real number: 10 GB for
+     * a no-card trial, 25 GB for the older mandated one.
+     */
+    public limitBytes?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -413,6 +420,11 @@ export function friendlyError(err: unknown): string {
     // Task 1037: an account without a plan is refused with 409
     // plan_required / account_lapsed, and has quota 0 by design. Say it is
     // read-only instead of "Storage full" or the raw server text.
+    // Task 1820 (server 1755): the no-card trial's typed refusals. Mapped by code to
+    // sentences that offer nothing to buy; the server's own wording for several of
+    // them says "choose a plan" / "Subscribe" and must never reach this binary.
+    const trialRefusal = trialRefusalMessage(err.code) ?? trialRefusalMessage(err.message);
+    if (trialRefusal) return trialRefusal;
     const refusal = gateForRefusalCode(err.code, getCurrentAccountGate());
     const readOnly = refusal ? readOnlyUploadMessage(refusal) : null;
     if (readOnly) return readOnly;
@@ -421,9 +433,9 @@ export function friendlyError(err: unknown): string {
       // No purchase call to action here (task 1400, App Review 3.1.1(a)) —
       // same informational tone as PLAN_MANAGEMENT_NOTE, never a button/link.
       if (err.isTrialCap) {
-        return 'This account is on the 25 GB trial storage cap until your first payment. Manage your plan from your account on the web.';
+        return trialCapMessage(err.limitBytes);
       }
-      return 'Storage full. Free up space or upgrade your plan to keep uploading.';
+      return 'This account has reached its storage limit. Free up space to keep uploading.';
     }
     if (err.status === 0) return 'Could not reach the server. Check your connection and try again.';
     if (err.status === 401) {
@@ -552,7 +564,7 @@ export async function endSessionForAccountMismatch(snapshot: RequestAuthSnapshot
  */
 async function throwUploadError(
   status: number,
-  err: { error?: string; message?: string; is_trial_cap?: boolean },
+  err: { error?: string; message?: string; is_trial_cap?: boolean; limit_bytes?: number },
   fallbackMessage: string,
   authSnapshot: RequestAuthSnapshot,
 ): Promise<never> {
@@ -560,7 +572,7 @@ async function throwUploadError(
     await endSessionForAccountMismatch(authSnapshot);
     throw new ApiError(409, err.message ?? 'This session does not match the account of the vault key on this device.', 'account_mismatch');
   }
-  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error, undefined, err.is_trial_cap);
+  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error, undefined, err.is_trial_cap, typeof err.limit_bytes === 'number' ? err.limit_bytes : undefined);
 }
 
 async function headers(auth = true, extra?: Record<string, string>): Promise<RequestHeaders> {
@@ -700,6 +712,7 @@ async function request<T>(
         err.error === ACCOUNT_LAPSED_ERROR ||
         err.error === TRIAL_CANCELLED_READ_ONLY_ERROR ||
         err.error === TRIAL_ENDED_ERROR ||
+        isTrialRefusalCode(err.error) ||
         isOnboardingErrorCode(err.error)
         ? err.error
         : undefined,

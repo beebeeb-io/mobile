@@ -45,7 +45,7 @@ export type AccountGate =
    * and empty-trash stay. `bannerText` is the server's sentence (one that passed
    * `noPurchaseCopy`), or null to use the client wording.
    */
-  | { kind: 'trial_ended'; dataDeletionAt: string | null; bannerText: string | null };
+  | { kind: 'trial_ended'; dataDeletionAt: string | null; bannerText: string | null; filesKept?: boolean };
 
 export function normalizeAccountState(raw: string | null | undefined): AccountState {
   if (raw === 'needs_plan' || raw === 'lapsed') return raw;
@@ -119,14 +119,14 @@ export function readOnlyUploadMessage(gate: AccountGate): string | null {
     return 'Your trial has ended, so your vault is read-only: uploads and backup are off. You can still browse and download your files.';
   }
   if (gate.kind === 'needs_plan') {
-    return 'Choose your plan on the web at beebeeb.io to start uploading.';
+    return 'Uploads are paused on this account.';
   }
   // Task 1605 — a never-paid trial cancelled before its first charge:
   // uploads/backup/new shares are off immediately, distinct from `lapsed`
   // (the trial hasn't ended — it's cancelled early, and resuming it, or
   // paying, restores uploads right away).
   if (gate.kind === 'trial_cancelled_read_only') {
-    return 'You cancelled your trial before its first payment, so uploads and backup are off. Resume your trial on the web to upload again.';
+    return 'This trial was cancelled, so uploads and backup are off. You can still browse and download your files.';
   }
   return null;
 }
@@ -177,6 +177,7 @@ export function gateForRefusalCode(code: string | null | undefined, current: Acc
       kind: 'trial_ended',
       dataDeletionAt: current.kind === 'trial_ended' ? current.dataDeletionAt : null,
       bannerText: current.kind === 'trial_ended' ? current.bannerText : null,
+      ...(current.kind === 'trial_ended' && current.filesKept ? { filesKept: true } : {}),
     };
   }
   if (code === 'quota_exceeded' && current.kind !== 'ok') return current;

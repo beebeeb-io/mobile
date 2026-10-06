@@ -20,7 +20,7 @@
  */
 
 import type { AccountGate } from '../account-state';
-import { noPurchaseCopy } from './account-summary';
+import { formatSize, noPurchaseCopy, trialEndedFilesKept } from './account-summary';
 import type { OnboardingDocument } from './types';
 
 export function gateFromDocument(doc: OnboardingDocument | null | undefined): AccountGate | null {
@@ -34,12 +34,26 @@ export function gateFromDocument(doc: OnboardingDocument | null | undefined): Ac
   const reason = upload?.reason ?? null;
   const deletion = doc.account.lifecycle?.dataDeletionAt ?? null;
   switch (reason) {
-    case 'trial_ended':
+    case 'trial_ended': {
+      // Explicit within-allowance evidence only; unknown stays read-only copy.
+      if (trialEndedFilesKept(doc)) {
+        const allowance = doc.account.storage?.allowanceBytes;
+        return {
+          kind: 'trial_ended',
+          dataDeletionAt: null,
+          filesKept: true,
+          bannerText:
+            allowance != null
+              ? `Your trial ended. Your files are kept, within your ${formatSize(allowance)} allowance.`
+              : 'Your trial ended. Your files are kept, within your allowance.',
+        };
+      }
       return {
         kind: 'trial_ended',
         dataDeletionAt: deletion,
         bannerText: noPurchaseCopy(doc.copy.trial_ended_over_allowance),
       };
+    }
     case 'plan_required':
     case 'email_unverified':
       return { kind: 'needs_plan' };

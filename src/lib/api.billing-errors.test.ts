@@ -168,7 +168,7 @@ describe('task 1037: 409 plan_required / account_lapsed from request() (e.g. sha
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(409);
     expect(err.code).toBe('plan_required');
-    expect(friendlyError(err)).toBe('Choose your plan on the web at beebeeb.io to start uploading.');
+    expect(friendlyError(err)).toBe('Uploads are paused on this account.');
   });
 
   test('account_lapsed keeps its code and friendlyError says the vault is read-only', async () => {
