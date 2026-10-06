@@ -103,7 +103,7 @@ describe('409 trial_cancelled_read_only — code preserved end to end', () => {
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(409);
     expect(err.code).toBe('trial_cancelled_read_only');
-    expect(friendlyError(err)).toContain('cancelled your trial');
+    expect(friendlyError(err)).toContain('trial was cancelled');
     // Never the generic 409 fallback ("A resource with that name already exists.").
     expect(friendlyError(err)).not.toContain('already exists');
   });
@@ -123,20 +123,19 @@ describe('friendlyError — quota_exceeded with is_trial_cap (25 GB active-trial
     const { ApiError, friendlyError } = await loadFreshApi();
     const err = new ApiError(413, 'server cap message', 'quota_exceeded', undefined, true);
     const msg = friendlyError(err);
-    expect(msg).toContain('25 GB');
-    expect(msg).toContain('on the web');
-    expect(msg).not.toMatch(/pay now/i);
+    expect(msg).toBe('This account has reached its trial storage cap. Free up space to keep uploading.');
+    expect(msg).not.toMatch(/web|payment|\bplan\b|pay now/i);
   });
 
   test('is_trial_cap: false (an ordinary plan-quota hit) keeps the existing generic message', async () => {
     const { ApiError, friendlyError } = await loadFreshApi();
     const err = new ApiError(413, 'server cap message', 'quota_exceeded', undefined, false);
-    expect(friendlyError(err)).toBe('Storage full. Free up space or upgrade your plan to keep uploading.');
+    expect(friendlyError(err)).toBe('This account has reached its storage limit. Free up space to keep uploading.');
   });
 
   test('is_trial_cap absent (older server) keeps the existing generic message', async () => {
     const { ApiError, friendlyError } = await loadFreshApi();
     const err = new ApiError(413, 'server cap message', 'quota_exceeded');
-    expect(friendlyError(err)).toBe('Storage full. Free up space or upgrade your plan to keep uploading.');
+    expect(friendlyError(err)).toBe('This account has reached its storage limit. Free up space to keep uploading.');
   });
 });

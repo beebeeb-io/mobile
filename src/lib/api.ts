@@ -435,7 +435,7 @@ export function friendlyError(err: unknown): string {
       if (err.isTrialCap) {
         return trialCapMessage(err.limitBytes);
       }
-      return 'Storage full. Free up space or upgrade your plan to keep uploading.';
+      return 'This account has reached its storage limit. Free up space to keep uploading.';
     }
     if (err.status === 0) return 'Could not reach the server. Check your connection and try again.';
     if (err.status === 401) {
