@@ -61,4 +61,34 @@ enum AccountRefusalDetection {
     guard (object["error"] as? String) == "quota_exceeded" else { return false }
     return (object["is_trial_cap"] as? Bool) == true
   }
+  /// `limit_bytes` of the 413 body: the cap the server enforced (10 GB for a
+  /// no-card trial, 25 GB for the older mandated one). `nil` when absent.
+  static func trialCapLimitBytes(_ data: Data) -> Int64? {
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let n = object["limit_bytes"] as? NSNumber else { return nil }
+    return n.int64Value
+  }
+
+  /// Decimal units, one decimal trimmed: the same output as the JS `formatSize`
+  /// (`onboarding/account-summary.ts`) for the sizes a trial cap takes.
+  static func formatSize(_ bytes: Int64) -> String {
+    let kb = 1_000.0, mb = 1_000_000.0, gb = 1_000_000_000.0, tb = 1_000_000_000_000.0
+    func trim(_ n: Double) -> String {
+      n == n.rounded() ? String(Int64(n)) : String(format: "%.1f", n).replacingOccurrences(of: ".0", with: "")
+    }
+    let b = Double(bytes)
+    if b >= tb { return "\(trim((b / tb * 10).rounded() / 10)) TB" }
+    if b >= gb { return "\(trim((b / gb * 10).rounded() / 10)) GB" }
+    if b >= mb { return "\(Int64((b / mb).rounded())) MB" }
+    if b >= kb { return "\(Int64((b / kb).rounded())) KB" }
+    return "\(bytes) B"
+  }
+
+  /// The upload refusal for a never-paid trial's storage cap. Word for word the
+  /// JS `trialCapMessage` (`trial-refusals.ts`): the server's number, no call to
+  /// action, no price, no plan. A missing or unusable limit keeps 25 GB.
+  static func trialCapMessage(limitBytes: Int64?) -> String {
+    let bytes = (limitBytes ?? 0) > 0 ? limitBytes! : 25_000_000_000
+    return "This account is on the \(formatSize(bytes)) trial storage cap. Free up space to keep uploading; your account is managed on the web."
+  }
 }

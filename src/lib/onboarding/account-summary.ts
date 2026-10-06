@@ -171,6 +171,25 @@ function usageOf(doc: OnboardingDocument): UsageSummary | null {
   };
 }
 
+/**
+ * A `trial_ended` account whose files are KEPT (PR #168 review). Absence is not
+ * evidence: this needs the document to say so explicitly (storage present with
+ * `over_allowance === false`) and to carry no deletion date. Missing storage or a
+ * missing/null `over_allowance` is "unknown", which the callers treat as read-only.
+ */
+export function trialEndedFilesKept(doc: OnboardingDocument): boolean {
+  const storage = doc.account?.storage;
+  if (!storage || storage.overAllowance !== false) return false;
+  return (doc.account?.lifecycle?.dataDeletionAt ?? null) === null;
+}
+
+/** The one sentence for the kept shape, shared by the summary and the Files banner. */
+export function trialEndedKeptSentence(allowanceBytes: number | null | undefined): string {
+  return allowanceBytes != null
+    ? `Your files are kept. They are within your ${formatSize(allowanceBytes)} allowance, so nothing will be deleted.`
+    : 'Your files are kept. They are within your allowance, so nothing will be deleted.';
+}
+
 export function summarizeAccount(doc: OnboardingDocument, timeZone?: string): AccountSummary {
   const account = doc.account;
   if (!account) throw new Error('summarizeAccount: not an account document');
@@ -206,16 +225,27 @@ export function summarizeAccount(doc: OnboardingDocument, timeZone?: string): Ac
       }
       if (usage?.overAllowance) tone = 'attention';
       break;
-    case 'trial_ended':
+    case 'trial_ended': {
       headline = 'Your trial has ended';
+      // Task 1820. Two shapes (server 1755, spec 4b.4): a DEADLINE (usage over the
+      // allowance, files above it deleted on `data_deletion_at`) or files KEPT
+      // (usage within the allowance, nothing pending, nothing deleted).
+      const allowance = usage?.allowanceBytes != null ? formatSize(usage.allowanceBytes) : null;
+      const above = allowance ? `Files above ${allowance}` : 'Files above your allowance';
+      if (trialEndedFilesKept(doc)) {
+        tone = 'neutral';
+        lines.push(trialEndedKeptSentence(usage?.allowanceBytes));
+        break;
+      }
       tone = 'restricted';
       lines.push(
         noPurchaseCopy(doc.copy.trial_ended_over_allowance) ??
           (deletion
-            ? `Files above your allowance are read-only until ${deletion}.`
-            : 'Files above your allowance are read-only.'),
+            ? `${above} are read-only and will be deleted on ${deletion} unless you free up space.`
+            : `${above} are read-only.`),
       );
       break;
+    }
     case 'needs_plan':
       headline = account.emailVerified ? 'This account has no plan yet' : 'Verify your email to continue';
       tone = 'restricted';

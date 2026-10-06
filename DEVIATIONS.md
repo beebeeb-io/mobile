@@ -925,3 +925,17 @@ The prepared key resolves symlinks as well as standardizing the URL, so an alias
 Task1724 video export: use materializeVideoPreviewForExport terminal-success contract for loopback previews, hold an independent exporter lease until Sharing.shareAsync finishes, and release on error/abort. Never pass a localhost capability to sharing. Export slice source88a2bc5 supersedes intermediate polling drafte233140.
 
 Task1724 terminal status cancellation precedence: a final native progress snapshot may already contain `error` while JS is cancelling or aborting the stream. Cancellation owns that terminal: the wrapper forwards the snapshot but waits for native cancel drain and resolves `terminalStatus` as `cancelled`. The registry treats `cancelled` like an AbortError failure, evicts the loopback capability, rejects export materialization, and makes retry wait for partial-output cleanup before starting a new writer.
+
+## Task 1820 — no-card trial codes, mapped by code (2026-10-06)
+
+Server task 1755 refuses with typed codes whose own sentences point at buying ("Choose a plan", "Subscribe to unlock", "pay at checkout"). The iOS binary shows account state only (App Store 3.1.x, task 1400), so `friendlyError` maps `trial_previously_subscribed`, `trial_already_used`, `trial_sharing_unavailable`, `trial_share_limit_reached`, `no_subscription_to_cancel`, `trial_convert_unavailable`, `trial_checkout_retired`, `trial_temporarily_unavailable` and `trial_rate_limited` by code to authored sentences in `src/lib/trial-refusals.ts` and never prints the server's. `request()` now keeps these codes on the `ApiError` (it kept only an allowlist before, so they arrived code-less with the server's wording).
+
+The trial-storage-cap upload refusal now names the cap the server sent (`limit_bytes`: 10 GB for a no-card trial, 25 GB for the older mandated one) and no longer says "until your first payment" or "Manage your plan" (both hinted at a purchase). Deviation from task 1605's wording, deliberate.
+
+`trial_ended` text: files kept (usage within the allowance, nothing pending) versus a deadline ("will be deleted on <date>"); the client fallback used to say "read-only until <date>", which understated what happens on that date.
+
+Not changed (pre-existing, out of 1820): `readOnlyUploadMessage` for `needs_plan` ("Choose your plan on the web at beebeeb.io") and the generic `quota_exceeded` text ("upgrade your plan") still carry plan wording.
+
+### 1820 round 2 (PR #168 review)
+- The native camera-backup engine's 413 trial-cap stop reason is now built from the server's `limit_bytes` with the same purchase-free sentence as the JS `trialCapMessage` (it was hard-coded "25 GB ... until your first payment clears. Manage your plan ...").
+- `trial_ended` is "files kept" only on explicit evidence (storage present, `over_allowance === false`, no deletion date); missing storage or a missing `over_allowance` gets the conservative read-only copy. The Files banner now says the files are kept in that case.
