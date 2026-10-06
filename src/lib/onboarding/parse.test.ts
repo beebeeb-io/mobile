@@ -123,11 +123,11 @@ describe('forward compatibility (spec 5.8)', () => {
     expect(r.doc.fallback.kind).toBe('unknown');
   });
 
-  test('capabilities outside the closed v1 set are dropped (rule 11)', () => {
+  test('capabilities outside the closed v1 set are dropped (rule 11); delete is inside it (task 1807)', () => {
     const raw = JSON.parse(JSON.stringify(loadFixture('account.allowance.ios')));
     raw.account.capabilities.teleport = { allowed: true };
     const r = parseOnboardingDocument(raw);
-    expect(Object.keys(r.doc.account.capabilities).sort()).toEqual(['download', 'share', 'upload']);
+    expect(Object.keys(r.doc.account.capabilities).sort()).toEqual(['delete', 'download', 'share', 'upload']);
   });
 
   test('update_required reaches the parser even when the stage block is missing (rule 7)', () => {
