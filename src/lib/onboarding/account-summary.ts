@@ -206,16 +206,32 @@ export function summarizeAccount(doc: OnboardingDocument, timeZone?: string): Ac
       }
       if (usage?.overAllowance) tone = 'attention';
       break;
-    case 'trial_ended':
+    case 'trial_ended': {
       headline = 'Your trial has ended';
+      // Task 1820. Two shapes (server 1755, spec 4b.4): a DEADLINE (usage over the
+      // allowance, files above it deleted on `data_deletion_at`) or files KEPT
+      // (usage within the allowance, nothing pending, nothing deleted).
+      const over = usage?.overAllowance === true || deletion !== null;
+      const allowance = usage?.allowanceBytes != null ? formatSize(usage.allowanceBytes) : null;
+      const above = allowance ? `Files above ${allowance}` : 'Files above your allowance';
+      if (!over) {
+        tone = 'neutral';
+        lines.push(
+          allowance
+            ? `Your files are kept. They are within your ${allowance} allowance, so nothing will be deleted.`
+            : 'Your files are kept. They are within your allowance, so nothing will be deleted.',
+        );
+        break;
+      }
       tone = 'restricted';
       lines.push(
         noPurchaseCopy(doc.copy.trial_ended_over_allowance) ??
           (deletion
-            ? `Files above your allowance are read-only until ${deletion}.`
-            : 'Files above your allowance are read-only.'),
+            ? `${above} are read-only and will be deleted on ${deletion} unless you free up space.`
+            : `${above} are read-only.`),
       );
       break;
+    }
     case 'needs_plan':
       headline = account.emailVerified ? 'This account has no plan yet' : 'Verify your email to continue';
       tone = 'restricted';
