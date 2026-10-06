@@ -128,6 +128,41 @@ expect(
   "malformed body returns false, never crashes"
 )
 
+// MARK: - trialCapMessage (PR #168 thread, P1): native copy == JS trialCapMessage
+
+expect(
+  AccountRefusalDetection.trialCapLimitBytes(jsonData(["error": "quota_exceeded", "is_trial_cap": true, "limit_bytes": 10_000_000_000])) == 10_000_000_000,
+  "limit_bytes is read from the 413 body"
+)
+expect(
+  AccountRefusalDetection.trialCapLimitBytes(jsonData(["error": "quota_exceeded", "is_trial_cap": true])) == nil,
+  "a missing limit_bytes is nil"
+)
+expect(
+  AccountRefusalDetection.trialCapMessage(limitBytes: 10_000_000_000)
+    == "This account is on the 10 GB trial storage cap. Free up space to keep uploading; your account is managed on the web.",
+  "10 GB cap: exact JS sentence, the server's number"
+)
+expect(
+  AccountRefusalDetection.trialCapMessage(limitBytes: 25_000_000_000).contains("25 GB"),
+  "25 GB cap says 25 GB"
+)
+expect(
+  AccountRefusalDetection.trialCapMessage(limitBytes: nil).contains("25 GB")
+    && AccountRefusalDetection.trialCapMessage(limitBytes: 0).contains("25 GB")
+    && AccountRefusalDetection.trialCapMessage(limitBytes: -5).contains("25 GB"),
+  "a missing or unusable limit keeps the mandated 25 GB number"
+)
+expect(
+  AccountRefusalDetection.trialCapMessage(limitBytes: 6_300_000_000).contains("6.3 GB")
+    && AccountRefusalDetection.trialCapMessage(limitBytes: 500_000_000).contains("500 MB"),
+  "formatting matches JS formatSize (decimal, one decimal, trimmed)"
+)
+for n: Int64? in [10_000_000_000, 25_000_000_000, nil] {
+  let m = AccountRefusalDetection.trialCapMessage(limitBytes: n).lowercased()
+  expect(!m.contains("first payment") && !m.contains("manage your plan"), "no purchase wording in the cap copy")
+}
+
 // MARK: - Report
 
 if failures.isEmpty {

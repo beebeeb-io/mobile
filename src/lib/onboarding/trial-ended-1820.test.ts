@@ -79,3 +79,44 @@ describe('trial_ended with the files kept (usage within the allowance, no deadli
     expect(trialEndedBannerText(gate)).not.toMatch(/deleted on/);
   });
 });
+
+describe('PR #168 round 2: the kept state needs explicit evidence and reaches the Files banner', () => {
+  test('the Files banner for a kept-files gate says the files are kept, not read-only', () => {
+    const gate = gateFromDocument(doc(kept));
+    const text = trialEndedBannerText(gate);
+    expect(text).toBe('Your trial ended. Your files are kept, within your 2 GB allowance.');
+    expect(text).not.toMatch(/read-only|deleted/);
+    expect(PURCHASE.test(text)).toBe(false);
+  });
+
+  test('a deadline gate is not marked kept and keeps the read-only sentence', () => {
+    const gate = gateFromDocument(doc());
+    expect(gate.filesKept).toBeFalsy();
+    expect(trialEndedBannerText(gate)).toMatch(/read-only and will be deleted on/);
+  });
+
+  test('missing storage is NOT kept: conservative read-only copy, no retention promise, in both surfaces', () => {
+    const mutate = (raw) => { delete raw.account.storage; delete raw.account.lifecycle; delete raw.copy.trial_ended_over_allowance; };
+    const s = summarizeAccount(doc(mutate), 'UTC');
+    expect(s.lines.join(' ')).not.toMatch(/kept|nothing will be deleted|within/i);
+    expect(s.lines).toEqual(['Files above your allowance are read-only.']);
+    expect(s.tone).toBe('restricted');
+    const gate = gateFromDocument(doc(mutate));
+    expect(gate.filesKept).toBeFalsy();
+    expect(trialEndedBannerText(gate)).not.toMatch(/kept|nothing will be deleted|within/i);
+  });
+
+  test('storage present but over_allowance missing is NOT kept', () => {
+    const mutate = (raw) => { delete raw.account.storage.over_allowance; delete raw.account.lifecycle; delete raw.copy.trial_ended_over_allowance; };
+    const s = summarizeAccount(doc(mutate), 'UTC');
+    expect(s.lines.join(' ')).not.toMatch(/kept|nothing will be deleted|within/i);
+    expect(s.tone).toBe('restricted');
+    expect(gateFromDocument(doc(mutate)).filesKept).toBeFalsy();
+  });
+
+  test('explicit over_allowance:false with a deletion date is a deadline, not kept', () => {
+    const mutate = (raw) => { raw.account.storage.over_allowance = false; };
+    expect(summarizeAccount(doc(mutate), 'UTC').lines.join(' ')).not.toMatch(/kept/);
+    expect(gateFromDocument(doc(mutate)).filesKept).toBeFalsy();
+  });
+});

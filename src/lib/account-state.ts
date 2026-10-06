@@ -45,7 +45,7 @@ export type AccountGate =
    * and empty-trash stay. `bannerText` is the server's sentence (one that passed
    * `noPurchaseCopy`), or null to use the client wording.
    */
-  | { kind: 'trial_ended'; dataDeletionAt: string | null; bannerText: string | null };
+  | { kind: 'trial_ended'; dataDeletionAt: string | null; bannerText: string | null; filesKept?: boolean };
 
 export function normalizeAccountState(raw: string | null | undefined): AccountState {
   if (raw === 'needs_plan' || raw === 'lapsed') return raw;
@@ -177,6 +177,7 @@ export function gateForRefusalCode(code: string | null | undefined, current: Acc
       kind: 'trial_ended',
       dataDeletionAt: current.kind === 'trial_ended' ? current.dataDeletionAt : null,
       bannerText: current.kind === 'trial_ended' ? current.bannerText : null,
+      ...(current.kind === 'trial_ended' && current.filesKept ? { filesKept: true } : {}),
     };
   }
   if (code === 'quota_exceeded' && current.kind !== 'ok') return current;

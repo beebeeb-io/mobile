@@ -935,3 +935,7 @@ The trial-storage-cap upload refusal now names the cap the server sent (`limit_b
 `trial_ended` text: files kept (usage within the allowance, nothing pending) versus a deadline ("will be deleted on <date>"); the client fallback used to say "read-only until <date>", which understated what happens on that date.
 
 Not changed (pre-existing, out of 1820): `readOnlyUploadMessage` for `needs_plan` ("Choose your plan on the web at beebeeb.io") and the generic `quota_exceeded` text ("upgrade your plan") still carry plan wording.
+
+### 1820 round 2 (PR #168 review)
+- The native camera-backup engine's 413 trial-cap stop reason is now built from the server's `limit_bytes` with the same purchase-free sentence as the JS `trialCapMessage` (it was hard-coded "25 GB ... until your first payment clears. Manage your plan ...").
+- `trial_ended` is "files kept" only on explicit evidence (storage present, `over_allowance === false`, no deletion date); missing storage or a missing `over_allowance` gets the conservative read-only copy. The Files banner now says the files are kept in that case.
