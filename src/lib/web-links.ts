@@ -60,7 +60,6 @@ export function webAppLink(base: string, path: string): string {
 }
 
 export const SIGNUP_PATH = '/signup';
-export const CHOOSE_PLAN_PATH = '/choose-plan';
 
 export interface LinkCopy {
   text: string;
@@ -77,22 +76,16 @@ export function createAccountCopy(linksEnabled: boolean): LinkCopy {
 export interface NeedsPlanCopy {
   title: string;
   body: string;
-  linkLabel: string | null;
 }
 
-/** The full-screen state for a `needs_plan` account. */
-export function needsPlanCopy(linksEnabled: boolean): NeedsPlanCopy {
-  const title = 'Finish setting up your account';
-  if (linksEnabled) {
-    return {
-      title,
-      body: 'Choose your plan on beebeeb.io to start using Beebeeb. When you are done, tap Refresh.',
-      linkLabel: 'Open beebeeb.io',
-    };
-  }
+/**
+ * The full-screen state for a `needs_plan` account (task 1821). A statement about
+ * the account, nothing to buy and nowhere to go: no plan name, no price, no link
+ * (App Store 3.1.1 / 3.1.3). The only action is Refresh, which re-reads the state.
+ */
+export function needsPlanCopy(): NeedsPlanCopy {
   return {
-    title,
-    body: 'Choose your plan on the web at beebeeb.io to start using Beebeeb. When you are done, tap Refresh.',
-    linkLabel: null,
+    title: 'Uploads are paused on this account',
+    body: 'Your files stay encrypted. Tap Refresh to check the account again.',
   };
 }

@@ -92,10 +92,10 @@ describe('readOnlyUploadMessage', () => {
     expect(msg).toMatch(/download/i);
   });
 
-  test('needs_plan: points to the web without a link or a price', () => {
+  test('needs_plan: states the account is paused; no link, no price, no plan, no web (task 1821)', () => {
     const msg = readOnlyUploadMessage({ kind: 'needs_plan' });
-    expect(msg).toMatch(/beebeeb\.io/);
-    expect(msg).not.toMatch(/https?:\/\//);
+    expect(msg).toBe('Uploads are paused on this account.');
+    expect(msg).not.toMatch(/https?:\/\/|beebeeb|\bweb\b|\bplans?\b|choose/i);
   });
 
   test('ok: null (nothing to explain)', () => {

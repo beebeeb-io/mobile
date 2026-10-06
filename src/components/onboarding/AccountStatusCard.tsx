@@ -4,8 +4,9 @@
  *
  * STATUS ONLY, by construction: nothing in this file is tappable. No button, no
  * link, no price, no plan to buy (App Store 3.1.3, task 1400). The one sentence
- * about plans is the server's "Plans are managed from your account on the web.",
- * rendered as plain text. Asserted for every account fixture in
+ * about plans (the server's "Plans are managed from your account on the web.") is
+ * parsed into the view-model but NOT rendered (task 1821, DEVIATIONS.md): it points
+ * at a purchase surface elsewhere. Asserted for every account fixture in
  * `src/lib/onboarding/account-summary.test.ts` and by the Maestro rung that checks
  * the allowance, trial and trial-ended screens for tappable purchase elements.
  */
@@ -86,11 +87,6 @@ export function AccountStatusCard({ doc }: { doc: OnboardingDocument }) {
           </View>
         ))}
       </View>
-      {summary.plansManagedNote ? (
-        <Text style={styles.note} testID="account-status-plans-note">
-          {summary.plansManagedNote}
-        </Text>
-      ) : null}
     </View>
   );
 }

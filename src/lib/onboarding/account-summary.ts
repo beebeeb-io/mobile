@@ -122,7 +122,7 @@ const REASON_TEXT: Record<string, string> = {
   trial_cancelled_read_only: 'Trial cancelled',
   trial_ended: 'Trial ended',
   email_unverified: 'Verify your email first',
-  billing_read_only: 'Billing is read-only',
+  billing_read_only: 'Read-only',
   account_frozen: 'Account frozen',
 };
 
@@ -247,7 +247,7 @@ export function summarizeAccount(doc: OnboardingDocument, timeZone?: string): Ac
       break;
     }
     case 'needs_plan':
-      headline = account.emailVerified ? 'This account has no plan yet' : 'Verify your email to continue';
+      headline = account.emailVerified ? 'Uploads are paused on this account' : 'Verify your email to continue';
       tone = 'restricted';
       break;
     case 'trialing':
@@ -280,7 +280,7 @@ export function summarizeAccount(doc: OnboardingDocument, timeZone?: string): Ac
     case 'lapsed':
       headline = 'Your plan has ended';
       tone = 'restricted';
-      lines.push(deletion ? `Files you do not move or renew are deleted on ${deletion}.` : 'Your files are read-only.');
+      lines.push(deletion ? `Files are deleted on ${deletion}.` : 'Your files are read-only.');
       break;
     case 'legacy_free':
       headline = 'You are on the free plan';

@@ -140,7 +140,7 @@ expect(
 )
 expect(
   AccountRefusalDetection.trialCapMessage(limitBytes: 10_000_000_000)
-    == "This account is on the 10 GB trial storage cap. Free up space to keep uploading; your account is managed on the web.",
+    == "This account is on the 10 GB trial storage cap. Free up space to keep uploading.",
   "10 GB cap: exact JS sentence, the server's number"
 )
 expect(

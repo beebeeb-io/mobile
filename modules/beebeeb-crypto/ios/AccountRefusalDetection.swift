@@ -89,6 +89,6 @@ enum AccountRefusalDetection {
   /// action, no price, no plan. A missing or unusable limit keeps 25 GB.
   static func trialCapMessage(limitBytes: Int64?) -> String {
     let bytes = (limitBytes ?? 0) > 0 ? limitBytes! : 25_000_000_000
-    return "This account is on the \(formatSize(bytes)) trial storage cap. Free up space to keep uploading; your account is managed on the web."
+    return "This account is on the \(formatSize(bytes)) trial storage cap. Free up space to keep uploading."
   }
 }

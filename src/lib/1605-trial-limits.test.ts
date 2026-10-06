@@ -60,7 +60,7 @@ describe('uploadsBlocked — trial_cancelled_read_only', () => {
 describe('readOnlyUploadMessage — trial_cancelled_read_only', () => {
   test('names the trial cancellation, never the generic lapsed copy', () => {
     const msg = readOnlyUploadMessage({ kind: 'trial_cancelled_read_only', accessUntil: null, dataDeletionAt: null });
-    expect(msg).toContain('cancelled your trial');
+    expect(msg).toContain('trial was cancelled');
     expect(msg).not.toContain('trial has ended');
   });
 
@@ -137,10 +137,11 @@ describe('billingStatusView — cancelling, task 1605 branch', () => {
 });
 
 describe('trialCapNote — informational only, no purchase CTA (task 1400)', () => {
-  test('names the cap and points to the web, for a capped trialing row', () => {
+  test('names the cap and says what to do, for a capped trialing row (task 1821: no web, payment or plan hint)', () => {
     const note = trialCapNote({ status: 'trialing', trial_storage_cap_bytes: 25_000_000_000 }, formatBytes);
     expect(note).toContain(formatBytes(25_000_000_000));
-    expect(note).toContain('on the web');
+    expect(note).toContain('Free up space');
+    expect(note).not.toMatch(/web|payment|plan/i);
   });
 
   test('never a tappable action word like "Pay now" or "Upgrade" (task 1400 — informational only)', () => {

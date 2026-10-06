@@ -873,11 +873,11 @@ final class NativeBackupEngine: NSObject {
   static func accountRefusalStopReasonMessage(for code: String) -> String {
     switch code {
     case "trial_cancelled_read_only":
-      return "You cancelled your trial before its first payment, so uploads and backup are off. Resume your trial on the web to upload again."
+      return "This trial was cancelled, so uploads and backup are off. You can still browse and download your files."
     case "account_lapsed":
       return "Your trial has ended, so your vault is read-only: uploads and backup are off. You can still browse and download your files."
     case "plan_required":
-      return "Choose your plan on the web at beebeeb.io to start uploading."
+      return "Uploads are paused on this account."
     default:
       // Unreachable in practice — `AccountRefusalDetection.knownRefusalCodes`
       // is the only source of `code` — but a switch over a `String` (not an
@@ -1995,9 +1995,8 @@ final class NativeBackupEngine: NSObject {
   /// Sibling for the 413 `quota_exceeded` + `is_trial_cap: true` case — same
   /// pause-and-keep-queue recovery as `handleConfirmedAccountRefusal` above,
   /// distinct reason text (no account-state transition is coming; the
-  /// account just needs its first payment to clear before more storage is
-  /// available, unlike the three codes above which resolve via resuming/
-  /// paying/choosing a plan on the web).
+  /// account just needs to free up space, unlike the three codes above which
+  /// resolve when the account state changes).
   private func handleConfirmedTrialCapExceeded(message: String) {
     RuntimeTrace.event("backup.native.trial_cap_exceeded")
     accountRefusalStopReason = message
