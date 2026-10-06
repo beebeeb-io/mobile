@@ -123,7 +123,7 @@ describe('friendlyError — quota_exceeded with is_trial_cap (25 GB active-trial
     const { ApiError, friendlyError } = await loadFreshApi();
     const err = new ApiError(413, 'server cap message', 'quota_exceeded', undefined, true);
     const msg = friendlyError(err);
-    expect(msg).toBe('This account has reached its trial storage cap. Free up space to keep uploading.');
+    expect(msg).toBe('This account is on the 25 GB trial storage cap. Free up space to keep uploading.');
     expect(msg).not.toMatch(/web|payment|\bplan\b|pay now/i);
   });
 

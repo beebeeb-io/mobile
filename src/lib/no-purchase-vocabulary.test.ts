@@ -106,3 +106,50 @@ describe('no purchase vocabulary in user-visible strings (task 1821)', () => {
     for (const [file, text, why] of ALLOWED) expect(why.length, `${file}: ${text}`).toBeGreaterThan(10);
   });
 });
+
+// The native engine (Swift) writes user-visible stop reasons too (camera backup paused ...).
+// Same vocabulary, same rule, over the string literals of the app's own Swift modules.
+const NATIVE_ALLOWED = [
+  ['modules/beebeeb-crypto/ios/NativeManualUploader.swift', 'Upload session was planned for', 'chunk layout ("plan"), a developer diagnostic'],
+];
+
+function swiftFiles(dir, out = []) {
+  for (const e of readdirSync(dir)) {
+    if (e === 'Pods' || e === 'node_modules' || e === 'build' || e.startsWith('.')) continue;
+    const f = join(dir, e);
+    if (statSync(f).isDirectory()) swiftFiles(f, out);
+    else if (/\.swift$/.test(e) && !/Tests?\.swift$/.test(e)) out.push(f);
+  }
+  return out;
+}
+
+describe('no purchase vocabulary in the native Swift modules (task 1821)', () => {
+  const files = swiftFiles(join(ROOT, 'modules'));
+  const literals = (src) =>
+    src
+      .split('\n')
+      .filter((l) => !/^\s*\/\//.test(l))
+      .flatMap((l, i) => [...l.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => ({ line: i + 1, text: m[1].replace(/\\\([^)]*\)/g, '{}').replace(/\s+/g, ' ').trim() })))
+      .filter((x) => /\s/.test(x.text) && isPurchaseWording(x.text));
+
+  test('we scanned the real Swift module set, and the Swift scanner can go red', () => {
+    expect(files.length).toBeGreaterThan(20);
+    expect(literals('let a = "Choose your plan on the web at beebeeb.io to start uploading."').length).toBe(1);
+    expect(literals('// "Pay now please"\nlet a = "Uploads are paused on this account."').length).toBe(0);
+  });
+
+  test('every hit is allowlisted and every allowlist entry is still needed', () => {
+    const used = new Set();
+    const unlisted = [];
+    for (const f of files) {
+      for (const h of literals(readFileSync(f, 'utf8'))) {
+        const idx = NATIVE_ALLOWED.findIndex(([file, text]) => file === relative(ROOT, f) && h.text.startsWith(text));
+        if (idx >= 0) used.add(idx);
+        else unlisted.push(`${relative(ROOT, f)}:${h.line}: ${h.text}`);
+      }
+    }
+    expect(unlisted).toEqual([]);
+    expect(NATIVE_ALLOWED.filter((_, i) => !used.has(i)).map(([file, text]) => `${file}: ${text}`)).toEqual([]);
+  });
+});
+

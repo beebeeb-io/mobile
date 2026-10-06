@@ -59,5 +59,5 @@ const MANDATED_TRIAL_CAP_BYTES = 25_000_000_000;
  */
 export function trialCapMessage(limitBytes: number | null | undefined): string {
   const bytes = typeof limitBytes === 'number' && Number.isFinite(limitBytes) && limitBytes > 0 ? limitBytes : MANDATED_TRIAL_CAP_BYTES;
-  return `This account is on the ${formatSize(bytes)} trial storage cap. Free up space to keep uploading; your account is managed on the web.`;
+  return `This account is on the ${formatSize(bytes)} trial storage cap. Free up space to keep uploading.`;
 }
