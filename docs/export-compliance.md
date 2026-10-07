@@ -230,3 +230,19 @@ The ANSSI cryptology declaration for France (§5 above; LCEN art. 30) and the BI
 self-classification report (§5) are unaffected by this section — both are Initlabs B.V.
 filings independent of Apple's per-app questionnaire, and remain owed regardless of whether
 the app is sold in France.
+
+## 8. 2026-10-07 — answer YES (task 1846); supersedes §6 and §7 point 2
+
+Guus ruled (task 1846, on legal-counsel advice) that `usesNonExemptEncryption = false` is not
+defensible for an app that ships its own standard crypto. `app.json` now sets
+`ios.config.usesNonExemptEncryption: true` and every iOS target (`ios/Beebeeb`,
+`ios/BeebeebFileProvider`, `ios/BeebeebShare`, `ios/BeebeebWidget`, plus their generators in
+`targets/*/Info.plist`, `plugins/file-provider/withFileProvider.js`,
+`plugins/share-extension/withShareExtension.js`, `plugins/withWidget.js`) carries
+`ITSAppUsesNonExemptEncryption = YES`. France stays off sale; RU and BY were removed from sale
+the same day (IR/KP/SY are not App Store storefronts).
+
+Open risk: builds 210-212 were rejected by `eas submit` (409 "Invalid Export Compliance Code")
+when the key was `true` with no `ITSEncryptionExportComplianceCode`. Apple's API still refuses a
+declaration for a non-France, standard-crypto app (see §7), so the first build with this change
+may hit the same 409. Verify on the next real upload; do not assume.

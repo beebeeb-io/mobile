@@ -39,6 +39,8 @@ const withWidget = (config) => {
   <string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key>
   <string>$(CURRENT_PROJECT_VERSION)</string>
+  <key>ITSAppUsesNonExemptEncryption</key>
+  <true/>
   <key>NSExtension</key>
   <dict>
     <key>NSExtensionPointIdentifier</key>

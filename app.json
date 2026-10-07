@@ -10,6 +10,9 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "io.beebeeb.app",
+      "config": {
+        "usesNonExemptEncryption": true
+      },
       "appleTeamId": "R8352WDJJR",
       "icon": "./assets/icon.png",
       "entitlements": {
