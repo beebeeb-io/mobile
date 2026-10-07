@@ -25,6 +25,11 @@ function isTokenArray(tokens: unknown): tokens is Token[] {
   return Array.isArray(tokens);
 }
 
+/** Only http(s) targets are openable; matches web's resolveSafeMarkdownHref. */
+export function isSafeMarkdownHref(href: string | undefined | null): boolean {
+  return !!href && /^https?:\/\//i.test(href);
+}
+
 /** Map one inline-level token to zero-or-one `MdInline` nodes (recursing into children). */
 function mapInlineToken(token: Token): MdInline | null {
   switch (token.type) {
@@ -49,6 +54,11 @@ function mapInlineToken(token: Token): MdInline | null {
       return { kind: 'code', text: (token as Tokens.Codespan).text };
     case 'link': {
       const l = token as Tokens.Link;
+      // 1753-P3-03: file content is untrusted. Same allowlist as web's
+      // resolveSafeMarkdownHref (repos/web/src/lib/markdown-link.ts): only
+      // http(s) is openable; mailto:, tel:, beebeeb://, javascript: etc. are
+      // rendered as plain text, never as a tappable link.
+      if (!isSafeMarkdownHref(l.href)) return { kind: 'text', text: l.text };
       return { kind: 'link', href: l.href, children: mapInline(l.tokens) };
     }
     case 'image': {
