@@ -56,13 +56,13 @@ describe('the iOS pre-account document', () => {
     return r.doc;
   };
 
-  test('signup is native and the policy carries the numbers the server declared', () => {
+  test('signup is web-only (task 1836) and the policy carries the numbers the server declared', () => {
     const d = doc();
     expect(d.stage).toBe('pre_account');
     expect(d.signup).toEqual({
-      allowed: true,
-      mode: 'native',
-      reason: null,
+      allowed: false,
+      mode: 'web_only',
+      reason: 'signup_web_only',
       webUrl: 'https://app.beebeeb.io/signup',
     });
     expect(d.policy.password.minLength).toBe(12);
