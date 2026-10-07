@@ -8,8 +8,12 @@ import { loadFixture } from './fixtures';
 import { parseOnboardingDocument } from './parse';
 import { HARD_CODED_WEB_FALLBACK, isKnownStep, planScreen } from './plan';
 
+// Signup is web-only (tasks 1834/1836): the iOS pre-account fixture says web_only. The
+// step-planner tests below walk the signup steps, which the planner only does for a
+// document that allows a native signup (the web's), so they open the door on a copy.
 function doc(name, mutate) {
   const raw = JSON.parse(JSON.stringify(loadFixture(name)));
+  if (name === 'pre_account.ios') raw.signup = { ...raw.signup, allowed: true, mode: 'native', reason: null };
   if (mutate) mutate(raw);
   const r = parseOnboardingDocument(raw);
   if (!r.ok) throw new Error(`${name} did not parse: ${JSON.stringify(r)}`);
@@ -19,6 +23,11 @@ function doc(name, mutate) {
 const PRE = ['enter_email', 'verify_email_code', 'accept_terms', 'set_password', 'save_recovery_phrase', 'create_account'];
 
 describe('pre-account order', () => {
+  test('the iOS fixture as the server emits it (web_only) has no native signup to plan', () => {
+    const r = parseOnboardingDocument(loadFixture('pre_account.ios'));
+    expect(r.ok).toBe(true);
+    expect(planScreen(r.doc, new Set()).kind).toBe('signup_unavailable');
+  });
   test('walks the six steps in document order, one at a time, position n of 6', () => {
     const d = doc('pre_account.ios');
     const done = new Set();
