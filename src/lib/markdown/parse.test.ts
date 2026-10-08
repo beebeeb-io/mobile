@@ -187,6 +187,17 @@ describe('parseMarkdown — link scheme allowlist (1753-P3-03)', () => {
   test('http and https (any case) stay links', () => {
     expect(linkCount(parseMarkdown('[a](http://x.io) [b](HTTPS://x.io)'))).toBe(2)
   })
+  test('suppressed link keeps inline formatting of its label (Codex P2)', () => {
+    const blocks = parseMarkdown('[**Support** `x`](mailto:a@b.nl)')
+    expect(linkCount(blocks)).toBe(0)
+    const json = JSON.stringify(blocks)
+    expect(json).toContain('"kind":"bold"')
+    expect(json).toContain('"kind":"code"')
+    // flattened into the paragraph's inline array, not nested under a link
+    expect(blocks[0]).toMatchObject({ kind: 'paragraph' })
+    const kids = (blocks[0] as { inline: { kind: string }[] }).inline
+    expect(kids.map((k) => k.kind)).toEqual(['bold', 'text', 'code'])
+  })
   test('isSafeMarkdownHref', () => {
     expect(isSafeMarkdownHref('https://x.io')).toBe(true)
     expect(isSafeMarkdownHref('beebeeb://x')).toBe(false)

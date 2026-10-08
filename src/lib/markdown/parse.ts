@@ -58,6 +58,8 @@ function mapInlineToken(token: Token): MdInline | null {
       // resolveSafeMarkdownHref (repos/web/src/lib/markdown-link.ts): only
       // http(s) is openable; mailto:, tel:, beebeeb://, javascript: etc. are
       // rendered as plain text, never as a tappable link.
+      // (Block-level callers flatten the label via `suppressedLinkChildren`
+      // so bold/code/escapes inside it survive; this is the single-node fallback.)
       if (!isSafeMarkdownHref(l.href)) return { kind: 'text', text: l.text };
       return { kind: 'link', href: l.href, children: mapInline(l.tokens) };
     }
@@ -106,6 +108,13 @@ function collapseSoftNewlines(text: string): string {
   return text.replace(/\s*\n\s*/g, ' ');
 }
 
+/** An unsafe-scheme link is dropped but its label keeps its inline formatting. */
+function suppressedLinkChildren(token: Token): MdInline[] | null {
+  if (token.type !== 'link') return null;
+  const l = token as Tokens.Link;
+  return isSafeMarkdownHref(l.href) ? null : mapInline(l.tokens);
+}
+
 function mapInline(tokens: Token[] | undefined): MdInline[] {
   if (!tokens) return [];
   const out: MdInline[] = [];
@@ -117,6 +126,11 @@ function mapInline(tokens: Token[] | undefined): MdInline[] {
         continue;
       }
       out.push({ kind: 'text', text: collapseSoftNewlines(t.text) });
+      continue;
+    }
+    const flat = suppressedLinkChildren(token);
+    if (flat) {
+      out.push(...flat);
       continue;
     }
     const mapped = mapInlineToken(token);
@@ -141,6 +155,11 @@ function mapListItem(item: Tokens.ListItem): MdListItem {
       } else if (t.text) {
         inline.push({ kind: 'text', text: t.text });
       }
+      continue;
+    }
+    const flat = suppressedLinkChildren(token);
+    if (flat) {
+      inline.push(...flat);
       continue;
     }
     const mapped = mapInlineToken(token);
