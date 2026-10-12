@@ -218,4 +218,48 @@ describe('bucket pacing stays coherent with the real rateLimitedFetch', () => {
     expect((await rl(url, { method: 'POST' })).status).toBe(201)
     expect(Math.max(0, ...sleeps)).toBeLessThanOrEqual(120)
   })
+
+  // Codex P2 on #176: the bucket pause must not outlast the helper's capped wait.
+  test('(r2-2) server_busy Retry-After: 60 through the real rateLimitedFetch -> retry sent after 30 s (not 60), one wait only', async () => {
+    const sleeps: number[] = []
+    const sentAt: number[] = []
+    const queue = [() => busy(60), () => created()]
+    const rl = createRateLimitedFetch({
+      fetchImpl: async () => { sentAt.push(Date.now()); return queue.shift()!() },
+      // The bucket's own sleep, on the same fake clock, recorded.
+      sleep: (ms) => { sleeps.push(ms); return new Promise((r) => setTimeout(r, ms)) },
+    })
+    const url = 'https://api.test/api/v1/files/upload'
+    const start = Date.now()
+    const p = withServerBusyRetry(() => rl(url, { method: 'POST' }))
+    await flush()
+    expect(sentAt.length).toBe(1)
+
+    jest.advanceTimersByTime(29_999)
+    await flush()
+    expect(sentAt.length).toBe(1) // still waiting at 29.999 s
+    jest.advanceTimersByTime(1)
+    await flush()
+    expect(sentAt.length).toBe(2) // retry out at 30 s, not held in the bucket until 60 s
+    expect(sentAt[1] - start).toBe(30_000)
+    expect((await p).status).toBe(201)
+    expect(sleeps.filter((ms) => ms > 120)).toEqual([]) // the bucket added no second long wait
+  })
+
+  test('(r2-3) upload_rate_limited Retry-After: 60 still pauses the bucket for the full 60 s, as today', async () => {
+    const sleeps: number[] = []
+    const queue = [
+      () => new Response(JSON.stringify({ error: 'upload_rate_limited', retry_after: 60 }), {
+        status: 429, headers: { 'content-type': 'application/json', 'Retry-After': '60' } }),
+      () => created(),
+    ]
+    const rl = createRateLimitedFetch({
+      fetchImpl: async () => queue.shift()!(),
+      sleep: (ms) => { sleeps.push(ms); return Promise.resolve() },
+    })
+    const url = 'https://api.test/api/v1/files/upload'
+    expect((await rl(url, { method: 'POST' })).status).toBe(429)
+    expect((await rl(url, { method: 'POST' })).status).toBe(201)
+    expect(Math.max(...sleeps)).toBe(60_000)
+  })
 })

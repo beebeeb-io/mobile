@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, jest, mock, test } from 'bun:test';
 
 let fetchQueue: Array<() => Promise<Response>> = [];
+let mockFetchImpl: ((init: RequestInit) => Promise<Response>) | null = null;
 const fetchCalls: Array<{ url: string; init: RequestInit }> = [];
 const calls = { endSession: 0, endSessionSnapshots: [] as unknown[] };
 let currentToken: string | null = 'token-A';
@@ -22,6 +23,7 @@ mock.module('../../modules/beebeeb-crypto', () => ({
 mock.module('./rate-limited-fetch', () => ({
   rateLimitedFetch: async (url: string, init: RequestInit) => {
     fetchCalls.push({ url, init });
+    if (mockFetchImpl) return mockFetchImpl(init);
     const next = fetchQueue.shift();
     if (!next) throw new Error(`unexpected fetch: ${url}`);
     return next();
@@ -55,6 +57,7 @@ async function flush(): Promise<void> {
 
 beforeEach(() => {
   fetchQueue = [];
+  mockFetchImpl = null;
   fetchCalls.length = 0;
   calls.endSession = 0;
   calls.endSessionSnapshots = [];
@@ -104,5 +107,48 @@ describe('1870 — saveIndex() retries a 429 server_busy', () => {
     expect(await p).toBeNull();
     expect(fetchCalls.length).toBe(1);
     expect(calls.endSession).toBe(1);
+  });
+
+  // Codex P1 on #176: an older save that is waiting out a server_busy must not
+  // be retried once a newer save exists — it carries no ETag and would
+  // overwrite the newer index.
+  test('(r2-1) save A busy, save B sent + succeeds during A\'s wait -> A makes no further request, does not throw; last write is B', async () => {
+    const written: string[] = [];
+    // Server model: last PUT wins. Body is the (mock-crypto) plaintext JSON.
+    const decode = (init: RequestInit) => JSON.parse(new TextDecoder().decode((init.body as Uint8Array).slice(12))).updated_at as string;
+    const ok = (init: RequestInit) => { written.push(decode(init)); return jsonResponse({}, 200, { ETag: 'vB' }); };
+    const indexA = { ...createEmptyIndex(), updated_at: 'snapshot-A' };
+    const indexB = { ...createEmptyIndex(), updated_at: 'snapshot-B' };
+    let n = 0;
+    mockFetchImpl = async (init) => {
+      n += 1;
+      if (n === 1) return busy(2); // A's first send
+      return ok(init); // anything after that succeeds and is recorded
+    };
+
+    const pA = saveIndex(indexA, new Uint8Array(32), 'v1');
+    await flush();
+    expect(fetchCalls.length).toBe(1); // A sent, now waiting 2 s
+
+    jest.advanceTimersByTime(500);
+    const pB = saveIndex(indexB, new Uint8Array(32)); // newer edit, sent during A's wait
+    await flush();
+    expect(await pB).toBe('vB');
+    expect(fetchCalls.length).toBe(2);
+
+    jest.advanceTimersByTime(60_000); // A's wait elapses, then some
+    await flush();
+    expect(await pA).toBeNull(); // resolved quietly, no throw
+    expect(fetchCalls.length).toBe(2); // A never re-sent
+    expect(written).toEqual(['snapshot-B']); // server's last write is B
+  });
+
+  test('(r2-1b) a save that is still the latest keeps retrying (the guard is not a blanket no-retry)', async () => {
+    fetchQueue.push(async () => busy(1), async () => jsonResponse({}, 200, { ETag: 'v9' }));
+    const p = saveIndex(createEmptyIndex(), new Uint8Array(32));
+    await flush();
+    jest.advanceTimersByTime(1000);
+    expect(await p).toBe('v9');
+    expect(fetchCalls.length).toBe(2);
   });
 });

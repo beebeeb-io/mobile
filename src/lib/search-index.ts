@@ -128,11 +128,24 @@ export async function fetchIndex(indexKey: Uint8Array): Promise<SearchIndex | nu
   return decryptIndex(blob, indexKey)
 }
 
+/**
+ * Task 1870 r2 (Codex P1): the index is one last-write-wins blob. Each
+ * `saveIndex` call takes the next generation synchronously at call time; a
+ * `server_busy` retry is only allowed while its call is still the latest.
+ * Otherwise an older snapshot, retried after a newer one was already stored,
+ * would go out without the newer save's ETag and overwrite it. A superseded
+ * save stops retrying and resolves `null` quietly — the newer save carries
+ * the newer state.
+ */
+let latestSaveGeneration = 0
+
 export async function saveIndex(
   index: SearchIndex,
   indexKey: Uint8Array,
   etag?: string,
 ): Promise<string | null> {
+  const generation = ++latestSaveGeneration
+  const isLatestSave = () => generation === latestSaveGeneration
   // Task 1594 round 3 (Codex T6): snapshot the session at this call's own
   // start, mirroring the upload paths — see `endSessionForAccountMismatch`.
   const authSnapshot = await captureRequestAuthSnapshot()
@@ -156,8 +169,12 @@ export async function saveIndex(
       headers,
       body: encrypted as unknown as BodyInit,
     }),
+    undefined,
+    isLatestSave,
   )
   if (!res.ok) {
+    // Superseded while busy: not an error, the newer save owns the state.
+    if (res.status === 429 && !isLatestSave()) return null
     // Task 1594 round 3 (Codex T6): this PUT can now receive a 409
     // `account_mismatch` (the same header `request()` and the upload paths
     // send). Route it through the same guarded session-teardown instead of

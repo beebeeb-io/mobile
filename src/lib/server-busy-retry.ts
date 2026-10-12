@@ -21,10 +21,17 @@
  * After the last attempt the final 429 `Response` is RETURNED untouched, so the
  * caller's existing `!res.ok` handling raises the same user-facing error.
  *
- * Bucket pacing: `rateLimitedFetch` already pauses the `files` / `general`
- * bucket until `now + Retry-After` on every 429. That pause is an absolute
- * timestamp, so it lapses on its own — the wait below ends at or after it,
- * and a successful retry leaves nothing paused behind it.
+ * Bucket pacing (round 2, Codex P2): `rateLimitedFetch` pauses the `files` /
+ * `general` bucket until `now + Retry-After` on every 429, and for a
+ * `server_busy` 429 it caps that pause at {@link SERVER_BUSY_MAX_WAIT_SECONDS}
+ * (it asks {@link serverBusyWait}). The pause is an absolute timestamp that
+ * starts before the wait below does, so it has lapsed by the time the wait
+ * ends: exactly ONE wait per retry, never more than 30 s, and a successful
+ * retry leaves nothing paused behind it.
+ *
+ * Superseded retries (round 2, Codex P1): a caller whose payload is
+ * "last write wins" (the search index) passes `shouldRetry`; once it says no,
+ * the retry is dropped — no wait, no request — and the last 429 is returned.
  */
 
 export const SERVER_BUSY_CODE = 'server_busy';
@@ -61,7 +68,7 @@ export function serverBusyWaitSeconds(headerValue: string | null, bodyValue: unk
 }
 
 /** Returns the wait in seconds when `res` is a `429 server_busy`, else `null`. Leaves `res`'s body unread. */
-async function serverBusyWait(res: Response): Promise<number | null> {
+export async function serverBusyWait(res: Response): Promise<number | null> {
   if (res.status !== 429 || typeof res.clone !== 'function') return null;
   let body: { error?: unknown; retry_after?: unknown } = {};
   try {
@@ -95,17 +102,22 @@ function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
  * Run `send`; while it answers `429 server_busy`, wait and run it again — at
  * most {@link SERVER_BUSY_MAX_RETRIES} more times. Resolves with the first
  * non-`server_busy` response, or the last `server_busy` one when the retries
- * are spent. Rejects with an `AbortError` as soon as `signal` fires, including
+ * are spent, or `shouldRetry()` (checked before and after each wait) says the
+ * request is no longer wanted. Rejects with an `AbortError` as soon as `signal` fires, including
  * mid-wait (no further request is made).
  */
 export async function withServerBusyRetry(
   send: () => Promise<Response>,
   signal?: AbortSignal,
+  shouldRetry?: () => boolean,
 ): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     const res = await send();
     const waitSeconds = await serverBusyWait(res);
     if (waitSeconds === null || attempt >= SERVER_BUSY_MAX_RETRIES) return res;
+    if (shouldRetry && !shouldRetry()) return res;
     await sleepAbortable(waitSeconds * 1000, signal);
+    // Re-check after the wait: a newer write may have been sent meanwhile.
+    if (shouldRetry && !shouldRetry()) return res;
   }
 }
