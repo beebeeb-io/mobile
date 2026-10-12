@@ -16,6 +16,7 @@
 import { encryptChunk, decryptChunk } from '../../modules/beebeeb-crypto'
 import { getApiUrl, getToken, captureRequestAuthSnapshot, endSessionForAccountMismatch } from './api'
 import { rateLimitedFetch } from './rate-limited-fetch'
+import { withServerBusyRetry } from './server-busy-retry'
 import { expectedUserHeaders } from './expected-user'
 
 export interface SearchIndexEntry {
@@ -146,11 +147,16 @@ export async function saveIndex(
   }
   if (etag) headers['If-Match'] = etag
 
-  const res = await rateLimitedFetch(`${getApiUrl()}/api/v1/index`, {
-    method: 'PUT',
-    headers,
-    body: encrypted as unknown as BodyInit,
-  })
+  // Task 1870: PUT /index buffers its whole body, so a full server-side upload
+  // budget answers 429 server_busy — wait Retry-After and re-send (<= 3 times).
+  // A non-OK final answer still collapses to `null` below, as before.
+  const res = await withServerBusyRetry(() =>
+    rateLimitedFetch(`${getApiUrl()}/api/v1/index`, {
+      method: 'PUT',
+      headers,
+      body: encrypted as unknown as BodyInit,
+    }),
+  )
   if (!res.ok) {
     // Task 1594 round 3 (Codex T6): this PUT can now receive a 409
     // `account_mismatch` (the same header `request()` and the upload paths
