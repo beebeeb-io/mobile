@@ -1,3 +1,5 @@
+import { SERVER_BUSY_MAX_WAIT_SECONDS, serverBusyWait } from './server-busy-retry';
+
 type FetchInput = RequestInfo | URL;
 type FetchLike = (input: FetchInput, init?: RequestInit) => Promise<Response>;
 type SleepFn = (ms: number) => Promise<void>;
@@ -129,10 +131,17 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
     state.nextAt = Math.max(state.nextAt, now() + cappedMs);
   }
 
-  function applyResponsePacing(bucket: RateLimitBucket, response: Response): void {
+  async function applyResponsePacing(bucket: RateLimitBucket, response: Response): Promise<void> {
     const retryAfterMs = parseRetryAfterMs(response.headers.get('Retry-After'), now());
     if (response.status === 429 && retryAfterMs !== null) {
-      pauseBucket(bucket, retryAfterMs);
+      // Task 1870 r2 (Codex P2): a `429 server_busy` is retried by
+      // `withServerBusyRetry` after at most SERVER_BUSY_MAX_WAIT_SECONDS. If
+      // the bucket were paused for the server's full Retry-After (up to 60 s)
+      // the retry would sit in the bucket for the rest of it — a second wait
+      // on top of the first. So pause it for the same capped time. Any other
+      // 429 (upload_rate_limited, the generic limiter) keeps the full pause.
+      const busy = (await serverBusyWait(response)) !== null;
+      pauseBucket(bucket, busy ? Math.min(retryAfterMs, SERVER_BUSY_MAX_WAIT_SECONDS * 1000) : retryAfterMs);
     } else {
       const remaining = Number(response.headers.get('X-RateLimit-Remaining'));
       if (Number.isFinite(remaining) && remaining <= 2) {
@@ -147,7 +156,7 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
     const minSpacing = spacing[bucket] ?? 0;
     if (minSpacing <= 0) {
       const response = await fetchImpl(input, init);
-      applyResponsePacing(bucket, response);
+      await applyResponsePacing(bucket, response);
       return response;
     }
 
@@ -157,7 +166,7 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
       if (waitMs > 0) await sleep(waitMs);
       state.nextAt = Math.max(now(), state.nextAt) + minSpacing;
       const response = await fetchImpl(input, init);
-      applyResponsePacing(bucket, response);
+      await applyResponsePacing(bucket, response);
       return response;
     });
     state.chain = task.then(() => undefined, () => undefined);

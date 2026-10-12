@@ -14,6 +14,7 @@ import { clearCachedFileIndex } from './file-index-cache';
 import { clearCachedBilling } from './billing-cache';
 import { collectPaged, findInPages } from './paginate';
 import { rateLimitedFetch } from './rate-limited-fetch';
+import { withServerBusyRetry } from './server-busy-retry';
 import { isNativeUploadAvailable, planUploadChunksNative, uploadChunksNative } from '../../modules/beebeeb-crypto';
 import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgress, parseNativeUploadError, resumeStateMatchesNativePlan, uploadChunksNativeTracked } from './native-upload-bridge';
 import { getDeviceId } from './sync-client';
@@ -567,12 +568,13 @@ async function throwUploadError(
   err: { error?: string; message?: string; is_trial_cap?: boolean; limit_bytes?: number },
   fallbackMessage: string,
   authSnapshot: RequestAuthSnapshot,
+  retryAfterSeconds?: number,
 ): Promise<never> {
   if (status === 409 && err.error === 'account_mismatch') {
     await endSessionForAccountMismatch(authSnapshot);
     throw new ApiError(409, err.message ?? 'This session does not match the account of the vault key on this device.', 'account_mismatch');
   }
-  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error, undefined, err.is_trial_cap, typeof err.limit_bytes === 'number' ? err.limit_bytes : undefined);
+  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error, retryAfterSeconds, err.is_trial_cap, typeof err.limit_bytes === 'number' ? err.limit_bytes : undefined);
 }
 
 async function headers(auth = true, extra?: Record<string, string>): Promise<RequestHeaders> {
@@ -1492,20 +1494,32 @@ async function uploadFileSimple(
   // see `endSessionForAccountMismatch`.
   const authSnapshot = await captureRequestAuthSnapshot();
   const token = authSnapshot.token;
-  const form = new FormData();
-  form.append('metadata', JSON.stringify(metadata));
-  form.append('chunk_0', fileBlob);
-
-  const res = await rateLimitedFetch(`${BASE_URL}/api/v1/files/upload`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, ...expectedUserHeaders() },
-    body: form,
+  // Task 1870: this route buffers the whole body, so a full server-side upload
+  // budget answers `429 server_busy` + Retry-After. Wait it out and re-send (<= 3
+  // times); the FormData is rebuilt per attempt so a consumed body is never reused.
+  const res = await withServerBusyRetry(() => {
+    const form = new FormData();
+    form.append('metadata', JSON.stringify(metadata));
+    form.append('chunk_0', fileBlob);
+    return rateLimitedFetch(`${BASE_URL}/api/v1/files/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, ...expectedUserHeaders() },
+      body: form,
+    });
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     // Task 1594 round 2 (F5) / round 3 (T5): route account_mismatch the same
     // as request(), guarded against a session that has since moved on.
-    await throwUploadError(res.status, err, res.statusText, authSnapshot);
+    await throwUploadError(
+      res.status,
+      err,
+      res.statusText,
+      authSnapshot,
+      // Task 1870: a 429 (server_busy after the retries, or any other 429)
+      // carries its Retry-After, as request() does for every other route.
+      res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,
+    );
   }
 
   onProgress?.({ phase: 'finalizing', chunksTotal: 1, chunksUploaded: 1, bytesTotal: fileBlob.size, bytesUploaded: fileBlob.size });
