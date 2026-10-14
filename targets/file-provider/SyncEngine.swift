@@ -57,9 +57,28 @@ enum SyncEngine {
     // when the main app has not pre-warmed that directory's shared cache. This
     // uses the extension Secure Enclave key only, so it does not trigger Face ID
     // from the extension process.
-    let masterKeyHandle = try? CryptoBridge.loadMasterKeyHandle()
+    let masterKeyHandle: MasterKeyHandle?
+    do {
+      masterKeyHandle = try CryptoBridge.loadMasterKeyHandle()
+    } catch {
+      // Task 1722 (G3): `error` is a sanitised reason (a step and a status).
+      masterKeyHandle = nil
+      NSLog("[Beebeeb] refreshContainer(\(containerId)) key unavailable: \(error)")
+    }
     let cached = CacheManager.shared.children(parent: parentId)
     let cachedById = Dictionary(uniqueKeysWithValues: cached.map { ($0.id, $0) })
+
+    // Task 1722 (d): without the key, a listing with names only the key can
+    // read is refused rather than written with placeholder names. Files then
+    // shows "Authentication Required" with "Open Beebeeb" and retries once
+    // the app resolves the error; nothing is cached for this folder until
+    // then. Names the app already decrypted, and legacy plaintext names,
+    // still refresh without the key.
+    if masterKeyHandle == nil,
+       entries.contains(where: { needsKeyForName($0, prior: cachedById[$0.id]) }) {
+      NSLog("[Beebeeb] refreshContainer(\(containerId)) refused: names need the vault key")
+      return .notAuthenticated
+    }
 
     var rowsToUpsert: [CachedItem] = []
 
@@ -144,6 +163,13 @@ enum SyncEngine {
       return .notAuthenticated
     }
     return .serverUnreachable
+  }
+
+  /// True when this entry's name is an encrypted envelope and no decrypted
+  /// name for it is cached yet, so only the vault key can produce a name.
+  private static func needsKeyForName(_ dto: ApiClient.FileEntryDto, prior: CachedItem?) -> Bool {
+    guard let raw = dto.name_encrypted, raw.hasPrefix("{") else { return false }
+    return (prior?.nameDecrypted ?? "").isEmpty
   }
 
   private static func bumpAnchor(_ prior: Int64?) -> Int64 {

@@ -223,8 +223,9 @@ final class ApiClient {
   var listings: [String: Result<[FileEntryDto], Error>] = [:]
   var downloadResult: Result<DownloadedEncryptedFile, Error> = .failure(ApiError.invalidResponse)
   private(set) var calls: [String] = []
+  private(set) var patchedNames: [String?] = []
 
-  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); calls = [] }
+  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); calls = []; patchedNames = [] }
   func count(_ prefix: String) -> Int { calls.filter { $0.hasPrefix(prefix) }.count }
 
   func listFiles(parentId: String?) async throws -> [FileEntryDto] {
@@ -236,7 +237,8 @@ final class ApiClient {
     return try downloadResult.get()
   }
   func patchFile(fileId: String, nameEncrypted: String? = nil, parentId: String? = nil, expectedUser: String?) async throws -> FileEntryDto {
-    calls.append("patch \(fileId) name=\(nameEncrypted != nil) parent=\(parentId ?? "root")")
+    calls.append("patch \(fileId) parent=\(parentId ?? "root")")
+    patchedNames.append(nameEncrypted)
     return FileEntryDto(id: fileId, parent_id: parentId, name_encrypted: nameEncrypted, name_nonce: nil, mime_type: nil,
                         size_bytes: 0, is_folder: false, chunk_count: 1, created_at: nil, updated_at: "2026-10-14T00:00:00Z")
   }
@@ -267,6 +269,7 @@ final class ApiClient {
 const scenarios = String.raw`
 import Foundation
 import FileProvider
+import UniformTypeIdentifiers
 
 var passed = 0
 func check(_ condition: @autoclosure () -> Bool, _ label: String) {
@@ -360,11 +363,164 @@ func otherFailuresKeepTheirMeaning() async {
   check(isProviderError(missing, .noSuchItem), "unknown item: expected -1005, got \(describe(missing))")
 }
 
+// ---- (d) listings never vend placeholder names ----
+final class ListingObserver: NSObject, NSFileProviderEnumerationObserver {
+  private let lock = NSLock()
+  private let done = DispatchSemaphore(value: 0)
+  private var collected: [NSFileProviderItem] = []
+  private var failure: NSError?
+  var items: [NSFileProviderItem] { lock.lock(); defer { lock.unlock() }; return collected }
+  var error: NSError? { lock.lock(); defer { lock.unlock() }; return failure }
+  func didEnumerate(_ updatedItems: [NSFileProviderItem]) { lock.lock(); collected += updatedItems; lock.unlock() }
+  func finishEnumerating(upTo nextPage: NSFileProviderPage?) { done.signal() }
+  func finishEnumeratingWithError(_ error: Error) { lock.lock(); failure = error as NSError; lock.unlock(); done.signal() }
+  func wait() -> Bool { done.wait(timeout: .now() + 10) == .success }
+}
+
+func list(_ container: String) async -> ListingObserver {
+  let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
+  let observer = ListingObserver()
+  guard let enumerator = try? ext.enumerator(for: NSFileProviderItemIdentifier(container), request: NSFileProviderRequest()) else {
+    check(false, "enumerator(for: \(container)) threw")
+    return observer
+  }
+  enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage(Data()))
+  let finished = await withCheckedContinuation { continuation in
+    DispatchQueue.global().async { continuation.resume(returning: observer.wait()) }
+  }
+  check(finished, "listing of \(container) finished")
+  enumerator.invalidate()
+  return observer
+}
+
+let fixtureMaster = try! MasterKeyHandle.fromKeychainBytes(bytes: BeebeebKeychainCore.goodKey)
+func encryptedName(_ id: String, _ name: String) -> String {
+  try! CryptoBridge.encryptFilename(masterKeyHandle: fixtureMaster, fileId: id, filename: "{\"name\":\"\(name)\"}")
+}
+/// A well-formed envelope this account's key cannot open.
+let undecryptable = #"{"nonce":"AAAAAAAAAAAAAAAA","ciphertext":"AAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#
+
+func dto(_ id: String, parent: String?, name: String?, folder: Bool = false) -> ApiClient.FileEntryDto {
+  ApiClient.FileEntryDto(id: id, parent_id: parent, name_encrypted: name, name_nonce: nil, mime_type: folder ? nil : "text/plain",
+                         size_bytes: folder ? 0 : 5, is_folder: folder, chunk_count: 1, created_at: nil, updated_at: "2026-10-14T00:00:00Z")
+}
+
+func noKeyRefusesListingInsteadOfPlaceholders() async {
+  reset()
+  BeebeebKeychainCore.keyResult = .failure(BeebeebKeychainCore.LoadError.seKeyNotFound)
+  ApiClient.shared.listings["F"] = .success([
+    dto("c1", parent: "F", name: encryptedName("c1", "Taxes"), folder: true),
+    dto("c2", parent: "F", name: encryptedName("c2", "Photos"), folder: true),
+    dto("c3", parent: "F", name: encryptedName("c3", "notes.txt")),
+  ])
+  let observer = await list("F")
+  check(isProviderError(observer.error, .notAuthenticated), "no key: listing ends with -1000, got \(describe(observer.error))")
+  check(observer.items.isEmpty, "no key: 0 items vended, got \(observer.items.map(\.filename))")
+  check(CacheManager.shared.writes.isEmpty, "no key: nothing written to the cache, got \(CacheManager.shared.writes)")
+  check(CacheManager.shared.syncState(key: "container.F.anchor") == nil, "no key: the folder is not marked as listed")
+}
+
+func noKeyStillRefreshesKnownNames() async {
+  reset()
+  BeebeebKeychainCore.keyResult = .failure(BeebeebKeychainCore.LoadError.seKeyNotFound)
+  CacheManager.shared.rows["k1"] = row("k1", parent: "G", name: "Budget.xlsx", encrypted: encryptedName("k1", "Budget.xlsx"))
+  ApiClient.shared.listings["G"] = .success([
+    dto("k1", parent: "G", name: encryptedName("k1", "Budget.xlsx")),
+    dto("k2", parent: "G", name: "legacy-plain.txt"),
+  ])
+  let outcome = await SyncEngine.refreshContainer(containerId: "G")
+  check(outcome == .success, "no key, all names known: refresh succeeds, got \(outcome)")
+  check(CacheManager.shared.item(id: "k1").map { FileProviderItem(cached: $0).filename } == "Budget.xlsx", "app-decrypted name kept")
+  check(CacheManager.shared.item(id: "k2").map { FileProviderItem(cached: $0).filename } == "legacy-plain.txt", "legacy plaintext name kept")
+}
+
+func undecryptableNameGetsUniqueLabelWithoutRename() async {
+  reset()
+  ApiClient.shared.listings["H"] = .success([
+    dto("aaaaaaaa-1111-4000-8000-000000000001", parent: "H", name: undecryptable, folder: true),
+    dto("bbbbbbbb-2222-4000-8000-000000000002", parent: "H", name: undecryptable, folder: true),
+    dto("cccccccc-3333-4000-8000-000000000003", parent: "H", name: undecryptable),
+    dto("r1", parent: "H", name: encryptedName("r1", "readable.txt")),
+  ])
+  let observer = await list("H")
+  check(observer.error == nil, "key available: listing succeeds, got \(describe(observer.error))")
+  let names = observer.items.map(\.filename).sorted()
+  check(names.count == 4, "4 items listed, got \(names)")
+  check(Set(names).count == names.count, "sibling names are unique (no Folder 2 / Folder 3 bounce), got \(names)")
+  check(names.contains("readable.txt"), "readable name decrypted, got \(names)")
+  for prefix in ["aaaaaaaa", "bbbbbbbb", "cccccccc"] {
+    check(names.contains("Encrypted item \u{00B7} \(prefix)"), "undecryptable item labelled by id, got \(names)")
+  }
+  for item in observer.items {
+    let canRename = (item.capabilities ?? []).contains(.allowsRenaming)
+    check(canRename == (item.filename == "readable.txt"), "\(item.filename): renaming allowed only for a decrypted name")
+  }
+}
+
+final class Template: NSObject, NSFileProviderItem {
+  let itemIdentifier: NSFileProviderItemIdentifier
+  let parentItemIdentifier: NSFileProviderItemIdentifier
+  let filename: String
+  var contentType: UTType { .data }
+  init(_ id: String, parent: String, filename: String) {
+    itemIdentifier = NSFileProviderItemIdentifier(id)
+    parentItemIdentifier = NSFileProviderItemIdentifier(parent)
+    self.filename = filename
+  }
+}
+
+func modify(_ template: NSFileProviderItem, _ fields: NSFileProviderItemFields) async -> (NSFileProviderItem?, NSError?) {
+  let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
+  return await withCheckedContinuation { continuation in
+    _ = ext.modifyItem(template, baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
+                       changedFields: fields, contents: nil, options: [], request: NSFileProviderRequest()) { item, _, _, error in
+      continuation.resume(returning: (item, error as NSError?))
+    }
+  }
+}
+
+func renameOfUndecryptedItemNeverReachesTheServer() async {
+  reset()
+  CacheManager.shared.rows["u1"] = row("u1", parent: "H", name: nil, encrypted: undecryptable)
+  let placeholder = FileProviderItem(cached: CacheManager.shared.rows["u1"]!).filename
+  let (renamed, renameError) = await modify(Template("u1", parent: "H", filename: "Folder 2"), [.filename])
+  check(renameError == nil, "rename of an undecrypted item: no error, got \(describe(renameError))")
+  check(ApiClient.shared.count("patch") == 0, "rename of an undecrypted item: 0 server writes, got \(ApiClient.shared.calls)")
+  check(renamed?.filename == placeholder, "rename of an undecrypted item: the label is kept (\(placeholder)), got \(renamed?.filename ?? "nil")")
+  check(CacheManager.shared.item(id: "u1")?.nameEncrypted == undecryptable, "the server name is untouched in the cache")
+
+  reset()
+  CacheManager.shared.rows["u1"] = row("u1", parent: "H", name: nil, encrypted: undecryptable)
+  let (_, moveError) = await modify(Template("u1", parent: "K", filename: "Folder 2"), [.filename, .parentItemIdentifier])
+  check(moveError == nil, "move of an undecrypted item: no error, got \(describe(moveError))")
+  check(ApiClient.shared.calls == ["patch u1 parent=K"], "move: one PATCH for the new parent, got \(ApiClient.shared.calls)")
+  check(ApiClient.shared.patchedNames == [undecryptable], "move: carries the existing ciphertext name, never a new one")
+
+  reset()
+  CacheManager.shared.rows["r1"] = row("r1", parent: "H", name: "old.txt", encrypted: encryptedName("r1", "old.txt"))
+  let (readable, readableError) = await modify(Template("r1", parent: "H", filename: "new.txt"), [.filename])
+  check(readableError == nil && readable?.filename == "new.txt", "a decrypted item still renames, got \(describe(readableError))")
+  let sent = ApiClient.shared.patchedNames.first ?? nil
+  let sentName = sent.flatMap { try? CryptoBridge.decryptFilename(masterKeyHandle: fixtureMaster, fileId: "r1", nameEncrypted: $0) }
+  check(ApiClient.shared.count("patch") == 1 && sentName == "new.txt", "the rename sends one ciphertext of the new name, got \(sentName ?? "nil")")
+}
+
+let scenarioTable: [(String, () async -> Void)] = [
+  ("key-errors", keyFailuresAreAuthenticationRequired),
+  ("other-errors", otherFailuresKeepTheirMeaning),
+  ("no-key-listing", noKeyRefusesListingInsteadOfPlaceholders),
+  ("no-key-known-names", noKeyStillRefreshesKnownNames),
+  ("undecryptable-label", undecryptableNameGetsUniqueLabelWithoutRename),
+  ("placeholder-rename", renameOfUndecryptedItemNeverReachesTheServer),
+]
+
 @main
 struct Harness {
   static func main() async {
-    await keyFailuresAreAuthenticationRequired()
-    await otherFailuresKeepTheirMeaning()
+    let only = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : nil
+    for (name, scenario) in scenarioTable where only == nil || only == name {
+      await scenario()
+    }
     print("extension-behaviour harness: \(passed) checks passed")
   }
 }
@@ -379,35 +535,80 @@ const REAL_SOURCES = [
   'CryptoBridge.swift',
 ].map((file) => join(EXT, file));
 
-function runHarness(): string {
+let compiled: { dir: string; binary: string } | null = null;
+
+/** Compiles the shipped sources + doubles once per test file run. */
+function harnessBinary(): { dir: string; binary: string } {
+  if (compiled) return compiled;
   const dir = mkdtempSync(join(tmpdir(), 'bb-1722-extension-'));
   const doublesPath = join(dir, 'Doubles.swift');
   const scenariosPath = join(dir, 'Scenarios.swift');
   const binary = join(dir, 'harness');
-  const output = join(dir, 'output.log');
   writeFileSync(doublesPath, doubles);
   writeFileSync(scenariosPath, scenarios);
-  execFileSync('xcrun', [
+  try {
+    execFileSync('xcrun', [
     'swiftc', '-parse-as-library',
     '-framework', 'FileProvider', '-framework', 'UniformTypeIdentifiers',
     ...REAL_SOURCES, doublesPath, scenariosPath, '-o', binary,
-  ], { stdio: 'pipe', timeout: 240_000 });
-  try {
-    execFileSync('/bin/sh', ['-c', '"$1" "$2" > "$3" 2>&1', 'extension-harness', binary, dir, output], { timeout: 60_000 });
-  } catch {
-    // The FAIL line below is the useful part of a red run.
+    ], { stdio: 'pipe', timeout: 240_000 });
+  } catch (error) {
+    // Show the compiler's own diagnostics instead of only "Command failed".
+    throw new Error(`harness did not compile:\n${String(error?.stderr ?? error)}`);
   }
-  return readFileSync(output, 'utf8');
+  compiled = { dir, binary };
+  return compiled;
 }
 
-describe('task 1722: iOS File Provider extension behaviour (shipped sources, in-memory doubles)', () => {
-  nativeSwiftHarnessTest('key failures are Authentication Required, never -2005; other errors keep their meaning', () => {
-    const output = runHarness();
-    // eslint-disable-next-line no-console
-    console.log(output);
-    expect(output).not.toContain('FAIL:');
-    expect(output).toContain('extension-behaviour harness: 24 checks passed');
+/** Runs one scenario group; returns its combined stdout/stderr (NSLog lines included). */
+function runScenario(name: string): string {
+  const { dir, binary } = harnessBinary();
+  const workDir = mkdtempSync(join(dir, `${name}-`));
+  const output = join(workDir, 'output.log');
+  try {
+    execFileSync('/bin/sh', ['-c', '"$1" "$2" "$3" > "$4" 2>&1', 'extension-harness', binary, workDir, name, output], { timeout: 60_000 });
+  } catch {
+    // The FAIL line is the useful part of a red run; the assertions below report it.
+  }
+  const text = readFileSync(output, 'utf8');
+  // eslint-disable-next-line no-console
+  console.log(`--- ${name}\n${text}`);
+  return text;
+}
+
+function expectScenario(name: string, checks: number): string {
+  const output = runScenario(name);
+  expect(output).not.toContain('FAIL:');
+  expect(output).toContain(`extension-behaviour harness: ${checks} checks passed`);
+  return output;
+}
+
+describe('task 1722 (c): key failures surface as Authentication Required', () => {
+  nativeSwiftHarnessTest('every key-unavailable error is -1000 (never -2005) and nothing is downloaded', () => {
+    const output = expectScenario('key-errors', 21);
     // G3: the reason a key load failed is logged, sanitised to a step and a status.
     expect(output).toContain('[Beebeeb] fetchContents(f1) failed: fileProviderKeyUnavailable(step: "unwrap", domain: "NSOSStatusErrorDomain", code: -25308)');
+  }, 300_000);
+
+  nativeSwiftHarnessTest('errors that are not about the key keep their meaning (-1004, -1000 for HTTP 401, -1005)', () => {
+    expectScenario('other-errors', 3);
+  }, 300_000);
+});
+
+describe('task 1722 (d): listings never vend placeholder names', () => {
+  nativeSwiftHarnessTest('with no key, a folder whose names need decrypting ends -1000 with 0 items and 0 cache writes', () => {
+    expectScenario('no-key-listing', 5);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('with no key, names the app already decrypted (and legacy plaintext names) still refresh', () => {
+    expectScenario('no-key-known-names', 3);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('an undecryptable name gets a unique id label and no rename capability', () => {
+    expectScenario('undecryptable-label', 12);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('renaming an undecrypted item sends 0 server writes; a move keeps its ciphertext name', () => {
+    expectScenario('placeholder-rename', 9);
   }, 300_000);
 });

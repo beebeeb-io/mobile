@@ -414,7 +414,18 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         var nextSizeBytes = cached.sizeBytes
         var nextUpdatedAt = ISO8601DateFormatter().string(from: Date())
 
-        if changedFields.contains(.filename) {
+        // Task 1722 (d): this row's real name could not be decrypted, so the
+        // filename Files reports is our "Encrypted item · …" label (or a
+        // bounce of it). Writing that to the server would replace the real
+        // name. Keep the server name; returning the item unchanged makes the
+        // system put the label back on disk. A move still works: it carries
+        // the existing ciphertext name.
+        let nameIsUnresolved = cached.hasUnresolvedName
+        let renamesOnServer = changedFields.contains(.filename) && !nameIsUnresolved
+        if changedFields.contains(.filename), nameIsUnresolved {
+          NSLog("[Beebeeb] modifyItem(\(cached.id)) kept the server name: the current name could not be decrypted")
+        }
+        if renamesOnServer {
           nextName = item.filename
           nextNameEncrypted = try CryptoBridge.encryptFilename(
             masterKeyHandle: masterKey,
@@ -439,6 +450,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           if let existing = nextNameEncrypted {
             nameForUpload = existing
           } else {
+            // Task 1722 (d): no server name and no readable one: the only
+            // name available is our label, which must never become the
+            // file's name. Definitively unsyncable until the item changes.
+            guard !nameIsUnresolved else { throw NSFileProviderError(.cannotSynchronize) }
             nameForUpload = try CryptoBridge.encryptFilename(
               masterKeyHandle: masterKey,
               fileId: cached.id,
@@ -465,7 +480,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           progress.completedUnitCount = 80
         }
 
-        if changedFields.contains(.filename) || changedFields.contains(.parentItemIdentifier) {
+        if renamesOnServer || changedFields.contains(.parentItemIdentifier) {
           let patched = try await ApiClient.shared.patchFile(
             fileId: cached.id,
             nameEncrypted: nextNameEncrypted,
