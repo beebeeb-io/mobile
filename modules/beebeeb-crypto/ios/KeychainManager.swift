@@ -104,8 +104,57 @@ final class KeychainManager {
 
     // --- Extension SE key (.devicePasscode always — no biometric prompt from extensions) ---
     try storeExtensionWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
-    try storeFileProviderWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
+    // Task 1722 (G6/G7): the Files key follows the Files mount, and never
+    // fails this store — the vault key above is already written.
+    syncFileProviderWrappedKey(
+      masterKeyBytes: masterKeyBytes,
+      label: label,
+      mounted: BeebeebKeychainCore.fileProviderMountConsented()
+    )
     #endif
+  }
+
+  // MARK: - Files key lifecycle (task 1722 G1/G6/G7)
+
+  /// The File Provider's own wrapping key + blob (`storeFileProviderWrappedKey`)
+  /// unwraps the vault key on an unlocked, passcode-protected device without
+  /// Face ID or a passcode prompt, because Files has no authentication UI. It
+  /// therefore exists only while the user has Beebeeb mounted in Files (the
+  /// Settings copy: "Anyone who can unlock this iPhone can access the mounted
+  /// Files location"): provisioned while `mounted`, deleted otherwise.
+  ///
+  /// Best effort and never throws: a Files key that cannot be created must
+  /// not fail a vault store or unlock (before task 1722 it did, which broke
+  /// unlock or pushed `store` onto the weaker software-key fallback). Files
+  /// then reports "Authentication Required" until a later provisioning works.
+  @discardableResult
+  static func syncFileProviderWrappedKey(masterKeyBytes: Data, label: String, mounted: Bool) -> Bool {
+    guard mounted else {
+      deleteFileProviderKey()
+      return false
+    }
+    do {
+      try storeFileProviderWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
+      RuntimeTrace.event("keychain.manager.files_key.provisioned")
+      return true
+    } catch {
+      RuntimeTrace.event("keychain.manager.files_key.provision_failed", ["error": String(describing: error)])
+      return false
+    }
+  }
+
+  /// Removes the Files wrapping key and its wrapped blob; the vault and
+  /// share/backup keys are untouched.
+  static func deleteFileProviderKey() {
+    deleteSEKey(tag: BeebeebKeychainCore.seKeyTagFiles)
+    deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceFiles)
+  }
+
+  /// Both halves of the Files key are present (it may still fail to unwrap,
+  /// e.g. on a locked device; this only answers "is it provisioned").
+  static func hasFileProviderKey(label: String) -> Bool {
+    BeebeebKeychainCore.findSEKey(tag: BeebeebKeychainCore.seKeyTagFiles) != nil
+      && BeebeebKeychainCore.fetchWrappedBlob(service: BeebeebKeychainCore.wrappedKeyServiceFiles, label: label) != nil
   }
 
   /// Encrypt the master key under the extension SE key and persist alongside
@@ -235,7 +284,13 @@ final class KeychainManager {
 
     // Keep the extension-wrapped blob in sync so backup extensions can read.
     try storeExtensionWrappedKey(masterKeyBytes: plaintextData, label: label)
-    try storeFileProviderWrappedKey(masterKeyBytes: plaintextData, label: label)
+    // Task 1722 (G1/G6/G7): (re)provision the Files key while Files is
+    // mounted, remove it otherwise; never fail the unlock over it.
+    syncFileProviderWrappedKey(
+      masterKeyBytes: plaintextData,
+      label: label,
+      mounted: BeebeebKeychainCore.fileProviderMountConsented()
+    )
 
     // Idempotent re-store under the access group. If the read came from
     // legacy no-access-group storage, this migrates it forward; if it
@@ -453,9 +508,11 @@ final class KeychainManager {
     // Always keep the extension wrapped key available. The File Provider never
     // falls back to the primary key, because that key may require Face ID from
     // an extension process and can cause repeated system prompts in Files.app.
+    let filesMounted = BeebeebKeychainCore.fileProviderMountConsented()
     for item in plaintexts {
       try storeExtensionWrappedKey(masterKeyBytes: item.data, label: item.account)
-      try storeFileProviderWrappedKey(masterKeyBytes: item.data, label: item.account)
+      // Task 1722 (G6/G7): mounted-only and best effort, as in `store`/`load`.
+      syncFileProviderWrappedKey(masterKeyBytes: item.data, label: item.account, mounted: filesMounted)
     }
     RuntimeTrace.event("keychain.manager.set_access_control.success", [
       "requireBiometric": requireBiometric,

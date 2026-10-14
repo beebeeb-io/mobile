@@ -42,10 +42,25 @@ enum BeebeebKeychainCore {
   static var strings: [String: String] = [:]
   static func loadString(key: String) -> String? { strings[key] }
 }
+final class FakeHandle {
+  var exports = 0
+  func exportForKeychain() throws -> Data { exports += 1; return Data(repeating: 9, count: 32) }
+}
 enum BeebeebCryptoBridge {
-  struct Snapshot { var handle: Int?; var ownerId: String? }
-  static var snapshot = Snapshot(handle: 1, ownerId: "A")
+  static let kMasterKeyLabel = "io.beebeeb.master-key"
+  struct Snapshot { var handle: FakeHandle?; var ownerId: String? }
+  static var snapshot = Snapshot(handle: FakeHandle(), ownerId: "A")
   static func cachedMasterKeySnapshot() -> Snapshot { snapshot }
+}
+// Task 1722 (G1): the Files key is provisioned from the verified unlocked handle when missing.
+enum KeychainManager {
+  static var present = false
+  static var provisioned: [(bytes: Int, label: String, mounted: Bool)] = []
+  static func hasFileProviderKey(label: String) -> Bool { present }
+  @discardableResult
+  static func syncFileProviderWrappedKey(masterKeyBytes: Data, label: String, mounted: Bool) -> Bool {
+    provisioned.append((masterKeyBytes.count, label, mounted)); present = mounted; return mounted
+  }
 }
 enum RuntimeTrace {
   static var events: [String] = []
@@ -72,18 +87,28 @@ ${helper}
       defaults.set(true, forKey: "trusted"); defaults.set(true, forKey: "enabled")
       PlaintextStorageProtection.pending = false
       BeebeebKeychainCore.strings = ["token": "token", "owner": "A", "user": "A"]
-      BeebeebCryptoBridge.snapshot = .init(handle: 1, ownerId: "A")
+      BeebeebCryptoBridge.snapshot = .init(handle: FakeHandle(), ownerId: "A")
+      KeychainManager.present = false; KeychainManager.provisioned = []
       NSFileProviderManager.available = true; NSFileProviderManager.fail = false
       NSFileProviderManager.calls = []; RuntimeTrace.events = []
     }
-    func run(_ label: String, _ change: () -> Void, expected: Int = 0) async {
+    // Ready: provision the Files key if it is missing, then lift BOTH throttles Files may hold:
+    // -1000 (key/session unavailable) and -2005 (what builds before task 1722 reported for a
+    // key failure, which Files never retries on its own).
+    let resolved = [NSFileProviderError.notAuthenticated.rawValue, NSFileProviderError.cannotSynchronize.rawValue]
+    func run(_ label: String, _ change: () -> Void, ready: Bool = false, provisions: Bool = false) async {
       reset(); change()
       await resumeFileProviderAuthenticationIfReady(domain: domain, defaults: defaults)
-      precondition(NSFileProviderManager.calls.count == expected, label)
-      if expected > 0 { precondition(NSFileProviderManager.calls == [NSFileProviderError.notAuthenticated.rawValue], label) }
+      precondition(NSFileProviderManager.calls == (ready ? resolved : []), "\\(label): signalled \\(NSFileProviderManager.calls)")
+      precondition(KeychainManager.provisioned.count == (provisions ? 1 : 0), "\\(label): provisioned \\(KeychainManager.provisioned.count)x")
+      if provisions {
+        let call = KeychainManager.provisioned[0]
+        precondition(call.bytes == 32 && call.label == "io.beebeeb.master-key" && call.mounted, "\\(label): provisioned \\(call)")
+      }
       count += 1
     }
-    await run("authenticated unlock", {}, expected: 1)
+    await run("authenticated unlock, Files key missing", {}, ready: true, provisions: true)
+    await run("authenticated unlock, Files key present", { KeychainManager.present = true }, ready: true)
     await run("locked vault", { BeebeebCryptoBridge.snapshot.handle = nil })
     await run("unconfirmed handle", { BeebeebCryptoBridge.snapshot.ownerId = nil })
     await run("foreign handle", { BeebeebCryptoBridge.snapshot.ownerId = "B" })
@@ -96,8 +121,8 @@ ${helper}
     await run("mount not trusted", { defaults.set(false, forKey: "trusted") })
     await run("mount disabled", { defaults.set(false, forKey: "enabled") })
     await run("manager unavailable", { NSFileProviderManager.available = false })
-    await run("retry callback failure", { NSFileProviderManager.fail = true }, expected: 1)
-    precondition(RuntimeTrace.events == ["fileprovider.authentication_retry.failed"])
+    await run("retry callback failure", { NSFileProviderManager.fail = true }, ready: true, provisions: true)
+    precondition(RuntimeTrace.events == ["fileprovider.authentication_retry.failed", "fileprovider.authentication_retry.failed"], "\\(RuntimeTrace.events)")
     FileHandle.standardOutput.write(Data("PASS native authentication recovery cases=\\(count)\\n".utf8))
   }
 }
@@ -108,5 +133,8 @@ ${helper}
   execFileSync('swiftc', ['-parse-as-library', swift, '-o', binary], { timeout: 60_000 });
   const output = join(dir, 'result.log');
   execFileSync('/bin/sh', ['-c', '"$1" > "$2" 2>&1', 'harness', binary, output], { timeout: 30_000 });
-  expect(readFileSync(output, 'utf8')).toContain('PASS native authentication recovery cases=14');
+  const text = readFileSync(output, 'utf8');
+  // eslint-disable-next-line no-console
+  if (!text.includes('PASS')) console.log(text);
+  expect(text).toContain('PASS native authentication recovery cases=15');
 }, 65_000);

@@ -347,6 +347,25 @@ enum BeebeebKeychainCore {
     static let masterKeyOwnerKey = "io.beebeeb.master-key-owner"
     static let sessionUserIdKey = "io.beebeeb.session-user-id"
 
+    // Task 1722 (G6): the "show in Files" consent, in App Group
+    // UserDefaults, written by the main app only (`mountFileProviderAccess`
+    // sets both; every sign-out purge and every Files toggle-off clears
+    // them). Declared here, once, so the keychain writer can tie the Files
+    // key's existence to the same flags `BeebeebCryptoModule` aliases,
+    // instead of re-typing the strings (the task 1671 drift lesson).
+    static let fileProviderEnabledKey = "io.beebeeb.fileProvider.enabled"
+    static let fileProviderTrustedMountKey = "io.beebeeb.fileProvider.trustedMountEnabled"
+
+    /// True while the user has Beebeeb mounted in Files: the trusted-mount
+    /// flag is on and `enabled` is on (absent counts as on). Same rule as
+    /// `fileProviderPrivacyState`'s `showInFiles` in BeebeebCryptoModule.
+    static func fileProviderMountConsented(
+        defaults: UserDefaults? = UserDefaults(suiteName: appGroupSuiteName)
+    ) -> Bool {
+        guard let defaults, defaults.bool(forKey: fileProviderTrustedMountKey) else { return false }
+        return defaults.object(forKey: fileProviderEnabledKey) == nil || defaults.bool(forKey: fileProviderEnabledKey)
+    }
+
     /// Persist `value` under `key` in the shared Keychain. Replaces any
     /// existing value at the same key. Also clears any legacy App Group
     /// UserDefaults entry at the same key (belt-and-suspenders against the

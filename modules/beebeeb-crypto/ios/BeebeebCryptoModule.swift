@@ -26,8 +26,10 @@ private let simulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProvide
 // `sessionTokenKey` / `apiBaseUrlKey` doc comment.
 private let sharedSessionTokenKey = BeebeebKeychainCore.sessionTokenKey
 private let sharedAPIBaseURLKey = BeebeebKeychainCore.apiBaseUrlKey
-private let fileProviderEnabledKey = "io.beebeeb.fileProvider.enabled"
-private let fileProviderTrustedMountKey = "io.beebeeb.fileProvider.trustedMountEnabled"
+// Task 1722 (G6): aliased from `BeebeebKeychainCore` (the keychain writer
+// ties the Files key to the same consent), never re-typed here.
+private let fileProviderEnabledKey = BeebeebKeychainCore.fileProviderEnabledKey
+private let fileProviderTrustedMountKey = BeebeebKeychainCore.fileProviderTrustedMountKey
 private let fileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDeviceAuth"
 private let fileProviderUnlockedUntilKey = "io.beebeeb.fileProvider.unlockedUntilMs"
 private let fileProviderEnumeratorStatePrefix = "io.beebeeb.fileProvider.enumerator."
@@ -1112,6 +1114,8 @@ private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
   BeebeebKeychainCore.deleteString(key: sharedSessionTokenKey)
   BeebeebKeychainCore.deleteString(key: sharedAPIBaseURLKey)
   defaults?.removeObject(forKey: simulatorFileProviderMasterKeyKey)
+  // Task 1722 (G6): Files is off, so its no-prompt copy of the vault key goes.
+  KeychainManager.deleteFileProviderKey()
   // Task 1593 f3 (item 2) — this path REMOVES the domain outright (see
   // `removeMountedFileProviderDomain`, its only caller); there is no
   // subsequent add to gate, so `cacheResetOk` is not needed here.
@@ -1134,6 +1138,9 @@ private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
 private func resetFileProviderShowInFilesConsent(defaults: UserDefaults?) {
   defaults?.set(false, forKey: fileProviderEnabledKey)
   defaults?.set(false, forKey: fileProviderTrustedMountKey)
+  // Task 1722 (G6): every sign-out purge revokes the Files consent, and with
+  // it the Files key (a no-prompt copy of the vault key).
+  KeychainManager.deleteFileProviderKey()
   // Task 1593 round 8 (R1) — stamp the generation here too, not only on a
   // successful ADD (`registerMountedFileProviderDomainLocked`). A consent
   // reset is exactly the kind of state change a pending stale-`.remove`
@@ -2045,14 +2052,31 @@ private func resumeFileProviderAuthenticationIfReady(
         let user = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.sessionUserIdKey), user == owner
   else { return }
   let unlocked = BeebeebCryptoBridge.cachedMasterKeySnapshot()
-  guard unlocked.handle != nil, unlocked.ownerId == user,
+  guard let handle = unlocked.handle, unlocked.ownerId == user,
         let manager = NSFileProviderManager(for: domain)
   else { return }
-  do {
-    try await manager.signalErrorResolved(NSFileProviderError(.notAuthenticated))
-    RuntimeTrace.event("fileprovider.authentication_retry.resumed")
-  } catch {
-    RuntimeTrace.event("fileprovider.authentication_retry.failed")
+  // Task 1722 (G1): Files is mounted (checked above) and this is the
+  // verified owner's unlocked key, so make sure the extension's own key
+  // exists before asking Files to retry. Without this a user who mounted
+  // Files before upgrading, or whose unlock came from the in-process handle
+  // rather than a keychain load, had no Files key until a later unlock.
+  if !KeychainManager.hasFileProviderKey(label: BeebeebCryptoBridge.kMasterKeyLabel),
+     var bytes = try? handle.exportForKeychain() {
+    KeychainManager.syncFileProviderWrappedKey(masterKeyBytes: bytes, label: BeebeebCryptoBridge.kMasterKeyLabel, mounted: true)
+    bytes.withUnsafeMutableBytes { ptr in
+      if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+    }
+  }
+  // -1000 is what a missing/locked key reports now; -2005 is what builds
+  // before task 1722 reported for the same failure, and Files never retries
+  // those items on its own. Lift both throttles, independently.
+  for error in [NSFileProviderError(.notAuthenticated), NSFileProviderError(.cannotSynchronize)] {
+    do {
+      try await manager.signalErrorResolved(error)
+      RuntimeTrace.event("fileprovider.authentication_retry.resumed")
+    } catch {
+      RuntimeTrace.event("fileprovider.authentication_retry.failed")
+    }
   }
 }
 
