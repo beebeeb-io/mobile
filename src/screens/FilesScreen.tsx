@@ -84,7 +84,6 @@ import { FileIcon } from '../components/FileIcon';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
-import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import { loadRegionCity } from '../lib/storage-region';
 import { storageLocationLabel } from '../lib/preview-info';
@@ -125,6 +124,7 @@ import {
   READ_ONLY_TITLE,
   isAccountRefusalCode,
   lapsedBannerText,
+  trialEndedBannerText,
   readOnlyUploadMessage,
   requestAccountStateRefresh,
 } from '../lib/account-state';
@@ -4851,6 +4851,22 @@ export default function FilesScreen() {
         </View>
       )}
 
+      {/* Task 1746: a no-card trial ended with usage above the allowance. Read-only
+          above the allowance; download, export, delete and empty-trash stay. Facts
+          only (task 1400): the server's sentence, no price, no purchase link. */}
+      {!selectMode && accountGate.kind === 'trial_ended' && (
+        <View
+          style={[styles.readOnlyBanner, { backgroundColor: c.amberBg, borderColor: c.amber }]}
+          accessibilityRole="alert"
+          testID="trial-ended-banner"
+        >
+          <Ionicons name="lock-closed-outline" size={16} color={c.amberDeep} style={styles.readOnlyBannerIcon} />
+          <Text style={[styles.readOnlyBannerText, { color: c.ink }]} testID="trial-ended-banner-text">
+            {trialEndedBannerText(accountGate)}
+          </Text>
+        </View>
+      )}
+
       {/* Storage warning — shown when nearing or exceeding plan limit */}
       {!selectMode && usage && usage.plan_limit_bytes > 0 && (() => {
         const ratio = usage.used_bytes / usage.plan_limit_bytes;
@@ -4875,7 +4891,7 @@ export default function FilesScreen() {
             activeOpacity={0.7}
             onPress={() => Alert.alert(
               isFull ? 'Storage full' : 'Storage almost full',
-              `Free up space by deleting files. ${PLAN_MANAGEMENT_NOTE}`,
+              'Free up space by deleting files.',
             )}
             style={[
               styles.storageBanner,

@@ -10,6 +10,8 @@
  */
 
 import BeebeebCryptoModule, { isNativeAvailable as nativeFlag } from './BeebeebCryptoModule'
+// Task 1746: onboarding (password policy, breach check, signup ceremony) over UniFFI.
+export * from './BeebeebOnboarding'
 import { requireOptionalNativeModule } from 'expo-modules-core'
 
 // ─── Thumbnail worker pool types (declared early for use in module type below) ─

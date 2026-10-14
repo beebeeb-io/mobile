@@ -77,6 +77,13 @@ try {
 
 // Eager screens — auth entry points and tab destinations (Tab navigator handles its own lazy mounting)
 import LoginScreen from './screens/LoginScreen';
+import WelcomeScreen from './screens/WelcomeScreen';
+import SignupScreen from './screens/SignupScreen';
+import { markWelcomeSeen, readWelcomeSeen } from './lib/welcome-seen';
+import { applyDevFixtureName } from './lib/onboarding/dev-fixture';
+import { requestAccountStateRefresh } from './lib/account-state';
+import { isSignupUnlockInProgress } from './lib/signup-unlock-guard';
+import { AccountOnboardingOverlay } from './components/onboarding/AccountOverlay';
 import TwoFactorChallengeScreen from './screens/TwoFactorChallengeScreen';
 import FilesScreen from './screens/FilesScreen';
 import SharedScreen from './screens/SharedScreen';
@@ -263,6 +270,9 @@ export type RootStackParamList = {
     email?: string;
   } | undefined;
   TwoFactorChallenge: { partialToken: string };
+  // Task 1746: first-run screen and native signup (signed-out stack).
+  Welcome: undefined;
+  Signup: undefined;
   // Main app
   Tabs: undefined;
   Trash: undefined;
@@ -968,6 +978,9 @@ export default function App() {
   const { colors: c, resolved } = useTheme();
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
+  // Task 1746: null until read. false = a fresh install that has not seen the Welcome
+  // screen; it is the first screen of the signed-out stack until then.
+  const [welcomeSeen, setWelcomeSeen] = useState<boolean | null>(null);
   const [loadingStatus, setLoadingStatus] = useState('');
   const [loadingFailed, setLoadingFailed] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
@@ -1461,6 +1474,40 @@ export default function App() {
 
   const isAuthenticated = user !== null;
 
+  // Task 1746, DEV-ONLY (the whole effect is a no-op in release): render the account UI
+  // from a contract fixture. xcrun simctl openurl <udid> "beebeeb://dev/onboarding-fixture?name=account.trial_ended.ios"
+  useEffect(() => {
+    if (!__DEV__) return;
+    const apply = (url: string | null) => {
+      if (!url || !url.includes('dev/onboarding-fixture')) return;
+      const m = /[?&]name=([^&#]+)/.exec(url);
+      const changed = applyDevFixtureName(m ? decodeURIComponent(m[1]) : 'off');
+      console.info(`[Beebeeb] dev onboarding fixture ${m ? m[1] : 'off'} changed=${changed}`);
+      if (changed) requestAccountStateRefresh();
+    };
+    Linking.getInitialURL().then(apply).catch(() => {});
+    const sub = Linking.addEventListener('url', ({ url }) => apply(url));
+    return () => sub.remove();
+  }, []);
+
+  // Task 1746: first-run Welcome screen. Read once; a live session marks it seen so an
+  // upgrading user who signs out later lands on Login, never on a first-run screen.
+  useEffect(() => {
+    let alive = true;
+    void readWelcomeSeen().then((seen) => {
+      if (alive) setWelcomeSeen((prev) => (prev === null ? seen : prev));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (user) {
+      setWelcomeSeen(true);
+      void markWelcomeSeen();
+    }
+  }, [user]);
+
   // Task 1445 (ruling 2): an account whose recovery phrase was never
   // confirmed is sent to PhraseNotConfirmed. Since task 1037 no account is
   // created in-app, so this only applies to one made by an older build.
@@ -1473,6 +1520,9 @@ export default function App() {
   // by polling the token after navigation events
   const handleNavigationStateChange = useCallback(async () => {
     if (user) return;
+    // Task 1746 (restores the 1594 round 6 guard removed with the old signup): while
+    // signup is storing the new account's key, `user` must not flip underneath it.
+    if (isSignupUnlockInProgress()) return;
     const tokenExists = await hasToken();
     if (tokenExists) {
       await refreshAuth();
@@ -1480,7 +1530,7 @@ export default function App() {
   }, [user, refreshAuth]);
 
   // Loading splash while checking auth, or diagnostic panel when server is unreachable
-  if (checking || showDiagnostics || showSecureStorageError) {
+  if (checking || welcomeSeen === null || showDiagnostics || showSecureStorageError) {
     return (
       <SafeAreaProvider>
         <View style={{ flex: 1, backgroundColor: c.paper, alignItems: 'center', justifyContent: 'center', paddingHorizontal: showDiagnostics || showSecureStorageError ? 0 : 32 }}>
@@ -1682,10 +1732,20 @@ export default function App() {
                 </>
               ) : (
                 <>
+                  {welcomeSeen === false ? (
+                    <Stack.Screen name="Welcome" component={WelcomeScreen} />
+                  ) : null}
                   <Stack.Screen
                     name="Login"
                     component={LoginScreen}
                     options={{ animationTypeForReplace: 'pop' }}
+                  />
+                  <Stack.Screen
+                    name="Signup"
+                    component={SignupScreen}
+                    // Swiping back mid-ceremony would drop a phrase the person has
+                    // already written down; the flow has its own Back and Cancel.
+                    options={{ gestureEnabled: false }}
                   />
                   <Stack.Screen
                     name="TwoFactorChallenge"
@@ -1707,6 +1767,12 @@ export default function App() {
             is chosen on the web. Covers the whole file UI; the biometric
             lock below still renders on top of it. */}
         {isAuthenticated && <NeedsPlanOverlay />}
+
+        {/* Task 1746: the account-stage onboarding document. Blocks the file UI only for
+            a required step this build can do (confirm the email, accept the Terms), a
+            client that is too old, or a required step it cannot do. Text first, never a
+            purchase element. Rendered after NeedsPlanOverlay so it wins when both apply. */}
+        {isAuthenticated && <AccountOnboardingOverlay />}
 
         {/* Biometric lock overlay — shown when app resumes from background */}
         {isAuthenticated && (

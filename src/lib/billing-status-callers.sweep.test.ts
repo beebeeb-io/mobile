@@ -63,25 +63,30 @@ function billingStatusViewCallArgs(text: string): string[] {
 }
 
 describe('the sweep sees the callers', () => {
-  test('it reads the source tree and finds the known billingStatusView call sites', () => {
+  test('it reads the source tree; the only billingStatusView caller is lib/plan-chip.ts (task 1821: no screen builds its own)', () => {
     expect(files.length).toBeGreaterThan(100);
     const callers = files.filter((f) => f.text.includes('billingStatusView(')).map((f) => f.rel);
-    expect(callers).toContain('screens/StorageScreen.tsx');
-    expect(callers).toContain('screens/SettingsScreen.tsx');
+    expect(callers).toEqual(['lib/plan-chip.ts']);
   });
 });
 
 describe('every billingStatusView caller passes uploads_blocked_at and access_until', () => {
-  test('no call site omits either field (task 1605 — the SettingsScreen regression this sweep exists to catch)', () => {
-    const offenders: string[] = [];
-    for (const f of files) {
-      const callArgs = billingStatusViewCallArgs(f.text);
-      callArgs.forEach((arg, index) => {
-        const label = callArgs.length > 1 ? `${f.rel} (call ${index + 1})` : f.rel;
-        if (!/uploads_blocked_at\s*:/.test(arg)) offenders.push(`${label}: missing uploads_blocked_at`);
-        if (!/access_until\s*:/.test(arg)) offenders.push(`${label}: missing access_until`);
-      });
+  test('the argument is built by billingFieldsOf, which carries both fields (task 1605 — the SettingsScreen regression this sweep exists to catch)', () => {
+    const chip = files.find((f) => f.rel === 'lib/plan-chip.ts');
+    const callArgs = billingStatusViewCallArgs(chip.text);
+    expect(callArgs.length).toBeGreaterThan(0);
+    for (const arg of callArgs) expect(arg).toMatch(/^\s*fields\b/);
+    const helper = chip.text.slice(chip.text.indexOf('export function billingFieldsOf'), chip.text.indexOf('export function accountChip'));
+    expect(helper).toMatch(/uploads_blocked_at\s*:/);
+    expect(helper).toMatch(/access_until\s*:/);
+  });
+
+  test('screens use accountChip, never billingStatusView directly', () => {
+    for (const f of files.filter((x) => x.rel.startsWith('screens/'))) {
+      expect(f.text.includes('billingStatusView('), f.rel).toBe(false);
     }
-    expect(offenders).toEqual([]);
+    for (const rel of ['screens/SettingsScreen.tsx', 'screens/StorageScreen.tsx']) {
+      expect(files.find((x) => x.rel === rel).text.includes('accountChip('), rel).toBe(true);
+    }
   });
 });

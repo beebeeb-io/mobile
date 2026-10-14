@@ -4,6 +4,58 @@ Per the workspace `CLAUDE.md` → "How we work" → "Design before code": where 
 design artefact and the shipped code disagree, the deviation is recorded HERE,
 in the same commit as the code, with the ruling that caused it.
 
+## Task 1746 — native signup, first-run screen and account-stage screens (no canvas artboard)
+
+**Design:** `design/ios26-canvas/` has one auth artboard, Sign in. It has no artboard for
+account creation, the first-run screen, the signup steps, the account-stage steps
+(`verify_email`, `accept_terms`), the "version too old" screen or the account status card.
+Precedent: task 1037 (NeedsPlan) and the removed SignupScreen, which had none either.
+
+**What shipped:** the new screens are styled after their siblings (`LoginScreen`,
+`NeedsPlanScreen`): plain surface, brand mark, ONE amber primary per screen, JetBrains Mono for
+codes, counters and the recovery phrase, no emojis. Components: `src/components/onboarding/*`,
+`src/screens/WelcomeScreen.tsx`, `src/screens/SignupScreen.tsx`.
+
+**Why:** the screens are driven by the server's onboarding document (spec section 5), and the
+design lane has not drawn them. They are a first pass for review, not a design ruling; flow,
+copy and visuals belong to the design lane (task 1703 says the same of the first-run screen).
+
+### What the spec asks for and this build does differently
+
+1. **Server copy is not always rendered verbatim (spec 5.3).** The server writes ONE sentence per
+   account state, not per client: `copy.trial_end_over_allowance` ends "...unless you subscribe or
+   free up space." and is sent to an iOS account too (`beebeeb-api/src/onboarding/mod.rs`
+   `account_copy` takes no client context). A "subscribe" call to action inside the app is what
+   App Store 3.1.3 and task 1400 forbid. The app therefore renders server copy through
+   `noPurchaseCopy` (`src/lib/onboarding/account-summary.ts`): verbatim when it has no purchase
+   vocabulary, the known clause reduced to "...unless you free up space.", and anything else with
+   purchase vocabulary dropped for client-authored status text. **Server finding:** `account_copy`
+   should vary by `purchase.cta_allowed`; once it does, this reduction is a no-op.
+2. **The Files banner for `trial_ended` omits the sentence "Plans are managed from your account on
+   the web."** that spec 4b.7 puts in the banner. The spec itself flags it as untested with App
+   Review (open question 4) and names "drop that last sentence" as the more restrained fallback. The
+   sentence is on Storage & Plan (status card and the existing plan note). T17 (1754) decides.
+3. **No offer, no `offers`, no purchase steps at all.** The parser does not read `offers`; the
+   model has no field for it. `PurchaseInfo.ctaAllowed` is false for every surface not in
+   `COMPILED_PURCHASE_SURFACES`, which is empty in this binary (spec 5.1 principle 6). A required
+   purchase step (`choose_plan`, `start_trial`, ...) stops at a text-only screen.
+4. **`use_web` fallbacks are plain text while `WEB_ACCOUNT_LINKS_ENABLED` is off** (App Review
+   3.1.1(a), task 1400). `update_app` opens this app's App Store page, never a server-named URL.
+5. **Account-stage `accept_terms` is implemented** (the spec's 5.5 lists it for both stages). Every
+   account without a terms acceptance record, which is every account created before task 1740,
+   carries a required one, so without a screen all existing users would hit the "cannot do this
+   step" fallback on their first launch of this build.
+6. **The Welcome screen is shown once to a fresh install** and marked seen the moment any session
+   exists. It covers the "how it works" part of 1703 only; the Face ID opt-in and the design pass
+   are still 1703's.
+7. **`describeApiEnvironment`** treats any loopback port as `Local` (was :3001 only), so a lane on
+   its own port can show "API environment: Local" in Metro.
+8. **`CryptoProvider.unlock(phrase?, source?, freshMasterKey?)`** takes the new account's master key
+   from the signup ceremony through the same branch as a typed recovery phrase. No second way to
+   adopt a key was added.
+9. **The signup screen disables the swipe-back gesture** so an accidental swipe cannot drop a
+   phrase the person has already written down.
+
 ## Task 1724 — native video controls reserve space below Preview's floating bottom bar
 
 **Design:** `design/preview-redesign-ios.html` section 01 treats photo/video
@@ -883,3 +935,35 @@ Guus reports Beebeeb is empty in iOS Files on build234. Existing signalEnumerato
 ## Task 1722 — Files-only Secure Enclave key (2026-10-04)
 
 User reports populated root, numbered undecrypted subfolder names, and file-open -2005; requests verification without phone. Existing shared extension key combines privateKeyUsage with devicePasscode authentication while Files provides no LAContext. Repair the trusted-mount contract using a separate versioned Files SE key/blob: privateKeyUsage with WhenPasscodeSetThisDeviceOnly protection (passcode required, device bound, unavailable while locked). Provision from existing main-app trusted key store/load/rewrap paths, include in existing delete/purge paths, and use only this key in Files. No primary/shared-extension fallback, no plaintext simulator fallback; preserve ownership and purge-epoch checks. Existing share/backup key policy remains unchanged. Local verification must exercise production Swift policy/loader/provisioning paths including denied/missing keys and real chunk/name codec fixtures, then full tests/typecheck and signed native archive. Physical SE behavior remains a separate unverified rung.
+
+## Task 1820 — no-card trial codes, mapped by code (2026-10-06)
+
+Server task 1755 refuses with typed codes whose own sentences point at buying ("Choose a plan", "Subscribe to unlock", "pay at checkout"). The iOS binary shows account state only (App Store 3.1.x, task 1400), so `friendlyError` maps `trial_previously_subscribed`, `trial_already_used`, `trial_sharing_unavailable`, `trial_share_limit_reached`, `no_subscription_to_cancel`, `trial_convert_unavailable`, `trial_checkout_retired`, `trial_temporarily_unavailable` and `trial_rate_limited` by code to authored sentences in `src/lib/trial-refusals.ts` and never prints the server's. `request()` now keeps these codes on the `ApiError` (it kept only an allowlist before, so they arrived code-less with the server's wording).
+
+The trial-storage-cap upload refusal now names the cap the server sent (`limit_bytes`: 10 GB for a no-card trial, 25 GB for the older mandated one) and no longer says "until your first payment" or "Manage your plan" (both hinted at a purchase). Deviation from task 1605's wording, deliberate.
+
+`trial_ended` text: files kept (usage within the allowance, nothing pending) versus a deadline ("will be deleted on <date>"); the client fallback used to say "read-only until <date>", which understated what happens on that date.
+
+Not changed (pre-existing, out of 1820): `readOnlyUploadMessage` for `needs_plan` ("Choose your plan on the web at beebeeb.io") and the generic `quota_exceeded` text ("upgrade your plan") still carry plan wording.
+
+### 1820 round 2 (PR #168 review)
+- The native camera-backup engine's 413 trial-cap stop reason is now built from the server's `limit_bytes` with the same purchase-free sentence as the JS `trialCapMessage` (it was hard-coded "25 GB ... until your first payment clears. Manage your plan ...").
+- `trial_ended` is "files kept" only on explicit evidence (storage present, `over_allowance === false`, no deletion date); missing storage or a missing `over_allowance` gets the conservative read-only copy. The Files banner now says the files are kept in that case.
+
+## Task 1821 — no purchase wording anywhere in the binary; account chip from the onboarding document (2026-10-06)
+
+App Store 3.1.1 / 3.1.3: the app shows account STATE only. `src/lib/no-purchase-vocabulary.test.ts` now scans every string literal, template piece and JSX text under `src/` (scanner: `scripts/purchase-vocabulary-scan.ts`) for subscribe / upgrade / plan(s) / price / pay / buy / purchase / checkout / billing / renew / "on the web" next to a plan or money word. A hit fails unless it is in the reviewed allowlist in the test (each entry has a reason; an entry that no longer matches also fails).
+
+Copy that changed, and why it differs from the earlier wording:
+- `readOnlyUploadMessage(needs_plan)`: "Choose your plan on the web at beebeeb.io to start uploading." became "Uploads are paused on this account."
+- `readOnlyUploadMessage(trial_cancelled_read_only)`: lost "before its first payment" and "Resume your trial on the web"; now "This trial was cancelled, so uploads and backup are off. You can still browse and download your files."
+- Generic `quota_exceeded`: "Storage full. Free up space or upgrade your plan..." became "This account has reached its storage limit. Free up space to keep uploading." The trial-cap variant lost "until your first payment" and "Manage your plan from your account on the web"; after the rebase it is task 1820's `trialCapMessage` (names the server's cap), whose trailing "your account is managed on the web" clause is also removed here.
+- `needs_plan` full-screen: title "Uploads are paused on this account", body "Your files stay encrypted. Tap Refresh to check the account again." The "Open beebeeb.io" link to `/choose-plan` is gone (it was a link to a purchase page when `WEB_ACCOUNT_LINKS_ENABLED` was on); `CHOOSE_PLAN_PATH` is deleted.
+- Storage screen: title "Storage & Plan" became "Storage"; section "Current plan" became "Account"; "NN% used — consider upgrading" became "NN% used". The plan catalog (`PlanCard`, `SHOW_PLAN_CATALOG`, prices in EUR) was behind a `false` flag since task 1400 and is deleted, with the `getPlans()` fetch. Settings: row "Subscription" became "Account", section "Storage & plan" became "Storage".
+- `billing_read_only` reason: "Billing is read-only" became "Read-only"; lapsed line "Files you do not move or renew are deleted on <date>" became "Files are deleted on <date>"; needs_plan headline "This account has no plan yet" became "Uploads are paused on this account".
+
+RULING NEEDED (Guus), spec 4b.7 conflict: the server's sentence "Plans are managed from your account on the web." (`purchase.copy.plans_managed_on_web`, shown by task 1746 under the account card and on the storage-full toasts and alert as `PLAN_MANAGEMENT_NOTE`) is itself an "on the web" plan-management hint, which the 1821 brief rules out. It is no longer rendered anywhere (`billing-copy.ts` deleted; `summarizeAccount` still parses it into `plansManagedNote`, unrendered). If App Review guidance says the sentence is required for a reader app, restoring it is one `<Text>` in `AccountStatusCard`.
+
+Account chip (Settings "Account" row, Storage "Account" card): `src/lib/plan-chip.ts` + `src/lib/onboarding/plan-card.ts` read `account.state` from the onboarding document: allowance = "Allowance" + size; trialing / trialing_no_card = "Trial" + "Ends <date>" (no plan name, so no "BASIC TRIAL"); trial_ended = "Trial ended" + "Read-only · deleted on <date>" or "Files kept · <n> allowance"; lapsed = "Plan ended"; needs_plan = "No plan" + "Uploads are off" (the Storage usage line no longer appends " plan", which made "No plan plan"); active = the account's own plan name + "Renews <date>". Without a document the subscription row is used, and `billingStatusView` now treats a `trialing` row whose end date has passed as "Trial ended <date>" with no TRIAL chip (stale cache). Both screens go through `accountChip`; the 1605 sweep test now asserts that no screen calls `billingStatusView` itself.
+
+Rebased onto PR #168 (task 1820): its `trialCapMessage` and the native stop reason ended "...; your account is managed on the web." (an "on the web" management hint, caught by the 1821 guard); that clause is gone from `src/lib/trial-refusals.ts` and `AccountRefusalDetection.swift`. The native engine's own stop reasons (`NativeBackupEngine.swift`) had the old needs_plan / cancelled-trial wording ("Choose your plan on the web at beebeeb.io...", "before its first payment... Resume your trial on the web"); they now match the JS copy. The guard also scans the string literals of `modules/**/*.swift` (allowlist: the chunk-layout diagnostic that says "plans").

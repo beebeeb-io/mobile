@@ -503,6 +503,87 @@ Rules for lanes using this account:
 - If a file fails to decrypt and it isn't already documented as broken by tasks 1349/1351, stop
   and flag it — don't upload past it and mask the failure.
 
+## Native signup and the server-driven onboarding document (task 1746)
+
+The app creates accounts itself again, driven by `GET /api/v1/onboarding` (spec
+`docs/specs/2026-10-04-backend-driven-onboarding.md`, section 5). The server declares the steps, the
+numbers and whether this build may sign up natively; the app renders. Nothing about the order of the
+steps, the password minimum, the code length or the resend wait is hard-coded.
+
+```mermaid
+flowchart LR
+    W["WelcomeScreen (once)"] --> L["LoginScreen"]
+    W --> S["SignupScreen"]
+    L --> S
+    S -->|"pre_account document"| F["SignupFlow: email, code, terms, password, phrase, create"]
+    F -->|"register-finish 201 + session"| A["unlock(freshMasterKey), refreshAuth"]
+    A --> O["AccountStateProvider: account document"]
+    O -->|"blocking step"| V["AccountOnboardingOverlay: verify_email, accept_terms, update_required"]
+    O -->|"working vault"| T["Files + Storage status card (text only)"]
+```
+
+- **Pure logic, no native imports (tested without mocks):** `src/lib/onboarding/` : `types`, `parse`
+  (tolerant parser, spec 5.8), `plan` (step planner), `account-summary` (status text), `account-gate`
+  (gate from capabilities), `account-decision` (document vs legacy `/billing/subscription`),
+  `create-account` (the commit point), `copy` (every user-facing failure sentence), `resend`,
+  `fallback-action`, `breach-step`, `wire`, `ports`.
+- **Crypto stays in core.** `modules/beebeeb-crypto/ios/OnboardingBridge.swift` +
+  `src/BeebeebOnboarding.ts` expose `beebeeb_core::onboarding` (task 1744): password evaluator, the
+  k-anonymity breach check, the signup ceremony. JS holds integer handles. The password, phrase and
+  master key live in Rust memory; the three things that cross the bridge are the phrase words (once,
+  for the phrase screen), the OPAQUE messages, and the new master key bytes (once, into
+  `crypto.unlock(undefined, 'new_account', key)`, then zeroed).
+- **Contract copy:** `src/contracts/onboarding/` is byte-identical to `repos/server/contracts/onboarding/`
+  and guarded by `scripts/check-onboarding-contract.sh` at the workspace root (one byte of drift is
+  red). Re-vendor with `cp -R` after the server contract changes.
+- **No purchase UI, by construction (App Store 3.1.3, task 1400).** `COMPILED_PURCHASE_SURFACES` is
+  empty, the parser never reads `offers`, `AccountStatusCard` has no touchable, server sentences go
+  through `noPurchaseCopy`, `use_web` is text while `WEB_ACCOUNT_LINKS_ENABLED` is off.
+  `src/components/onboarding/no-purchase-ui.test.ts` and `account-summary.test.ts` guard it.
+- **Anti-enumeration:** the code screen's copy is identical for every address. Never add a sentence
+  that says whether an address is new.
+- **The recovery phrase screen** calls `usePreventScreenCapture`, words are `selectable={false}`,
+  and the words are dropped from state when the step is left. The Simulator's framebuffer capture is
+  NOT blocked by it; only a device shows the black frame. That rung stays open until a device run.
+
+### Running it locally (a lane's own API, never the shared :3001)
+
+```sh
+# server worktree .env (debug build): its own DB and port
+BB_PORT=3146  DATABASE_URL=<the dev Postgres URL, pointing at your own database name>
+BB_SIGNUP_EMAIL_CODE=1  BB_REQUIRE_EMAIL_VERIFICATION=1  BB_REQUIRE_PLAN_AT_SIGNUP=1
+BB_ENTRY_ALLOWANCE_BYTES=2000000000          # allowance ships OFF
+BB_SIGNUP_TICKET_TTL_SECONDS=60              # floor is 60; default 1800
+# a native mobile-ios matrix row (server_config key onboarding_policy_matrix), purchase_surface none
+# mailpit (docker compose up -d mailpit) shows the emailed 8-digit codes on :8025
+# mobile worktree .env:  EXPO_PUBLIC_API_URL=http://localhost:3146  -> Metro must print
+#   "[Beebeeb] API environment: Local (http://localhost:3146)"
+```
+
+A new account needs TWO emailed codes today: the signup code, then (after the account exists) the
+account-stage `verify_email` code, because `register-finish` does not mark the address verified.
+Spec rev 3 does not say so; it is a server finding, not an app choice.
+
+- **Dev fixtures:** in a debug build `beebeeb://dev/onboarding-fixture?name=account.trial_ended.ios`
+  (also `account.trialing_no_card.desktop`, `account.lapsed.ios`, `account.needs_plan.ios`,
+  `account.allowance.ios`; `name=off` clears) renders the real screens from a golden document. The
+  local server cannot produce `trialing_no_card` / `trial_ended` until task 1755 lands.
+- **Native rebuild:** after any `beebeeb_uniffi.swift` / `BeebeebCore.xcframework` change, run
+  `scripts/swift-ci/build-ios-simulator.sh`. Its unsigned build cannot use the Keychain in the
+  Simulator (SecureStore fails, the app falls to the secure-storage panel); for a QA install build
+  the same workspace with `CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO`.
+  `pod install` rewrites `ios/Podfile.lock` and `project.pbxproj` ordering: restore them before
+  committing. The xcframework regenerated for 1746 added 28 `uniffi_beebeeb_uniffi_fn_*` symbols and
+  removed none (symbol diff recorded in the task evidence).
+- **Metro quirk:** a file created after Metro started can be reported "Unable to resolve module";
+  restart Metro.
+- **Maestro quirks found on this task (2.5.1):** `hideKeyboard` fails on a number pad (tap the
+  screen title instead); `eraseText` removes only part of a field (start from a fresh screen);
+  `while read` drops a last line with no trailing newline when you generate flows from a file; the
+  iOS hierarchy has no `clickable` attribute, so "no tappable purchase element" is asserted on ALL
+  text and labels plus the source-level guard; the iOS "Save Password?" sheet after sign-in needs
+  `tapOn: "Not Now"`.
+
 ## Stack
 
 React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.

@@ -92,7 +92,10 @@ function isValidIso(iso: string | null | undefined): iso is string {
   return !!iso && !Number.isNaN(new Date(iso).getTime());
 }
 
-export function billingStatusView(sub: SubscriptionStatusFields | null | undefined): BillingStatusView {
+export function billingStatusView(
+  sub: SubscriptionStatusFields | null | undefined,
+  now: Date = new Date(),
+): BillingStatusView {
   const status = (sub?.status ?? '').toLowerCase();
 
   // Task 1037: the account state outranks the row's status. A lapsed row is
@@ -107,7 +110,7 @@ export function billingStatusView(sub: SubscriptionStatusFields | null | undefin
     };
   }
   if (sub?.account_state === 'needs_plan') {
-    return { isFree: false, badgeKind: null, statusLine: 'No plan yet' };
+    return { isFree: false, badgeKind: null, statusLine: 'Uploads are off' };
   }
 
   // Task 1601: an ended subscription is never the paid plan and never
@@ -125,6 +128,13 @@ export function billingStatusView(sub: SubscriptionStatusFields | null | undefin
   }
 
   if (status === 'trialing') {
+    // Task 1821: a row still saying `trialing` after its end date is a stale
+    // cache, not a running trial. It must never show the TRIAL chip or
+    // "Trial ends <past date>"; say the trial ended.
+    const endedIso = sub?.trial_ends_at ?? sub?.current_period_end ?? null;
+    if (isValidIso(endedIso) && new Date(endedIso).getTime() <= now.getTime()) {
+      return { isFree, badgeKind: null, statusLine: `Trial ended ${formatBillingDate(endedIso)}` };
+    }
     // trial.rs sets current_period_end === trial_ends_at, so either field
     // works — prefer trial_ends_at when present since it's the more
     // explicit contract, fall back to current_period_end for any client
@@ -183,8 +193,8 @@ export interface TrialCapFields {
  * No purchase/pay-now call to action here, unlike web (task 1400, App
  * Review 3.1.1(a) — this app has no In-App Purchase product configured, and
  * neither a button nor a link to an external purchasing mechanism is
- * allowed). Same informational tone as `PLAN_MANAGEMENT_NOTE`. See
- * DEVIATIONS.md → "Task 1605" for the deviation from the web/server brief.
+ * allowed). Task 1821: and no hint at one either ("until your first payment",
+ * "manage your plan on the web" are gone). See DEVIATIONS.md → "Task 1605", "Task 1821".
  */
 export function trialCapNote(
   sub: TrialCapFields | null | undefined,
@@ -193,5 +203,5 @@ export function trialCapNote(
   if (!sub || (sub.status ?? '').toLowerCase() !== 'trialing') return null;
   const cap = sub.trial_storage_cap_bytes;
   if (typeof cap !== 'number' || cap <= 0) return null;
-  return `This account is on the ${formatBytes(cap)} trial storage cap until your first payment clears. Manage your plan from your account on the web.`;
+  return `This account is on the ${formatBytes(cap)} trial storage cap. Free up space to keep uploading.`;
 }

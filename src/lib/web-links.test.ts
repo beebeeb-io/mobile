@@ -77,23 +77,16 @@ describe('createAccountCopy', () => {
 });
 
 describe('needsPlanCopy', () => {
-  test('links off: tells the user to choose a plan on the web, then refresh; no link label', () => {
-    const copy = needsPlanCopy(false);
-    expect(copy.linkLabel).toBeNull();
-    expect(copy.title).toBe('Finish setting up your account');
-    expect(copy.body).toMatch(/beebeeb\.io/);
+  test('states the account is paused and says only to refresh; no link, no URL, no plan', () => {
+    const copy = needsPlanCopy();
+    expect(Object.keys(copy).sort()).toEqual(['body', 'title']);
+    expect(copy.title).toBe('Uploads are paused on this account');
     expect(copy.body).toMatch(/Refresh/);
-    expect(copy.body).not.toMatch(/https?:\/\//);
+    expect(`${copy.title} ${copy.body}`).not.toMatch(/https?:\/\/|beebeeb\.io|\bweb\b/i);
   });
 
-  test('links on: carries a neutral link label', () => {
-    expect(needsPlanCopy(true).linkLabel).toBe('Open beebeeb.io');
-  });
-
-  test('no price or purchase wording either way', () => {
-    for (const on of [false, true]) {
-      const { title, body, linkLabel } = needsPlanCopy(on);
-      expect(`${title} ${body} ${linkLabel ?? ''}`).not.toMatch(/€|\$|upgrad|subscribe|buy|purchase|price/i);
-    }
+  test('no price, plan or purchase wording', () => {
+    const { title, body } = needsPlanCopy();
+    expect(`${title} ${body}`).not.toMatch(/€|\$|upgrad|subscri|buy|purchase|price|\bplans?\b|choose/i);
   });
 });

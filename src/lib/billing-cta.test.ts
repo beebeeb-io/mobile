@@ -70,8 +70,9 @@ describe('findings 5, 8: FilesScreen — the storage-full banner no longer promi
     expect(source).toMatch(/delete files/i);
   });
 
-  test('the storage-full copy still points to managing the plan on the web (consistent with StorageScreen\'s PLAN_MANAGEMENT_NOTE)', () => {
-    expect(source).toMatch(/web/i);
+  test('task 1821: the storage-full copy no longer points anywhere (no plan-management hint)', () => {
+    expect(source).not.toMatch(/Free up space by deleting files\.\s*\$\{/);
+    expect(source).not.toMatch(/managed from your account/i);
   });
 });
 
@@ -104,17 +105,17 @@ describe('FilesScreen — the storage banner hint is not a dead "Manage" CTA', (
   });
 });
 
-describe('SettingsScreen — quota toasts do not say "manage your plan" without saying where', () => {
+describe('SettingsScreen — quota toasts say only what the user can do (task 1821)', () => {
   const source = read(SETTINGS_SCREEN);
 
-  test('the file never contains the bare phrase "manage your plan" (the qualified PLAN_MANAGEMENT_NOTE sentence replaces it)', () => {
+  test('the file never contains the bare phrase "manage your plan"', () => {
     expect(source).not.toMatch(/manage your plan/i);
   });
 
-  test('PLAN_MANAGEMENT_NOTE is imported from billing-copy and used by the quota toasts', () => {
-    expect(source).toContain("import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';");
-    const usages = source.match(/\$\{PLAN_MANAGEMENT_NOTE\}/g) ?? [];
-    // One for the 100% tier toast, one for the 90% tier toast.
-    expect(usages.length).toBeGreaterThanOrEqual(2);
+  test('the quota toasts carry no plan-management note: PLAN_MANAGEMENT_NOTE and billing-copy are gone', () => {
+    expect(source).not.toContain('PLAN_MANAGEMENT_NOTE');
+    expect(source).not.toContain('billing-copy');
+    expect(source).toContain("'Storage full — uploads will fail until you free space.'");
+    expect(source).toContain("'Storage 90% full — free up space.'");
   });
 });

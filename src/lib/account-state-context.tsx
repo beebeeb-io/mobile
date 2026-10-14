@@ -16,16 +16,26 @@
  * A failed fetch keeps the last known gate. On first load that is `ok`: a
  * network error must never lock anyone out, and the server enforces the
  * quota either way.
+ *
+ * Task 1746: the onboarding document (`GET /api/v1/onboarding`) is read in the
+ * same refresh. When the server sends a usable one it decides the gate from its
+ * capabilities (an `allowance` account is a working vault although the legacy
+ * label for it is `needs_plan`) and is exposed as `document` for the status view
+ * and the account-stage steps. Anything else is the legacy path, unchanged. See
+ * `onboarding/account-decision.ts`.
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
-import { getSubscription, type Subscription } from './api';
+import { fetchOnboardingRaw, getSubscription, type Subscription } from './api';
 import {
-  accountGateFor,
   registerAccountStateRefresher,
   setCurrentAccountGate,
   type AccountGate,
 } from './account-state';
+import { fetchOnboardingDocument } from './onboarding/client';
+import { getDevDocumentOverride } from './onboarding/dev-fixture';
+import { decideAccountState, type AccountSnapshot } from './onboarding/account-decision';
+import type { OnboardingDocument } from './onboarding/types';
 
 const FOREGROUND_REFRESH_MS = 60_000;
 
@@ -35,6 +45,10 @@ export interface AccountStateValue {
   gate: AccountGate;
   /** Last subscription payload read, or null when unknown. */
   subscription: Subscription | null;
+  /** The account-stage onboarding document, or null (old server, signed out, unreadable). */
+  document: OnboardingDocument | null;
+  /** The server speaks a schema major this build does not understand (spec 5.8 rule 5). */
+  unsupportedSchema: boolean;
   /** Re-read the account state now. Resolves with the resulting gate. */
   refresh: () => Promise<AccountGate>;
 }
@@ -45,6 +59,8 @@ const AccountStateContext = createContext<AccountStateValue>({
   ready: true,
   gate: OK_GATE,
   subscription: null,
+  document: null,
+  unsupportedSchema: false,
   refresh: async () => OK_GATE,
 });
 
@@ -59,7 +75,10 @@ export function AccountStateProvider({
   const [ready, setReady] = useState(userId === null);
   const [gate, setGate] = useState<AccountGate>(OK_GATE);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const [onboardingDoc, setOnboardingDoc] = useState<OnboardingDocument | null>(null);
+  const [unsupportedSchema, setUnsupportedSchema] = useState(false);
   const gateRef = useRef<AccountGate>(OK_GATE);
+  const snapshotRef = useRef<AccountSnapshot>({ gate: OK_GATE, document: null, unsupportedSchema: false });
   const lastFetchAtRef = useRef(0);
   const inflightRef = useRef<Promise<AccountGate> | null>(null);
   const mountedRef = useRef(true);
@@ -69,15 +88,23 @@ export function AccountStateProvider({
     if (inflightRef.current) return inflightRef.current;
     const run = (async () => {
       lastFetchAtRef.current = Date.now();
-      const sub = await getSubscription();
+      const [sub, outcome] = await Promise.all([
+        getSubscription(),
+        // DEV-ONLY (inert in release): a contract fixture stands in for the server's document.
+        (async () => {
+          const dev = getDevDocumentOverride();
+          return dev ? ({ kind: 'document', doc: dev } as const) : fetchOnboardingDocument(fetchOnboardingRaw, true);
+        })(),
+      ]);
       if (!mountedRef.current) return gateRef.current;
-      if (sub) {
-        const next = accountGateFor(sub);
-        gateRef.current = next;
-        setCurrentAccountGate(next);
-        setGate(next);
-        setSubscription(sub);
-      }
+      const next = decideAccountState({ subscription: sub, outcome, previous: snapshotRef.current });
+      snapshotRef.current = next;
+      gateRef.current = next.gate;
+      setCurrentAccountGate(next.gate);
+      setGate(next.gate);
+      setOnboardingDoc(next.document);
+      setUnsupportedSchema(next.unsupportedSchema);
+      if (sub) setSubscription(sub);
       setReady(true);
       return gateRef.current;
     })();
@@ -92,6 +119,7 @@ export function AccountStateProvider({
   useEffect(() => {
     mountedRef.current = true;
     setCurrentAccountGate(OK_GATE);
+    snapshotRef.current = { gate: OK_GATE, document: null, unsupportedSchema: false };
     if (userId) void refresh();
     const unregister = registerAccountStateRefresher(() => { void refresh(); });
     return () => {
@@ -113,8 +141,8 @@ export function AccountStateProvider({
   }, [refresh, userId]);
 
   const value = useMemo<AccountStateValue>(
-    () => ({ ready, gate, subscription, refresh }),
-    [ready, gate, subscription, refresh],
+    () => ({ ready, gate, subscription, document: onboardingDoc, unsupportedSchema, refresh }),
+    [ready, gate, subscription, onboardingDoc, unsupportedSchema, refresh],
   );
 
   return <AccountStateContext.Provider value={value}>{children}</AccountStateContext.Provider>;

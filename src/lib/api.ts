@@ -14,13 +14,18 @@ import { clearCachedFileIndex } from './file-index-cache';
 import { clearCachedBilling } from './billing-cache';
 import { collectPaged, findInPages } from './paginate';
 import { rateLimitedFetch } from './rate-limited-fetch';
+import { withServerBusyRetry } from './server-busy-retry';
 import { isNativeUploadAvailable, planUploadChunksNative, uploadChunksNative } from '../../modules/beebeeb-crypto';
 import { assertNativeUploadEncryptedUnderSessionId, nativeProgressToUploadProgress, parseNativeUploadError, resumeStateMatchesNativePlan, uploadChunksNativeTracked } from './native-upload-bridge';
 import { getDeviceId } from './sync-client';
 import { deviceIdHeader } from './upload-device-header';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
-import { ACCOUNT_LAPSED_ERROR, PLAN_REQUIRED_ERROR, TRIAL_CANCELLED_READ_ONLY_ERROR, gateForRefusalCode, getCurrentAccountGate, readOnlyUploadMessage } from './account-state';
+import { isTrialRefusalCode, trialCapMessage, trialRefusalMessage } from './trial-refusals';
+import { ACCOUNT_LAPSED_ERROR, PLAN_REQUIRED_ERROR, TRIAL_CANCELLED_READ_ONLY_ERROR, TRIAL_ENDED_ERROR, gateForRefusalCode, getCurrentAccountGate, readOnlyUploadMessage } from './account-state';
 import { resolveWebAppUrl } from './web-links';
+import { ONBOARDING_SCHEMA_HEADER, isOnboardingErrorCode, sameOriginPath } from './onboarding/wire';
+import { describeApiEnvironment, type ApiEnvironment } from './api-environment';
+export type { ApiEnvironment, ApiEnvironmentKind } from './api-environment';
 import { normalizeNotificationPreferences, type NotificationPreferences } from './notification-prefs';
 // Task 1594 fix 4: the unlocked key's owner, sent on authenticated mutations.
 import { expectedUserHeaders, isMutatingMethod } from './expected-user';
@@ -55,30 +60,6 @@ const DEVICE_CONFIRMATION_SECRET_KEY = 'beebeeb_device_confirmation_secret';
 
 const MOBILE_IOS_BACKUP_CLIENT_SESSION_KEY = 'beebeeb_mobile_ios_backup_client_session_id';
 const MOBILE_IOS_BACKUP_SESSION_NAME = 'iPhone Camera Roll Backup';
-
-export type ApiEnvironmentKind = 'local' | 'production' | 'custom';
-
-export interface ApiEnvironment {
-  kind: ApiEnvironmentKind;
-  label: string;
-  baseUrl: string;
-}
-
-function describeApiEnvironment(baseUrl: string): ApiEnvironment {
-  if (
-    baseUrl === 'http://localhost:3001' ||
-    baseUrl === 'http://127.0.0.1:3001' ||
-    baseUrl === 'http://10.0.2.2:3001'
-  ) {
-    return { kind: 'local', label: 'Local', baseUrl };
-  }
-
-  if (baseUrl === 'https://api.beebeeb.io') {
-    return { kind: 'production', label: 'Production', baseUrl };
-  }
-
-  return { kind: 'custom', label: 'Custom', baseUrl };
-}
 
 const API_ENVIRONMENT = describeApiEnvironment(BASE_URL);
 
@@ -286,6 +267,12 @@ export class ApiError extends Error {
      * the account's real plan quota. Undefined for every other error.
      */
     public isTrialCap?: boolean,
+    /**
+     * Task 1820 — the cap the server enforced (`limit_bytes` on a 413
+     * `quota_exceeded`), so a trial-cap message names the real number: 10 GB for
+     * a no-card trial, 25 GB for the older mandated one.
+     */
+    public limitBytes?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -434,6 +421,11 @@ export function friendlyError(err: unknown): string {
     // Task 1037: an account without a plan is refused with 409
     // plan_required / account_lapsed, and has quota 0 by design. Say it is
     // read-only instead of "Storage full" or the raw server text.
+    // Task 1820 (server 1755): the no-card trial's typed refusals. Mapped by code to
+    // sentences that offer nothing to buy; the server's own wording for several of
+    // them says "choose a plan" / "Subscribe" and must never reach this binary.
+    const trialRefusal = trialRefusalMessage(err.code) ?? trialRefusalMessage(err.message);
+    if (trialRefusal) return trialRefusal;
     const refusal = gateForRefusalCode(err.code, getCurrentAccountGate());
     const readOnly = refusal ? readOnlyUploadMessage(refusal) : null;
     if (readOnly) return readOnly;
@@ -442,9 +434,9 @@ export function friendlyError(err: unknown): string {
       // No purchase call to action here (task 1400, App Review 3.1.1(a)) —
       // same informational tone as PLAN_MANAGEMENT_NOTE, never a button/link.
       if (err.isTrialCap) {
-        return 'This account is on the 25 GB trial storage cap until your first payment. Manage your plan from your account on the web.';
+        return trialCapMessage(err.limitBytes);
       }
-      return 'Storage full. Free up space or upgrade your plan to keep uploading.';
+      return 'This account has reached its storage limit. Free up space to keep uploading.';
     }
     if (err.status === 0) return 'Could not reach the server. Check your connection and try again.';
     if (err.status === 401) {
@@ -573,15 +565,16 @@ export async function endSessionForAccountMismatch(snapshot: RequestAuthSnapshot
  */
 async function throwUploadError(
   status: number,
-  err: { error?: string; message?: string; is_trial_cap?: boolean },
+  err: { error?: string; message?: string; is_trial_cap?: boolean; limit_bytes?: number },
   fallbackMessage: string,
   authSnapshot: RequestAuthSnapshot,
+  retryAfterSeconds?: number,
 ): Promise<never> {
   if (status === 409 && err.error === 'account_mismatch') {
     await endSessionForAccountMismatch(authSnapshot);
     throw new ApiError(409, err.message ?? 'This session does not match the account of the vault key on this device.', 'account_mismatch');
   }
-  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error, undefined, err.is_trial_cap);
+  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error, retryAfterSeconds, err.is_trial_cap, typeof err.limit_bytes === 'number' ? err.limit_bytes : undefined);
 }
 
 async function headers(auth = true, extra?: Record<string, string>): Promise<RequestHeaders> {
@@ -719,7 +712,10 @@ async function request<T>(
       // Other bodies stay code-less, as before.
       err.error === PLAN_REQUIRED_ERROR ||
         err.error === ACCOUNT_LAPSED_ERROR ||
-        err.error === TRIAL_CANCELLED_READ_ONLY_ERROR
+        err.error === TRIAL_CANCELLED_READ_ONLY_ERROR ||
+        err.error === TRIAL_ENDED_ERROR ||
+        isTrialRefusalCode(err.error) ||
+        isOnboardingErrorCode(err.error)
         ? err.error
         : undefined,
       res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,
@@ -1498,20 +1494,32 @@ async function uploadFileSimple(
   // see `endSessionForAccountMismatch`.
   const authSnapshot = await captureRequestAuthSnapshot();
   const token = authSnapshot.token;
-  const form = new FormData();
-  form.append('metadata', JSON.stringify(metadata));
-  form.append('chunk_0', fileBlob);
-
-  const res = await rateLimitedFetch(`${BASE_URL}/api/v1/files/upload`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, ...expectedUserHeaders() },
-    body: form,
+  // Task 1870: this route buffers the whole body, so a full server-side upload
+  // budget answers `429 server_busy` + Retry-After. Wait it out and re-send (<= 3
+  // times); the FormData is rebuilt per attempt so a consumed body is never reused.
+  const res = await withServerBusyRetry(() => {
+    const form = new FormData();
+    form.append('metadata', JSON.stringify(metadata));
+    form.append('chunk_0', fileBlob);
+    return rateLimitedFetch(`${BASE_URL}/api/v1/files/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, ...expectedUserHeaders() },
+      body: form,
+    });
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     // Task 1594 round 2 (F5) / round 3 (T5): route account_mismatch the same
     // as request(), guarded against a session that has since moved on.
-    await throwUploadError(res.status, err, res.statusText, authSnapshot);
+    await throwUploadError(
+      res.status,
+      err,
+      res.statusText,
+      authSnapshot,
+      // Task 1870: a 429 (server_busy after the retries, or any other 429)
+      // carries its Retry-After, as request() does for every other route.
+      res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,
+    );
   }
 
   onProgress?.({ phase: 'finalizing', chunksTotal: 1, chunksUploaded: 1, bytesTotal: fileBlob.size, bytesUploaded: fileBlob.size });
@@ -3602,6 +3610,161 @@ export async function completeTwoFactor(
   // one. Trash device-owner auth will require a re-confirmation later.
   await setSessionCredentials(data.session_token, undefined);
   return { sessionToken: data.session_token };
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding document + native signup (task 1746)
+// Spec: docs/specs/2026-10-04-backend-driven-onboarding.md sections 5.2, 5.9
+// ---------------------------------------------------------------------------
+
+/**
+ * Headers every onboarding / signup call carries. `X-Beebeeb-Onboarding-Schema`
+ * is what lets a store build past the 403 `signup_web_only` product gate once the
+ * server's matrix row for `mobile-ios` is `native` (spec 5.8 rule 8); an old build
+ * without it keeps getting the 403. Self-declared, so a product gate, not a
+ * security control: account creation is protected by the ticket, limiter and
+ * pilot gate on the server regardless.
+ */
+function onboardingHeaders(extra?: Record<string, string>): Record<string, string> {
+  return {
+    ...(mobileClientHeaders() ?? {}),
+    ...(Platform.OS === 'ios' ? { 'X-Beebeeb-Client-OS': 'ios' } : {}),
+    'X-Beebeeb-Onboarding-Schema': ONBOARDING_SCHEMA_HEADER,
+    ...(extra ?? {}),
+  };
+}
+
+/**
+ * `GET /api/v1/onboarding`. Optional Bearer: without a session the server answers
+ * the `pre_account` form, with one the `account` form. Returns the raw JSON; the
+ * tolerant parser in `./onboarding/parse` decides what it means. Throws ApiError
+ * (404 on an old server: the caller falls back to the legacy account-state logic,
+ * spec 5.8 rule 6).
+ */
+export async function fetchOnboardingRaw(signedIn: boolean): Promise<unknown> {
+  return request<unknown>('GET', '/api/v1/onboarding', undefined, signedIn, onboardingHeaders());
+}
+
+/** Pilot access key header, only when the document says one is required. */
+function pilotHeader(pilotKey?: string): Record<string, string> | undefined {
+  return pilotKey ? { 'X-Beebeeb-Pilot-Key': pilotKey } : undefined;
+}
+
+/**
+ * `POST /api/v1/auth/signup/email-start`. Answers 202 identically for every
+ * address (anti-enumeration): a new address is mailed an 8-digit code, an existing
+ * one a "you already have an account" notice. The client cannot tell which, so it
+ * must never try to (spec 5.9).
+ */
+export async function signupEmailStart(email: string, pilotKey?: string): Promise<void> {
+  await request<unknown>('POST', '/api/v1/auth/signup/email-start', { email }, false, onboardingHeaders(pilotHeader(pilotKey)));
+}
+
+/** `POST /api/v1/auth/signup/email-verify`: the code for a single-use `signup_ticket`. */
+export async function signupEmailVerify(email: string, code: string): Promise<string> {
+  const data = await request<{ signup_ticket?: string }>('POST', '/api/v1/auth/signup/email-verify', { email, code }, false, onboardingHeaders());
+  if (typeof data?.signup_ticket !== 'string' || data.signup_ticket.length === 0) {
+    throw new ApiError(500, 'Server returned no signup ticket');
+  }
+  return data.signup_ticket;
+}
+
+/** `POST /api/v1/opaque/register-start`: OPAQUE round 1, from the ceremony. Returns the server message. */
+export async function signupRegisterStart(input: {
+  email: string;
+  ticket: string;
+  clientMessage: Uint8Array;
+  pilotKey?: string;
+}): Promise<Uint8Array> {
+  const data = await request<{ server_message: string }>(
+    'POST',
+    '/api/v1/opaque/register-start',
+    { email: input.email, client_message: uint8ToBase64(input.clientMessage), signup_ticket: input.ticket },
+    false,
+    onboardingHeaders(pilotHeader(input.pilotKey)),
+  );
+  return base64ToUint8(data.server_message);
+}
+
+/**
+ * `POST /api/v1/opaque/register-finish`: OPAQUE round 2 with the D12 recovery
+ * binding and the Terms version shown. 201 creates the account AND a session,
+ * which is stored here exactly like a login. `403 signup_ticket_invalid` (expired
+ * or spent ticket) is `ApiError.code`; the caller returns to the code step.
+ */
+export async function signupRegisterFinish(input: {
+  email: string;
+  ticket: string;
+  termsVersion: string;
+  upload: Uint8Array;
+  x25519Public: Uint8Array;
+  recoveryCheck: Uint8Array;
+  pilotKey?: string;
+}): Promise<{ userId: string; sessionToken: string }> {
+  const data = await request<{ user_id: string; session_token: string; device_confirmation_secret?: string }>(
+    'POST',
+    '/api/v1/opaque/register-finish',
+    {
+      email: input.email,
+      client_message: uint8ToBase64(input.upload),
+      x25519_public_key: uint8ToBase64(input.x25519Public),
+      recovery_check: uint8ToBase64(input.recoveryCheck),
+      signup_ticket: input.ticket,
+      terms_version: input.termsVersion,
+    },
+    false,
+    onboardingHeaders(pilotHeader(input.pilotKey)),
+  );
+  if (typeof data?.session_token !== 'string' || data.session_token.length === 0) {
+    throw new ApiError(500, 'Server returned no session token');
+  }
+  await setSessionCredentials(data.session_token, data.device_confirmation_secret);
+  return { userId: data.user_id, sessionToken: data.session_token };
+}
+
+/** `POST /api/v1/auth/verify-email`: the account-stage `verify_email` step. */
+export async function verifyAccountEmail(code: string): Promise<void> {
+  await request<unknown>('POST', '/api/v1/auth/verify-email', { code });
+}
+
+/** `POST /api/v1/auth/resend-verification`: a fresh code for the account-stage `verify_email` step (3 per hour). */
+export async function resendAccountVerification(): Promise<void> {
+  await request<unknown>('POST', '/api/v1/auth/resend-verification');
+}
+
+/** `POST /api/v1/account/terms-acceptance`: the account-stage `accept_terms` step (task 1740). */
+export async function acceptTermsVersion(version: string): Promise<void> {
+  await request<unknown>('POST', '/api/v1/account/terms-acceptance', { version });
+}
+
+const BREACH_TIMEOUT_MS = 6000;
+const BREACH_MAX_BODY_BYTES = 256 * 1024;
+
+/**
+ * The one HTTP call the breach check leaves to the host: `GET` the same-origin
+ * `policy.password.breach_check.endpoint` with the 5-hex-character prefix (never
+ * the password, never the rest of the digest), to Beebeeb's own API. Returns the
+ * response text of a 2xx answer, or null on ANY failure; core treats null as an
+ * outage and applies the document's `fail_open`. A body over 256 KiB is an outage.
+ */
+export async function fetchBreachRange(endpointTemplate: string, prefix: string): Promise<string | null> {
+  const path = sameOriginPath(endpointTemplate);
+  if (!path || !/^[0-9A-F]{5}$/.test(prefix)) return null;
+  const url = `${BASE_URL}${path.replace('{prefix}', prefix)}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), BREACH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers: onboardingHeaders() });
+    if (!res.ok) return null;
+    const declared = Number(res.headers.get('content-length') ?? '0');
+    if (declared > BREACH_MAX_BODY_BYTES) return null;
+    const text = await res.text();
+    return text.length > BREACH_MAX_BODY_BYTES ? null : text;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------

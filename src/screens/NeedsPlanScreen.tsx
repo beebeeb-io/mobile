@@ -1,16 +1,14 @@
 /**
  * Task 1037: the full-screen state for a `needs_plan` account.
  *
- * The account exists (it was created on the web) but has never started a
- * trial or plan. The server gives it quota 0 and the web app sends it to
- * `/choose-plan`. The app blocks the file UI behind this screen until
- * `account_state` is no longer `needs_plan`.
+ * The account exists but is not active, so the server gives it quota 0. The app
+ * blocks the file UI behind this screen until `account_state` is no longer
+ * `needs_plan`.
  *
- * App Review 3.1.1(a) / task 1400: no price, and by default no link. The copy
- * says in plain text where to go (`WEB_ACCOUNT_LINKS_ENABLED` in
- * web-links.ts). The user can:
- *  - Refresh, which re-reads `/billing/subscription` after choosing a plan on
- *    the web;
+ * App Store 3.1.1 / 3.1.3, tasks 1400 and 1821: this screen states what is true
+ * about the account and offers nothing to buy: no plan name, no price, no link.
+ * The user can:
+ *  - Refresh, which re-reads the account state;
  *  - Sign out, for example to use a different account.
  *
  * Styled like its blocking siblings (`PhraseNotConfirmedScreen`,
@@ -20,7 +18,6 @@
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -35,13 +32,7 @@ import { onAmber, radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { useAuth } from '../lib/auth';
 import { useAccountState } from '../lib/account-state-context';
-import { getWebAppUrl } from '../lib/api';
-import {
-  CHOOSE_PLAN_PATH,
-  WEB_ACCOUNT_LINKS_ENABLED,
-  needsPlanCopy,
-  webAppLink,
-} from '../lib/web-links';
+import { needsPlanCopy } from '../lib/web-links';
 
 type RefreshOutcome = 'idle' | 'still_needs_plan';
 
@@ -53,7 +44,7 @@ export default function NeedsPlanScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [outcome, setOutcome] = useState<RefreshOutcome>('idle');
-  const copy = needsPlanCopy(WEB_ACCOUNT_LINKS_ENABLED);
+  const copy = needsPlanCopy();
   const busy = refreshing || signingOut;
 
   const styles = useMemo(() => StyleSheet.create({
@@ -112,7 +103,7 @@ export default function NeedsPlanScreen() {
     setRefreshing(true);
     try {
       const gate = await refresh();
-      // When the plan is live the overlay unmounts by itself. Otherwise say so,
+      // When the account is active the overlay unmounts by itself. Otherwise say so,
       // so the button does not look like it did nothing.
       setOutcome(gate.kind === 'needs_plan' ? 'still_needs_plan' : 'idle');
     } finally {
@@ -128,10 +119,6 @@ export default function NeedsPlanScreen() {
     } finally {
       setSigningOut(false);
     }
-  }
-
-  function handleOpenWeb() {
-    Linking.openURL(webAppLink(getWebAppUrl(), CHOOSE_PLAN_PATH)).catch(() => {});
   }
 
   return (
@@ -161,7 +148,7 @@ export default function NeedsPlanScreen() {
       {outcome === 'still_needs_plan' && (
         <View style={styles.note} accessibilityLiveRegion="polite">
           <Text style={styles.noteText}>
-            This account has no plan yet. If you just chose one, wait a moment and tap Refresh again.
+            Uploads are still paused on this account. Nothing has changed yet.
           </Text>
         </View>
       )}
@@ -174,24 +161,12 @@ export default function NeedsPlanScreen() {
           activeOpacity={0.82}
           accessibilityRole="button"
           accessibilityLabel="Refresh"
-          accessibilityHint="Checks again whether a plan has been chosen for this account"
+          accessibilityHint="Checks the status of this account again"
           accessibilityState={{ disabled: busy, busy: refreshing }}
           testID="needs-plan-refresh"
         >
           {refreshing ? <ActivityIndicator color={onAmber} /> : <Text style={styles.primaryText}>Refresh</Text>}
         </TouchableOpacity>
-
-        {copy.linkLabel ? (
-          <TouchableOpacity
-            style={[styles.button, styles.secondaryButton]}
-            onPress={handleOpenWeb}
-            activeOpacity={0.78}
-            accessibilityRole="link"
-            testID="needs-plan-open-web"
-          >
-            <Text style={styles.secondaryText}>{copy.linkLabel}</Text>
-          </TouchableOpacity>
-        ) : null}
 
         <TouchableOpacity
           style={[styles.button, styles.secondaryButton, busy && styles.buttonDisabled]}

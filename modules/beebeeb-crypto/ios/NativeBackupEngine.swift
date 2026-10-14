@@ -244,11 +244,11 @@ enum BackupError: LocalizedError {
   /// with this specific asset.
   case accountRefused(code: String)
   /// Task 1605 — the sibling 413 `quota_exceeded` with `is_trial_cap:
-  /// true`: the 25 GB never-paid-trial cap. Same pause-and-keep-queue
+  /// true`: the never-paid-trial cap. Same pause-and-keep-queue
   /// recovery as `.accountRefused` above (`handleConfirmedTrialCapExceeded`)
   /// — NOT the ordinary `quota_exceeded` retry (a real out-of-plan-quota
   /// hit is still a generic retryable failure, unchanged by this case).
-  case trialCapExceeded
+  case trialCapExceeded(message: String)
 
   var errorDescription: String? {
     switch self {
@@ -873,11 +873,11 @@ final class NativeBackupEngine: NSObject {
   static func accountRefusalStopReasonMessage(for code: String) -> String {
     switch code {
     case "trial_cancelled_read_only":
-      return "You cancelled your trial before its first payment, so uploads and backup are off. Resume your trial on the web to upload again."
+      return "This trial was cancelled, so uploads and backup are off. You can still browse and download your files."
     case "account_lapsed":
       return "Your trial has ended, so your vault is read-only: uploads and backup are off. You can still browse and download your files."
     case "plan_required":
-      return "Choose your plan on the web at beebeeb.io to start uploading."
+      return "Uploads are paused on this account."
     default:
       // Unreachable in practice — `AccountRefusalDetection.knownRefusalCodes`
       // is the only source of `code` — but a switch over a `String` (not an
@@ -886,12 +886,6 @@ final class NativeBackupEngine: NSObject {
       return "Backup paused: this account cannot upload right now."
     }
   }
-  /// Task 1605 — sibling copy for the 413 trial-cap case. Word-for-word the
-  /// same as `billing-status.ts`'s `trialCapNote()`, same "one voice"
-  /// rationale as the doc comment above.
-  static let trialCapStopReasonMessage =
-    "This account is on the 25 GB trial storage cap until your first payment clears. Manage your plan from your account on the web."
-
   // MARK: - Configuration (set by JS before calling start)
 
   var parentFolderId: String? {
@@ -2001,12 +1995,11 @@ final class NativeBackupEngine: NSObject {
   /// Sibling for the 413 `quota_exceeded` + `is_trial_cap: true` case — same
   /// pause-and-keep-queue recovery as `handleConfirmedAccountRefusal` above,
   /// distinct reason text (no account-state transition is coming; the
-  /// account just needs its first payment to clear before more storage is
-  /// available, unlike the three codes above which resolve via resuming/
-  /// paying/choosing a plan on the web).
-  private func handleConfirmedTrialCapExceeded() {
+  /// account just needs to free up space, unlike the three codes above which
+  /// resolve when the account state changes).
+  private func handleConfirmedTrialCapExceeded(message: String) {
     RuntimeTrace.event("backup.native.trial_cap_exceeded")
-    accountRefusalStopReason = Self.trialCapStopReasonMessage
+    accountRefusalStopReason = message
     pause()
   }
 
@@ -3532,7 +3525,7 @@ final class NativeBackupEngine: NSObject {
       onFileStatus?(asset.localAssetId, "pending", nil, nil)
       NSLog("[NativeBackupEngine] Asset upload paused (account refused, \(code)): \(asset.localAssetId)")
       return false
-    } catch BackupError.trialCapExceeded {
+    } catch BackupError.trialCapExceeded(let capMessage) {
       // Task 1605 — sibling of the `.accountRefused` catch above for the
       // 413 trial-cap case. Same "keep the queue" recovery.
       perfLog("asset.trial_cap_exceeded", [
@@ -3540,11 +3533,11 @@ final class NativeBackupEngine: NSObject {
         "retry": asset.retryCount
       ])
       dbQueue.sync {
-        markPending(assetId: asset.localAssetId, error: Self.trialCapStopReasonMessage)
+        markPending(assetId: asset.localAssetId, error: capMessage)
       }
       updateBackupStatusSurfaces(reason: "Backup paused")
       onFileStatus?(asset.localAssetId, "pending", nil, nil)
-      NSLog("[NativeBackupEngine] Asset upload paused (25 GB trial cap reached): \(asset.localAssetId)")
+      NSLog("[NativeBackupEngine] Asset upload paused (trial storage cap reached): \(asset.localAssetId)")
       return false
     } catch {
       perfLog("asset.fail", [
@@ -4503,8 +4496,11 @@ final class NativeBackupEngine: NSObject {
     // out-of-plan-quota 413 must NOT take this branch (it stays a generic
     // retryable failure, unchanged by this task).
     if statusCode == 413, AccountRefusalDetection.isTrialCapQuotaExceeded(data) {
-      handleConfirmedTrialCapExceeded()
-      throw BackupError.trialCapExceeded
+      // The server's own cap (`limit_bytes`), purchase-free copy shared word for
+      // word with the JS path (PR #168 review).
+      let message = AccountRefusalDetection.trialCapMessage(limitBytes: AccountRefusalDetection.trialCapLimitBytes(data))
+      handleConfirmedTrialCapExceeded(message: message)
+      throw BackupError.trialCapExceeded(message: message)
     }
 
     // Handle rate limiting
