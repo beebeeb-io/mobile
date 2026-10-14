@@ -1480,6 +1480,14 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
 
   var ok = sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK
+  // Task 1722 (f): a database another writer created with only some of the
+  // tables (older `syncFileProviderCache` builds created `file_cache` alone)
+  // must still reset. Create anything missing inside this same transaction,
+  // so "reset" never fails on "no such table" and the forced-reset gate in
+  // `registerMountedFileProviderDomainLocked` only refuses a real failure.
+  for statement in fileProviderCacheSchemaStatements {
+    ok = ok && sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK
+  }
   ok = ok && sqlite3_exec(db, "DELETE FROM file_cache", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "DELETE FROM sync_state", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "DELETE FROM upload_queue", nil, nil, nil) == SQLITE_OK
@@ -3565,27 +3573,14 @@ public class BeebeebCryptoModule: Module {
       // the only defense it gets. Must be set before any DELETE runs.
       sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
 
-      // Ensure the table exists (idempotent)
-      let createSql = """
-      CREATE TABLE IF NOT EXISTS file_cache (
-        id TEXT PRIMARY KEY,
-        parent_id TEXT,
-        name_encrypted TEXT,
-        name_decrypted TEXT,
-        mime_type TEXT,
-        size_bytes INTEGER NOT NULL DEFAULT 0,
-        is_folder INTEGER NOT NULL DEFAULT 0,
-        is_pinned INTEGER NOT NULL DEFAULT 0,
-        has_thumbnail INTEGER NOT NULL DEFAULT 0,
-        thumbnail_data BLOB,
-        thumbnail_nonce BLOB,
-        created_at TEXT,
-        updated_at TEXT,
-        sync_anchor INTEGER NOT NULL DEFAULT 0,
-        is_materialized INTEGER NOT NULL DEFAULT 0
-      );
-      """
-      sqlite3_exec(db, createSql, nil, nil, nil)
+      // Task 1722 (f): the same schema `ensureFileProviderCacheDatabase` and
+      // the extension's `CacheManager` create (all idempotent). This used to
+      // create `file_cache` only, so on a fresh install the forced reset
+      // before the first mount failed on `DELETE FROM sync_state` ("no such
+      // table") and the domain add was refused.
+      for statement in fileProviderCacheSchemaStatements {
+        sqlite3_exec(db, statement, nil, nil, nil)
+      }
 
       let upsertSql = """
       INSERT INTO file_cache(

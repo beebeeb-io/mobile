@@ -579,7 +579,8 @@ describe('C2 (round 7, P1): the File Provider cache DB is protected at the momen
     );
     const openIdx = body.indexOf('sqlite3_open_v2');
     const protectIdx = body.indexOf('PlaintextStorageProtection.protect(URL(fileURLWithPath: dbPath))');
-    const createSqlIdx = body.indexOf('CREATE TABLE IF NOT EXISTS file_cache');
+    // Task 1722 (f): the inline single-table CREATE became the shared schema loop.
+    const createSqlIdx = body.indexOf('for statement in fileProviderCacheSchemaStatements');
     expect(openIdx).toBeGreaterThan(-1);
     expect(protectIdx).toBeGreaterThan(-1);
     expect(createSqlIdx).toBeGreaterThan(-1);
@@ -1190,7 +1191,8 @@ describe('round 10 (Codex thread PRRT_kwDOSLX6T86mhUiZ, P2): the File Provider c
     );
     const protectIdx = body.indexOf('PlaintextStorageProtection.protect(URL(fileURLWithPath: dbPath))');
     const sidecarIdx = body.indexOf('PlaintextStorageProtection.protectSQLiteSidecars(URL(fileURLWithPath: dbPath))');
-    const createSqlIdx = body.indexOf('CREATE TABLE IF NOT EXISTS file_cache');
+    // Task 1722 (f): the inline single-table CREATE became the shared schema loop.
+    const createSqlIdx = body.indexOf('for statement in fileProviderCacheSchemaStatements');
     expect(protectIdx).toBeGreaterThan(-1);
     expect(sidecarIdx).toBeGreaterThan(-1);
     expect(createSqlIdx).toBeGreaterThan(-1);
@@ -3092,6 +3094,12 @@ if RuntimeTrace.events != [
     const vacuumHelper = bracedBody(moduleSwift, 'private func vacuumRetryingOnceOnBusy(');
     const resetHelper = bracedBody(moduleSwift, 'private func resetFileProviderCacheDatabase(at url: URL) -> Bool {');
     const retryHelper = bracedBody(moduleSwift, 'private func retryFileProviderCacheReset(');
+    // Task 1722 (f): the reset now creates missing tables from the shared schema.
+    const schemaStart = moduleSwift.indexOf('private let fileProviderCacheSchemaStatements = [');
+    const schemaEnd = moduleSwift.indexOf('\n]\n', schemaStart);
+    expect(schemaStart).toBeGreaterThan(-1);
+    expect(schemaEnd).toBeGreaterThan(schemaStart);
+    const schemaDeclaration = moduleSwift.slice(schemaStart, schemaEnd + 2);
 
     const dir = mkdtempSync(join(tmpdir(), 'bb-reset-sqlite-'));
     const source = join(dir, 'SQLiteResetHarness.swift');
@@ -3105,6 +3113,8 @@ enum RuntimeTrace {
     events.append(name)
   }
 }
+
+${schemaDeclaration}
 
 ${vacuumHelper}
 
