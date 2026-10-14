@@ -758,6 +758,29 @@ back up `Library/Caches/`. Any path this app writes outside `Caches/` must be re
   accepted-plaintext rationale live in `docs/0300-plaintext-lifecycle-audit.md`.
 
 
+## Files (File Provider extension) — testing it (task 1722)
+
+- **Behaviour tests run the shipped extension sources.** `src/lib/file-provider-extension-behaviour.test.ts`
+  compiles `targets/file-provider/{FileProviderExtension,FileProviderItem,FileProviderEnumerator,SyncEngine,
+  CachedHandleIdentity,CryptoBridge}.swift` on macOS against in-memory doubles (cache, API, keychain,
+  CryptoKit key fixtures) and drives `fetchContents`, `modifyItem`, `item(for:)`, `enumerator(for:)`
+  per scenario. Add a scenario there before changing extension behaviour; the CI `swift-gate` job runs
+  it with `BB_REQUIRE_NATIVE_SWIFT_HARNESSES=1`. Strings in its `String.raw` Swift must be ASCII (bun
+  rewrites non-ASCII in template literals to `·`, which Swift rejects: write `\u{00B7}`).
+- **The simulator CAN hold the Files Secure Enclave key** (Apple-silicon simulators emulate the
+  Secure Enclave). Correction to the 2026-10-03/14 notes that said the simulator can never load a key
+  in the extension: those builds only provisioned the Files key from `KeychainManager.store/load`,
+  whose DEBUG-simulator branch uses the software key and skips it. Since task 1722 the mount and every
+  unlocked foreground registration provision it from the verified in-memory handle
+  (`resumeFileProviderAuthenticationIfReady`), so on a simulator content opens from Files. What the
+  simulator still cannot show: device passcode/lock behaviour of the key, and jetsam limits.
+- **iOS creates a default "Beebeeb" location** (`NSFileProviderDomainDefaultIdentifier`) from install,
+  shown whenever our `io.beebeeb.files` domain is not registered; it answers "Authentication Required"
+  and "Open Beebeeb" only opens the app. Registering our domain marks it `hidden` (it stays in
+  `Domains.plist`); removing ours brings it back within ~100 ms. What to show there is decision 1722 Q1.
+- **Files icon view: tapping a label can start an in-place rename.** In Maestro, switch Files to list
+  view ("…" → List) and tap the row's size/date text, or tap the tile, never the label.
+
 ## Bottom sheets — one primitive (task 1586)
 
 Every partial-height sheet renders through `src/components/sheet/BottomSheet.tsx` (+
