@@ -2245,6 +2245,7 @@ export default function SettingsScreen() {
                   onValueChange={handleFileProviderMountToggle}
                   disabled={loadingFileProvider || updatingFileProviderMount}
                   c={c}
+                  testID="files-mount-toggle"
                 />
                 <RowDivider c={c} />
               </>
