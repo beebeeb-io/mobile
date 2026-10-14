@@ -128,9 +128,21 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       return progress
     }
 
-    if identifier == .trashContainer || identifier == .workingSet {
-      // We don't host a separate trash or working-set container yet; treat
-      // both as the same as the root for the system so it doesn't error out.
+    if identifier == .trashContainer {
+      // Task 1722 (e): Beebeeb has no Files trash (a delete goes to the
+      // server's trash). This used to answer with the ROOT item, so
+      // fileproviderd's trash create-item failed with
+      // itemMismatch(expected: nil, received: .root) and retried with
+      // backoff (7 times in ~3.5 min on the simulator). Unsupported is the
+      // documented answer for a provider without trash.
+      completionHandler(nil, Self.trashUnsupported)
+      progress.completedUnitCount = 1
+      return progress
+    }
+
+    if identifier == .workingSet {
+      // The working set is not a real container; keep answering with the
+      // root so a lookup of it does not error out.
       completionHandler(FileProviderItem(cached: .rootContainer()), nil)
       progress.completedUnitCount = 1
       return progress
@@ -587,7 +599,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     for containerItemIdentifier: NSFileProviderItemIdentifier,
     request: NSFileProviderRequest
   ) throws -> NSFileProviderEnumerator {
+    // Task 1722 (e): "If containerItemIdentifier is NSFileProviderTrash-
+    // ContainerItemIdentifier and the extension does not support trashing
+    // items, then it should fail the call with the NSFeatureUnsupportedError
+    // error code from the NSCocoaErrorDomain domain" (NSFileProviderReplicatedExtension.h).
+    if containerItemIdentifier == .trashContainer {
+      throw Self.trashUnsupported
+    }
     return FileProviderEnumerator(containerIdentifier: containerItemIdentifier)
+  }
+
+  /// Task 1722 (e): the answer for every trash-container request.
+  private static var trashUnsupported: NSError {
+    NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)
   }
 
   // MARK: - Streaming upload

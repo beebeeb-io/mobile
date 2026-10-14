@@ -505,6 +505,42 @@ func renameOfUndecryptedItemNeverReachesTheServer() async {
   check(ApiClient.shared.count("patch") == 1 && sentName == "new.txt", "the rename sends one ciphertext of the new name, got \(sentName ?? "nil")")
 }
 
+// ---- (e) Beebeeb has no Files trash ----
+func lookup(_ identifier: NSFileProviderItemIdentifier) async -> (NSFileProviderItem?, NSError?) {
+  let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
+  return await withCheckedContinuation { continuation in
+    _ = ext.item(for: identifier, request: NSFileProviderRequest()) { item, error in
+      continuation.resume(returning: (item, error as NSError?))
+    }
+  }
+}
+
+func isFeatureUnsupported(_ error: NSError?) -> Bool {
+  error?.domain == NSCocoaErrorDomain && error?.code == NSFeatureUnsupportedError
+}
+
+func trashIsUnsupportedNotTheRoot() async {
+  reset()
+  let (trash, trashError) = await lookup(.trashContainer)
+  check(trash == nil, "item(for: .trashContainer) must not vend an item, got \(trash.map { $0.itemIdentifier.rawValue } ?? "nil")")
+  check(isFeatureUnsupported(trashError), "item(for: .trashContainer): NSFeatureUnsupportedError, got \(describe(trashError))")
+
+  let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
+  var enumeratorError: NSError?
+  do {
+    _ = try ext.enumerator(for: .trashContainer, request: NSFileProviderRequest())
+  } catch {
+    enumeratorError = error as NSError
+  }
+  check(isFeatureUnsupported(enumeratorError), "enumerator(for: .trashContainer): NSFeatureUnsupportedError, got \(describe(enumeratorError))")
+
+  let (root, rootError) = await lookup(.rootContainer)
+  check(rootError == nil && root?.itemIdentifier == .rootContainer, "the root item is unchanged")
+  let (workingSet, workingSetError) = await lookup(.workingSet)
+  check(workingSetError == nil && workingSet?.itemIdentifier == .rootContainer, "the working set lookup is unchanged")
+  check(ApiClient.shared.calls.isEmpty && CacheManager.shared.writes.isEmpty, "trash lookups touch neither the server nor the cache")
+}
+
 let scenarioTable: [(String, () async -> Void)] = [
   ("key-errors", keyFailuresAreAuthenticationRequired),
   ("other-errors", otherFailuresKeepTheirMeaning),
@@ -512,6 +548,7 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("no-key-known-names", noKeyStillRefreshesKnownNames),
   ("undecryptable-label", undecryptableNameGetsUniqueLabelWithoutRename),
   ("placeholder-rename", renameOfUndecryptedItemNeverReachesTheServer),
+  ("trash", trashIsUnsupportedNotTheRoot),
 ]
 
 @main
@@ -610,5 +647,11 @@ describe('task 1722 (d): listings never vend placeholder names', () => {
 
   nativeSwiftHarnessTest('renaming an undecrypted item sends 0 server writes; a move keeps its ciphertext name', () => {
     expectScenario('placeholder-rename', 9);
+  }, 300_000);
+});
+
+describe('task 1722 (e): no Files trash', () => {
+  nativeSwiftHarnessTest('the trash container is NSFeatureUnsupportedError for item lookup and enumeration, never the root item', () => {
+    expectScenario('trash', 6);
   }, 300_000);
 });
