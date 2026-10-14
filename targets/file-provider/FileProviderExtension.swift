@@ -677,9 +677,25 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
   // MARK: - Errors
 
+  /// `errSecInteractionNotAllowed`: a keychain item read while the device is
+  /// locked. Spelled out so this file needs no `import Security`.
+  private static let errSecInteractionNotAllowedStatus = -25308
+
   /// Map our internal errors into something `NSFileProviderError`-shaped so
   /// the Files app shows an actionable message.
-  private static func mapError(_ error: Error) -> Error {
+  ///
+  /// Task 1722 (c): every way the vault key can be unavailable to this
+  /// extension (no Files key provisioned yet, the device locked, an unwrap
+  /// the Secure Enclave refused, key bytes that do not form a key, an owner
+  /// that is not proven) is `.notAuthenticated` (-1000): Files shows
+  /// "Authentication Required" with "Open Beebeeb" and retries once the app
+  /// calls `signalErrorResolved`. These used to fall through to
+  /// `.cannotSynchronize` (-2005), a dead end Files never retries for
+  /// create/modify until the extension is updated.
+  static func mapError(_ error: Error) -> Error {
+    if error is BeebeebKeychainCore.LoadError {
+      return NSFileProviderError(.notAuthenticated)
+    }
     if let api = error as? ApiError {
       switch api {
       case .notAuthenticated: return NSFileProviderError(.notAuthenticated)
@@ -696,7 +712,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
     if let bridge = error as? CryptoBridge.CryptoBridgeError {
       switch bridge {
-      case .keyUnavailable, .decodeFailed: return NSFileProviderError(.cannotSynchronize)
+      case .keyUnavailable: return NSFileProviderError(.notAuthenticated)
+      // Content that fails to decode is not a key problem; retrying the same
+      // bytes cannot succeed.
+      case .decodeFailed: return NSFileProviderError(.cannotSynchronize)
       // Task 1594 round 2 (F3): the key exists but is not (yet, or no
       // longer) provably this account's — surface the same error Files.app
       // shows for "not authenticated", since using it would be exactly the
@@ -704,8 +723,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       case .ownerUnverified: return NSFileProviderError(.notAuthenticated)
       }
     }
-    if (error as NSError).domain == NSFileProviderErrorDomain {
+    let nsError = error as NSError
+    if nsError.domain == NSFileProviderErrorDomain {
       return error
+    }
+    if nsError.domain == NSOSStatusErrorDomain, nsError.code == errSecInteractionNotAllowedStatus {
+      return NSFileProviderError(.notAuthenticated)
     }
     return NSFileProviderError(.cannotSynchronize)
   }

@@ -33,6 +33,12 @@ enum BeebeebKeychainCore {
         case writeFailed(OSStatus)
         case decryptFailed
         case seKeyNotFound
+        /// Task 1722 (G3): the Files-only key could not be used. `step` names
+        /// the failing call (`se_key_lookup`, `wrapped_blob_lookup`, `unwrap`);
+        /// `domain` + `code` are its Security `OSStatus` or the unwrap
+        /// CFError's domain and code. Safe to log by construction: no key
+        /// bytes, labels, names or user data.
+        case fileProviderKeyUnavailable(step: String, domain: String, code: Int)
     }
 
     /// Typed outcome for a primary-key biometric/passcode evaluation or the
@@ -165,14 +171,9 @@ enum BeebeebKeychainCore {
         decryptError: inout Unmanaged<CFError>?
     ) -> Data? {
         if mode == .fileProviderOnly {
-            guard let key = findSEKey(tag: seKeyTagFiles),
-                  let wrapped = fetchWrappedBlob(service: wrappedKeyServiceFiles, label: label) else {
-                return nil
-            }
-            guard let plain = SecKeyCreateDecryptedData(key, eciesAlgorithm, wrapped as CFData, &decryptError) else {
-                return nil
-            }
-            return plain as Data
+            // Callers that need the reason use `loadMasterKeyThrowing`, which
+            // carries it in `LoadError.fileProviderKeyUnavailable`.
+            return try? loadFileProviderMasterKey(label: label)
         }
         // Extension SE key path (.devicePasscode, no Face ID prompt)
         if mode != .primaryOnly,
@@ -208,11 +209,11 @@ enum BeebeebKeychainCore {
     /// up to system frameworks. Distinguishes "no SE key at all" from
     /// "blob missing" so Files.app can show a coherent message.
     static func loadMasterKeyThrowing(label: String, mode: LoadMode) throws -> Data {
+        if mode == .fileProviderOnly {
+            return try loadFileProviderMasterKey(label: label)
+        }
         if let key = loadMasterKey(label: label, mode: mode) {
             return key
-        }
-        if mode == .fileProviderOnly {
-            throw findSEKey(tag: seKeyTagFiles) == nil ? LoadError.seKeyNotFound : LoadError.notFound
         }
         // Determine which gate failed for a cleaner error
         let extKeyMissing = findSEKey(tag: seKeyTagExt) == nil
@@ -229,6 +230,29 @@ enum BeebeebKeychainCore {
         }
     }
 
+    /// The File Provider's key load (task 1722 G3). Files runs without an
+    /// authentication UI, so it only ever uses its own wrapping key
+    /// (`seKeyTagFiles` + `wrappedKeyServiceFiles`) and never falls back to the
+    /// primary or shared extension keys. A failure names the step and its
+    /// status (`LoadError.fileProviderKeyUnavailable`) instead of collapsing
+    /// to "not found", so the extension can log why Files cannot decrypt.
+    static func loadFileProviderMasterKey(label: String) throws -> Data {
+        let (key, keyStatus) = findSEKeyReportingStatus(tag: seKeyTagFiles)
+        guard let key else {
+            throw LoadError.fileProviderKeyUnavailable(step: "se_key_lookup", domain: "OSStatus", code: Int(keyStatus))
+        }
+        let (wrapped, blobStatus) = fetchWrappedBlobReportingStatus(service: wrappedKeyServiceFiles, label: label)
+        guard let wrapped else {
+            throw LoadError.fileProviderKeyUnavailable(step: "wrapped_blob_lookup", domain: "OSStatus", code: Int(blobStatus))
+        }
+        var unwrapError: Unmanaged<CFError>?
+        guard let plain = SecKeyCreateDecryptedData(key, eciesAlgorithm, wrapped as CFData, &unwrapError) else {
+            let reason = unwrapError.map { $0.takeRetainedValue() as Error as NSError }
+            throw LoadError.fileProviderKeyUnavailable(step: "unwrap", domain: reason?.domain ?? "none", code: reason?.code ?? 0)
+        }
+        return plain as Data
+    }
+
     // MARK: - Lookup helpers (internal so KeychainManager can reuse on the write path)
 
     /// Find an SE key by application tag. Tries the access-group-scoped
@@ -240,6 +264,12 @@ enum BeebeebKeychainCore {
     /// `kSecUseAuthenticationContext` (task 0882). The main app passes the
     /// context it evaluated once; extensions pass `nil`.
     static func findSEKey(tag: Data, authContext: AnyObject? = nil) -> SecKey? {
+        findSEKeyReportingStatus(tag: tag, authContext: authContext).key
+    }
+
+    /// `findSEKey` plus the lookup's Security status (task 1722 G3): the
+    /// first status that is not "item not found", else the last one tried.
+    static func findSEKeyReportingStatus(tag: Data, authContext: AnyObject? = nil) -> (key: SecKey?, status: OSStatus) {
         var query: [CFString: Any] = [
             kSecClass: kSecClassKey,
             kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
@@ -253,17 +283,18 @@ enum BeebeebKeychainCore {
         var result: CFTypeRef?
         var status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecSuccess, let obj = result {
-            return unsafeBitCast(obj, to: SecKey.self)
+            return (unsafeBitCast(obj, to: SecKey.self), status)
         }
+        let groupStatus = status
         if accessGroup != nil {
             var legacy = query
             legacy.removeValue(forKey: kSecAttrAccessGroup)
             status = SecItemCopyMatching(legacy as CFDictionary, &result)
             if status == errSecSuccess, let obj = result {
-                return unsafeBitCast(obj, to: SecKey.self)
+                return (unsafeBitCast(obj, to: SecKey.self), status)
             }
         }
-        return nil
+        return (nil, groupStatus != errSecItemNotFound ? groupStatus : status)
     }
 
     // MARK: - Generic string storage (App-Group-shared)
@@ -403,6 +434,11 @@ enum BeebeebKeychainCore {
     /// Tries access-group-scoped lookup first, then falls back to
     /// no-access-group for the same legacy reason as `findSEKey`.
     static func fetchWrappedBlob(service: String, label: String) -> Data? {
+        fetchWrappedBlobReportingStatus(service: service, label: label).blob
+    }
+
+    /// `fetchWrappedBlob` plus the lookup's Security status (task 1722 G3).
+    static func fetchWrappedBlobReportingStatus(service: String, label: String) -> (blob: Data?, status: OSStatus) {
         var query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -418,7 +454,7 @@ enum BeebeebKeychainCore {
             query.removeValue(forKey: kSecAttrAccessGroup)
             status = SecItemCopyMatching(query as CFDictionary, &result)
         }
-        guard status == errSecSuccess else { return nil }
-        return result as? Data
+        guard status == errSecSuccess else { return (nil, status) }
+        return (result as? Data, status)
     }
 }

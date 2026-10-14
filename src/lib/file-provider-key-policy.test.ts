@@ -42,6 +42,9 @@ nativeTest('actual Files provisioning and loader enforce unlocked device policy 
   ].map(s => functionBody(manager, s)).join('\n');
   const loader = functionBody(core, 'static func loadMasterKey(\n');
   const throwing = functionBody(core, 'static func loadMasterKeyThrowing(');
+  // Task 1722 (G3): the Files loader names the failing step; LoadError is the shipped enum.
+  const filesLoader = functionBody(core, 'static func loadFileProviderMasterKey(');
+  const loadError = functionBody(core, 'enum LoadError: Error {');
   const harness = `
 import Foundation
 typealias CFString = String
@@ -80,7 +83,10 @@ func SecKeyCreateRandomKey(_ attrs: CFDictionary, _ error: inout Unmanaged<CFErr
 func SecKeyCopyPublicKey(_ key: SecKey) -> SecKey? { key }
 func SecKeyCreateEncryptedData(_ key: SecKey, _ algorithm: String, _ bytes: CFData, _ error: inout Unmanaged<CFError>?) -> CFData? { Data([99]) + bytes.map { $0 ^ 0xA5 } }
 func SecKeyCreateDecryptedData(_ key: SecKey, _ algorithm: String, _ bytes: CFData, _ error: inout Unmanaged<CFError>?) -> CFData? {
-  guard State.unlocked, State.passcode, !State.decryptFails, !key.acl.flags.contains(.devicePasscode), bytes.first == 99 else { return nil }
+  guard State.unlocked, State.passcode, !State.decryptFails, !key.acl.flags.contains(.devicePasscode), bytes.first == 99 else {
+    error = Unmanaged.passRetained(NSError(domain: "NSOSStatusErrorDomain", code: State.unlocked ? -26276 : -25308))
+    return nil
+  }
   return Data(bytes.dropFirst().map { $0 ^ 0xA5 })
 }
 func SecItemAdd(_ attrs: CFDictionary, _ result: Any?) -> Int32 {
@@ -99,13 +105,21 @@ func SecItemUpdate(_ query: CFDictionary, _ values: CFDictionary) -> Int32 {
 enum KeychainError: Error { case seKeyNotFound, encryptionFailed, seKeyGenerationFailed, writeError(Int32) }
 enum BeebeebKeychainCore {
   enum LoadMode { case primaryOnly, extensionOnly, extensionThenPrimary, fileProviderOnly }
-  enum LoadError: Error { case seKeyNotFound, notFound }
+  ${loadError}
   static let accessGroup: String? = "shared"
   static let seKeyTag = Data([1]), seKeyTagExt = Data([2]), seKeyTagFiles = Data([3])
   static let wrappedKeyService = "primary", wrappedKeyServiceExt = "extension", wrappedKeyServiceFiles = "files"
   static let eciesAlgorithm = "ecies"
   static func findSEKey(tag: Data, authContext: AnyObject? = nil) -> SecKey? { State.lookups.append(tag); return State.keys[tag] }
   static func fetchWrappedBlob(service: String, label: String) -> Data? { State.blobs[service] }
+  static func findSEKeyReportingStatus(tag: Data, authContext: AnyObject? = nil) -> (key: SecKey?, status: Int32) {
+    let key = findSEKey(tag: tag, authContext: authContext)
+    return (key, key == nil ? errSecItemNotFound : errSecSuccess)
+  }
+  static func fetchWrappedBlobReportingStatus(service: String, label: String) -> (blob: Data?, status: Int32) {
+    let blob = fetchWrappedBlob(service: service, label: label)
+    return (blob, blob == nil ? errSecItemNotFound : errSecSuccess)
+  }
   ${loader}
   static func loadMasterKey(label: String, mode: LoadMode) -> Data? {
     var error: Unmanaged<CFError>?
@@ -114,6 +128,10 @@ enum BeebeebKeychainCore {
     return result
   }
   ${throwing}
+  ${filesLoader}
+}
+func reason(_ body: () throws -> Data) -> String {
+  do { _ = try body(); return "loaded" } catch { return "\\(error)" }
 }
 enum Manager {
   ${writer}
@@ -139,17 +157,20 @@ try Manager.storeFileProviderWrappedKey(masterKeyBytes: bytes, label: "vault")
 check(State.generated.count == before, "idempotent Files key reuse")
 State.unlocked = false
 check(BeebeebKeychainCore.loadMasterKey(label: "vault", mode: .fileProviderOnly) == nil, "locked device denied")
+check(reason { try BeebeebKeychainCore.loadMasterKeyThrowing(label: "vault", mode: .fileProviderOnly) } == #"fileProviderKeyUnavailable(step: "unwrap", domain: "NSOSStatusErrorDomain", code: -25308)"#, "locked device reason names the unwrap status")
 State.unlocked = true; State.passcode = false
 check(BeebeebKeychainCore.loadMasterKey(label: "vault", mode: .fileProviderOnly) == nil, "passcode removed denied")
 State.passcode = true; State.decryptFails = true
 check(BeebeebKeychainCore.loadMasterKey(label: "vault", mode: .fileProviderOnly) == nil, "unwrap failure denied")
 State.decryptFails = false; State.blobs.removeValue(forKey: "files")
 check(BeebeebKeychainCore.loadMasterKey(label: "vault", mode: .fileProviderOnly) == nil, "missing Files blob denied")
+check(reason { try BeebeebKeychainCore.loadMasterKeyThrowing(label: "vault", mode: .fileProviderOnly) } == #"fileProviderKeyUnavailable(step: "wrapped_blob_lookup", domain: "OSStatus", code: -25300)"#, "missing blob reason names the lookup")
 State.keys.removeValue(forKey: BeebeebKeychainCore.seKeyTagFiles)
 State.keys[BeebeebKeychainCore.seKeyTag] = SecKey(Data([1]), ACL(protection: "legacy", flags: [.privateKeyUsage]))
 State.keys[BeebeebKeychainCore.seKeyTagExt] = SecKey(Data([2]), ACL(protection: "legacy", flags: [.privateKeyUsage]))
 State.blobs["primary"] = Data([99]) + bytes.map { $0 ^ 0xA5 }; State.blobs["extension"] = State.blobs["primary"]
 check(BeebeebKeychainCore.loadMasterKey(label: "vault", mode: .fileProviderOnly) == nil, "legacy primary/extension never fallback")
+check(reason { try BeebeebKeychainCore.loadMasterKeyThrowing(label: "vault", mode: .fileProviderOnly) } == #"fileProviderKeyUnavailable(step: "se_key_lookup", domain: "OSStatus", code: -25300)"#, "missing Files key reason names the key lookup")
 State.passcode = false
 do { try Manager.storeFileProviderWrappedKey(masterKeyBytes: bytes, label: "vault"); fatalError("no passcode accepted") } catch {}
 check(State.blobs["files"] == nil, "no blob created without passcode")
@@ -172,5 +193,5 @@ print("Files key policy: \\(count) cases passed")
   writeFileSync(swift, harness);
   execFileSync('swiftc', [swift, '-o', binary], { timeout: 60_000 });
   execFileSync('/bin/sh', ['-c', '"$1" > "$2" 2>&1', 'files-key-test', binary, output], { timeout: 30_000 });
-  expect(readFileSync(output, 'utf8')).toContain('Files key policy: 18 cases passed');
+  expect(readFileSync(output, 'utf8')).toContain('Files key policy: 21 cases passed');
 }, 90_000);

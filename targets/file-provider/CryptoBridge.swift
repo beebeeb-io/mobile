@@ -74,7 +74,14 @@ enum CryptoBridge {
         if let ptr = buf.baseAddress { memset(ptr, 0, buf.count) }
       }
     }
-    return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+    do {
+      return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+    } catch {
+      // Task 1722 (c): unwrapped bytes that do not form a key are an
+      // unavailable key (Files shows "Authentication Required" and retries
+      // after the app re-provisions it), not a generic sync failure.
+      throw CryptoBridgeError.keyUnavailable
+    }
   }
 
   // MARK: - Filename codec
