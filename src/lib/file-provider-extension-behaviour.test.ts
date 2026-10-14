@@ -81,6 +81,11 @@ enum BeebeebConstants {
   }
 }
 
+enum PlaintextStorageProtection {
+  static var protected: [String] = []
+  @discardableResult static func protect(_ url: URL) -> Bool { protected.append(url.lastPathComponent); return true }
+}
+
 enum AppGroupContainer {
   static let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
   static func directory(_ name: String) -> URL {
@@ -167,10 +172,13 @@ final class CacheManager {
   var state: [String: String] = [:]
   var epoch = 7
   private(set) var writes: [String] = []
+  /// Scenario hook: runs on the Nth purgeEpochUnchanged call (a purge or a cancel landing mid-stream).
+  var onEpochCheck: (count: Int, action: () -> Void)?
+  private(set) var epochChecks = 0
 
   func reset() {
     lock.lock(); defer { lock.unlock() }
-    rows = [:]; state = [:]; epoch = 7; writes = []
+    rows = [:]; state = [:]; epoch = 7; writes = []; onEpochCheck = nil; epochChecks = 0
   }
   func item(id: String) -> CachedItem? { lock.lock(); defer { lock.unlock() }; return rows[id] }
   func children(parent: String?) -> [CachedItem] {
@@ -203,7 +211,15 @@ final class CacheManager {
     return true
   }
   func currentPurgeEpoch() -> Int { lock.lock(); defer { lock.unlock() }; return epoch }
-  func purgeEpochUnchanged(since captured: Int) -> Bool { lock.lock(); defer { lock.unlock() }; return captured == epoch }
+  func purgeEpochUnchanged(since captured: Int) -> Bool {
+    lock.lock()
+    epochChecks += 1
+    let hook = onEpochCheck?.count == epochChecks ? onEpochCheck?.action : nil
+    lock.unlock()
+    hook?()
+    lock.lock(); defer { lock.unlock() }
+    return captured == epoch
+  }
   func setMaterialized(id: String, value: Bool) { lock.lock(); defer { lock.unlock() }; rows[id]?.isMaterialized = value }
   func setSyncState(key: String, value: String) { lock.lock(); defer { lock.unlock() }; state[key] = value }
   func syncState(key: String) -> String? { lock.lock(); defer { lock.unlock() }; return state[key] }
@@ -541,6 +557,146 @@ func trashIsUnsupportedNotTheRoot() async {
   check(ApiClient.shared.calls.isEmpty && CacheManager.shared.writes.isEmpty, "trash lookups touch neither the server nor the cache")
 }
 
+// ---- (G4/G5) content streams, chunk by chunk, into the system's temporary directory ----
+import CryptoKit
+
+func footprint() -> (current: UInt64, peak: UInt64) {
+  var info = task_vm_info_data_t()
+  var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+  let result = withUnsafeMutablePointer(to: &info) {
+    $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+      task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+    }
+  }
+  return result == KERN_SUCCESS ? (info.phys_footprint, UInt64(max(0, info.ledger_phys_footprint_peak))) : (0, 0)
+}
+
+/// Writes \(size) bytes of a deterministic payload as upload-format ciphertext, one chunk at a time,
+/// and returns the payload's SHA-256 so the decrypted file can be compared without holding either.
+func writeCiphertext(fileId: String, size: Int, chunkSize: Int, to url: URL) -> (chunks: Int, digest: SHA256.Digest) {
+  FileManager.default.createFile(atPath: url.path, contents: nil)
+  let handle = try! FileHandle(forWritingTo: url)
+  defer { try? handle.close() }
+  var hash = SHA256()
+  var offset = 0
+  var chunks = 0
+  repeat {
+    let length = min(chunkSize, size - offset)
+    let plaintext = Data((0..<length).map { UInt8(truncatingIfNeeded: (offset + $0) &* 31 &+ 7) })
+    hash.update(data: plaintext)
+    try! handle.write(contentsOf: CryptoBridge.encryptChunkForUpload(masterKeyHandle: fixtureMaster, fileId: fileId, plaintext: plaintext))
+    offset += length
+    chunks += 1
+  } while offset < size
+  return (chunks, hash.finalize())
+}
+
+func digest(of url: URL) -> SHA256.Digest? {
+  guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+  defer { try? handle.close() }
+  var hash = SHA256()
+  while let next = try? handle.read(upToCount: 1 << 20), !next.isEmpty { hash.update(data: next) }
+  return hash.finalize()
+}
+
+func stage(_ id: String, size: Int, chunkSize: Int, pinned: Bool = false) -> (download: URL, digest: SHA256.Digest) {
+  var cachedRow = row(id, name: "\(id).dng", size: size)
+  cachedRow.isPinned = pinned
+  CacheManager.shared.rows[id] = cachedRow
+  let download = AppGroupContainer.root.appendingPathComponent("download-\(id).bin")
+  let written = writeCiphertext(fileId: id, size: size, chunkSize: chunkSize, to: download)
+  ApiClient.shared.downloadResult = .success(DownloadedEncryptedFile(url: download, chunkCount: written.chunks, chunkSize: chunkSize))
+  return (download, written.digest)
+}
+
+func leftovers(_ id: String) -> [String] {
+  let directories = [AppGroupContainer.temporaryContentDirectory, AppGroupContainer.pinnedContentDirectory]
+  return directories.flatMap { (try? FileManager.default.contentsOfDirectory(atPath: $0.path)) ?? [] }.filter { $0.hasPrefix(id) }
+}
+
+func contentStreamsIntoATemporaryFile() async {
+  reset()
+  let size = 6 * 1_048_576 + 12_345
+  let staged = stage("big", size: size, chunkSize: 1_048_576)
+  let (url, error) = await fetch("big")
+  check(error == nil, "streamed fetch: no error, got \(describe(error))")
+  check(url.flatMap(digest(of:)) == staged.digest, "streamed fetch: the plaintext matches byte for byte (\(size) bytes, 7 chunks)")
+  check(!FileManager.default.fileExists(atPath: staged.download.path), "streamed fetch: the downloaded ciphertext file is deleted")
+
+  reset()
+  let pinned = stage("pin", size: 70_000, chunkSize: 16_384, pinned: true)
+  let (pinnedURL, pinnedError) = await fetch("pin")
+  let pinnedCopy = AppGroupContainer.pinnedContentDirectory.appendingPathComponent("pin")
+  check(pinnedError == nil && pinnedURL.flatMap(digest(of:)) == pinned.digest, "pinned fetch: returned content matches")
+  check(digest(of: pinnedCopy) == pinned.digest, "pinned fetch: the pinned copy matches")
+  check(PlaintextStorageProtection.protected.contains("pin"), "pinned fetch: the pinned copy is protected")
+  check(CacheManager.shared.item(id: "pin")?.isMaterialized == true, "pinned fetch: marked materialized")
+}
+
+func contentStreamingStaysWithinTheExtensionBudget() async {
+  reset()
+  let size = 48 * 1_048_576
+  let staged = stage("dng", size: size, chunkSize: 4 * 1_048_576)
+  let before = footprint()
+  let (url, error) = await fetch("dng")
+  let after = footprint()
+  check(error == nil && url.flatMap(digest(of:)) == staged.digest, "48 MiB fetch decrypts correctly, got \(describe(error))")
+  check(before.peak > 0 && after.peak > 0, "footprint is measurable")
+  let grown = after.peak > before.current ? after.peak - before.current : 0
+  check(grown < 24 * 1_048_576, "48 MiB fetch peak growth is under 24 MiB (two 4 MiB chunks + overhead), got \(grown / 1_048_576) MiB")
+  print("streamed-memory: 48 MiB fetched, peak footprint grew \(grown / 1_048_576) MiB")
+}
+
+func temporaryDirectoryIsTheSystemsWithAFallback() async {
+  let fallback = AppGroupContainer.temporaryContentDirectory
+  let system = URL(fileURLWithPath: "/fp-domain-temp", isDirectory: true)
+  check(FileProviderExtension.contentDirectory(managerTemporaryDirectory: { system }, fallback: { fallback }) == system, "the manager's temporaryDirectoryURL() is used when available")
+  check(FileProviderExtension.contentDirectory(managerTemporaryDirectory: { throw NSFileProviderError(.providerNotFound) }, fallback: { fallback }) == fallback, "a failing temporaryDirectoryURL() falls back to the App Group temp directory")
+  check(FileProviderExtension.contentDirectory(managerTemporaryDirectory: { nil }, fallback: { fallback }) == fallback, "no manager falls back to the App Group temp directory")
+}
+
+var pendingProgress: Progress?
+let pendingLock = NSLock()
+
+func fetchKeepingProgress(_ id: String) async -> (URL?, NSError?) {
+  let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
+  return await withCheckedContinuation { continuation in
+    let progress = ext.fetchContents(for: NSFileProviderItemIdentifier(id), version: nil, request: NSFileProviderRequest()) { url, _, error in
+      continuation.resume(returning: (url, error as NSError?))
+    }
+    pendingLock.lock(); pendingProgress = progress; pendingLock.unlock()
+  }
+}
+
+func midStreamStopsDeleteThePartialFile() async {
+  // A sign-out purge landing on the 4th epoch check: before write (1), chunks 1-2 (2, 3), chunk 3 (4).
+  reset()
+  let purged = stage("purged", size: 5 * 16_384, chunkSize: 16_384)
+  CacheManager.shared.onEpochCheck = (4, { CacheManager.shared.epoch += 1 })
+  let (purgedURL, purgedError) = await fetch("purged")
+  check(purgedURL == nil && isProviderError(purgedError, .noSuchItem), "purge mid-stream: -1005, got \(describe(purgedError))")
+  check(leftovers("purged").isEmpty, "purge mid-stream: no partial plaintext left, got \(leftovers("purged"))")
+  check(!FileManager.default.fileExists(atPath: purged.download.path), "purge mid-stream: the ciphertext file is deleted")
+
+  // The system cancelling the progress mid-stream: NSUserCancelledError, nothing left behind.
+  reset()
+  pendingProgress = nil
+  _ = stage("cancelled", size: 5 * 16_384, chunkSize: 16_384)
+  CacheManager.shared.onEpochCheck = (3, {
+    // Runs inside the fetch task: cancel its progress (as the system would) and wait until the
+    // cancellation handler has reached this task, so the next chunk check sees it.
+    for _ in 0..<5_000 {
+      pendingLock.lock(); let progress = pendingProgress; pendingLock.unlock()
+      if let progress { progress.cancel(); break }
+      usleep(1_000)
+    }
+    for _ in 0..<5_000 where !Task.isCancelled { usleep(1_000) }
+  })
+  let (cancelledURL, cancelledError) = await fetchKeepingProgress("cancelled")
+  check(cancelledURL == nil && cancelledError?.domain == NSCocoaErrorDomain && cancelledError?.code == NSUserCancelledError, "cancel mid-stream: NSUserCancelledError, got \(describe(cancelledError))")
+  check(leftovers("cancelled").isEmpty, "cancel mid-stream: no partial plaintext left, got \(leftovers("cancelled"))")
+}
+
 let scenarioTable: [(String, () async -> Void)] = [
   ("key-errors", keyFailuresAreAuthenticationRequired),
   ("other-errors", otherFailuresKeepTheirMeaning),
@@ -549,6 +705,10 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("undecryptable-label", undecryptableNameGetsUniqueLabelWithoutRename),
   ("placeholder-rename", renameOfUndecryptedItemNeverReachesTheServer),
   ("trash", trashIsUnsupportedNotTheRoot),
+  ("streamed-content", contentStreamsIntoATemporaryFile),
+  ("streamed-memory", contentStreamingStaysWithinTheExtensionBudget),
+  ("temp-dir-choice", temporaryDirectoryIsTheSystemsWithAFallback),
+  ("stream-abort", midStreamStopsDeleteThePartialFile),
 ]
 
 @main
@@ -653,5 +813,54 @@ describe('task 1722 (d): listings never vend placeholder names', () => {
 describe('task 1722 (e): no Files trash', () => {
   nativeSwiftHarnessTest('the trash container is NSFeatureUnsupportedError for item lookup and enumeration, never the root item', () => {
     expectScenario('trash', 6);
+  }, 300_000);
+});
+
+// Task 1722 (G4/G5): fetchContents used to hold the whole ciphertext AND the whole plaintext in
+// memory (a 59.8 MB DNG needs ~120 MB against the extension's ~50 MB budget) and wrote the
+// plaintext into the App Group temp directory instead of the one Apple specifies.
+describe('task 1722 (G4/G5): content is streamed to the File Provider temporary directory', () => {
+  const extensionSource = read(join(EXT, 'FileProviderExtension.swift'));
+  const bridgeSource = read(join(EXT, 'CryptoBridge.swift'));
+  const fetchBody = declaration(extensionSource, 'func fetchContents(');
+
+  test('the download lands in a file, never in one Data buffer', () => {
+    const download = declaration(apiClient, 'func downloadEncrypted(fileId: String)');
+    expect(download).toContain('session.download(for:');
+    expect(download).not.toContain('session.data(for:');
+    const downloaded = declaration(apiClient, 'struct DownloadedEncryptedFile {');
+    expect(downloaded).toMatch(/let url: URL/);
+    expect(downloaded).not.toMatch(/let data: Data/);
+  });
+
+  test('decryption reads and writes one chunk at a time', () => {
+    const decrypt = declaration(bridgeSource, 'static func decryptDownloadedFile(');
+    expect(decrypt).toContain('to destination: URL');
+    expect(decrypt).toContain('readExactly(');
+    expect(decrypt).toContain('write(contentsOf:');
+    expect(decrypt).not.toContain('Data(capacity: safePlaintextSize)');
+    expect(decrypt).not.toMatch(/plaintext\.append\(/);
+  });
+
+  test('fetchContents writes into NSFileProviderManager.temporaryDirectoryURL(), falling back to the App Group temp dir', () => {
+    expect(fetchBody).toContain('temporaryDirectoryURL()');
+    expect(fetchBody).not.toMatch(/plaintext\.write\(to:/);
+    expect(fetchBody).toContain('try? FileManager.default.removeItem(at: encrypted.url)');
+  });
+
+  nativeSwiftHarnessTest('a multi-chunk file and a pinned file stream to disk byte for byte; the ciphertext file is deleted', () => {
+    expectScenario('streamed-content', 7);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('a 48 MiB fetch grows the peak footprint by under 24 MiB', () => {
+    expectScenario('streamed-memory', 3);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('content goes to the manager temporary directory, else the App Group temp directory', () => {
+    expectScenario('temp-dir-choice', 3);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('a purge or a cancel mid-stream leaves no partial plaintext (-1005 / NSUserCancelledError)', () => {
+    expectScenario('stream-abort', 5);
   }, 300_000);
 });

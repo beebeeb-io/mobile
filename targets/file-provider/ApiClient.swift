@@ -89,17 +89,28 @@ final class ApiClient {
     return try JSONDecoder().decode(ListResponse.self, from: data).files
   }
 
-  /// Download the encrypted chunk stream for a file.
+  /// Download the encrypted chunk stream for a file into a temporary file.
+  ///
+  /// Task 1722 (G5): the ciphertext goes to disk, not into one `Data`, so a
+  /// large file (the 59.8 MB DNG) never needs its full size in memory; the
+  /// caller decrypts it chunk by chunk. The file holds ciphertext only and
+  /// the caller deletes it (`DownloadedEncryptedFile.url`) when done.
   func downloadEncrypted(fileId: String) async throws -> DownloadedEncryptedFile {
     let url = baseUrl.appendingPathComponent("/api/v1/files/\(fileId)/download")
     let request = try authedRequest(url: url, method: "GET")
-    let (data, response) = try await session.data(for: request)
-    try validate(response, data)
-    let http = response as? HTTPURLResponse
-    let chunkCount = Int(http?.value(forHTTPHeaderField: "X-Chunk-Count") ?? "1") ?? 1
-    let chunkSize = Int(http?.value(forHTTPHeaderField: "X-Chunk-Size") ?? "") ?? defaultPlaintextChunkSize
+    let (location, response) = try await session.download(for: request)
+    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+      // An error body is a small JSON document; read it for the 409
+      // account-mismatch check, then drop the file.
+      let body = (try? Data(contentsOf: location)) ?? Data()
+      try? FileManager.default.removeItem(at: location)
+      try validate(response, body)
+      throw ApiError.invalidResponse
+    }
+    let chunkCount = Int(http.value(forHTTPHeaderField: "X-Chunk-Count") ?? "1") ?? 1
+    let chunkSize = Int(http.value(forHTTPHeaderField: "X-Chunk-Size") ?? "") ?? defaultPlaintextChunkSize
     return DownloadedEncryptedFile(
-      data: data,
+      url: location,
       chunkCount: max(1, chunkCount),
       chunkSize: max(1, chunkSize)
     )
@@ -263,7 +274,9 @@ enum ApiError: Error {
 }
 
 struct DownloadedEncryptedFile {
-  let data: Data
+  /// `nonce || ciphertext || tag` frames on disk (task 1722 G5). Ciphertext
+  /// only; whoever downloaded it deletes it.
+  let url: URL
   let chunkCount: Int
   let chunkSize: Int
 }

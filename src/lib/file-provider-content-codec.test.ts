@@ -41,9 +41,9 @@ struct EncryptedData {
 }
 
 struct DownloadedEncryptedFile {
-  let data: Data
-  let chunkSize: Int
+  let url: URL
   let chunkCount: Int
+  let chunkSize: Int
 }
 
 struct DecryptedNameWithMime {
@@ -134,43 +134,89 @@ while offset < payload.count {
   chunks += 1
 }
 
+// Task 1722 (G5): decryptDownloadedFile streams from the downloaded ciphertext file into an output
+// file, one chunk at a time. Every case writes its ciphertext to disk and reads the output back.
+let scratch = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("beebeeb-codec-\(UUID().uuidString)", isDirectory: true)
+try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+var files = 0
+func decryptFile(_ wire: Data, chunkSize: Int, chunkCount: Int, plaintextSize: Int, fileId: String = fileId,
+                 shouldContinue: () -> Bool = { true }) throws -> Data {
+  files += 1
+  let input = scratch.appendingPathComponent("in-\(files).bin")
+  let output = scratch.appendingPathComponent("out-\(files).bin")
+  try wire.write(to: input)
+  try CryptoBridge.decryptDownloadedFile(
+    masterKeyHandle: master,
+    fileId: fileId,
+    encryptedFile: DownloadedEncryptedFile(url: input, chunkCount: chunkCount, chunkSize: chunkSize),
+    plaintextSize: plaintextSize,
+    to: output,
+    shouldContinue: shouldContinue
+  )
+  return try Data(contentsOf: output)
+}
+func wireFor(_ chunks: [[UInt8]]) throws -> Data {
+  var data = Data()
+  for chunk in chunks { data.append(try CryptoBridge.encryptChunkForUpload(masterKeyHandle: master, fileId: fileId, plaintext: Data(chunk))) }
+  return data
+}
+
 var count = 0
-let downloaded = DownloadedEncryptedFile(data: wire, chunkSize: chunkSize, chunkCount: chunks)
-let decrypted = try CryptoBridge.decryptDownloadedFile(
-  masterKeyHandle: master,
-  fileId: fileId,
-  encryptedFile: downloaded,
-  plaintextSize: payload.count
-)
+let decrypted = try decryptFile(wire, chunkSize: chunkSize, chunkCount: chunks, plaintextSize: payload.count)
 assert(decrypted == payload, "mixed-size chunks decrypt in order", count: &count)
 
-let inferred = DownloadedEncryptedFile(data: wire, chunkSize: chunkSize, chunkCount: 0)
-let inferredPlaintext = try CryptoBridge.decryptDownloadedFile(masterKeyHandle: master, fileId: fileId, encryptedFile: inferred, plaintextSize: payload.count)
+let inferredPlaintext = try decryptFile(wire, chunkSize: chunkSize, chunkCount: 0, plaintextSize: payload.count)
 assert(inferredPlaintext == payload, "chunk count can be inferred", count: &count)
 
 let emptyWire = try CryptoBridge.encryptChunkForUpload(masterKeyHandle: master, fileId: fileId, plaintext: Data())
-let empty = DownloadedEncryptedFile(data: emptyWire, chunkSize: chunkSize, chunkCount: 1)
-let emptyPlaintext = try CryptoBridge.decryptDownloadedFile(masterKeyHandle: master, fileId: fileId, encryptedFile: empty, plaintextSize: 0)
+let emptyPlaintext = try decryptFile(emptyWire, chunkSize: chunkSize, chunkCount: 1, plaintextSize: 0)
 assert(emptyPlaintext.isEmpty, "empty files decrypt", count: &count)
 
 expectThrows("truncated body rejected", count: &count) {
   var truncated = wire
   truncated.removeLast()
-  _ = try CryptoBridge.decryptDownloadedFile(masterKeyHandle: master, fileId: fileId, encryptedFile: DownloadedEncryptedFile(data: truncated, chunkSize: chunkSize, chunkCount: chunks), plaintextSize: payload.count)
+  _ = try decryptFile(truncated, chunkSize: chunkSize, chunkCount: chunks, plaintextSize: payload.count)
 }
 expectThrows("tampered body rejected", count: &count) {
   var tampered = wire
   tampered[tampered.count / 2] ^= 0x80
-  _ = try CryptoBridge.decryptDownloadedFile(masterKeyHandle: master, fileId: fileId, encryptedFile: DownloadedEncryptedFile(data: tampered, chunkSize: chunkSize, chunkCount: chunks), plaintextSize: payload.count)
+  _ = try decryptFile(tampered, chunkSize: chunkSize, chunkCount: chunks, plaintextSize: payload.count)
 }
 expectThrows("wrong file id rejected", count: &count) {
-  _ = try CryptoBridge.decryptDownloadedFile(masterKeyHandle: master, fileId: "wrong-id", encryptedFile: downloaded, plaintextSize: payload.count)
+  _ = try decryptFile(wire, chunkSize: chunkSize, chunkCount: chunks, plaintextSize: payload.count, fileId: "wrong-id")
 }
 expectThrows("extra trailing bytes rejected", count: &count) {
   var extra = wire
   extra.append(0)
-  _ = try CryptoBridge.decryptDownloadedFile(masterKeyHandle: master, fileId: fileId, encryptedFile: DownloadedEncryptedFile(data: extra, chunkSize: chunkSize, chunkCount: chunks), plaintextSize: payload.count)
+  _ = try decryptFile(extra, chunkSize: chunkSize, chunkCount: chunks, plaintextSize: payload.count)
 }
+
+// Chunk-layout cases (from scripts/test-file-provider-decrypt-downloaded-file.py), real AES-GCM.
+let single = try decryptFile(try wireFor([[1, 2, 3, 4, 5]]), chunkSize: 8, chunkCount: 1, plaintextSize: 5)
+assert(single == Data([1, 2, 3, 4, 5]), "single chunk uses the full plaintext size", count: &count)
+let exact = try decryptFile(try wireFor([[1, 2, 3, 4], [5, 6, 7, 8]]), chunkSize: 4, chunkCount: 2, plaintextSize: 8)
+assert(exact == Data(1...8), "exact multiple uses the declared chunk size", count: &count)
+let remainder = try decryptFile(try wireFor([[10, 11, 12, 13], [14, 15]]), chunkSize: 4, chunkCount: 2, plaintextSize: 6)
+assert(remainder == Data([10, 11, 12, 13, 14, 15]), "the last chunk is sized from the plaintext size", count: &count)
+let underDeclared = try decryptFile(try wireFor([[20, 21, 22, 23], [24, 25]]), chunkSize: 4, chunkCount: 1, plaintextSize: 6)
+assert(underDeclared == Data([20, 21, 22, 23, 24, 25]), "a declared chunk count below the size inference still decrypts every chunk", count: &count)
+expectThrows("zero cached size rejects a non-empty stream", count: &count) {
+  _ = try decryptFile(try wireFor([[90, 91, 92, 93]]), chunkSize: 4, chunkCount: 1, plaintextSize: 0)
+}
+
+// The per-chunk stop: checked before every chunk, and a stop throws instead of returning a prefix.
+var checks = 0
+_ = try decryptFile(wire, chunkSize: chunkSize, chunkCount: chunks, plaintextSize: payload.count, shouldContinue: { checks += 1; return true })
+assert(checks == chunks, "shouldContinue runs once per chunk (\(checks) of \(chunks))", count: &count)
+var stopped: Error?
+do {
+  checks = 0
+  _ = try decryptFile(wire, chunkSize: chunkSize, chunkCount: chunks, plaintextSize: payload.count, shouldContinue: { checks += 1; return checks < 3 })
+} catch {
+  stopped = error
+}
+assert(stopped is CancellationError && checks == 3, "a stop before chunk 3 throws CancellationError", count: &count)
+try? FileManager.default.removeItem(at: scratch)
 
 let metadata = "{\\"name\\":\\"RAW image.dng\\",\\"mime_type\\":\\"image/x-adobe-dng\\"}"
 let encryptedName = try CryptoBridge.encryptFilename(masterKeyHandle: master, fileId: fileId, filename: metadata)
@@ -193,6 +239,13 @@ FileHandle.standardOutput.write(Data("PASS FileProvider codec cases=\\(count)\\n
   const output = join(dir, 'output.log');
   writeFileSync(swift, harness);
   execFileSync('swiftc', [swift, '-o', binary], { timeout: 60_000 });
-  execFileSync('/bin/sh', ['-c', '"$1" > "$2" 2>&1', 'files-codec-test', binary, output], { timeout: 30_000 });
-  expect(readFileSync(output, 'utf8')).toContain('PASS FileProvider codec cases=11');
+  try {
+    execFileSync('/bin/sh', ['-c', '"$1" > "$2" 2>&1', 'files-codec-test', binary, output], { timeout: 30_000 });
+  } catch {
+    // The failing precondition is in the output asserted below.
+  }
+  const text = readFileSync(output, 'utf8');
+  // eslint-disable-next-line no-console
+  if (!text.includes('PASS')) console.log(text);
+  expect(text).toContain('PASS FileProvider codec cases=18');
 }, 90_000);

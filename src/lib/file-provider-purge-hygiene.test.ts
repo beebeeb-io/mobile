@@ -1399,65 +1399,78 @@ describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoN, P1): fetchContents gates
     expect(captureIdx).toBeLessThan(taskIdx);
   });
 
-  test('re-checks the epoch after decrypt and before the first (temp) write', () => {
-    const decryptIdx = body.indexOf('CryptoBridge.decryptDownloadedFile(');
+  // Task 1722 (G4/G5): the plaintext is now streamed (decrypt and write interleave, one chunk at a
+  // time) into the File Provider temporary directory, so the round-11 checks moved with it: before
+  // the first byte, before every chunk, after the last chunk, and after the pinned copy.
+  test('re-checks the epoch after the download and before the streamed decrypt writes its first byte', () => {
+    const downloadIdx = body.indexOf('ApiClient.shared.downloadEncrypted(');
     const firstCheckIdx = body.indexOf('CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)');
-    const writeIdx = body.indexOf('plaintext.write(to: destination');
-    expect(decryptIdx).toBeGreaterThan(-1);
-    expect(firstCheckIdx).toBeGreaterThan(-1);
-    expect(writeIdx).toBeGreaterThan(-1);
-    expect(decryptIdx).toBeLessThan(firstCheckIdx);
-    expect(firstCheckIdx).toBeLessThan(writeIdx);
+    const decryptIdx = body.indexOf('CryptoBridge.decryptDownloadedFile(');
+    expect(downloadIdx).toBeGreaterThan(-1);
+    expect(firstCheckIdx).toBeGreaterThan(downloadIdx);
+    expect(decryptIdx).toBeGreaterThan(firstCheckIdx);
   });
 
   test('a failed pre-write check aborts without writing and reports .noSuchItem', () => {
     const firstCheckIdx = body.indexOf('CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)');
     const after = body.slice(firstCheckIdx, firstCheckIdx + 400);
     expect(after).toMatch(/NSFileProviderError\(\.noSuchItem\)/);
-    // The write itself must be AFTER this guard's else-branch closes, i.e.
-    // not inside the same guard block.
     const guardCloseIdx = after.indexOf('}');
-    const writeOffset = after.indexOf('plaintext.write(to: destination');
+    const writeOffset = after.indexOf('CryptoBridge.decryptDownloadedFile(');
     expect(writeOffset === -1 || writeOffset > guardCloseIdx).toBe(true);
   });
 
-  test('re-checks the epoch again immediately after the temp write, and deletes the partial output on a mismatch', () => {
-    const writeIdx = body.indexOf('plaintext.write(to: destination');
-    expect(writeIdx).toBeGreaterThan(-1);
-    const after = body.slice(writeIdx, writeIdx + 900);
+  test('the streamed decrypt re-checks the epoch before every chunk', () => {
+    const decryptIdx = body.indexOf('CryptoBridge.decryptDownloadedFile(');
+    const call = body.slice(decryptIdx, body.indexOf('progress.completedUnitCount = 90', decryptIdx));
+    expect(call).toMatch(/shouldContinue: \{[^}]*CacheManager\.shared\.purgeEpochUnchanged\(since: epochAtStart\)[^}]*\}/);
+  });
+
+  test('re-checks the epoch again right after the last chunk, and deletes the output on a mismatch', () => {
+    const afterDecryptIdx = body.indexOf('progress.completedUnitCount = 90');
+    expect(afterDecryptIdx).toBeGreaterThan(-1);
+    const after = body.slice(afterDecryptIdx, afterDecryptIdx + 900);
     const secondCheckIdx = after.indexOf('CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)');
     expect(secondCheckIdx).toBeGreaterThan(-1);
     const branch = after.slice(secondCheckIdx, secondCheckIdx + 400);
-    expect(branch).toMatch(/removeItem\(at: destination\)/);
+    expect(branch).toMatch(/removeItem\(at: output\)/);
     expect(branch).toMatch(/NSFileProviderError\(\.noSuchItem\)/);
   });
 
-  test('re-checks a THIRD time for the separate pinned write, and deletes BOTH copies on a mismatch', () => {
-    const pinnedWriteIdx = body.indexOf('try plaintext.write(to: pinned, options: [.atomic])');
-    expect(pinnedWriteIdx).toBeGreaterThan(-1);
-    const after = body.slice(pinnedWriteIdx, pinnedWriteIdx + 900);
+  test('re-checks again for the separate pinned copy, and deletes BOTH copies on a mismatch', () => {
+    const pinnedCopyIdx = body.indexOf('try FileManager.default.copyItem(at: output, to: pinned)');
+    expect(pinnedCopyIdx).toBeGreaterThan(-1);
+    const after = body.slice(pinnedCopyIdx, pinnedCopyIdx + 1100);
     const thirdCheckIdx = after.indexOf('CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)');
     expect(thirdCheckIdx).toBeGreaterThan(-1);
     const branch = after.slice(thirdCheckIdx, thirdCheckIdx + 500);
-    expect(branch).toMatch(/removeItem\(at: destination\)/);
+    expect(branch).toMatch(/removeItem\(at: output\)/);
     expect(branch).toMatch(/removeItem\(at: pinned\)/);
     expect(branch).toMatch(/NSFileProviderError\(\.noSuchItem\)/);
   });
 
-  test('setMaterialized only runs after the pinned-write epoch check passes (closes round 10\'s open "not epoch-gated" note)', () => {
-    const pinnedWriteIdx = body.indexOf('try plaintext.write(to: pinned, options: [.atomic])');
-    const thirdCheckIdx = body.indexOf('CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)', pinnedWriteIdx);
+  test('setMaterialized only runs after the pinned-copy epoch check passes (closes round 10\'s open "not epoch-gated" note)', () => {
+    const pinnedCopyIdx = body.indexOf('try FileManager.default.copyItem(at: output, to: pinned)');
+    const thirdCheckIdx = body.indexOf('CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)', pinnedCopyIdx);
     const setMaterializedIdx = body.indexOf('CacheManager.shared.setMaterialized(id: cached.id, value: true)');
-    expect(pinnedWriteIdx).toBeGreaterThan(-1);
-    expect(thirdCheckIdx).toBeGreaterThan(pinnedWriteIdx);
+    expect(pinnedCopyIdx).toBeGreaterThan(-1);
+    expect(thirdCheckIdx).toBeGreaterThan(pinnedCopyIdx);
     expect(setMaterializedIdx).toBeGreaterThan(thirdCheckIdx);
   });
 
-  test('all three checks use the sentinel-safe CacheManager.purgeEpochUnchanged helper, never a bare currentPurgeEpoch() == comparison', () => {
+  test('a stop or failure part-way deletes the partial output before completing', () => {
+    const catchIdx = body.lastIndexOf('} catch {');
+    const handler = body.slice(catchIdx, catchIdx + 400);
+    expect(handler).toContain('if let destination { try? FileManager.default.removeItem(at: destination) }');
+  });
+
+  test('every check uses the sentinel-safe CacheManager.purgeEpochUnchanged helper, never a bare currentPurgeEpoch() == comparison', () => {
     const rawCompareMatches = body.match(/currentPurgeEpoch\(\)\s*==/g) ?? [];
     expect(rawCompareMatches.length).toBe(0);
+    // before the first byte, before every chunk, after the last chunk, after the pinned copy, and
+    // in the stop handler deciding purge (-1005) vs cancel.
     const safeCompareMatches = body.match(/purgeEpochUnchanged\(since: epochAtStart\)/g) ?? [];
-    expect(safeCompareMatches.length).toBe(3);
+    expect(safeCompareMatches.length).toBe(5);
   });
 });
 

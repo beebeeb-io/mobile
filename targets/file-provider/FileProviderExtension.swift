@@ -41,10 +41,32 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   /// invalidates it and forces a fresh `ownershipVerified()` round-trip.
   private var cachedForSignedInUser: String?
 
+  /// The domain this instance serves; `fetchContents` asks its manager for
+  /// the temporary directory the system expects content in (task 1722 G4).
+  private let domain: NSFileProviderDomain
+
   required init(domain: NSFileProviderDomain) {
+    self.domain = domain
     super.init()
-    _ = domain
     _ = CacheManager.shared
+  }
+
+  /// Task 1722 (G4): where `fetchContents` writes plaintext for the system to
+  /// take over. Apple: the content "must be a regular file on the same volume
+  /// as the user-visible URL. A suitable location can be retrieved using
+  /// -[NSFileProviderManager temporaryDirectoryURLWithError:]. The system
+  /// clones and unlinks the received fileContents." If the manager cannot
+  /// provide one, fall back to the App Group temp directory (same volume on
+  /// iOS, protected, and swept by the sign-out purge).
+  static func contentDirectory(managerTemporaryDirectory: () throws -> URL?, fallback: () -> URL) -> URL {
+    do {
+      if let url = try managerTemporaryDirectory() { return url }
+      NSLog("[Beebeeb] fetchContents: no File Provider manager; using the App Group temp directory")
+    } catch {
+      let nsError = error as NSError
+      NSLog("[Beebeeb] fetchContents: temporaryDirectoryURL failed (\(nsError.domain) \(nsError.code)); using the App Group temp directory")
+    }
+    return fallback()
   }
 
   /// Task 1594 round 4 (Codex P1, FileProviderExtension.swift:73): `masterKey()`
@@ -185,23 +207,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     let epochAtStart = CacheManager.shared.currentPurgeEpoch()
 
     let task = Task.detached {
+      // Task 1722 (G4/G5): the plaintext is streamed into this file chunk by
+      // chunk; every abort path below deletes whatever part of it exists.
+      var destination: URL?
       do {
         let masterKey = try self.masterKey().handle
         progress.completedUnitCount = 20
 
         let encrypted = try await ApiClient.shared.downloadEncrypted(fileId: cached.id)
+        // Ciphertext only, but it is ours to delete once decrypted.
+        defer { try? FileManager.default.removeItem(at: encrypted.url) }
         progress.completedUnitCount = 70
 
-        let plaintext = try CryptoBridge.decryptDownloadedFile(
-          masterKeyHandle: masterKey,
-          fileId: cached.id,
-          encryptedFile: encrypted,
-          plaintextSize: cached.sizeBytes
-        )
-        progress.completedUnitCount = 90
-
         // Task 1593 round 11 — re-check right after the (slow, unbounded)
-        // network + decrypt span and BEFORE the first plaintext write. A
+        // network span and BEFORE the first plaintext byte is written. A
         // purge landing anywhere during that span must not let a decrypted
         // temp copy reach disk at all.
         guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
@@ -210,17 +229,30 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           return
         }
 
-        let destination = AppGroupContainer.temporaryContentDirectory
-          .appendingPathComponent("\(cached.id)-\(UUID().uuidString)")
-        try plaintext.write(to: destination, options: [.atomic])
+        let output = Self.contentDirectory(
+          managerTemporaryDirectory: { try NSFileProviderManager(for: self.domain)?.temporaryDirectoryURL() },
+          fallback: { AppGroupContainer.temporaryContentDirectory }
+        ).appendingPathComponent("\(cached.id)-\(UUID().uuidString)")
+        destination = output
+        // Task 1722 (G5): decrypt and write one chunk at a time. The purge
+        // epoch (and cancellation) is re-checked before every chunk, so a
+        // purge that lands mid-stream stops the write within one chunk.
+        try CryptoBridge.decryptDownloadedFile(
+          masterKeyHandle: masterKey,
+          fileId: cached.id,
+          encryptedFile: encrypted,
+          plaintextSize: cached.sizeBytes,
+          to: output,
+          shouldContinue: { !Task.isCancelled && CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) }
+        )
+        progress.completedUnitCount = 90
 
         // Task 1593 round 11 — re-check again immediately after the write:
-        // the write itself takes real (if usually short) wall time, and a
-        // purge landing DURING it would otherwise leave this fresh temp copy
-        // on disk even though the check just above passed. Delete the
-        // partial output rather than hand it back to the system.
+        // a purge landing during its last chunk would otherwise leave this
+        // fresh temp copy on disk even though the per-chunk checks passed.
+        // Delete the output rather than hand it back to the system.
         guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
-          try? FileManager.default.removeItem(at: destination)
+          try? FileManager.default.removeItem(at: output)
           NSLog("[Beebeeb] fetchContents(\(cached.id)) aborted: purge epoch changed during write")
           completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
           return
@@ -228,15 +260,17 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         if cached.isPinned {
           let pinned = AppGroupContainer.pinnedContentDirectory.appendingPathComponent(cached.id)
-          // Replace any prior pinned copy atomically.
+          // Replace any prior pinned copy. A copy (an APFS clone) rather than
+          // a second decrypt: the system takes ownership of `output`.
           try? FileManager.default.removeItem(at: pinned)
-          try plaintext.write(to: pinned, options: [.atomic])
+          try FileManager.default.copyItem(at: output, to: pinned)
+          PlaintextStorageProtection.protect(pinned)
 
-          // Task 1593 round 11 — this is a SECOND, later write of the same
+          // Task 1593 round 11 — this is a SECOND, later copy of the same
           // plaintext bytes into a second, independently-purged directory;
-          // the two checks above only cover the `temp` write, not this one.
+          // the checks above only cover the `temp` write, not this one.
           guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
-            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.removeItem(at: output)
             try? FileManager.default.removeItem(at: pinned)
             NSLog("[Beebeeb] fetchContents(\(cached.id)) aborted: purge epoch changed during pinned write")
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
@@ -246,8 +280,17 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
 
         progress.completedUnitCount = 100
-        completionHandler(destination, FileProviderItem(cached: cached), nil)
+        completionHandler(output, FileProviderItem(cached: cached), nil)
       } catch {
+        if let destination { try? FileManager.default.removeItem(at: destination) }
+        if error is CancellationError {
+          // Stopped between chunks: a purge (the item is gone for this
+          // account) or the system cancelled the progress.
+          let purged = !CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)
+          NSLog("[Beebeeb] fetchContents(\(cached.id)) stopped: \(purged ? "purge epoch changed during write" : "cancelled")")
+          completionHandler(nil, nil, purged ? NSFileProviderError(.noSuchItem) : CocoaError(.userCancelled))
+          return
+        }
         NSLog("[Beebeeb] fetchContents(\(cached.id)) failed: \(error)")
         completionHandler(nil, nil, Self.mapError(error))
       }
