@@ -3407,8 +3407,13 @@ describe('f2: CacheManager still refuses every epoch-gated write and gate check 
 
   test('every epoch-gated writer still routes through beginImmediate — the marker check has exactly one place to live', () => {
     const beginImmediateCallCount = (cacheManagerSwift.match(/guard beginImmediate\(\) else \{ return false \}/g) ?? []).length;
-    // replaceChildren, upsert(_:expectedEpoch:), delete(id:expectedEpoch:).
-    expect(beginImmediateCallCount).toBe(3);
+    // replaceChildren, upsert(_:expectedEpoch:), delete(id:expectedEpoch:), and (task 1722 round 4)
+    // noteContainerMaterialized(_:).
+    expect(beginImmediateCallCount).toBe(4);
+    // Task 1722 round 4: replaceMaterializedContainers(_:expectedEpoch:) reports a refusal as nil.
+    expect((cacheManagerSwift.match(/guard beginImmediate\(\) else \{ return nil \}/g) ?? []).length).toBe(1);
+    // No writer opens its own transaction around the marker check: BEGIN IMMEDIATE is issued in one place.
+    expect((cacheManagerSwift.match(/"BEGIN IMMEDIATE"/g) ?? []).length).toBe(1);
   });
 });
 

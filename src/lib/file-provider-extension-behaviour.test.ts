@@ -106,13 +106,37 @@ final class NSFileProviderManager {
   private static var _temporaryDirectoryCalls = 0
   static var temporaryDirectoryCalls: Int { lock.lock(); defer { lock.unlock() }; return _temporaryDirectoryCalls }
   static var systemTemporaryDirectory: URL { AppGroupContainer.directory("system-temp") }
+  // Task 1722 round 4: what the system reports as materialized, and every signal sent.
+  private static var _materialized: [NSFileProviderItem] = []
+  private static var _signals: [String] = []
+  static func setMaterialized(_ items: [NSFileProviderItem]) { lock.lock(); _materialized = items; lock.unlock() }
+  static var signals: [String] { lock.lock(); defer { lock.unlock() }; return _signals }
+  static func resetRecords() { lock.lock(); _materialized = []; _signals = []; lock.unlock() }
   init?(for domain: NSFileProviderDomain) {}
   func temporaryDirectoryURL() throws -> URL {
     Self.lock.lock(); Self._temporaryDirectoryCalls += 1; Self.lock.unlock()
     return Self.systemTemporaryDirectory
   }
   func signalEnumerator(for container: NSFileProviderItemIdentifier, completionHandler: @escaping (Error?) -> Void) {
+    Self.lock.lock(); Self._signals.append(container.rawValue); Self.lock.unlock()
     completionHandler(nil)
+  }
+  func enumeratorForMaterializedItems() -> NSFileProviderEnumerator {
+    Self.lock.lock(); defer { Self.lock.unlock() }
+    return ScriptedEnumerator(items: Self._materialized)
+  }
+}
+
+/// The system's materialized set enumerator: one page, delivered off the caller's thread.
+final class ScriptedEnumerator: NSObject, NSFileProviderEnumerator {
+  let items: [NSFileProviderItem]
+  init(items: [NSFileProviderItem]) { self.items = items }
+  func invalidate() {}
+  func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
+    DispatchQueue.global().async {
+      observer.didEnumerate(self.items)
+      observer.finishEnumerating(upTo: nil)
+    }
   }
 }
 
@@ -195,9 +219,25 @@ final class CacheManager {
   var onEpochCheck: (count: Int, action: () -> Void)?
   private(set) var epochChecks = 0
 
+  /// Task 1722 round 4: the folders the system has materialized (not counted in writes).
+  var materialized: Set<String> = []
+
   func reset() {
     lock.lock(); defer { lock.unlock() }
-    rows = [:]; state = [:]; epoch = 7; writes = []; onEpochCheck = nil; epochChecks = 0
+    rows = [:]; state = [:]; epoch = 7; writes = []; onEpochCheck = nil; epochChecks = 0; materialized = []
+  }
+  func materializedContainerIds() -> [String] { lock.lock(); defer { lock.unlock() }; return materialized.sorted() }
+  @discardableResult
+  func noteContainerMaterialized(_ containerId: String) -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    materialized.insert(containerId)
+    return true
+  }
+  func replaceMaterializedContainers(_ ids: Set<String>, expectedEpoch: Int) -> Bool? {
+    lock.lock(); defer { lock.unlock() }
+    guard expectedEpoch == epoch else { return nil }
+    defer { materialized = ids }
+    return materialized != ids
   }
   func item(id: String) -> CachedItem? { lock.lock(); defer { lock.unlock() }; return rows[id] }
   func children(parent: String?) -> [CachedItem] {
@@ -910,6 +950,109 @@ func midStreamStopsDeleteThePartialFile() async {
   check(leftovers("cancelled").isEmpty, "cancel mid-stream: no partial plaintext left, got \(leftovers("cancelled"))")
 }
 
+// ---- Task 1722 round 4 (review round 2, minor 6): the working set covers the folders Files listed ----
+// In the replicated model iOS never lists a materialized folder again and ignores signals for any
+// container but the working set: a web-side change in such a folder, or a TestFlight 236 row cached
+// without a name, reaches Files only through the working set.
+var keepGoing = false
+var softFailures = 0
+func soft(_ condition: @autoclosure () -> Bool, _ label: String) {
+  if condition() { passed += 1 } else { softFailures += 1; print("FAIL: \(label)"); fflush(stdout) }
+}
+func waitUntil(_ seconds: Double = 6, _ condition: () -> Bool) async -> Bool {
+  let deadline = Date().addingTimeInterval(seconds)
+  while Date() < deadline {
+    if condition() { return true }
+    try? await Task.sleep(nanoseconds: 20_000_000)
+  }
+  return condition()
+}
+func materializedItems(_ ids: [String]) -> [NSFileProviderItem] {
+  ids.map { id in
+    id == "root" ? FileProviderItem(cached: .rootContainer()) as NSFileProviderItem
+                 : FileProviderItem(cached: CacheManager.shared.rows[id]!) as NSFileProviderItem
+  }
+}
+func callMaterializedItemsDidChange(_ ext: FileProviderExtension) -> Bool {
+  let replicated: NSFileProviderReplicatedExtension = ext
+  var returned = false
+  replicated.materializedItemsDidChange? { returned = true }
+  return returned
+}
+
+func materializedSetFollowsTheSystem() async {
+  reset()
+  NSFileProviderManager.resetRecords()
+  CacheManager.shared.rows["F"] = row("F", name: "Taxes", folder: true)
+  CacheManager.shared.rows["G"] = row("G", name: "Photos", folder: true)
+  CacheManager.shared.rows["x"] = row("x", name: "notes.txt")
+  NSFileProviderManager.setMaterialized(materializedItems(["F", "x", "G", "root"]))
+  let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
+  soft(callMaterializedItemsDidChange(ext), "materializedItemsDidChange is implemented and returns at once")
+  let stored = await waitUntil { CacheManager.shared.materializedContainerIds() == ["F", "G"] }
+  soft(stored, "the system's materialized folders are stored (not its files, not the root), got \(CacheManager.shared.materializedContainerIds())")
+  soft(NSFileProviderManager.signals.contains(NSFileProviderItemIdentifier.workingSet.rawValue), "the working set is signalled when the stored set changes, got \(NSFileProviderManager.signals)")
+  NSFileProviderManager.setMaterialized(materializedItems(["F"]))
+  _ = callMaterializedItemsDidChange(ext)
+  let shrunk = await waitUntil { CacheManager.shared.materializedContainerIds() == ["F"] }
+  soft(shrunk, "a folder made dataless again leaves the set, got \(CacheManager.shared.materializedContainerIds())")
+}
+
+func listWorkingSetNames() async -> [String] {
+  let observer = ListingObserver()
+  let enumerator = FileProviderEnumerator(containerIdentifier: .workingSet)
+  enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage(Data()))
+  _ = await withCheckedContinuation { continuation in
+    DispatchQueue.global().async { continuation.resume(returning: observer.wait()) }
+  }
+  enumerator.invalidate()
+  return observer.items.map(\.filename).sorted()
+}
+
+func staleMaterializedFoldersAreRefreshed() async {
+  reset()
+  NSFileProviderManager.resetRecords()
+  // TestFlight 236 cached this folder's row without a name (Files showed "Open Beebeeb to Decrypt N").
+  CacheManager.shared.rows["F"] = row("F", name: "Taxes", folder: true)
+  CacheManager.shared.rows["t1"] = row("t1", parent: "F", name: nil, encrypted: encryptedName("t1", "2026 return.pdf"))
+  CacheManager.shared.rows["G"] = row("G", name: "Photos", folder: true)
+  CacheManager.shared.rows["g1"] = row("g1", parent: "G", name: nil, encrypted: encryptedName("g1", "beach.jpg"))
+  ApiClient.shared.listings["F"] = .success([dto("t1", parent: "F", name: encryptedName("t1", "2026 return.pdf"))])
+  ApiClient.shared.listings["G"] = .success([dto("g1", parent: "G", name: encryptedName("g1", "beach.jpg"))])
+  NSFileProviderManager.setMaterialized(materializedItems(["F", "root"]))
+  let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
+  _ = callMaterializedItemsDidChange(ext)
+  _ = await waitUntil { CacheManager.shared.materializedContainerIds() == ["F"] }
+  soft(CacheManager.shared.materializedContainerIds() == ["F"], "setup: F is materialized, got \(CacheManager.shared.materializedContainerIds())")
+  let before = await listWorkingSetNames()
+  soft(before.contains("Encrypted item \u{00B7} t1"), "before: the working set carries F's cached row, got \(before)")
+
+  let ws = FileProviderEnumerator(containerIdentifier: .workingSet)
+  var anchor: NSFileProviderSyncAnchor?
+  ws.currentSyncAnchor { anchor = $0 }
+  ws.enumerateChanges(for: ChangeObserver(), from: anchor!)
+  let listed = await waitUntil { ApiClient.shared.count("list F") == 1 }
+  soft(listed, "the stale materialized folder is listed again, calls \(ApiClient.shared.calls)")
+  let named = await waitUntil { CacheManager.shared.item(id: "t1").map { FileProviderItem(cached: $0).filename } == "2026 return.pdf" }
+  soft(named, "its TestFlight 236 row gets its real name")
+  soft(ApiClient.shared.count("list G") == 0, "a folder Files never listed is not refreshed, calls \(ApiClient.shared.calls)")
+  let after = await listWorkingSetNames()
+  soft(after.contains("2026 return.pdf") && !after.contains("beach.jpg"), "the working set now carries the real name and nothing from G, got \(after)")
+  let changed = ChangeObserver()
+  ws.enumerateChanges(for: changed, from: anchor!)
+  soft(isProviderError(changed.error, .syncAnchorExpired), "Files is told the working set changed, got \(describe(changed.error))")
+  soft(NSFileProviderManager.signals.contains(NSFileProviderItemIdentifier.workingSet.rawValue), "the refresh signalled the working set, got \(NSFileProviderManager.signals)")
+  let listCount = ApiClient.shared.count("list F")
+  ws.enumerateChanges(for: ChangeObserver(), from: anchor!)
+  try? await Task.sleep(nanoseconds: 400_000_000)
+  soft(ApiClient.shared.count("list F") == listCount, "a folder refreshed a moment ago is not listed again (no loop), got \(ApiClient.shared.count("list F"))")
+  ws.invalidate()
+}
+
+func workingSetScenariosFinish() {
+  check(softFailures == 0, "\(softFailures) working set check(s) failed")
+}
+
 let scenarioTable: [(String, () async -> Void)] = [
   ("key-errors", keyFailuresAreAuthenticationRequired),
   ("other-errors", otherFailuresKeepTheirMeaning),
@@ -927,6 +1070,8 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("bad-chunk", badChunkLeavesNoPlaintext),
   ("leftover-sweep", leftoversFromAKilledExtensionAreDeletedAtStart),
   ("stream-abort", midStreamStopsDeleteThePartialFile),
+  ("materialized-set", { await materializedSetFollowsTheSystem(); workingSetScenariosFinish() }),
+  ("materialized-refresh", { await staleMaterializedFoldersAreRefreshed(); workingSetScenariosFinish() }),
 ]
 
 @main
@@ -1049,6 +1194,21 @@ describe('task 1722 review M4: no full rescans for a MIME type the cache writers
 describe('task 1722 (e): no Files trash', () => {
   nativeSwiftHarnessTest('the trash container is NSFeatureUnsupportedError for item lookup and enumeration, never the root item', () => {
     expectScenario('trash', 6);
+  }, 300_000);
+});
+
+// Task 1722 round 4 (review round 2, minor 6): iOS never lists a materialized folder again and
+// ignores signals for any container but the working set. The extension keeps the system's
+// materialized folders (materializedItemsDidChange -> enumeratorForMaterializedItems) and refreshes
+// their stale listings when the working set is enumerated, so a web-side change and a TestFlight
+// 236 row cached without a name reach Files.
+describe('task 1722 round 4: folders Files already listed get their changes through the working set', () => {
+  nativeSwiftHarnessTest('materializedItemsDidChange keeps the stored folders equal to the system\'s materialized folders', () => {
+    expectScenario('materialized-set', 5);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('a stale materialized folder is listed again from the working set, gets its real names, once', () => {
+    expectScenario('materialized-refresh', 10);
   }, 300_000);
 });
 

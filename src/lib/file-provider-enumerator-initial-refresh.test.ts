@@ -60,6 +60,9 @@ final class CacheManager {
   static let shared = CacheManager()
   func children(parent: String?) -> [CachedItem] { [] }
   func syncState(key: String) -> String? { nil }
+  func materializedContainerIds() -> [String] { [] }
+  @discardableResult
+  func noteContainerMaterialized(_ containerId: String) -> Bool { false }
 }
 
 enum FileProviderRefreshOutcome {
@@ -81,6 +84,8 @@ enum FileProviderRefreshOutcome {
 
 enum SyncEngine {
   static func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome { .success }
+  @discardableResult
+  static func refreshMaterializedContainers() async -> [String] { [] }
 }
 
 final class FileProviderItem: NSObject, NSFileProviderItem {
@@ -122,6 +127,19 @@ final class MockCache: FileProviderCacheReading {
     lock.lock(); defer { lock.unlock() }
     return anchors[key]
   }
+
+  // Task 1722 round 4: the working set covers materialized folders; a folder listing notes itself.
+  private var materialized: [String] = []
+  func materializedContainerIds() -> [String] {
+    lock.lock(); defer { lock.unlock() }
+    return materialized
+  }
+  @discardableResult
+  func noteContainerMaterialized(_ containerId: String) -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    if !materialized.contains(containerId) { materialized.append(containerId) }
+    return true
+  }
 }
 
 final class MockRefresher: FileProviderContainerRefreshing {
@@ -142,6 +160,11 @@ final class MockRefresher: FileProviderContainerRefreshing {
     self.outcome = outcome
     self.rowsAfterSuccess = rowsAfterSuccess
     self.delayNanos = delayNanos
+  }
+
+  private(set) var materializedPasses = 0
+  func refreshMaterializedContainers() async {
+    lock.lock(); materializedPasses += 1; lock.unlock()
   }
 
   func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome {
@@ -418,6 +441,147 @@ describe('iOS File Provider initial enumeration refresh', () => {
     expect(output).toContain('swift-enumerator-harness: 11 pass');
   }, 15_000);
 
+  // Task 1722 round 4 (review round 2, minor 6): iOS never lists a materialized folder again and
+  // ignores signals for any container but the working set, so the working set must carry the
+  // children of every folder Files has listed. Keep-going harness: a red run lists every check.
+  nativeSwiftHarnessTest('the working set carries the children of materialized folders; a listed folder joins it', () => {
+    const doublesPart = swiftHarness.slice(0, swiftHarness.indexOf('@main'));
+    const workingSetMain = String.raw`
+var passed = 0, failed = 0
+func check(_ condition: @autoclosure () -> Bool, _ label: String) {
+  if condition() { passed += 1 } else { failed += 1; print("FAIL: \(label)") }
+}
+final class IdsObserver: NSObject, NSFileProviderEnumerationObserver {
+  private let lock = NSLock()
+  private let done = DispatchSemaphore(value: 0)
+  private var collected: [String] = []
+  private var failure: NSError?
+  var ids: [String] { lock.lock(); defer { lock.unlock() }; return collected.sorted() }
+  var error: NSError? { lock.lock(); defer { lock.unlock() }; return failure }
+  func didEnumerate(_ updatedItems: [NSFileProviderItem]) { lock.lock(); collected += updatedItems.map { $0.itemIdentifier.rawValue }; lock.unlock() }
+  func finishEnumerating(upTo nextPage: NSFileProviderPage?) { done.signal() }
+  func finishEnumeratingWithError(_ error: Error) { lock.lock(); failure = error as NSError; lock.unlock(); done.signal() }
+  func wait() -> Bool { done.wait(timeout: .now() + 2) == .success }
+}
+func row(_ id: String, _ parent: String?, _ name: String? = nil) -> CachedItem { CachedItem(id: id, parentId: parent, nameDecrypted: name ?? id) }
+func list(_ enumerator: FileProviderEnumerator) -> IdsObserver {
+  let observer = IdsObserver()
+  enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage(Data()))
+  check(observer.wait(), "listing finished")
+  return observer
+}
+/// The default refresher fails, so its background refresh leaves the cache as the scenario set it
+/// (MockRefresher's success replaces the root rows).
+func workingSet(_ cache: MockCache, _ refresher: MockRefresher? = nil) -> FileProviderEnumerator {
+  FileProviderEnumerator(containerIdentifier: .workingSet, cache: cache, refresher: refresher ?? MockRefresher(cache: cache, outcome: .serverUnreachable))
+}
+func anchor(_ enumerator: FileProviderEnumerator) -> NSFileProviderSyncAnchor? {
+  var result: NSFileProviderSyncAnchor?
+  enumerator.currentSyncAnchor { result = $0 }
+  return result
+}
+func changes(_ enumerator: FileProviderEnumerator, from anchor: NSFileProviderSyncAnchor?) -> RecordingChangeObserver {
+  let observer = RecordingChangeObserver()
+  if let anchor { enumerator.enumerateChanges(for: observer, from: anchor) }
+  return observer
+}
+func expired(_ observer: RecordingChangeObserver) -> Bool {
+  observer.error?.domain == NSFileProviderErrorDomain && observer.error?.code == NSFileProviderError.syncAnchorExpired.rawValue
+}
+
+@main
+struct WorkingSetMain {
+  static func main() async {
+    // W1. Root rows plus the children of the materialized folder F; never the children of G,
+    // a folder Files has not listed.
+    let cache = MockCache(rowsByParent: [
+      "root": [row("F", nil), row("readme", nil)],
+      "F": [row("c1", "F"), row("c2", "F")],
+      "G": [row("g1", "G")],
+    ])
+    _ = cache.noteContainerMaterialized("F")
+    let ws = workingSet(cache)
+    let listed = list(ws)
+    check(listed.ids == ["F", "c1", "c2", "readme"], "working set: root rows + the materialized folder's children, got \(listed.ids)")
+
+    // W2. The working set anchor follows the materialized folders, and only them.
+    let base = anchor(ws)
+    cache.setRows([row("g1", "G", "renamed on the web")], parent: "G")
+    let outside = changes(ws, from: base)
+    check(outside.error == nil && outside.finishedAnchor == base, "a change in a folder Files never listed does not expire the working set")
+    cache.setRows([row("c1", "F", "renamed on the web"), row("c2", "F")], parent: "F")
+    check(expired(changes(ws, from: base)), "a rename inside a materialized folder expires the working set anchor")
+    cache.setRows([row("c1", "F"), row("c2", "F"), row("c3", "F")], parent: "F")
+    check(expired(changes(ws, from: base)), "a new child of a materialized folder expires the working set anchor")
+    cache.setRows([row("c1", "F")], parent: "F")
+    check(expired(changes(ws, from: base)), "a removed child of a materialized folder expires the working set anchor")
+    ws.invalidate()
+
+    // W3. A folder that Files lists joins the working set (cached rows, and after a refresh);
+    // a failed listing does not; the root and the working set never note themselves.
+    let folderCache = MockCache(rowsByParent: ["H": [row("h1", "H")]])
+    let folder = FileProviderEnumerator(containerIdentifier: NSFileProviderItemIdentifier("H"), cache: folderCache,
+                                        refresher: MockRefresher(cache: folderCache, outcome: .success))
+    _ = list(folder)
+    check(folderCache.materializedContainerIds() == ["H"], "a listed folder is noted as materialized, got \(folderCache.materializedContainerIds())")
+    folder.invalidate()
+    let emptyCache = MockCache()
+    let refreshed = FileProviderEnumerator(containerIdentifier: NSFileProviderItemIdentifier("K"), cache: emptyCache,
+                                           refresher: MockRefresher(cache: emptyCache, outcome: .success))
+    _ = list(refreshed)
+    check(emptyCache.materializedContainerIds() == ["K"], "a folder listed after its first refresh is noted, got \(emptyCache.materializedContainerIds())")
+    let refusedCache = MockCache()
+    let refused = FileProviderEnumerator(containerIdentifier: NSFileProviderItemIdentifier("L"), cache: refusedCache,
+                                         refresher: MockRefresher(cache: refusedCache, outcome: .notAuthenticated))
+    _ = list(refused)
+    check(refusedCache.materializedContainerIds().isEmpty, "a refused listing is not noted, got \(refusedCache.materializedContainerIds())")
+    let rootCache = MockCache(rowsByParent: ["root": [row("r", nil)]])
+    _ = list(FileProviderEnumerator(containerIdentifier: .rootContainer, cache: rootCache, refresher: MockRefresher(cache: rootCache, outcome: .success)))
+    _ = list(workingSet(rootCache))
+    check(rootCache.materializedContainerIds().isEmpty, "the root and the working set do not note themselves, got \(rootCache.materializedContainerIds())")
+
+    // W4. Enumerating the working set's changes asks for the stale materialized folders to be
+    // refreshed (rate limited in SyncEngine); a folder's own change enumeration does not.
+    let passCache = MockCache(rowsByParent: ["root": [row("F", nil)], "F": [row("c1", "F")]])
+    _ = passCache.noteContainerMaterialized("F")
+    let passRefresher = MockRefresher(cache: passCache, outcome: .success)
+    let passWs = workingSet(passCache, passRefresher)
+    _ = changes(passWs, from: anchor(passWs))
+    var waited = 0
+    while passRefresher.materializedPasses == 0 && waited < 200 { try? await Task.sleep(nanoseconds: 10_000_000); waited += 1 }
+    check(passRefresher.materializedPasses >= 1, "working set change enumeration starts a materialized refresh pass")
+    let folderRefresher = MockRefresher(cache: passCache, outcome: .success)
+    let folderEnum = FileProviderEnumerator(containerIdentifier: NSFileProviderItemIdentifier("F"), cache: passCache, refresher: folderRefresher)
+    _ = changes(folderEnum, from: anchor(folderEnum))
+    try? await Task.sleep(nanoseconds: 200_000_000)
+    check(folderRefresher.materializedPasses == 0, "a folder's change enumeration does not start one, got \(folderRefresher.materializedPasses)")
+
+    print("working-set-harness: \(passed) checks passed, \(failed) failed")
+  }
+}
+`;
+    const dir = mkdtempSync(join(tmpdir(), 'beebeeb-file-provider-working-set-'));
+    const harness = join(dir, 'Harness.swift');
+    const binary = join(dir, 'Harness');
+    const outputPath = join(dir, 'output.log');
+    writeFileSync(harness, doublesPart + workingSetMain);
+    try {
+      execFileSync('xcrun', ['swiftc', '-parse-as-library', '-framework', 'FileProvider', '-framework', 'UniformTypeIdentifiers', ENUMERATOR, harness, '-o', binary], { stdio: 'pipe' });
+    } catch (error) {
+      throw new Error(`working-set harness did not compile:\n${String(error?.stderr ?? error)}`);
+    }
+    try {
+      execFileSync('/bin/sh', ['-c', '"$1" > "$2" 2>&1', 'working-set-harness', binary, outputPath], { timeout: 30_000 });
+    } catch {
+      // asserted below
+    }
+    const output = readFileSync(outputPath, 'utf8');
+    // eslint-disable-next-line no-console
+    console.log(output);
+    expect(output).not.toContain('FAIL:');
+    expect(output).toContain('working-set-harness: 17 checks passed, 0 failed');
+  }, 60_000);
+
   test('an empty cached listing branches on typed refresh outcome before finishing', () => {
     const src = readFileSync(ENUMERATOR, 'utf8');
     const body = bracedBody(src, 'func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage)');
@@ -454,7 +618,9 @@ describe('iOS File Provider initial enumeration refresh', () => {
     const knownEmpty = body.indexOf('if rows.isEmpty && hasCachedListing', anchorProbe);
     expect(knownEmpty).toBeGreaterThan(anchorProbe);
 
-    const enumerateEmpty = body.indexOf('observer.didEnumerate([])', knownEmpty);
+    // Task 1722 round 4: a folder's known-empty listing still vends nothing; the working set adds
+    // the children of materialized folders (deliveredRows), so the call is no longer a literal [].
+    const enumerateEmpty = body.indexOf('observer.didEnumerate(delivered.map', knownEmpty);
     const finishEmpty = body.indexOf('observer.finishEnumerating(upTo: nil)', enumerateEmpty);
     expect(enumerateEmpty).toBeGreaterThan(knownEmpty);
     expect(finishEmpty).toBeGreaterThan(enumerateEmpty);

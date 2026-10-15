@@ -46,6 +46,24 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     _ = domain
     _ = CacheManager.shared
     _ = Self.leftoverContentSweep
+    _ = Self.materializedSetBootstrap
+  }
+
+  /// Task 1722 round 4 (review round 2, minor 6): once per extension process, read the system's
+  /// materialized set. A phone upgraded from a build that did not track it (TestFlight 236) has
+  /// folders Files already listed that the working set must now cover, and the system calls
+  /// `materializedItemsDidChange` only when that set changes.
+  private static let materializedSetBootstrap: Bool = {
+    MaterializedSetTracker.shared.scheduleSync(after: 2)
+    return true
+  }()
+
+  /// Task 1722 round 4: Apple's contract for a replicated extension ("The file provider extension
+  /// should therefore keep a list of the identifiers of the materialized directories"). The work
+  /// is scheduled, the callback returns at once.
+  func materializedItemsDidChange(completionHandler: @escaping () -> Void) {
+    MaterializedSetTracker.shared.scheduleSync()
+    completionHandler()
   }
 
   /// Task 1722 review I1: deletes plaintext a previous extension process left
