@@ -774,6 +774,16 @@ back up `Library/Caches/`. Any path this app writes outside `Caches/` must be re
   unlocked foreground registration provision it from the verified in-memory handle
   (`resumeFileProviderAuthenticationIfReady`), so on a simulator content opens from Files. What the
   simulator still cannot show: device passcode/lock behaviour of the key, and jetsam limits.
+- **The Files key has one writer** (review round 2, 2026-10-15). Every write and delete of the Files
+  Secure Enclave key goes through `KeychainManager.syncFileProviderWrappedKey` /
+  `deleteFileProviderKey`: one `NSLock`, the consent rule read before and after the write, and
+  "provisioned" checked by unwrapping (one key under the tag, its blob opens to this vault key).
+  Never call `storeFileProviderWrappedKey` from a new path, and keep "consent off, then delete" in
+  every revoking path. `file-provider-key-policy.test.ts` models several keys under one tag and runs
+  two writers at once; extend it when this lifecycle changes.
+- **modifyItem returns what it does not apply as still pending** (`declinedFields`). Returning `[]`
+  for a `lastUsedDate` change put our nil on disk after every open. Whether iOS then stops sending
+  those fields (the header documents it for macOS 12+) is not yet observed on a simulator or device.
 - **iOS creates a default "Beebeeb" location** (`NSFileProviderDomainDefaultIdentifier`) from install,
   shown whenever our `io.beebeeb.files` domain is not registered; it answers "Authentication Required"
   and "Open Beebeeb" only opens the app. Registering our domain marks it `hidden` (it stays in
