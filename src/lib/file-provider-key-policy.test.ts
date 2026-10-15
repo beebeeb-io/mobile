@@ -46,10 +46,12 @@ test('Files key follows the Files mount through one locked writer, never failing
   // unwrap, so the existence-only check is gone.
   expect(functionBody(manager, 'static func deleteFileProviderKey()')).toContain('fileProviderKeyLock.lock()');
   const remove = functionBody(manager, 'private static func deleteFileProviderKeyLocked()');
-  expect(remove).toContain('deleteSEKey(tag: BeebeebKeychainCore.seKeyTagFiles)');
-  expect(remove).toContain('deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceFiles)');
+  // Task 1722 round 4 (Q3): every group (Files, shared, then all of the app's), plus the round-3 v1 items.
+  expect(remove).toContain('deleteSEKey(tag: BeebeebKeychainCore.seKeyTagFiles, accessGroup: group)');
+  expect(remove).toContain('deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceFiles, accessGroup: group)');
+  expect(remove).toContain('deleteLegacyFileProviderKeyLocked()');
   expect(remove).not.toContain('seKeyTagExt');
-  expect(remove).not.toMatch(/seKeyTag\)/);
+  expect(remove).not.toMatch(/seKeyTag[,)]/);
   expect(functionBody(manager, 'private static func deleteSEKey()')).toContain('deleteFileProviderKey()');
   expect(functionBody(manager, 'private static func deleteWrappedItems()')).toContain('deleteFileProviderKey()');
   expect(manager).not.toContain('static func hasFileProviderKey(');
@@ -102,7 +104,7 @@ struct ACL { let protection: String; let flags: SecAccessControlCreateFlags }
 final class SecKey { let tag: Data; let acl: ACL; init(_ tag: Data, _ acl: ACL) { self.tag = tag; self.acl = acl } }
 enum State {
   static var keys: [Data: SecKey] = [:], blobs: [String: Data] = [:]
-  static var lookups: [Data] = [], generated: [CFDictionary] = [], written: [CFDictionary] = []
+  static var lookups: [Data] = [], generated: [CFDictionary] = [], written: [CFDictionary] = [], groupLookups: [String] = []
   static var unlocked = true, passcode = true, generationFails = false, writeStatus: Int32 = 0, decryptFails = false
 }
 func SecAccessControlCreateWithFlags(_ allocator: Int, _ protection: String, _ flags: SecAccessControlCreateFlags, _ error: Any?) -> ACL? { ACL(protection: protection, flags: flags) }
@@ -140,8 +142,10 @@ enum BeebeebKeychainCore {
   enum LoadMode { case primaryOnly, extensionOnly, extensionThenPrimary, fileProviderOnly }
   ${loadError}
   static let accessGroup: String? = "shared"
-  static let seKeyTag = Data([1]), seKeyTagExt = Data([2]), seKeyTagFiles = Data([3])
+  static let filesAccessGroup = "files-group"
+  static let seKeyTag = Data([1]), seKeyTagExt = Data([2]), seKeyTagFiles = Data([3]), legacySeKeyTagFilesV1 = Data([4])
   static let wrappedKeyService = "primary", wrappedKeyServiceExt = "extension", wrappedKeyServiceFiles = "files"
+  static let legacyWrappedKeyServiceFilesV1 = "files-v1"
   static let eciesAlgorithm = "ecies"
   static func findSEKey(tag: Data, authContext: AnyObject? = nil) -> SecKey? { State.lookups.append(tag); return State.keys[tag] }
   static func fetchWrappedBlob(service: String, label: String) -> Data? { State.blobs[service] }
@@ -152,6 +156,16 @@ enum BeebeebKeychainCore {
   static func fetchWrappedBlobReportingStatus(service: String, label: String) -> (blob: Data?, status: Int32) {
     let blob = fetchWrappedBlob(service: service, label: label)
     return (blob, blob == nil ? errSecItemNotFound : errSecSuccess)
+  }
+  // Task 1722 round 4 (Q3): the Files lookups name a group; this double has one keychain, groups are
+  // covered by file-provider-key-access-group.test.ts.
+  static func findSEKeyReportingStatus(tag: Data, inAccessGroup group: String) -> (key: SecKey?, status: Int32) {
+    State.groupLookups.append(group)
+    return findSEKeyReportingStatus(tag: tag)
+  }
+  static func fetchWrappedBlobReportingStatus(service: String, label: String, inAccessGroup group: String) -> (blob: Data?, status: Int32) {
+    State.groupLookups.append(group)
+    return fetchWrappedBlobReportingStatus(service: service, label: label)
   }
   ${loader}
   static func loadMasterKey(label: String, mode: LoadMode) -> Data? {
@@ -180,11 +194,13 @@ let acl = p[kSecAttrAccessControl] as! ACL
 check(acl.flags == [.privateKeyUsage], "no passcode-operation authentication")
 check(acl.protection == kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, "unlocked device with passcode only")
 check(attrs[kSecAttrTokenID] as? String == kSecAttrTokenIDSecureEnclave, "hardware key")
-check((attrs[kSecAttrAccessGroup] as? String ?? p[kSecAttrAccessGroup] as? String) == "shared", "shared access group")
+check((attrs[kSecAttrAccessGroup] as? String ?? p[kSecAttrAccessGroup] as? String) == "files-group", "Files key in the Files access group (round 4, Q3)")
 check(State.written.last![kSecAttrAccessible] as? String == kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, "wrapped blob same protection")
+check(State.written.last![kSecAttrAccessGroup] as? String == "files-group", "wrapped blob in the Files access group (round 4, Q3)")
 check(State.blobs["files"] != bytes, "only ciphertext persisted")
 check(try BeebeebKeychainCore.loadMasterKeyThrowing(label: "vault", mode: .fileProviderOnly) == bytes, "unlocked Files load")
 check(State.lookups.allSatisfy { $0 == BeebeebKeychainCore.seKeyTagFiles }, "no primary or legacy key lookup")
+check(!State.groupLookups.isEmpty && State.groupLookups.allSatisfy { $0 == "files-group" }, "Files lookups name the Files group only, got \\(State.groupLookups)")
 let before = State.generated.count
 try Manager.storeFileProviderWrappedKey(masterKeyBytes: bytes, label: "vault")
 check(State.generated.count == before, "idempotent Files key reuse")
@@ -226,7 +242,7 @@ print("Files key policy: \\(count) cases passed")
   writeFileSync(swift, harness);
   execFileSync('swiftc', [swift, '-o', binary], { timeout: 60_000 });
   execFileSync('/bin/sh', ['-c', '"$1" > "$2" 2>&1', 'files-key-test', binary, output], { timeout: 30_000 });
-  expect(readFileSync(output, 'utf8')).toContain('Files key policy: 21 cases passed');
+  expect(readFileSync(output, 'utf8')).toContain('Files key policy: 23 cases passed');
 }, 90_000);
 
 /** Like functionBody, but '' when the signature is not in the source (so one harness compiles before and after a change). */
@@ -282,6 +298,10 @@ nativeTest('Files key exists only while Files is mounted, has one writer at a ti
     'static func deleteFileProviderKey()',
     'private static func deleteFileProviderKeyLocked()',
     'static func hasFileProviderKey(label: String)',
+    // Round 4 (Q3): group-aware deletes and the round-3 v1 cleanup.
+    'private static func deleteLegacyFileProviderKeyLocked()',
+    'private static func deleteSEKey(tag: Data, accessGroup: String?)',
+    'private static func deleteWrappedItems(service: String, accessGroup: String?)',
   ].map((s) => optionalBody(manager, s));
   const lock = optionalLine(manager, 'private static let fileProviderKeyLock');
   const loader = functionBody(core, 'static func loadMasterKey(\n');
@@ -401,14 +421,19 @@ func SecItemUpdate(_ query: CFDictionary, _ values: CFDictionary) -> Int32 {
 }
 @discardableResult
 func SecItemDelete(_ query: CFDictionary) -> Int32 {
-  State.with {
+  State.with { () -> Int32 in
     // As in the keychain, every match goes: two keys under one tag included.
-    if query[kSecClass] as? String == kSecClassKey, let tag = query[kSecAttrApplicationTag] as? Data { State.keys.removeAll { $0.tag == tag } }
+    var removed = false
+    if query[kSecClass] as? String == kSecClassKey, let tag = query[kSecAttrApplicationTag] as? Data {
+      removed = State.keys.contains { $0.tag == tag }
+      State.keys.removeAll { $0.tag == tag }
+    }
     if query[kSecClass] as? String == kSecClassGenericPassword, let service = query[kSecAttrService] as? String {
+      removed = removed || State.blobs[service] != nil
       State.blobs[service] = nil; State.accounts[service] = nil
     }
+    return removed ? errSecSuccess : errSecItemNotFound
   }
-  return errSecSuccess
 }
 func SecItemCopyMatching(_ query: CFDictionary, _ result: inout CFTypeRef?) -> Int32 {
   let (status, value) = State.with { () -> (Int32, CFTypeRef?) in
@@ -448,8 +473,10 @@ enum BeebeebKeychainCore {
   enum LoadMode { case primaryOnly, extensionOnly, extensionThenPrimary, fileProviderOnly }
   ${loadError}
   static let accessGroup: String? = "shared"
-  static let seKeyTag = Data([1]), seKeyTagExt = Data([2]), seKeyTagFiles = Data([3])
+  static let filesAccessGroup = "files-group"
+  static let seKeyTag = Data([1]), seKeyTagExt = Data([2]), seKeyTagFiles = Data([3]), legacySeKeyTagFilesV1 = Data([4])
   static let wrappedKeyService = "primary", wrappedKeyServiceExt = "extension", wrappedKeyServiceFiles = "files"
+  static let legacyWrappedKeyServiceFilesV1 = "files-v1"
   static let eciesAlgorithm = "ecies"
   static func fileProviderMountConsented(defaults: UserDefaults? = nil) -> Bool { State.with { State.mounted } }
   /// The first key under the tag, as a kSecMatchLimitOne lookup returns it.
@@ -460,6 +487,14 @@ enum BeebeebKeychainCore {
   }
   static func fetchWrappedBlobReportingStatus(service: String, label: String) -> (blob: Data?, status: Int32) {
     let blob = fetchWrappedBlob(service: service, label: label); return (blob, blob == nil ? errSecItemNotFound : errSecSuccess)
+  }
+  // Round 4 (Q3): one keychain here; groups are file-provider-key-access-group.test.ts.
+  static func findSEKeyReportingStatus(tag: Data, inAccessGroup group: String) -> (key: SecKey?, status: Int32) {
+    if State.with({ State.locked }), tag == seKeyTagFiles { return (nil, errSecInteractionNotAllowed) }
+    return findSEKeyReportingStatus(tag: tag)
+  }
+  static func fetchWrappedBlobReportingStatus(service: String, label: String, inAccessGroup group: String) -> (blob: Data?, status: Int32) {
+    fetchWrappedBlobReportingStatus(service: service, label: label)
   }
   ${loader}
   ${filesLoader}

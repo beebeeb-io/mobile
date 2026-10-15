@@ -175,6 +175,14 @@ final class KeychainManager {
   /// reads (the write is undone here) or after this returns (its delete
   /// removes the key). The callers used to read the consent once, before a
   /// write that could land after the toggle-off's delete.
+  ///
+  /// Task 1722 round 4 (Q3, own keychain group): the first thing every call
+  /// does, whatever `allowed` says, is delete the round-3 v1 Files key and
+  /// blob from the shared group (`deleteLegacyFileProviderKeyLocked`). So the
+  /// first unlock, store or foreground resume after the upgrade migrates: the
+  /// old key is gone, and a new one is written into `filesAccessGroup` when
+  /// Files is on. No key bytes move between groups; the new key is generated
+  /// in the Files group and wraps the vault key afresh.
   @discardableResult
   static func syncFileProviderWrappedKey(
     masterKeyBytes: Data,
@@ -183,6 +191,7 @@ final class KeychainManager {
   ) -> FileProviderKeyOutcome {
     fileProviderKeyLock.lock()
     defer { fileProviderKeyLock.unlock() }
+    deleteLegacyFileProviderKeyLocked()
     guard allowed() else {
       deleteFileProviderKeyLocked()
       return .notAllowed
@@ -252,8 +261,10 @@ final class KeychainManager {
   }
 
   /// Keys under the Files tag in any of this app's access groups (no group in
-  /// the query, so a legacy group-less key counts too); nil when the keychain
-  /// cannot say now (locked).
+  /// the query: the Files group, the shared group and a legacy group-less key
+  /// all count); nil when the keychain cannot say now (locked). A key in the
+  /// wrong group therefore makes the count wrong or the extension's lookup
+  /// (Files group only) fail, and either way the writer starts again.
   private static func fileProviderKeyCount() -> Int? {
     let query: [CFString: Any] = [
       kSecClass: kSecClassKey,
@@ -288,9 +299,35 @@ final class KeychainManager {
   }
 
   /// Under `fileProviderKeyLock`. `SecItemDelete` removes every match.
+  ///
+  /// Task 1722 round 4 (Q3): the Files key and blob are deleted from the
+  /// Files group, from the shared group and then without a group (every group
+  /// this app has), so a copy in the wrong group cannot outlive a toggle-off
+  /// or a sign-out either; the round-3 v1 items go too.
   private static func deleteFileProviderKeyLocked() {
-    deleteSEKey(tag: BeebeebKeychainCore.seKeyTagFiles)
-    deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceFiles)
+    for group in [BeebeebKeychainCore.filesAccessGroup, BeebeebKeychainCore.accessGroup, nil] {
+      deleteSEKey(tag: BeebeebKeychainCore.seKeyTagFiles, accessGroup: group)
+      deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceFiles, accessGroup: group)
+    }
+    deleteLegacyFileProviderKeyLocked()
+  }
+
+  /// Task 1722 round 4 (Q3, migration). Round-3 builds wrote the Files key
+  /// (`legacySeKeyTagFilesV1`) and its blob into the shared group, which the
+  /// Share extension is also entitled to. Deleted from the shared group and
+  /// then without a group (every group this app has). Under
+  /// `fileProviderKeyLock`. Returns whether anything was there.
+  @discardableResult
+  private static func deleteLegacyFileProviderKeyLocked() -> Bool {
+    var removed = false
+    for group in [BeebeebKeychainCore.accessGroup, nil] {
+      if deleteSEKey(tag: BeebeebKeychainCore.legacySeKeyTagFilesV1, accessGroup: group) { removed = true }
+      if deleteWrappedItems(service: BeebeebKeychainCore.legacyWrappedKeyServiceFilesV1, accessGroup: group) { removed = true }
+    }
+    if removed {
+      RuntimeTrace.event("keychain.manager.files_key.legacy_removed")
+    }
+    return removed
   }
 
   /// Encrypt the master key under the extension SE key and persist alongside
@@ -328,6 +365,8 @@ final class KeychainManager {
   /// Files has no authentication UI. Use a dedicated hardware wrapping key
   /// available only on this unlocked, passcode-equipped device. The shared
   /// backup/share wrapping key keeps its existing authentication policy.
+  /// Task 1722 round 4 (Q3): the key and the blob go into
+  /// `filesAccessGroup`, which the Share extension does not have.
   private static func storeFileProviderWrappedKey(masterKeyBytes: Data, label: String) throws {
     let key = try getOrCreateFileProviderSEKey()
     guard let publicKey = SecKeyCopyPublicKey(key) else {
@@ -342,8 +381,8 @@ final class KeychainManager {
       kSecClass: kSecClassGenericPassword,
       kSecAttrService: BeebeebKeychainCore.wrappedKeyServiceFiles,
       kSecAttrAccount: label,
+      kSecAttrAccessGroup: BeebeebKeychainCore.filesAccessGroup,
     ]
-    if let group = BeebeebKeychainCore.accessGroup { attributes[kSecAttrAccessGroup] = group }
     let values: [CFString: Any] = [
       kSecAttrAccessible: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
       kSecValueData: wrapped as Data,
@@ -803,20 +842,30 @@ final class KeychainManager {
     return try generateSEKey(tag: BeebeebKeychainCore.seKeyTagExt, flags: [.privateKeyUsage, .devicePasscode])
   }
 
+  /// Task 1722 round 4 (Q3): looked up and generated in `filesAccessGroup`
+  /// only. The writer deletes before it stores, so this normally generates.
   private static func getOrCreateFileProviderSEKey() throws -> SecKey {
-    if let key = BeebeebKeychainCore.findSEKey(tag: BeebeebKeychainCore.seKeyTagFiles) { return key }
+    if let key = BeebeebKeychainCore.findSEKeyReportingStatus(
+      tag: BeebeebKeychainCore.seKeyTagFiles,
+      inAccessGroup: BeebeebKeychainCore.filesAccessGroup
+    ).key {
+      return key
+    }
     return try generateSEKey(
       tag: BeebeebKeychainCore.seKeyTagFiles,
       flags: [.privateKeyUsage],
-      protection: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
+      protection: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
+      accessGroup: BeebeebKeychainCore.filesAccessGroup
     )
   }
 
-  /// Generate a Secure Enclave P-256 key with the given tag and access control flags.
+  /// Generate a Secure Enclave P-256 key with the given tag and access control flags,
+  /// in `accessGroup` (the shared group unless a caller names another one).
   private static func generateSEKey(
     tag: Data,
     flags: SecAccessControlCreateFlags,
-    protection: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    protection: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+    accessGroup: String? = BeebeebKeychainCore.accessGroup
   ) throws -> SecKey {
     guard let access = SecAccessControlCreateWithFlags(
       kCFAllocatorDefault,
@@ -837,7 +886,7 @@ final class KeychainManager {
         kSecAttrAccessControl: access,
       ] as [CFString: Any],
     ]
-    if let group = BeebeebKeychainCore.accessGroup { attributes[kSecAttrAccessGroup] = group }
+    if let group = accessGroup { attributes[kSecAttrAccessGroup] = group }
 
     var cfErr: Unmanaged<CFError>?
     guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &cfErr) else {
@@ -880,6 +929,21 @@ final class KeychainManager {
     }
   }
 
+  /// Task 1722 round 4 (Q3): deletes every SE key under `tag` in
+  /// `accessGroup`, or, with nil, in every access group this app has.
+  /// Returns whether anything was deleted.
+  @discardableResult
+  private static func deleteSEKey(tag: Data, accessGroup: String?) -> Bool {
+    var query: [CFString: Any] = [
+      kSecClass: kSecClassKey,
+      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+      kSecAttrApplicationTag: tag,
+      kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
+    ]
+    if let accessGroup { query[kSecAttrAccessGroup] = accessGroup }
+    return SecItemDelete(query as CFDictionary) == errSecSuccess
+  }
+
   private static func deleteWrappedItems() {
     deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyService)
     deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceExt)
@@ -899,6 +963,19 @@ final class KeychainManager {
       query.removeValue(forKey: kSecAttrAccessGroup)
       SecItemDelete(query as CFDictionary)
     }
+  }
+
+  /// Task 1722 round 4 (Q3): deletes every wrapped blob under `service` in
+  /// `accessGroup`, or, with nil, in every access group this app has.
+  /// Returns whether anything was deleted.
+  @discardableResult
+  private static func deleteWrappedItems(service: String, accessGroup: String?) -> Bool {
+    var query: [CFString: Any] = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: service,
+    ]
+    if let accessGroup { query[kSecAttrAccessGroup] = accessGroup }
+    return SecItemDelete(query as CFDictionary) == errSecSuccess
   }
 
   #if DEBUG && targetEnvironment(simulator)

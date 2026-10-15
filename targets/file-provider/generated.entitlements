@@ -9,6 +9,7 @@
     <key>keychain-access-groups</key>
     <array>
       <string>$(AppIdentifierPrefix)io.beebeeb.shared</string>
+      <string>$(AppIdentifierPrefix)io.beebeeb.files</string>
     </array>
   </dict>
 </plist>

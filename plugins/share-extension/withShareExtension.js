@@ -16,6 +16,27 @@ const APP_GROUP = 'group.io.beebeeb.shared';
 // entitlements file without keychain-access-groups, silently wiping the
 // 0433 fix and breaking `SharedKeychain.loadMasterKey()` on every fresh build.)
 const KEYCHAIN_ACCESS_GROUP = '$(AppIdentifierPrefix)io.beebeeb.shared';
+// Task 1722 round 4 (Guus 2026-10-15, Q3): the Files key's own keychain group
+// (`$(AppIdentifierPrefix)io.beebeeb.files`) is deliberately NOT listed here:
+// only the main app and the File Provider extension may use that key.
+
+/** The extension's entitlements file, as `expo prebuild` writes it. */
+function extensionEntitlementsPlist() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>${APP_GROUP}</string>
+  </array>
+  <key>keychain-access-groups</key>
+  <array>
+    <string>${KEYCHAIN_ACCESS_GROUP}</string>
+  </array>
+</dict>
+</plist>`;
+}
 const PRINCIPAL_CLASS = 'ShareViewController';
 
 const SOURCE_FILES = [
@@ -152,21 +173,7 @@ function withShareExtension(config) {
 </plist>`;
     fs.writeFileSync(path.join(extDir, 'Info.plist'), infoPlist);
 
-    const entitlements = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>com.apple.security.application-groups</key>
-  <array>
-    <string>${APP_GROUP}</string>
-  </array>
-  <key>keychain-access-groups</key>
-  <array>
-    <string>${KEYCHAIN_ACCESS_GROUP}</string>
-  </array>
-</dict>
-</plist>`;
-    fs.writeFileSync(path.join(extDir, `${targetName}.entitlements`), entitlements);
+    fs.writeFileSync(path.join(extDir, `${targetName}.entitlements`), extensionEntitlementsPlist());
 
     // Skip the Xcode-target stitching if it's already wired up (e.g. on a
     // subsequent prebuild). The full target wire-up below is best-effort:
@@ -201,5 +208,7 @@ function withShareExtension(config) {
 // own SOURCE_FILES, so src/lib/share-extension-plugin-sources.test.ts can
 // diff this list against the real files on disk.
 withShareExtension.SOURCE_FILES = SOURCE_FILES;
+// Task 1722 round 4: exported for src/lib/file-provider-key-access-group.test.ts.
+withShareExtension.extensionEntitlementsPlist = extensionEntitlementsPlist;
 
 module.exports = withShareExtension;
