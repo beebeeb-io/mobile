@@ -665,6 +665,17 @@ reset(mounted: true)
 injectRaceLeftovers()
 check(resumeSync() == .ready, "resume: race leftovers repaired")
 check(filesKeyWorks(), "resume: one Files key that unwraps after the repair, \\(filesKeys().count) key(s)")
+// One key and one blob, so both keychain items exist, but the blob was wrapped by a key that is
+// gone (deleted, then created again): only an unwrap shows it.
+reset(mounted: true)
+State.with {
+  let acl = ACL(protection: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, flags: [.privateKeyUsage])
+  State.keys = [SecKey(filesTag, acl, id: 210)]
+  State.blobs[filesService] = Data([99, 209]) + vault.map { $0 ^ 0xA5 }
+  State.accounts[filesService] = label
+}
+check(filesLoad() == nil, "setup: one key and a blob wrapped by a key that is gone; the extension cannot unwrap")
+check(resumeSync() == .ready && filesKeyWorks(), "resume: both items exist but the blob does not unwrap: replaced")
 reset(mounted: true)
 try! Manager.store(masterKeyBytes: otherVault, label: label)
 check(filesLoad() == otherVault, "setup: the Files key holds another vault key")
@@ -726,7 +737,7 @@ print("Files key lifecycle: \\(count) cases passed")
   // eslint-disable-next-line no-console
   console.log(text);
   expect(text).not.toContain('FAIL:');
-  expect(text).toContain('Files key lifecycle: 57 cases passed');
+  expect(text).toContain('Files key lifecycle: 59 cases passed');
 }, 150_000);
 
 // Review round 2, item 2 (mutation B): Settings toggle-off (`clearFileProviderSharedState`) and
