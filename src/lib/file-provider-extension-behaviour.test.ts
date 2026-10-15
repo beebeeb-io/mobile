@@ -559,6 +559,29 @@ func renameOfUndecryptedItemNeverReachesTheServer() async {
   check(ApiClient.shared.count("patch") == 1 && sentName == "new.txt", "the rename sends one ciphertext of the new name, got \(sentName ?? "nil")")
 }
 
+// Task 1722 (review round 1, found on the simulator log): opening a file makes Files send
+// modifyItem(changedFields: lastUsedDate). That used to stamp updatedAt = now and the system's
+// content type into the row, so the item came back with a NEW content version: fileproviderd
+// fetched (downloaded, decrypted, wrote) the same file a second time 7 s later, and the
+// snapshot anchor changed. A change Beebeeb does not store must leave the item as it was.
+func metadataOnlyModifyKeepsTheItem() async {
+  let changes: [(String, NSFileProviderItemFields)] = [
+    ("lastUsedDate", .lastUsedDate), ("contentModificationDate", .contentModificationDate),
+    ("tagData", .tagData), ("lastUsedDate+favoriteRank", [.lastUsedDate, .favoriteRank]),
+  ]
+  for (label, fields) in changes {
+    reset()
+    CacheManager.shared.rows["r1"] = row("r1", name: "notes.md", encrypted: encryptedName("r1", "notes.md"), size: 207, mime: nil)
+    let before = FileProviderItem(cached: CacheManager.shared.rows["r1"]!)
+    let (after, error) = await modify(Template("r1", parent: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "notes.md"), fields)
+    check(error == nil, "\(label): no error, got \(describe(error))")
+    check(after?.itemVersion?.contentVersion == before.itemVersion.contentVersion, "\(label): the content version is unchanged (no re-download)")
+    check(after?.itemVersion?.metadataVersion == before.itemVersion.metadataVersion, "\(label): the metadata version is unchanged")
+    check(CacheManager.shared.writes.isEmpty, "\(label): nothing written to the cache, got \(CacheManager.shared.writes)")
+    check(ApiClient.shared.calls.isEmpty, "\(label): no server call, got \(ApiClient.shared.calls)")
+  }
+}
+
 // ---- (e) Beebeeb has no Files trash ----
 func lookup(_ identifier: NSFileProviderItemIdentifier) async -> (NSFileProviderItem?, NSError?) {
   let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
@@ -853,6 +876,7 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("no-key-mixed", noKeyRefusesAMixedFolder),
   ("undecryptable-label", undecryptableNameGetsUniqueLabelWithoutRename),
   ("placeholder-rename", renameOfUndecryptedItemNeverReachesTheServer),
+  ("metadata-modify", metadataOnlyModifyKeepsTheItem),
   ("trash", trashIsUnsupportedNotTheRoot),
   ("snapshot-mime", snapshotIgnoresTheMimeType),
   ("streamed-content", contentStreamsIntoATemporaryFile),
@@ -964,6 +988,11 @@ describe('task 1722 (d): listings never vend placeholder names', () => {
 
   nativeSwiftHarnessTest('renaming an undecrypted item sends 0 server writes; a move keeps its ciphertext name', () => {
     expectScenario('placeholder-rename', 9);
+  }, 300_000);
+
+  // Found on the 2026-10-14 simulator log: Files sends modifyItem(lastUsedDate) after every open.
+  nativeSwiftHarnessTest('a change Beebeeb does not store (lastUsedDate, mtime, tags) keeps the item versions and writes nothing', () => {
+    expectScenario('metadata-modify', 20);
   }, 300_000);
 });
 

@@ -479,6 +479,34 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     let task = Task.detached {
       do {
+        // Task 1722 (d): this row's real name could not be decrypted, so the
+        // filename Files reports is our "Encrypted item · …" label (or a
+        // bounce of it). Writing that to the server would replace the real
+        // name. Keep the server name; returning the item unchanged makes the
+        // system put the label back on disk. A move still works: it carries
+        // the existing ciphertext name.
+        let nameIsUnresolved = cached.hasUnresolvedName
+        let renamesOnServer = changedFields.contains(.filename) && !nameIsUnresolved
+        if changedFields.contains(.filename), nameIsUnresolved {
+          NSLog("[Beebeeb] modifyItem(\(cached.id)) kept the server name: the current name could not be decrypted")
+        }
+
+        // Task 1722 (review round 1, simulator log 2026-10-14): Files sends
+        // modifyItem(changedFields: lastUsedDate) after every open. Beebeeb
+        // stores none of lastUsedDate, tags, favorite rank, dates, flags or
+        // xattrs, so such a change has nothing to send and nothing to cache.
+        // It used to stamp updatedAt = now (and the system's content type)
+        // into the row: the returned item had a new content version, so
+        // fileproviderd downloaded, decrypted and wrote the same file again,
+        // and the listing snapshot changed. Return the item as it is.
+        let uploadsContent = changedFields.contains(.contents) && newContents != nil
+        let movesOnServer = changedFields.contains(.parentItemIdentifier)
+        guard uploadsContent || renamesOnServer || movesOnServer else {
+          progress.completedUnitCount = 100
+          completionHandler(FileProviderItem(cached: cached), [], false, nil)
+          return
+        }
+
         // `epochAtStart` (see above) gates the cache write below against
         // both network calls that can follow (`streamUpload` for a content
         // change, `patchFile` for a rename/move), each of unbounded
@@ -494,17 +522,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         var nextSizeBytes = cached.sizeBytes
         var nextUpdatedAt = ISO8601DateFormatter().string(from: Date())
 
-        // Task 1722 (d): this row's real name could not be decrypted, so the
-        // filename Files reports is our "Encrypted item · …" label (or a
-        // bounce of it). Writing that to the server would replace the real
-        // name. Keep the server name; returning the item unchanged makes the
-        // system put the label back on disk. A move still works: it carries
-        // the existing ciphertext name.
-        let nameIsUnresolved = cached.hasUnresolvedName
-        let renamesOnServer = changedFields.contains(.filename) && !nameIsUnresolved
-        if changedFields.contains(.filename), nameIsUnresolved {
-          NSLog("[Beebeeb] modifyItem(\(cached.id)) kept the server name: the current name could not be decrypted")
-        }
         if renamesOnServer {
           nextName = item.filename
           nextNameEncrypted = try CryptoBridge.encryptFilename(
