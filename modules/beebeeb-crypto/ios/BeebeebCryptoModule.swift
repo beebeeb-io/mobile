@@ -2061,33 +2061,50 @@ private func resumeFileProviderAuthenticationIfReady(
   else { return }
   // Task 1722 (G1): Files is mounted (checked above) and this is the
   // verified owner's unlocked key, so make sure the extension's own key
-  // exists before asking Files to retry. Without this a user who mounted
-  // Files before upgrading, or whose unlock came from the in-process handle
-  // rather than a keychain load, had no Files key until a later unlock.
-  if !KeychainManager.hasFileProviderKey(label: BeebeebCryptoBridge.kMasterKeyLabel),
-     var bytes = try? handle.exportForKeychain() {
-    KeychainManager.syncFileProviderWrappedKey(masterKeyBytes: bytes, label: BeebeebCryptoBridge.kMasterKeyLabel, mounted: true)
+  // unwraps to it before asking Files to retry. Without this a user who
+  // mounted Files before upgrading, or whose unlock came from the in-process
+  // handle rather than a keychain load, had no Files key until a later unlock.
+  // Review round 3 (item 5): "both keychain items exist" is not enough. Two
+  // writers racing before round 3 could leave a blob wrapped by a key the
+  // lookup does not return, a -1000 nothing repaired; the writer now checks
+  // by unwrapping and replaces what does not unwrap to this key.
+  if var bytes = try? handle.exportForKeychain() {
+    let outcome = KeychainManager.syncFileProviderWrappedKey(
+      masterKeyBytes: bytes,
+      label: BeebeebCryptoBridge.kMasterKeyLabel,
+      allowed: {
+        // Task 1722 review M1: this runs on a Swift Task with no ordering
+        // against the purge queue, so a sign-out purge
+        // (`resetFileProviderShowInFilesConsent`) or a Settings toggle-off
+        // (`clearFileProviderSharedState`) can land at any point. Both turn
+        // the consent flags off before deleting the key, and a purge also
+        // moves the purge generation: the rule the domain add uses
+        // (`shouldUndoFileProviderAdd`) plus the purge marker. The writer
+        // reads it under the Files key lock before the write and after it.
+        !shouldUndoFileProviderAdd(
+          purgeGenerationBeforeAdd: purgeGenerationAtStart,
+          purgeGenerationAfterAdd: currentFileProviderPurgeGeneration(),
+          consentTrustedMount: defaults?.bool(forKey: fileProviderTrustedMountKey) ?? false,
+          consentEnabled: sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey)
+        ) && !PlaintextStorageProtection.isPurgePending()
+      }
+    )
     bytes.withUnsafeMutableBytes { ptr in
       if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
     }
-    // Task 1722 review M1: this runs on a Swift Task with no ordering against
-    // the purge queue, so a sign-out purge (`resetFileProviderShowInFilesConsent`)
-    // or a Settings toggle-off (`clearFileProviderSharedState`) can delete the
-    // Files key between the checks above and the write just made, leaving a
-    // no-prompt copy of the vault key after its consent was revoked. Both
-    // turn the consent flags off before deleting the key, and a purge also
-    // moves the purge generation, so re-check with the rule the domain add
-    // uses (`shouldUndoFileProviderAdd`) and undo the write.
-    let consentRevoked = shouldUndoFileProviderAdd(
-      purgeGenerationBeforeAdd: purgeGenerationAtStart,
-      purgeGenerationAfterAdd: currentFileProviderPurgeGeneration(),
-      consentTrustedMount: defaults?.bool(forKey: fileProviderTrustedMountKey) ?? false,
-      consentEnabled: sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey)
-    ) || PlaintextStorageProtection.isPurgePending()
-    if consentRevoked {
-      KeychainManager.deleteFileProviderKey()
+    switch outcome {
+    case .revoked:
+      // Written, then undone under the lock: the consent went while writing.
       RuntimeTrace.event("fileprovider.files_key.provision_undone")
       return
+    case .notAllowed:
+      // The consent went after the checks above, before anything was written.
+      RuntimeTrace.event("fileprovider.authentication_retry.consent_revoked")
+      return
+    case .ready, .failed:
+      // `.failed` (no passcode, a Secure Enclave error) still lets Files
+      // retry, as before round 3; the extension then reports -1000 again.
+      break
     }
   }
   // -1000 is what a missing/locked key reports now; -2005 is what builds

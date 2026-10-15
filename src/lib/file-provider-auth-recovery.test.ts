@@ -11,6 +11,22 @@ test('trusted registration resumes Files authentication throttling before enumer
   expect(registration.indexOf('await resumeFileProviderAuthenticationIfReady')).toBeLessThan(registration.indexOf('let rootError = await signalFileProviderEnumerator'));
 });
 
+// Task 1722 review round 2 (items 4/5): the resume no longer decides from "both keychain items
+// exist" (hasFileProviderKey); it hands the vault key and its consent rule (consent flags, purge
+// generation, purge marker) to the one locked Files key writer, which unwraps to check.
+test('the resume provisions through the locked Files key writer with its full consent rule', () => {
+  const start = source.indexOf('private func resumeFileProviderAuthenticationIfReady(');
+  const end = source.indexOf('private func removeMountedFileProviderDomain(', start);
+  const resume = source.slice(start, end);
+  expect(resume).not.toContain('hasFileProviderKey');
+  const call = resume.slice(resume.indexOf('KeychainManager.syncFileProviderWrappedKey('));
+  expect(call.length).toBeGreaterThan(0);
+  const rule = call.slice(call.indexOf('allowed: {'), call.indexOf('bytes.withUnsafeMutableBytes'));
+  expect(rule).toContain('shouldUndoFileProviderAdd(');
+  expect(rule).toContain('purgeGenerationBeforeAdd: purgeGenerationAtStart');
+  expect(rule).toContain('PlaintextStorageProtection.isPurgePending()');
+});
+
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -79,17 +95,31 @@ enum BeebeebCryptoBridge {
   static var snapshot = Snapshot(handle: FakeHandle(), ownerId: "A")
   static func cachedMasterKeySnapshot() -> Snapshot { snapshot }
 }
-// Task 1722 (G1): the Files key is provisioned from the verified unlocked handle when missing.
+// Task 1722 (G1) + review round 2 (items 4/5): the resume hands the verified owner's vault key and
+// its consent rule to KeychainManager.syncFileProviderWrappedKey. That function (the real code is
+// tested in file-provider-key-policy.test.ts) reads the rule under the Files key lock before it
+// writes and again after, writes only when the Files key does not already unwrap to that vault
+// key, and undoes a write the rule no longer allows. This double follows that contract.
 enum KeychainManager {
-  static var present = false
-  static var provisioned: [(bytes: Int, label: String, mounted: Bool)] = []
-  static func hasFileProviderKey(label: String) -> Bool { present }
-  @discardableResult
-  static func syncFileProviderWrappedKey(masterKeyBytes: Data, label: String, mounted: Bool) -> Bool {
-    provisioned.append((masterKeyBytes.count, label, mounted)); present = mounted; return mounted
-  }
+  enum FileProviderKeyOutcome: Equatable { case ready, notAllowed, revoked, failed }
+  /// The Files key unwraps to this vault key (one key, its blob, the right vault key).
+  static var unwraps = false
+  static var writeFails = false
+  static var provisioned: [(bytes: Int, label: String)] = []
   static var deletes = 0
-  static func deleteFileProviderKey() { deletes += 1; present = false }
+  /// Runs after the write, before the second read of the rule.
+  static var duringWrite: (() -> Void)?
+  @discardableResult
+  static func syncFileProviderWrappedKey(masterKeyBytes: Data, label: String, allowed: () -> Bool) -> FileProviderKeyOutcome {
+    guard allowed() else { deleteFileProviderKey(); return .notAllowed }
+    if unwraps { return .ready }
+    provisioned.append((masterKeyBytes.count, label))
+    unwraps = !writeFails
+    duringWrite?()
+    guard allowed() else { deleteFileProviderKey(); return .revoked }
+    return unwraps ? .ready : .failed
+  }
+  static func deleteFileProviderKey() { deletes += 1; unwraps = false }
 }
 enum RuntimeTrace {
   static var events: [String] = []
@@ -117,7 +147,8 @@ ${helper}
       PlaintextStorageProtection.pending = false
       BeebeebKeychainCore.strings = ["token": "token", "owner": "A", "user": "A"]
       BeebeebCryptoBridge.snapshot = .init(handle: FakeHandle(), ownerId: "A")
-      KeychainManager.present = false; KeychainManager.provisioned = []; KeychainManager.deletes = 0
+      KeychainManager.unwraps = false; KeychainManager.writeFails = false; KeychainManager.provisioned = []
+      KeychainManager.deletes = 0; KeychainManager.duringWrite = nil
       NSFileProviderManager.available = true; NSFileProviderManager.fail = false
       NSFileProviderManager.calls = []; RuntimeTrace.events = []
       purgeGeneration = 0; FakeHandle.onExport = nil; FakeHandle.zeroedAtRelease = []
@@ -133,12 +164,21 @@ ${helper}
       precondition(KeychainManager.provisioned.count == (provisions ? 1 : 0), "\\(label): provisioned \\(KeychainManager.provisioned.count)x")
       if provisions {
         let call = KeychainManager.provisioned[0]
-        precondition(call.bytes == 32 && call.label == "io.beebeeb.master-key" && call.mounted, "\\(label): provisioned \\(call)")
+        precondition(call.bytes == 32 && call.label == "io.beebeeb.master-key", "\\(label): provisioned \\(call)")
+      }
+      // Review M2-D: the exported vault key is zeroed before its buffer is released, write or not.
+      if BeebeebCryptoBridge.snapshot.handle != nil, ready {
+        precondition(FakeHandle.zeroedAtRelease == [true], "\\(label): exported key bytes not zeroed before release: \\(FakeHandle.zeroedAtRelease)")
       }
       count += 1
     }
-    await run("authenticated unlock, Files key missing", {}, ready: true, provisions: true)
-    await run("authenticated unlock, Files key present", { KeychainManager.present = true }, ready: true)
+    // Review round 2, item 5: "missing" includes a key that exists but does not unwrap to this
+    // vault key (two keys under the tag after a race, or another vault key): the resume no longer
+    // asks whether both keychain items exist, it asks KeychainManager to make the key unwrap.
+    await run("authenticated unlock, Files key missing or not unwrapping to this vault key", {}, ready: true, provisions: true)
+    await run("authenticated unlock, Files key unwraps", { KeychainManager.unwraps = true }, ready: true)
+    // As before round 3: a Files key that cannot be written (no passcode) still lets Files retry.
+    await run("Files key cannot be written", { KeychainManager.writeFails = true }, ready: true, provisions: true)
     await run("locked vault", { BeebeebCryptoBridge.snapshot.handle = nil })
     await run("unconfirmed handle", { BeebeebCryptoBridge.snapshot.ownerId = nil })
     await run("foreign handle", { BeebeebCryptoBridge.snapshot.ownerId = "B" })
@@ -154,41 +194,51 @@ ${helper}
     await run("retry callback failure", { NSFileProviderManager.fail = true }, ready: true, provisions: true)
     precondition(RuntimeTrace.events == ["fileprovider.authentication_retry.failed", "fileprovider.authentication_retry.failed"], "\\(RuntimeTrace.events)")
 
-    // Task 1722 review M2-D: the exported vault key is zeroed before its buffer is released.
-    await run("provisioning zeroes the exported key", {}, ready: true, provisions: true)
-    precondition(FakeHandle.zeroedAtRelease == [true], "exported key bytes not zeroed before release: \\(FakeHandle.zeroedAtRelease)")
 
-    // Task 1722 review M1: a sign-out purge or a Settings toggle-off can land between the checks
-    // above and the Files key write (this runs on a Swift Task with no ordering against the purge
-    // queue). The key written after consent was revoked must be deleted again, and nothing resolved.
-    func race(_ label: String, _ revoke: @escaping () -> Void) async {
+    // Task 1722 review M1 + round 2 item 4: a sign-out purge or a Settings toggle-off can land at
+    // any point (the resume runs on a Swift Task with no ordering against the purge queue). The
+    // consent rule the resume passes is read before the Files key write and again after it.
+    let revocations: [(String, () -> Void)] = [
+      // resetFileProviderShowInFilesConsent: flags off, key deleted, purge generation bumped.
+      ("sign-out purge", {
+        defaults.set(false, forKey: "enabled"); defaults.set(false, forKey: "trusted")
+        KeychainManager.deleteFileProviderKey(); purgeGeneration += 1
+      }),
+      // clearFileProviderSharedState (Settings toggle-off): flags off, key deleted, no generation bump.
+      ("Settings toggle-off", {
+        defaults.set(false, forKey: "enabled"); defaults.set(false, forKey: "trusted")
+        KeychainManager.deleteFileProviderKey()
+      }),
+      // A purge and a mount that turned Files back on: only the purge generation shows it.
+      ("purge and re-mount", { KeychainManager.deleteFileProviderKey(); purgeGeneration += 1 }),
+      // A purge still in progress (its marker is set).
+      ("purge pending", { PlaintextStorageProtection.pending = true }),
+    ]
+    // During the write: it is undone, and nothing is resolved.
+    for (name, revoke) in revocations {
+      reset()
+      KeychainManager.duringWrite = revoke
+      await resumeFileProviderAuthenticationIfReady(domain: domain, defaults: defaults)
+      precondition(KeychainManager.provisioned.count == 1, "\\(name) during the write: expected the racing write, got \\(KeychainManager.provisioned.count)")
+      precondition(!KeychainManager.unwraps, "\\(name) during the write: a no-prompt Files key outlived the consent that allowed it")
+      precondition(NSFileProviderManager.calls.isEmpty, "\\(name) during the write: signalled \\(NSFileProviderManager.calls) after consent was revoked")
+      precondition(RuntimeTrace.events.contains("fileprovider.files_key.provision_undone"), "\\(name) during the write: undo not traced: \\(RuntimeTrace.events)")
+      precondition(FakeHandle.zeroedAtRelease == [true], "\\(name) during the write: exported key bytes not zeroed")
+      count += 1
+    }
+    // After the resume's own checks but before the write (while the key is exported): nothing
+    // is written, and nothing is resolved.
+    for (name, revoke) in revocations {
       reset()
       FakeHandle.onExport = revoke
       await resumeFileProviderAuthenticationIfReady(domain: domain, defaults: defaults)
-      precondition(KeychainManager.provisioned.count == 1, "\\(label): expected the racing write, got \\(KeychainManager.provisioned.count)")
-      precondition(!KeychainManager.present, "\\(label): a no-prompt Files key outlived the consent that allowed it")
-      precondition(NSFileProviderManager.calls.isEmpty, "\\(label): signalled \\(NSFileProviderManager.calls) after consent was revoked")
-      precondition(RuntimeTrace.events.contains("fileprovider.files_key.provision_undone"), "\\(label): undo not traced: \\(RuntimeTrace.events)")
-      precondition(FakeHandle.zeroedAtRelease == [true], "\\(label): exported key bytes not zeroed")
+      precondition(KeychainManager.provisioned.isEmpty, "\\(name) before the write: wrote a Files key after consent was revoked")
+      precondition(!KeychainManager.unwraps, "\\(name) before the write: a Files key exists")
+      precondition(NSFileProviderManager.calls.isEmpty, "\\(name) before the write: signalled \\(NSFileProviderManager.calls)")
+      precondition(RuntimeTrace.events.contains("fileprovider.authentication_retry.consent_revoked"), "\\(name) before the write: not traced: \\(RuntimeTrace.events)")
+      precondition(FakeHandle.zeroedAtRelease == [true], "\\(name) before the write: exported key bytes not zeroed")
       count += 1
     }
-    // resetFileProviderShowInFilesConsent: flags off, key deleted, purge generation bumped.
-    await race("sign-out purge between check and write", {
-      defaults.set(false, forKey: "enabled"); defaults.set(false, forKey: "trusted")
-      KeychainManager.deleteFileProviderKey(); purgeGeneration += 1
-    })
-    // clearFileProviderSharedState (Settings toggle-off): flags off, key deleted, no generation bump.
-    await race("Settings toggle-off between check and write", {
-      defaults.set(false, forKey: "enabled"); defaults.set(false, forKey: "trusted")
-      KeychainManager.deleteFileProviderKey()
-    })
-    // A purge that ran and a mount that turned Files back on, both inside the window: the purge
-    // generation moved, so this write is undone; the new mount provisions its own key.
-    await race("purge and re-mount between check and write", {
-      KeychainManager.deleteFileProviderKey(); purgeGeneration += 1
-    })
-    // A purge still in progress (marker set) also undoes the write.
-    await race("purge pending between check and write", { PlaintextStorageProtection.pending = true })
     FileHandle.standardOutput.write(Data("PASS native authentication recovery cases=\\(count)\\n".utf8))
   }
 }
@@ -206,5 +256,5 @@ ${helper}
   const text = readFileSync(output, 'utf8');
   // eslint-disable-next-line no-console
   if (!text.includes('PASS')) console.log(text);
-  expect(text).toContain('PASS native authentication recovery cases=20');
+  expect(text).toContain('PASS native authentication recovery cases=24');
 }, 65_000);

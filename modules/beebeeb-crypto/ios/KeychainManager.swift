@@ -106,55 +106,191 @@ final class KeychainManager {
     try storeExtensionWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
     // Task 1722 (G6/G7): the Files key follows the Files mount, and never
     // fails this store — the vault key above is already written.
-    syncFileProviderWrappedKey(
-      masterKeyBytes: masterKeyBytes,
-      label: label,
-      mounted: BeebeebKeychainCore.fileProviderMountConsented()
-    )
+    syncFileProviderWrappedKey(masterKeyBytes: masterKeyBytes, label: label, allowed: fileProviderKeyAllowed)
     #endif
   }
 
-  // MARK: - Files key lifecycle (task 1722 G1/G6/G7)
+  // MARK: - Files key lifecycle (task 1722 G1/G6/G7, review round 3)
+
+  /// What `syncFileProviderWrappedKey` did.
+  enum FileProviderKeyOutcome: Equatable {
+    /// Exactly one Files key exists and its blob unwraps to the vault key
+    /// (checked, or written and checked).
+    case ready
+    /// `allowed` said no before anything was written: there is no Files key.
+    case notAllowed
+    /// `allowed` said yes before the write and no after it: the write was undone.
+    case revoked
+    /// The key could not be written, or the keychain could not answer (device
+    /// locked). Nothing half written is left; an existing key is left alone
+    /// when the device is locked.
+    case failed
+  }
+
+  /// What the extension's own lookup would find for a given vault key.
+  enum FileProviderKeyCheck: Equatable {
+    case matches
+    case mismatch
+    /// The keychain cannot answer now (errSecInteractionNotAllowed: locked).
+    case unavailable
+  }
+
+  /// Task 1722 review round 3 (item 5): every Files key write and delete runs
+  /// under this one lock. The writers run on Expo's serial queue (`store`,
+  /// `load`, `setAccessControl`), on Swift Tasks (the foreground resume, a
+  /// Settings toggle-off) and on background threads (a backup's `load`).
+  /// Without it two writers could both miss the key and each generate one, and
+  /// the blob ended up wrapped by a key the extension's lookup does not return:
+  /// a permanent -1000. Held only around synchronous keychain calls, never
+  /// across an `await`.
+  private static let fileProviderKeyLock = NSLock()
 
   /// The File Provider's own wrapping key + blob (`storeFileProviderWrappedKey`)
   /// unwraps the vault key on an unlocked, passcode-protected device without
   /// Face ID or a passcode prompt, because Files has no authentication UI. It
   /// therefore exists only while the user has Beebeeb mounted in Files (the
   /// Settings copy: "Anyone who can unlock this iPhone can access the mounted
-  /// Files location"): provisioned while `mounted`, deleted otherwise.
+  /// Files location") and no sign-out purge is running: the rule `store`,
+  /// `load` and `setAccessControl` pass in. They run on the module queue, as
+  /// the purge does, so the purge generation the foreground resume also checks
+  /// (`resumeFileProviderAuthenticationIfReady`) cannot move during them; a
+  /// backup's `load` off that queue still sees the purge's marker.
+  static func fileProviderKeyAllowed() -> Bool {
+    BeebeebKeychainCore.fileProviderMountConsented() && !PlaintextStorageProtection.isPurgePending()
+  }
+
+  /// Makes the Files key follow `allowed`: no Files key when it says no;
+  /// otherwise exactly one Files key whose blob unwraps to `masterKeyBytes`,
+  /// written only when that is not already so.
   ///
   /// Best effort and never throws: a Files key that cannot be created must
   /// not fail a vault store or unlock (before task 1722 it did, which broke
   /// unlock or pushed `store` onto the weaker software-key fallback). Files
   /// then reports "Authentication Required" until a later provisioning works.
+  ///
+  /// Review round 3 (item 4): `allowed` is read under the lock before the
+  /// write and again after it. A Settings toggle-off and a sign-out purge
+  /// turn the consent off first and then delete the key through this lock,
+  /// so each lands before the first read (nothing is written), between the
+  /// reads (the write is undone here) or after this returns (its delete
+  /// removes the key). The callers used to read the consent once, before a
+  /// write that could land after the toggle-off's delete.
   @discardableResult
-  static func syncFileProviderWrappedKey(masterKeyBytes: Data, label: String, mounted: Bool) -> Bool {
-    guard mounted else {
-      deleteFileProviderKey()
-      return false
+  static func syncFileProviderWrappedKey(
+    masterKeyBytes: Data,
+    label: String,
+    allowed: () -> Bool
+  ) -> FileProviderKeyOutcome {
+    fileProviderKeyLock.lock()
+    defer { fileProviderKeyLock.unlock() }
+    guard allowed() else {
+      deleteFileProviderKeyLocked()
+      return .notAllowed
     }
+    let provisioned = provisionFileProviderKeyLocked(masterKeyBytes: masterKeyBytes, label: label)
+    guard allowed() else {
+      deleteFileProviderKeyLocked()
+      RuntimeTrace.event("keychain.manager.files_key.provision_undone")
+      return .revoked
+    }
+    return provisioned ? .ready : .failed
+  }
+
+  /// Under `fileProviderKeyLock`. Leaves exactly one Files key whose blob
+  /// unwraps to `masterKeyBytes`, and writes only when that is not already so.
+  /// Anything else (no key, no blob, a blob for another vault key, a blob
+  /// wrapped by a key the lookup does not return, two keys under the Files
+  /// tag) is replaced from nothing, so the new blob is wrapped by the only key
+  /// the extension's lookup can return. A keychain that cannot answer now
+  /// (locked) is left as it is: a lookup that fails there must not lead to a
+  /// second key.
+  private static func provisionFileProviderKeyLocked(masterKeyBytes: Data, label: String) -> Bool {
+    switch checkFileProviderKey(masterKeyBytes: masterKeyBytes, label: label) {
+    case .matches:
+      return true
+    case .unavailable:
+      RuntimeTrace.event("keychain.manager.files_key.unverifiable")
+      return false
+    case .mismatch:
+      break
+    }
+    deleteFileProviderKeyLocked()
     do {
       try storeFileProviderWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
-      RuntimeTrace.event("keychain.manager.files_key.provisioned")
-      return true
     } catch {
       RuntimeTrace.event("keychain.manager.files_key.provision_failed", ["error": String(describing: error)])
+      deleteFileProviderKeyLocked()
       return false
+    }
+    if checkFileProviderKey(masterKeyBytes: masterKeyBytes, label: label) == .mismatch {
+      RuntimeTrace.event("keychain.manager.files_key.provision_failed", ["error": "written key does not unwrap"])
+      deleteFileProviderKeyLocked()
+      return false
+    }
+    RuntimeTrace.event("keychain.manager.files_key.provisioned")
+    return true
+  }
+
+  /// Review round 3 (item 5): "provisioned" is what the extension will find,
+  /// not whether both keychain items exist. `.matches` only for exactly one
+  /// key under the Files tag whose blob unwraps (the extension's own
+  /// `loadFileProviderMasterKey`) to `masterKeyBytes`. The unwrapped copy is
+  /// compared in constant time and zeroed.
+  private static func checkFileProviderKey(masterKeyBytes: Data, label: String) -> FileProviderKeyCheck {
+    guard let keys = fileProviderKeyCount() else { return .unavailable }
+    guard keys == 1 else { return .mismatch }
+    do {
+      var unwrapped = try BeebeebKeychainCore.loadFileProviderMasterKey(label: label)
+      defer { unwrapped.resetBytes(in: unwrapped.startIndex..<unwrapped.endIndex) }
+      return constantTimeEqual(unwrapped, masterKeyBytes) ? .matches : .mismatch
+    } catch BeebeebKeychainCore.LoadError.fileProviderKeyUnavailable(_, _, let code)
+      where code == Int(errSecInteractionNotAllowed) {
+      return .unavailable
+    } catch {
+      return .mismatch
     }
   }
 
-  /// Removes the Files wrapping key and its wrapped blob; the vault and
-  /// share/backup keys are untouched.
-  static func deleteFileProviderKey() {
-    deleteSEKey(tag: BeebeebKeychainCore.seKeyTagFiles)
-    deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceFiles)
+  /// Keys under the Files tag in any of this app's access groups (no group in
+  /// the query, so a legacy group-less key counts too); nil when the keychain
+  /// cannot say now (locked).
+  private static func fileProviderKeyCount() -> Int? {
+    let query: [CFString: Any] = [
+      kSecClass: kSecClassKey,
+      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+      kSecAttrApplicationTag: BeebeebKeychainCore.seKeyTagFiles,
+      kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
+      kSecReturnAttributes: true,
+      kSecMatchLimit: kSecMatchLimitAll,
+    ]
+    var result: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound { return 0 }
+    guard status == errSecSuccess else { return nil }
+    return (result as? [Any])?.count ?? 0
   }
 
-  /// Both halves of the Files key are present (it may still fail to unwrap,
-  /// e.g. on a locked device; this only answers "is it provisioned").
-  static func hasFileProviderKey(label: String) -> Bool {
-    BeebeebKeychainCore.findSEKey(tag: BeebeebKeychainCore.seKeyTagFiles) != nil
-      && BeebeebKeychainCore.fetchWrappedBlob(service: BeebeebKeychainCore.wrappedKeyServiceFiles, label: label) != nil
+  private static func constantTimeEqual(_ lhs: Data, _ rhs: Data) -> Bool {
+    guard lhs.count == rhs.count else { return false }
+    var difference: UInt8 = 0
+    for (left, right) in zip(lhs, rhs) { difference |= left ^ right }
+    return difference == 0
+  }
+
+  /// Removes every Files wrapping key (all of them, if a race before round 3
+  /// left two) and its wrapped blob; the vault and share/backup keys are
+  /// untouched. Takes the Files key lock, so it waits for a write in progress
+  /// and removes what that write left.
+  static func deleteFileProviderKey() {
+    fileProviderKeyLock.lock()
+    defer { fileProviderKeyLock.unlock() }
+    deleteFileProviderKeyLocked()
+  }
+
+  /// Under `fileProviderKeyLock`. `SecItemDelete` removes every match.
+  private static func deleteFileProviderKeyLocked() {
+    deleteSEKey(tag: BeebeebKeychainCore.seKeyTagFiles)
+    deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceFiles)
   }
 
   /// Encrypt the master key under the extension SE key and persist alongside
@@ -284,13 +420,9 @@ final class KeychainManager {
 
     // Keep the extension-wrapped blob in sync so backup extensions can read.
     try storeExtensionWrappedKey(masterKeyBytes: plaintextData, label: label)
-    // Task 1722 (G1/G6/G7): (re)provision the Files key while Files is
-    // mounted, remove it otherwise; never fail the unlock over it.
-    syncFileProviderWrappedKey(
-      masterKeyBytes: plaintextData,
-      label: label,
-      mounted: BeebeebKeychainCore.fileProviderMountConsented()
-    )
+    // Task 1722 (G1/G6/G7): make the Files key unwrap to this vault key while
+    // Files is mounted, remove it otherwise; never fail the unlock over it.
+    syncFileProviderWrappedKey(masterKeyBytes: plaintextData, label: label, allowed: fileProviderKeyAllowed)
 
     // Idempotent re-store under the access group. If the read came from
     // legacy no-access-group storage, this migrates it forward; if it
@@ -508,11 +640,11 @@ final class KeychainManager {
     // Always keep the extension wrapped key available. The File Provider never
     // falls back to the primary key, because that key may require Face ID from
     // an extension process and can cause repeated system prompts in Files.app.
-    let filesMounted = BeebeebKeychainCore.fileProviderMountConsented()
     for item in plaintexts {
       try storeExtensionWrappedKey(masterKeyBytes: item.data, label: item.account)
-      // Task 1722 (G6/G7): mounted-only and best effort, as in `store`/`load`.
-      syncFileProviderWrappedKey(masterKeyBytes: item.data, label: item.account, mounted: filesMounted)
+      // Task 1722 (G6/G7): mounted-only and best effort, as in `store`/`load`;
+      // the rule is read under the Files key lock, before and after the write.
+      syncFileProviderWrappedKey(masterKeyBytes: item.data, label: item.account, allowed: fileProviderKeyAllowed)
     }
     RuntimeTrace.event("keychain.manager.set_access_control.success", [
       "requireBiometric": requireBiometric,
@@ -727,7 +859,8 @@ final class KeychainManager {
   private static func deleteSEKey() {
     deleteSEKey(tag: BeebeebKeychainCore.seKeyTag)
     deleteSEKey(tag: BeebeebKeychainCore.seKeyTagExt)
-    deleteSEKey(tag: BeebeebKeychainCore.seKeyTagFiles)
+    // Task 1722 review round 3: through the Files key lock, like every Files key write.
+    deleteFileProviderKey()
   }
 
   private static func deleteSEKey(tag: Data) {
@@ -750,7 +883,8 @@ final class KeychainManager {
   private static func deleteWrappedItems() {
     deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyService)
     deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceExt)
-    deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceFiles)
+    // Task 1722 review round 3: the Files key and its blob, through the Files key lock.
+    deleteFileProviderKey()
   }
 
   private static func deleteWrappedItems(service: String) {
