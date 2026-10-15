@@ -241,6 +241,7 @@ nativeTest('Files key exists only while Files is mounted, and never fails a vaul
   const lifecycle = [
     'static func syncFileProviderWrappedKey(',
     'static func deleteFileProviderKey()',
+    'static func hasFileProviderKey(label: String)',
     'private static func deleteSEKey(tag: Data)',
     'private static func deleteWrappedItems(service: String)',
   ].map((s) => optionalBody(manager, s));
@@ -398,6 +399,20 @@ var loadError: Error?
 do { loadResult = try Manager.load(label: label) } catch { loadError = error }
 check(loadError == nil && loadResult == vault, "Files key failure: unlock still returns the vault key, got \\(String(describing: loadError))")
 check(!hasFilesKey, "Files key failure on unlock: no Files key")
+
+// Task 1722 review M2-C: "provisioned" needs BOTH halves. The resume re-provisions anything less
+// (an \`||\` here passed the whole suite and would leave a half-written key unrepaired).
+reset(mounted: true)
+try! Manager.store(masterKeyBytes: vault, label: label)
+check(Manager.hasFileProviderKey(label: label), "Files key + wrapped blob: provisioned")
+let filesBlob = State.blobs[BeebeebKeychainCore.wrappedKeyServiceFiles]
+State.blobs[BeebeebKeychainCore.wrappedKeyServiceFiles] = nil
+check(!Manager.hasFileProviderKey(label: label), "Files key without its wrapped blob: not provisioned")
+State.blobs[BeebeebKeychainCore.wrappedKeyServiceFiles] = filesBlob
+State.keys[BeebeebKeychainCore.seKeyTagFiles] = nil
+check(!Manager.hasFileProviderKey(label: label), "wrapped blob without its Files key: not provisioned")
+State.blobs[BeebeebKeychainCore.wrappedKeyServiceFiles] = nil
+check(!Manager.hasFileProviderKey(label: label), "neither half: not provisioned")
 print("Files key lifecycle: \\(count) cases passed")
 `;
   const dir = mkdtempSync(join(tmpdir(), 'beebeeb-files-key-lifecycle-'));
@@ -417,7 +432,7 @@ print("Files key lifecycle: \\(count) cases passed")
   // eslint-disable-next-line no-console
   console.log(text);
   expect(text).not.toContain('FAIL:');
-  expect(text).toContain('Files key lifecycle: 16 cases passed');
+  expect(text).toContain('Files key lifecycle: 20 cases passed');
 }, 150_000);
 
 nativeTest('fileProviderMountConsented is the Settings rule: trusted mount on, enabled on or absent', () => {
