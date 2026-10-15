@@ -110,7 +110,8 @@ import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
 import DevicesSection from '../components/settings/DevicesSection';
 import { markUnlocked } from '../lib/lock-state';
-import { mountTrustedFileProvider, populateFileProviderCache, registerTrustedFileProviderDomain, removeTrustedFileProvider, resetTrustedFileProviderDomain } from '../lib/file-provider-mount';
+import { populateFileProviderCache, registerTrustedFileProviderDomain, resetTrustedFileProviderDomain } from '../lib/file-provider-mount';
+import { setFilesMountedByUser } from '../lib/files-mount-default';
 import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { DEFAULT_NOTIFICATION_PREFERENCES } from '../lib/notification-prefs';
@@ -1312,14 +1313,19 @@ export default function SettingsScreen() {
     }
   }, []);
 
+  // Task 1722 round 4 (Guus 2026-10-15, Q1): Files is on by default for a signed-in account;
+  // this switch still turns it off, and that choice is kept for this account across sign-outs
+  // (src/lib/files-mount-default.ts), so the next sign-in does not switch it back on.
   const handleFileProviderMountToggle = useCallback(async (enabled: boolean) => {
     const previous = fileProviderMounted;
     setFileProviderMounted(enabled);
     setUpdatingFileProviderMount(true);
     try {
-      const result = enabled
-        ? await mountTrustedFileProvider({ vaultUnlocked: crypto.isUnlocked })
-        : await removeTrustedFileProvider();
+      const result = await setFilesMountedByUser({
+        userId: user?.user_id,
+        enabled,
+        vaultUnlocked: crypto.isUnlocked,
+      });
       // Don't claim "mounted in Files" unless iOS actually presents the
       // location: userVisibleRootError != null means it's registered but not
       // user-visible.
@@ -1347,7 +1353,7 @@ export default function SettingsScreen() {
     } finally {
       setUpdatingFileProviderMount(false);
     }
-  }, [crypto.decryptMetadata, crypto.isUnlocked, fileProviderMounted, showToast]);
+  }, [crypto.decryptMetadata, crypto.isUnlocked, fileProviderMounted, showToast, user?.user_id]);
 
   const handleNotificationsToggle = useCallback(async (enabled: boolean) => {
     if (enabled) {

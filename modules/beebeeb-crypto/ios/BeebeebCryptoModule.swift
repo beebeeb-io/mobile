@@ -1637,10 +1637,18 @@ private func fileProviderPrivacyState(defaults: UserDefaults? = sharedDefaults()
   let unlockedUntilMs = defaults?.double(forKey: fileProviderUnlockedUntilKey) ?? 0
   let cacheDatabaseReady = fileProviderCacheDatabaseExists()
   let locked = !showInFiles
+  // Task 1722 round 4 (Q1 "Files on by default"): the domain schema stamp is
+  // written only after a successful registration and never removed, so it
+  // says whether Files was ever mounted on this install. The app's one-time
+  // upgrade check (src/lib/files-mount-default.ts) reads it: off on an install
+  // that mounted before may be an explicit off (TestFlight 236 cleared the
+  // consent on every sign-out exactly as a toggle-off did).
+  let everMounted = defaults?.string(forKey: fileProviderDomainSchemaKey) != nil
 
   return [
     "supported": true,
     "showInFiles": showInFiles,
+    "everMounted": everMounted,
     "trustedMountEnabled": trustedMountEnabled,
     "mounted": showInFiles && cacheDatabaseReady,
     "cacheDatabaseReady": cacheDatabaseReady,

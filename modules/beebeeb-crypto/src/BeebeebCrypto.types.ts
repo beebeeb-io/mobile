@@ -90,6 +90,11 @@ export interface FileProviderDomainInfo {
 export interface FileProviderPrivacyState {
   supported: boolean
   showInFiles: boolean
+  /**
+   * Task 1722 round 4: true when Files was ever mounted on this install (the domain schema stamp
+   * a successful registration writes). Read once by the upgrade check in files-mount-default.ts.
+   */
+  everMounted?: boolean
   trustedMountEnabled: boolean
   mounted: boolean
   registered?: boolean
