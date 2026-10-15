@@ -230,3 +230,25 @@ The ANSSI cryptology declaration for France (§5 above; LCEN art. 30) and the BI
 self-classification report (§5) are unaffected by this section — both are Initlabs B.V.
 filings independent of Apple's per-app questionnaire, and remain owed regardless of whether
 the app is sold in France.
+
+## 8. 2026-10-15 — `ITSAppUsesNonExemptEncryption = false` in the Info.plist (no more per-build prompt)
+
+**Guus, 2026-10-15:** "why is that export compliance back again? That should NOT be the case
+anymore, should be fixed. fix it".
+
+**Supersedes §7's step 2 ("removed … rather than set to a value") and step 3 (per-build answers
+in App Store Connect).** Under §7 every upload stopped at *Missing Compliance* until someone
+answered the questionnaire, and every answer since build 213 was the same: standard algorithms
+only (§2), not available in France (§7) — which App Store Connect stores as
+`usesNonExemptEncryption = false` (builds 235, 236 and 237 carry exactly that value, read via the
+App Store Connect API on 2026-10-15).
+
+`app.json` (`ios.infoPlist`) and `ios/Beebeeb/Info.plist` now declare that same answer up front:
+`ITSAppUsesNonExemptEncryption = false`. With the key present App Store Connect does not ask per
+build. This is NOT the §7 failure mode: builds 210–212 were rejected because the key was `true`
+**without** an `ITSEncryptionExportComplianceCode`; `false` needs no code and no declaration.
+
+The truthfulness of `false` rests on §2 (standard, published algorithms only) and §7 (France,
+Russia and Belarus off sale). If either changes — a proprietary algorithm, or France back on
+sale — this key must change with it (France: §7 "Re-enabling France", both keys together).
+The ANSSI and BIS obligations in §5 are unaffected.
