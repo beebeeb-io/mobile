@@ -595,6 +595,40 @@ func trashIsUnsupportedNotTheRoot() async {
   check(ApiClient.shared.calls.isEmpty && CacheManager.shared.writes.isEmpty, "trash lookups touch neither the server nor the cache")
 }
 
+// ---- Task 1722 review M4: the snapshot anchor ignores the MIME type ----
+final class ChangeObserver: NSObject, NSFileProviderChangeObserver {
+  var finished: NSFileProviderSyncAnchor?
+  var error: NSError?
+  func didUpdate(_ updatedItems: [NSFileProviderItem]) {}
+  func didDeleteItems(withIdentifiers deletedItemIdentifiers: [NSFileProviderItemIdentifier]) {}
+  func finishEnumeratingChanges(upTo anchor: NSFileProviderSyncAnchor, moreComing: Bool) { finished = anchor }
+  func finishEnumeratingWithError(_ error: Error) { self.error = error as NSError }
+}
+
+// The two cache writers disagree on mime_type: the app writes the server's (often null), the
+// extension the decrypted one. Every flip changed the content type and so the anchor, and each
+// changed anchor costs "a very expensive scan of all the items known by the system". A MIME-only
+// change keeps the anchor; identity, parent, name and versions still move it.
+func snapshotIgnoresTheMimeType() async {
+  reset()
+  CacheManager.shared.rows["m1"] = row("m1", name: "notes.md", size: 207, mime: "text/plain")
+  let enumerator = FileProviderEnumerator(containerIdentifier: .rootContainer)
+  var anchor: NSFileProviderSyncAnchor?
+  enumerator.currentSyncAnchor { anchor = $0 }
+  guard let anchor else { check(false, "no anchor"); return }
+  for mime in [nil, "text/markdown", "application/octet-stream"] as [String?] {
+    CacheManager.shared.rows["m1"] = row("m1", name: "notes.md", size: 207, mime: mime)
+    let observer = ChangeObserver()
+    enumerator.enumerateChanges(for: observer, from: anchor)
+    check(observer.error == nil && observer.finished == anchor, "mime \(mime ?? "nil"): the anchor is unchanged (no full rescan), got \(describe(observer.error))")
+  }
+  CacheManager.shared.rows["m1"] = row("m1", name: "renamed.md", size: 207, mime: "text/plain")
+  let renamed = ChangeObserver()
+  enumerator.enumerateChanges(for: renamed, from: anchor)
+  check(isProviderError(renamed.error, .syncAnchorExpired), "a rename still rebuilds, got \(describe(renamed.error))")
+  enumerator.invalidate()
+}
+
 // ---- (G4/G5) content streams, chunk by chunk, into the registered App Group temp directory ----
 import CryptoKit
 
@@ -820,6 +854,7 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("undecryptable-label", undecryptableNameGetsUniqueLabelWithoutRename),
   ("placeholder-rename", renameOfUndecryptedItemNeverReachesTheServer),
   ("trash", trashIsUnsupportedNotTheRoot),
+  ("snapshot-mime", snapshotIgnoresTheMimeType),
   ("streamed-content", contentStreamsIntoATemporaryFile),
   ("streamed-memory", contentStreamingStaysWithinTheExtensionBudget),
   ("registered-temp", contentLandsInTheRegisteredTempDirectory),
@@ -929,6 +964,12 @@ describe('task 1722 (d): listings never vend placeholder names', () => {
 
   nativeSwiftHarnessTest('renaming an undecrypted item sends 0 server writes; a move keeps its ciphertext name', () => {
     expectScenario('placeholder-rename', 9);
+  }, 300_000);
+});
+
+describe('task 1722 review M4: no full rescans for a MIME type the cache writers disagree on', () => {
+  nativeSwiftHarnessTest('a MIME-only change keeps the snapshot anchor; a rename still expires it', () => {
+    expectScenario('snapshot-mime', 4);
   }, 300_000);
 });
 

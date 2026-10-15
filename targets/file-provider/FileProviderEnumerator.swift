@@ -155,13 +155,19 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
     let items = rows.map(FileProviderItem.init(cached:))
       .sorted { $0.itemIdentifier.rawValue < $1.itemIdentifier.rawValue }
     var hash = SHA256()
-    hash.update(data: Data("beebeeb.files.snapshot.v1".utf8))
+    // Task 1722 review M4: v2 leaves out the content type. The two cache
+    // writers disagree on mime_type (the app writes the server's, often null;
+    // the extension the decrypted one), so the same item flipped between
+    // public.data, public.plain-text and net.daringfireball.markdown, and
+    // every flip forced "a very expensive scan of all the items known by the
+    // system" (NSFileProviderReplicatedExtension.h). The item versions do not
+    // include the MIME type either.
+    hash.update(data: Data("beebeeb.files.snapshot.v2".utf8))
     for item in items {
       let fields = [
         Data(item.itemIdentifier.rawValue.utf8),
         Data(item.parentItemIdentifier.rawValue.utf8),
         Data(item.filename.utf8),
-        Data(item.contentType.identifier.utf8),
         item.itemVersion.contentVersion,
         item.itemVersion.metadataVersion,
       ]
