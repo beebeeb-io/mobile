@@ -780,6 +780,27 @@ back up `Library/Caches/`. Any path this app writes outside `Caches/` must be re
   `Domains.plist`); removing ours brings it back within ~100 ms. What to show there is decision 1722 Q1.
 - **Files icon view: tapping a label can start an in-place rename.** In Maestro, switch Files to list
   view ("…" → List) and tap the row's size/date text, or tap the tile, never the label.
+- **Files content is plaintext in App Group `temp/` only** (review I1, 2026-10-15). Never the File
+  Provider manager's `temporaryDirectoryURL()`: on a simulator it is `<device>/data/tmp`, outside every
+  app container, so no registry entry, protection or sign-out purge reaches it.
+  `src/lib/plaintext-storage.test.ts` fails on any system temp API in `targets/file-provider/`. After a
+  content open on a simulator, `temp/` in the App Group container should be empty again (the system
+  clones and unlinks what it takes).
+- **Upgrading a phone that ran TestFlight 236 or earlier** (review M3): folders Files already listed are
+  not re-listed when browsed again (signals for containers other than the working set are ignored, and
+  the working set is the root). They heal through the working-set rescan after the upgrade, which first
+  serves the cached rows: a subfolder that showed "Open Beebeeb to Decrypt N" can show "Encrypted item ·"
+  labels until a later root change brings the real names. Turning Files off and on rebuilds
+  everything, but on iOS removing the domain deletes every item in it, including files created
+  through Files that have not uploaded yet (`NSFileProviderManager.remove`; the mode that keeps them
+  is macOS-only). Use it only after those uploads finished; the same holds for any
+  `fileProviderDomainSchemaVersion` bump.
+- **Deleting a simulator after Files was mounted: wait for the purgatory first** (2026-10-15). Sign-out
+  removes the domain, and fileproviderd parks its directory in
+  `<device>/data/Library/Application Support/FileProvider/Purgatory/` as a dataless directory. Shut the
+  sim down while it is still there and `simctl delete` and `simctl erase` fail with EPERM ("data"
+  couldn't be moved), the device stays `isDeleted`, and it can no longer boot to finish the job
+  (`bb-1722-r1`, 57C1B9B7, is stuck that way). Before `simctl shutdown`, check that `Purgatory/` is empty.
 
 ## Bottom sheets — one primitive (task 1586)
 
