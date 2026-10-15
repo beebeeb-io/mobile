@@ -35,7 +35,7 @@ backups. A backup that captures plaintext is permanently outside Beebeeb's contr
 | `Caches/*` one-shot exports (share, save, proof, zip-extract, upload staging) | Decrypted bytes for share/save flows | `src/screens/FilesScreen.tsx`, `src/screens/SharedViewScreen.tsx`, `src/components/preview/ZipRenderer.tsx`, `src/lib/api.ts` | No — iOS excludes `Caches/` | Accepted, see below |
 | `Documents/beebeeb-simulator-master-key.txt` | RAW master key, base64 | `src/lib/crypto-context.tsx:74,88-96,141-142`; `modules/beebeeb-crypto/ios/BeebeebCryptoBridge.swift:165-175` | Yes, on simulators only | Excluded + protected (registry + launch `hardenAll()`); gate pinned by `src/lib/software-vault-gate.test.ts` + `src/lib/software-vault-gate-device.test.ts` |
 | App Group `pinned/` | Decrypted, pinned Files.app content — a **separate compiled `.appex` target**, not the main app | `targets/file-provider/Constants.swift:74-80`, `targets/file-provider/FileProviderExtension.swift:107-112` | Yes — plaintext images/documents, indefinitely retained | Excluded + protected (registry entry + target-membership fix, Task 2) |
-| App Group `temp/` | Decrypted transient blobs returned to the system from `fetchContents` | `targets/file-provider/Constants.swift:82-87`, `targets/file-provider/FileProviderExtension.swift:97-108` | Yes — plaintext, and never deleted after use (see Findings) | Excluded + protected |
+| App Group `temp/` | Decrypted transient blobs returned to the system from `fetchContents`, streamed one chunk at a time (task 1722) | `targets/file-provider/Constants.swift:118-124`, `targets/file-provider/FileProviderExtension.swift:67-82,259-260` | Yes — plaintext, and never deleted after use (see Findings) | Excluded + protected (directory protected before use; files inherit). Lifecycle since task 1722 (2026-10-15): the system clones and unlinks each file it takes; a partial file is deleted on every stop or failure; a file left by a killed extension process is deleted by the next process's first instance; every sign-out purge deletes the directory and resweeps it. The ONLY location the extension writes Files content to: not the File Provider manager's `temporaryDirectoryURL()` (see Findings) |
 
 ## Findings And Fixes
 
@@ -64,6 +64,31 @@ backups. A backup that captures plaintext is permanently outside Beebeeb's contr
   entry after handing it to the system from `fetchContents`. Excluding `temp/` from backup (this
   item) stops it from leaving the device; it does not stop it from accumulating on the device. This
   is a lifecycle bug, filed as a fast-follow rather than expanded into this item's scope.
+  - **Update 2026-10-15 (task 1722, review round 1):** the extension is a replicated
+    (`NSFileProviderReplicatedExtension`) provider, and for those the system "clones and unlinks the
+    received fileContents" (SDK `NSFileProviderReplicatedExtension.h`, `fetchContents`), so a
+    `temp/` entry handed to the system is deleted by the system. What could still accumulate is a
+    file left by a process that died first (a decrypt killed part-way, or a finished file not yet
+    unlinked). Apple makes the extension responsible for those "the next time an instance of the
+    extension is created": `FileProviderExtension.leftoverContentSweep` deletes everything in
+    `temp/` once per process, at its first instance. Pinned to tests in
+    `src/lib/file-provider-extension-behaviour.test.ts` (`leftover-sweep`, `bad-chunk`,
+    `stream-abort`).
+- **Task 1722 review I1 (2026-10-15): a system temporary directory is not a registered path.**
+  Commit `7b57ac7` streamed decrypted Files content into `NSFileProviderManager.temporaryDirectoryURL()`,
+  Apple's suggested location. On a simulator it resolved to `<device>/data/tmp/` (task 1722 evidence
+  `2026-10-14/sim/fileprovider-stream.log:26619-26649`), the device-wide temporary directory: outside
+  every app container, so not in this registry, not protected by us, and out of reach of the sign-out
+  purge, which runs in the app. With streaming, a partial plaintext file sits there for the whole
+  decrypt (2.16 s for the 59.8 MB DNG on the simulator), and a process kill leaves it behind. The
+  content goes back into App Group `temp/`: the requirement is "a regular file on the same volume as
+  the user-visible URL", the App Group container and the user-visible `CloudStorage/` root are on the
+  same APFS data volume on iOS, and the framework gives fileproviderd a read-write sandbox extension
+  for whatever URL the extension returns (same log), so the system can still clone and unlink it.
+  `src/lib/plaintext-storage.test.ts` now fails if any `targets/file-provider/` source names
+  `temporaryDirectoryURL`, `NSTemporaryDirectory()` or `FileManager.default.temporaryDirectory`.
+  Device-unverified: that fileproviderd clones and unlinks from the App Group container on a phone
+  (task 1722 device rungs D1/D2).
 - Pre-encryption share staging (`PendingShareUploads/` and App Group `IncomingShares/`) held full
   plaintext file bodies until upload completed. Both are now excluded and protected.
 - The pre-mortem brief stated that offline staging holds "full decrypted files". It does not:

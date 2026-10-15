@@ -97,6 +97,25 @@ enum AppGroupContainer {
   static var pinnedContentDirectory: URL { directory("app-group-pinned") }
 }
 
+// ---- File Provider manager: shadows the framework class for the extension sources ----
+// Task 1722 review I1: makes a call to temporaryDirectoryURL() observable. On a simulator it
+// resolved to <device>/data/tmp, outside every app container, where the sign-out purge cannot
+// reach; the extension must write plaintext only into the registered App Group temp directory.
+final class NSFileProviderManager {
+  private static let lock = NSLock()
+  private static var _temporaryDirectoryCalls = 0
+  static var temporaryDirectoryCalls: Int { lock.lock(); defer { lock.unlock() }; return _temporaryDirectoryCalls }
+  static var systemTemporaryDirectory: URL { AppGroupContainer.directory("system-temp") }
+  init?(for domain: NSFileProviderDomain) {}
+  func temporaryDirectoryURL() throws -> URL {
+    Self.lock.lock(); Self._temporaryDirectoryCalls += 1; Self.lock.unlock()
+    return Self.systemTemporaryDirectory
+  }
+  func signalEnumerator(for container: NSFileProviderItemIdentifier, completionHandler: @escaping (Error?) -> Void) {
+    completionHandler(nil)
+  }
+}
+
 // ---- keychain: the Files key load is the only call the extension makes ----
 enum BeebeebKeychainCore {
   enum LoadMode { case primaryOnly, extensionOnly, extensionThenPrimary, fileProviderOnly }
@@ -302,8 +321,9 @@ func isProviderError(_ error: NSError?, _ code: NSFileProviderError.Code) -> Boo
   error?.domain == NSFileProviderErrorDomain && error?.code == code.rawValue
 }
 
-func row(_ id: String, parent: String? = nil, name: String? = nil, encrypted: String? = nil, folder: Bool = false, size: Int = 0) -> CachedItem {
-  CachedItem(id: id, parentId: parent, nameEncrypted: encrypted, nameDecrypted: name, mimeType: folder ? nil : "text/plain",
+func row(_ id: String, parent: String? = nil, name: String? = nil, encrypted: String? = nil, folder: Bool = false, size: Int = 0,
+         mime: String? = "text/plain") -> CachedItem {
+  CachedItem(id: id, parentId: parent, nameEncrypted: encrypted, nameDecrypted: name, mimeType: folder ? nil : mime,
              sizeBytes: size, isFolder: folder, isPinned: false, hasThumbnail: false, thumbnailData: nil, thumbnailNonce: nil,
              createdAt: nil, updatedAt: "2026-10-14T00:00:00Z", syncAnchor: 1, isMaterialized: false)
 }
@@ -450,6 +470,24 @@ func noKeyStillRefreshesKnownNames() async {
   check(CacheManager.shared.item(id: "k2").map { FileProviderItem(cached: $0).filename } == "legacy-plain.txt", "legacy plaintext name kept")
 }
 
+// Task 1722 review M2-A: one name the key must open is enough to refuse the whole listing, even
+// when its siblings are already known. A folder that is only partly decryptable without the key
+// must not be written with placeholder rows for the rest.
+func noKeyRefusesAMixedFolder() async {
+  reset()
+  BeebeebKeychainCore.keyResult = .failure(BeebeebKeychainCore.LoadError.seKeyNotFound)
+  CacheManager.shared.rows["k1"] = row("k1", parent: "M", name: "Budget.xlsx", encrypted: encryptedName("k1", "Budget.xlsx"))
+  ApiClient.shared.listings["M"] = .success([
+    dto("k1", parent: "M", name: encryptedName("k1", "Budget.xlsx")),
+    dto("k2", parent: "M", name: "legacy-plain.txt"),
+    dto("n1", parent: "M", name: encryptedName("n1", "Taxes 2026.pdf")),
+  ])
+  let outcome = await SyncEngine.refreshContainer(containerId: "M")
+  check(outcome == .notAuthenticated, "no key, one name needs the key: refresh refused, got \(outcome)")
+  check(CacheManager.shared.writes.isEmpty, "no key, mixed folder: nothing written, got \(CacheManager.shared.writes)")
+  check(CacheManager.shared.item(id: "n1") == nil, "no key, mixed folder: no placeholder row for the undecrypted name")
+}
+
 func undecryptableNameGetsUniqueLabelWithoutRename() async {
   reset()
   ApiClient.shared.listings["H"] = .success([
@@ -557,7 +595,7 @@ func trashIsUnsupportedNotTheRoot() async {
   check(ApiClient.shared.calls.isEmpty && CacheManager.shared.writes.isEmpty, "trash lookups touch neither the server nor the cache")
 }
 
-// ---- (G4/G5) content streams, chunk by chunk, into the system's temporary directory ----
+// ---- (G4/G5) content streams, chunk by chunk, into the registered App Group temp directory ----
 import CryptoKit
 
 func footprint() -> (current: UInt64, peak: UInt64) {
@@ -610,8 +648,13 @@ func stage(_ id: String, size: Int, chunkSize: Int, pinned: Bool = false) -> (do
 }
 
 func leftovers(_ id: String) -> [String] {
-  let directories = [AppGroupContainer.temporaryContentDirectory, AppGroupContainer.pinnedContentDirectory]
+  let directories = [AppGroupContainer.temporaryContentDirectory, AppGroupContainer.pinnedContentDirectory,
+                     NSFileProviderManager.systemTemporaryDirectory]
   return directories.flatMap { (try? FileManager.default.contentsOfDirectory(atPath: $0.path)) ?? [] }.filter { $0.hasPrefix(id) }
+}
+
+func entries(_ directory: URL) -> [String] {
+  ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).sorted()
 }
 
 func contentStreamsIntoATemporaryFile() async {
@@ -647,12 +690,83 @@ func contentStreamingStaysWithinTheExtensionBudget() async {
   print("streamed-memory: 48 MiB fetched, peak footprint grew \(grown / 1_048_576) MiB")
 }
 
-func temporaryDirectoryIsTheSystemsWithAFallback() async {
-  let fallback = AppGroupContainer.temporaryContentDirectory
-  let system = URL(fileURLWithPath: "/fp-domain-temp", isDirectory: true)
-  check(FileProviderExtension.contentDirectory(managerTemporaryDirectory: { system }, fallback: { fallback }) == system, "the manager's temporaryDirectoryURL() is used when available")
-  check(FileProviderExtension.contentDirectory(managerTemporaryDirectory: { throw NSFileProviderError(.providerNotFound) }, fallback: { fallback }) == fallback, "a failing temporaryDirectoryURL() falls back to the App Group temp directory")
-  check(FileProviderExtension.contentDirectory(managerTemporaryDirectory: { nil }, fallback: { fallback }) == fallback, "no manager falls back to the App Group temp directory")
+// Task 1722 review I1: plaintext goes only into the registered App Group temp directory
+// (excluded from backup, protected, swept by every sign-out purge), never into the system
+// temporary directory, which on a simulator resolved to <device>/data/tmp.
+func contentLandsInTheRegisteredTempDirectory() async {
+  reset()
+  let staged = stage("small", size: 207, chunkSize: 1_048_576)
+  let (url, error) = await fetch("small")
+  check(error == nil && url.flatMap(digest(of:)) == staged.digest, "fetch succeeds, got \(describe(error))")
+  let directory = url?.deletingLastPathComponent().standardizedFileURL.path
+  check(directory == AppGroupContainer.temporaryContentDirectory.standardizedFileURL.path, "content is in the App Group temp directory, got \(directory ?? "nil")")
+  check(NSFileProviderManager.temporaryDirectoryCalls == 0, "temporaryDirectoryURL() is never asked, got \(NSFileProviderManager.temporaryDirectoryCalls) calls")
+  check(entries(NSFileProviderManager.systemTemporaryDirectory).isEmpty, "nothing written to the system temporary directory, got \(entries(NSFileProviderManager.systemTemporaryDirectory))")
+}
+
+/// Flips one byte in chunk number "index" (0-based) of upload-format ciphertext with "chunkSize" plaintext chunks.
+func tamper(_ url: URL, chunk index: Int, chunkSize: Int) {
+  let handle = try! FileHandle(forUpdating: url)
+  defer { try? handle.close() }
+  let offset = UInt64(index * (12 + chunkSize + 16) + 12 + 100)
+  try! handle.seek(toOffset: offset)
+  let byte = try! handle.read(upToCount: 1)!
+  try! handle.seek(toOffset: offset)
+  try! handle.write(contentsOf: Data([byte[0] ^ 0xFF]))
+}
+
+// Task 1722 review I1 / mutation B: a chunk that fails part-way (tampered, or the file ends
+// early) must not leave the chunks already written. The partial file is observed existing
+// before the failing chunk, so the check below proves a real cleanup, not an empty directory.
+func badChunkLeavesNoPlaintext() async {
+  let chunk = 16_384
+  let cases: [(id: String, label: String, damage: (URL) -> Void)] = [
+    ("tampered", "tampered chunk 3 of 5", { url in tamper(url, chunk: 2, chunkSize: chunk) }),
+    ("truncated", "truncated in chunk 4 of 5", { url in
+      let handle = try! FileHandle(forWritingTo: url)
+      try! handle.truncate(atOffset: UInt64(3 * (12 + chunk + 16) + 8_000))
+      try! handle.close()
+    }),
+  ]
+  for (id, label, damage) in cases {
+    reset()
+    let staged = stage(id, size: 5 * chunk, chunkSize: chunk)
+    damage(staged.download)
+    var partialBeforeFailure: [String] = []
+    // Epoch checks: before the first byte (1), then before chunks 1, 2, 3 (2, 3, 4).
+    CacheManager.shared.onEpochCheck = (4, { partialBeforeFailure = leftovers(id) })
+    let (url, error) = await fetch(id)
+    check(url == nil && isProviderError(error, .cannotSynchronize), "\(label): content that does not decode is -2005, got \(describe(error))")
+    check(partialBeforeFailure.count == 1, "\(label): a partial plaintext file existed before the bad chunk, got \(partialBeforeFailure)")
+    check(leftovers(id).isEmpty, "\(label): no partial plaintext left, got \(leftovers(id))")
+    check(!FileManager.default.fileExists(atPath: staged.download.path), "\(label): the ciphertext file is deleted")
+  }
+}
+
+// Task 1722 review I1: a decrypt that was killed (jetsam, crash, or the extension stopped when
+// sign-out removes the domain) leaves its partial plaintext in temp/. Apple: such a file "may
+// unexpectedly still be on disk the next time an instance of the extension is created. The
+// extension is then responsible for deleting that file." The first instance in a process sweeps
+// temp/ (nothing of this process can be in flight yet); later instances leave it alone, so they
+// never delete another instance's in-flight output. pinned/ is kept on purpose.
+func leftoversFromAKilledExtensionAreDeletedAtStart() async {
+  reset()
+  let temp = AppGroupContainer.temporaryContentDirectory
+  for name in ["f1-11111111-2222-3333-4444-555555555555", "f2-66666666-7777-8888-9999-000000000000"] {
+    FileManager.default.createFile(atPath: temp.appendingPathComponent(name).path, contents: Data(repeating: 7, count: 4_096))
+  }
+  let pinnedCopy = AppGroupContainer.pinnedContentDirectory.appendingPathComponent("kept")
+  FileManager.default.createFile(atPath: pinnedCopy.path, contents: Data(repeating: 1, count: 16))
+  check(entries(temp).count == 2, "two leftovers staged")
+
+  _ = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
+  check(entries(temp).isEmpty, "the first extension instance deletes leftover plaintext, got \(entries(temp))")
+  check(FileManager.default.fileExists(atPath: pinnedCopy.path), "pinned content is kept")
+
+  let inFlight = temp.appendingPathComponent("f3-in-flight")
+  FileManager.default.createFile(atPath: inFlight.path, contents: Data(repeating: 3, count: 16))
+  _ = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
+  check(FileManager.default.fileExists(atPath: inFlight.path), "a later instance never deletes another instance's in-flight output")
 }
 
 var pendingProgress: Progress?
@@ -702,12 +816,15 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("other-errors", otherFailuresKeepTheirMeaning),
   ("no-key-listing", noKeyRefusesListingInsteadOfPlaceholders),
   ("no-key-known-names", noKeyStillRefreshesKnownNames),
+  ("no-key-mixed", noKeyRefusesAMixedFolder),
   ("undecryptable-label", undecryptableNameGetsUniqueLabelWithoutRename),
   ("placeholder-rename", renameOfUndecryptedItemNeverReachesTheServer),
   ("trash", trashIsUnsupportedNotTheRoot),
   ("streamed-content", contentStreamsIntoATemporaryFile),
   ("streamed-memory", contentStreamingStaysWithinTheExtensionBudget),
-  ("temp-dir-choice", temporaryDirectoryIsTheSystemsWithAFallback),
+  ("registered-temp", contentLandsInTheRegisteredTempDirectory),
+  ("bad-chunk", badChunkLeavesNoPlaintext),
+  ("leftover-sweep", leftoversFromAKilledExtensionAreDeletedAtStart),
   ("stream-abort", midStreamStopsDeleteThePartialFile),
 ]
 
@@ -751,7 +868,7 @@ function harnessBinary(): { dir: string; binary: string } {
     ], { stdio: 'pipe', timeout: 240_000 });
   } catch (error) {
     // Show the compiler's own diagnostics instead of only "Command failed".
-    throw new Error(`harness did not compile:\n${String(error?.stderr ?? error)}`);
+    throw new Error(`harness did not compile:\n${String(error?.stderr ?? '')}${String(error?.stdout ?? '')}\n${String(error?.message ?? error)}`);
   }
   compiled = { dir, binary };
   return compiled;
@@ -801,6 +918,11 @@ describe('task 1722 (d): listings never vend placeholder names', () => {
     expectScenario('no-key-known-names', 3);
   }, 300_000);
 
+  // Review M2-A: `contains(where:)` -> `!isEmpty && allSatisfy` passed every other check.
+  nativeSwiftHarnessTest('with no key, a folder with ONE name that needs the key is refused whole (no placeholder rows)', () => {
+    expectScenario('no-key-mixed', 3);
+  }, 300_000);
+
   nativeSwiftHarnessTest('an undecryptable name gets a unique id label and no rename capability', () => {
     expectScenario('undecryptable-label', 12);
   }, 300_000);
@@ -817,9 +939,14 @@ describe('task 1722 (e): no Files trash', () => {
 });
 
 // Task 1722 (G4/G5): fetchContents used to hold the whole ciphertext AND the whole plaintext in
-// memory (a 59.8 MB DNG needs ~120 MB against the extension's ~50 MB budget) and wrote the
-// plaintext into the App Group temp directory instead of the one Apple specifies.
-describe('task 1722 (G4/G5): content is streamed to the File Provider temporary directory', () => {
+// memory (a 59.8 MB DNG needs ~120 MB against the extension's ~50 MB budget).
+// Task 1722 review I1 (2026-10-15): 7b57ac7 also moved the plaintext to
+// NSFileProviderManager.temporaryDirectoryURL(). On the simulator that is <device>/data/tmp
+// (fileprovider-stream.log:26619-26649), outside every app container: not registered, not
+// protected by us, and out of reach of the sign-out purge. The plaintext stays in the registered
+// App Group temp/ (same APFS volume on iOS; the framework hands fileproviderd a read-write
+// sandbox extension for whatever URL we return, so it can still clone and unlink the file).
+describe('task 1722 (G4/G5, review I1): content is streamed into the registered App Group temp directory', () => {
   const extensionSource = read(join(EXT, 'FileProviderExtension.swift'));
   const bridgeSource = read(join(EXT, 'CryptoBridge.swift'));
   const fetchBody = declaration(extensionSource, 'func fetchContents(');
@@ -842,8 +969,9 @@ describe('task 1722 (G4/G5): content is streamed to the File Provider temporary 
     expect(decrypt).not.toMatch(/plaintext\.append\(/);
   });
 
-  test('fetchContents writes into NSFileProviderManager.temporaryDirectoryURL(), falling back to the App Group temp dir', () => {
-    expect(fetchBody).toContain('temporaryDirectoryURL()');
+  test('fetchContents writes only into the registered App Group temp directory, never temporaryDirectoryURL()', () => {
+    expect(fetchBody).toContain('AppGroupContainer.temporaryContentDirectory');
+    expect(extensionSource).not.toContain('temporaryDirectoryURL');
     expect(fetchBody).not.toMatch(/plaintext\.write\(to:/);
     expect(fetchBody).toContain('try? FileManager.default.removeItem(at: encrypted.url)');
   });
@@ -856,8 +984,16 @@ describe('task 1722 (G4/G5): content is streamed to the File Provider temporary 
     expectScenario('streamed-memory', 3);
   }, 300_000);
 
-  nativeSwiftHarnessTest('content goes to the manager temporary directory, else the App Group temp directory', () => {
-    expectScenario('temp-dir-choice', 3);
+  nativeSwiftHarnessTest('content lands in the App Group temp directory; temporaryDirectoryURL() is never asked', () => {
+    expectScenario('registered-temp', 4);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('a tampered or truncated chunk k of n leaves no partial plaintext (-2005)', () => {
+    expectScenario('bad-chunk', 8);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('the first extension instance deletes plaintext a killed decrypt left in temp/; later ones do not', () => {
+    expectScenario('leftover-sweep', 4);
   }, 300_000);
 
   nativeSwiftHarnessTest('a purge or a cancel mid-stream leaves no partial plaintext (-1005 / NSUserCancelledError)', () => {

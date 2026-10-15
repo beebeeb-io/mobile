@@ -41,33 +41,46 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   /// invalidates it and forces a fresh `ownershipVerified()` round-trip.
   private var cachedForSignedInUser: String?
 
-  /// The domain this instance serves; `fetchContents` asks its manager for
-  /// the temporary directory the system expects content in (task 1722 G4).
-  private let domain: NSFileProviderDomain
-
   required init(domain: NSFileProviderDomain) {
-    self.domain = domain
     super.init()
+    _ = domain
     _ = CacheManager.shared
+    _ = Self.leftoverContentSweep
   }
 
-  /// Task 1722 (G4): where `fetchContents` writes plaintext for the system to
-  /// take over. Apple: the content "must be a regular file on the same volume
-  /// as the user-visible URL. A suitable location can be retrieved using
-  /// -[NSFileProviderManager temporaryDirectoryURLWithError:]. The system
-  /// clones and unlinks the received fileContents." If the manager cannot
-  /// provide one, fall back to the App Group temp directory (same volume on
-  /// iOS, protected, and swept by the sign-out purge).
-  static func contentDirectory(managerTemporaryDirectory: () throws -> URL?, fallback: () -> URL) -> URL {
-    do {
-      if let url = try managerTemporaryDirectory() { return url }
-      NSLog("[Beebeeb] fetchContents: no File Provider manager; using the App Group temp directory")
-    } catch {
-      let nsError = error as NSError
-      NSLog("[Beebeeb] fetchContents: temporaryDirectoryURL failed (\(nsError.domain) \(nsError.code)); using the App Group temp directory")
+  /// Task 1722 review I1: deletes plaintext a previous extension process left
+  /// in the App Group `temp/` directory, once per process, at its first
+  /// instance.
+  ///
+  /// `fetchContents` streams plaintext into `temp/`, and the system "clones
+  /// and unlinks the received fileContents". A file is left behind only when
+  /// a process dies first: jetsam or a crash part-way through a decrypt (a
+  /// partial file), or before the system unlinked a finished one. Apple: such
+  /// a file "may unexpectedly still be on disk the next time an instance of
+  /// the extension is created. The extension is then responsible for deleting
+  /// that file" (NSFileProviderReplicatedExtension.h, fetchContents). The
+  /// sign-out purge deletes `temp/` as well; this closes the window until
+  /// then. Only the first instance of a process sweeps: before it existed,
+  /// nothing in this process could be writing there, while a later instance
+  /// could otherwise delete another instance's in-flight output. `pinned/` is
+  /// kept on purpose.
+  private static let leftoverContentSweep: Int = {
+    let directory = AppGroupContainer.temporaryContentDirectory
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+    var removed = 0
+    for name in names {
+      do {
+        try FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        removed += 1
+      } catch {
+        // Left for the next process start and the sign-out purge.
+      }
     }
-    return fallback()
-  }
+    if removed > 0 {
+      NSLog("[Beebeeb] Files removed %ld leftover content file(s) from an earlier process", removed)
+    }
+    return removed
+  }()
 
   /// Task 1594 round 4 (Codex P1, FileProviderExtension.swift:73): `masterKey()`
   /// carries the owner ALONGSIDE the handle, so every caller that goes on to
@@ -208,7 +221,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     let task = Task.detached {
       // Task 1722 (G4/G5): the plaintext is streamed into this file chunk by
-      // chunk; every abort path below deletes whatever part of it exists.
+      // chunk; every abort path below deletes whatever part of it exists,
+      // including a chunk that fails to decode part-way (review I1).
       var destination: URL?
       do {
         let masterKey = try self.masterKey().handle
@@ -229,10 +243,21 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           return
         }
 
-        let output = Self.contentDirectory(
-          managerTemporaryDirectory: { try NSFileProviderManager(for: self.domain)?.temporaryDirectoryURL() },
-          fallback: { AppGroupContainer.temporaryContentDirectory }
-        ).appendingPathComponent("\(cached.id)-\(UUID().uuidString)")
+        // Task 1722 review I1: plaintext goes only into the registered App
+        // Group temp directory: excluded from backup and protected
+        // (`AppGroupContainer.temporaryContentDirectory` protects it before
+        // returning, and files created in it inherit both), deleted by every
+        // sign-out purge and its resweep, and swept at the next process start
+        // if this process dies part-way (`leftoverContentSweep`). Not the
+        // File Provider manager's own temporary directory: on a simulator that
+        // was <device>/data/tmp, outside every app container, which the purge
+        // cannot reach. Apple asks for "a regular file on the same volume as
+        // the user-visible URL"; the App Group container is on the same APFS
+        // data volume on iOS, and the framework hands fileproviderd a
+        // read-write sandbox extension for the URL we return, so it can still
+        // clone and unlink the file.
+        let output = AppGroupContainer.temporaryContentDirectory
+          .appendingPathComponent("\(cached.id)-\(UUID().uuidString)")
         destination = output
         // Task 1722 (G5): decrypt and write one chunk at a time. The purge
         // epoch (and cancellation) is re-checked before every chunk, so a
