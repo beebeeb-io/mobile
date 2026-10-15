@@ -2044,6 +2044,10 @@ private func resumeFileProviderAuthenticationIfReady(
   domain: NSFileProviderDomain,
   defaults: UserDefaults?
 ) async {
+  // Task 1722 review M1: read before the consent checks below, so a sign-out
+  // purge that lands anywhere after them moves it (see the re-check after the
+  // Files key write).
+  let purgeGenerationAtStart = currentFileProviderPurgeGeneration()
   guard defaults?.bool(forKey: fileProviderTrustedMountKey) == true,
         sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey),
         !PlaintextStorageProtection.isPurgePending(),
@@ -2065,6 +2069,25 @@ private func resumeFileProviderAuthenticationIfReady(
     KeychainManager.syncFileProviderWrappedKey(masterKeyBytes: bytes, label: BeebeebCryptoBridge.kMasterKeyLabel, mounted: true)
     bytes.withUnsafeMutableBytes { ptr in
       if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+    }
+    // Task 1722 review M1: this runs on a Swift Task with no ordering against
+    // the purge queue, so a sign-out purge (`resetFileProviderShowInFilesConsent`)
+    // or a Settings toggle-off (`clearFileProviderSharedState`) can delete the
+    // Files key between the checks above and the write just made, leaving a
+    // no-prompt copy of the vault key after its consent was revoked. Both
+    // turn the consent flags off before deleting the key, and a purge also
+    // moves the purge generation, so re-check with the rule the domain add
+    // uses (`shouldUndoFileProviderAdd`) and undo the write.
+    let consentRevoked = shouldUndoFileProviderAdd(
+      purgeGenerationBeforeAdd: purgeGenerationAtStart,
+      purgeGenerationAfterAdd: currentFileProviderPurgeGeneration(),
+      consentTrustedMount: defaults?.bool(forKey: fileProviderTrustedMountKey) ?? false,
+      consentEnabled: sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey)
+    ) || PlaintextStorageProtection.isPurgePending()
+    if consentRevoked {
+      KeychainManager.deleteFileProviderKey()
+      RuntimeTrace.event("fileprovider.files_key.provision_undone")
+      return
     }
   }
   // -1000 is what a missing/locked key reports now; -2005 is what builds
