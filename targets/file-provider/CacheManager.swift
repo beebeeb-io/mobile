@@ -431,6 +431,75 @@ final class CacheManager {
     }
   }
 
+  // MARK: - Materialized folders (task 1722 round 4, review round 2 minor 6)
+
+  /// `sync_state` keys that list the folders the system has materialized: folders Files has
+  /// listed, whose children are on disk and are refreshed ONLY through the working set (Apple,
+  /// NSFileProviderReplicatedExtension.h, materializedItemsDidChange: "traversals of materialized
+  /// directories do not [trigger an enumeration] ... there is no alternative cache invalidation
+  /// mechanism"). Folder ids only, no names. In `sync_state`, so the sign-out purge's reset
+  /// (`DELETE FROM sync_state`) clears them with the rest of the account's cache.
+  static let materializedContainerKeyPrefix = "materialized.container."
+
+  func materializedContainerIds() -> [String] {
+    queue.sync { _materializedContainerIds() }
+  }
+
+  /// Records a folder the system has just listed. Refused while a sign-out purge is pending.
+  /// Returns whether it was written.
+  @discardableResult
+  func noteContainerMaterialized(_ containerId: String) -> Bool {
+    queue.sync {
+      guard beginImmediate() else { return false }
+      executeBindable("INSERT INTO sync_state(key, value) VALUES(?, '1') ON CONFLICT(key) DO NOTHING") { stmt in
+        bindNullable(stmt, 1, Self.materializedContainerKeyPrefix + containerId)
+      }
+      return commitOrRollback()
+    }
+  }
+
+  /// Replaces the stored folders with `ids`, the system's own materialized set. Epoch-gated like
+  /// `replaceChildren` (a purge that ran after `expectedEpoch` was read refuses the write): nil
+  /// when refused, otherwise whether the stored set changed.
+  func replaceMaterializedContainers(_ ids: Set<String>, expectedEpoch: Int) -> Bool? {
+    queue.sync {
+      guard beginImmediate() else { return nil }
+      guard currentEpochMatches(expectedEpoch) else {
+        execute("ROLLBACK")
+        return nil
+      }
+      guard Set(_materializedContainerIds()) != ids else {
+        execute("ROLLBACK")
+        return false
+      }
+      executeBindable("DELETE FROM sync_state WHERE substr(key, 1, ?) = ?") { stmt in
+        sqlite3_bind_int(stmt, 1, Int32(Self.materializedContainerKeyPrefix.utf8.count))
+        bindNullable(stmt, 2, Self.materializedContainerKeyPrefix)
+      }
+      for id in ids.sorted() {
+        executeBindable("INSERT INTO sync_state(key, value) VALUES(?, '1') ON CONFLICT(key) DO NOTHING") { stmt in
+          bindNullable(stmt, 1, Self.materializedContainerKeyPrefix + id)
+        }
+      }
+      return commitOrRollback() ? true : nil
+    }
+  }
+
+  private func _materializedContainerIds() -> [String] {
+    var stmt: OpaquePointer?
+    defer { sqlite3_finalize(stmt) }
+    let prefix = Self.materializedContainerKeyPrefix
+    guard prepare("SELECT key FROM sync_state WHERE substr(key, 1, ?) = ? ORDER BY key", &stmt) else { return [] }
+    sqlite3_bind_int(stmt, 1, Int32(prefix.utf8.count))
+    bindNullable(stmt, 2, prefix)
+    var ids: [String] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      guard let cstr = sqlite3_column_text(stmt, 0) else { continue }
+      ids.append(String(String(cString: cstr).dropFirst(prefix.count)))
+    }
+    return ids
+  }
+
   // MARK: - Internal
 
   private func _upsert(_ item: CachedItem) {

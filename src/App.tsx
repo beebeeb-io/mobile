@@ -45,7 +45,8 @@ import { hydrateShareKeys, setPendingShareKey } from './lib/share-key-store';
 import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import * as BeebeebCrypto from '../modules/beebeeb-crypto';
-import { populateFileProviderCache, registerTrustedFileProviderDomain } from './lib/file-provider-mount';
+import { populateFileProviderCache } from './lib/file-provider-mount';
+import { ensureFilesMountedByDefault } from './lib/files-mount-default';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
 import { purgeAllPlaintextCaches } from './lib/account-cleanup';
@@ -810,13 +811,17 @@ function PhraseGate({ enabled, navReady, navReadyEpoch }: { enabled: boolean; na
   return null;
 }
 
-function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
+// Task 1722 round 4 (Guus 2026-10-15, Q1 "Files on by default"): on every unlock and
+// foreground, the signed-in account gets Beebeeb in iOS Files unless it turned Files off in
+// Settings (src/lib/files-mount-default.ts: register when mounted, mount when not, stay off
+// after an explicit off). Q2: sign-out still removes the domain and the Files key.
+function FileProviderDomainRegistrar({ enabled, userId }: { enabled: boolean; userId: string | null }) {
   const crypto = useCrypto();
   const registeringRef = useRef(false);
   const attemptedRef = useRef(false);
 
   const register = useCallback(async () => {
-    if (Platform.OS !== 'ios' || !enabled || !crypto.isUnlocked) return;
+    if (Platform.OS !== 'ios' || !enabled || !crypto.isUnlocked || !userId) return;
     if (registeringRef.current || attemptedRef.current) return;
 
     registeringRef.current = true;
@@ -824,11 +829,12 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
     try {
       const token = await getToken();
       if (!token) return;
-      const result = await registerTrustedFileProviderDomain();
+      const { action, result } = await ensureFilesMountedByDefault(userId);
       // "registered" is not "presented in Files". userVisibleRootError != null
       // means iOS could not surface the location (the user may have removed it),
       // so don't treat it as mounted.
       const mounted =
+        !!result &&
         result.registered &&
         result.cacheDatabaseReady !== false &&
         !result.userVisibleRootError;
@@ -836,7 +842,7 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
         void populateFileProviderCache(crypto.decryptMetadata, { recursive: false, decryptNames: crypto.decryptNames }).catch(() => {});
       }
       if (__DEV__) {
-        console.log('[FileProvider] domain registration', result);
+        console.log('[FileProvider] domain registration', action, result);
       }
     } catch (error) {
       if (__DEV__) {
@@ -845,11 +851,11 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
     } finally {
       registeringRef.current = false;
     }
-  }, [crypto.decryptMetadata, crypto.decryptNames, crypto.isUnlocked, enabled]);
+  }, [crypto.decryptMetadata, crypto.decryptNames, crypto.isUnlocked, enabled, userId]);
 
   useEffect(() => {
     attemptedRef.current = false;
-  }, [crypto.isUnlocked, enabled]);
+  }, [crypto.isUnlocked, enabled, userId]);
 
   useEffect(() => {
     void register();
@@ -1605,7 +1611,7 @@ export default function App() {
             {isAuthenticated && startupLockChecked && !locked && Platform.OS === 'android'
               ? <AndroidThumbnailRepairWorker enabled />
               : null}
-            <FileProviderDomainRegistrar enabled={isAuthenticated && startupLockChecked && !locked} />
+            <FileProviderDomainRegistrar enabled={isAuthenticated && startupLockChecked && !locked} userId={user?.user_id ?? null} />
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               {isAuthenticated ? (
                 <>

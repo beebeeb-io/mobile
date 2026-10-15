@@ -62,20 +62,26 @@ enum CryptoBridge {
     guard ownershipVerified() else {
       throw CryptoBridgeError.ownerUnverified
     }
-    // File Provider must NOT fall back to the primary SE key — that key may
-    // require Face ID, and Files.app can't surface a clean biometric prompt
-    // from an extension. `.extensionOnly` preserves that contract (task 0436,
-    // was previously `KeychainKeyLoader.loadMasterKey()`).
+    // Files must use its dedicated unlocked-device SE key. Never fall back
+    // to the primary or shared backup/share keys, which may require a prompt
+    // that this extension cannot present.
     var bytes = try BeebeebKeychainCore.loadMasterKeyThrowing(
       label: BeebeebConstants.masterKeyLabel,
-      mode: .extensionOnly
+      mode: .fileProviderOnly
     )
     defer {
       bytes.withUnsafeMutableBytes { buf in
         if let ptr = buf.baseAddress { memset(ptr, 0, buf.count) }
       }
     }
-    return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+    do {
+      return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+    } catch {
+      // Task 1722 (c): unwrapped bytes that do not form a key are an
+      // unavailable key (Files shows "Authentication Required" and retries
+      // after the app re-provisions it), not a generic sync failure.
+      throw CryptoBridgeError.keyUnavailable
+    }
   }
 
   // MARK: - Filename codec
@@ -128,22 +134,40 @@ enum CryptoBridge {
 
   // MARK: - Chunk codec
 
+  /// Decrypts the downloaded ciphertext into a new file at `destination`.
+  ///
+  /// Task 1722 (G5): one chunk at a time. At most one ciphertext chunk and
+  /// one plaintext chunk (about 2 x the 4 MiB chunk size) are in memory, so
+  /// the 59.8 MB DNG no longer needs ~120 MB against the extension's ~50 MB
+  /// budget. `shouldContinue` runs before every chunk; when it returns false
+  /// the call stops with `CancellationError` (the caller deletes the partial
+  /// output). Any framing mismatch (short chunk, trailing bytes, a chunk that
+  /// does not authenticate) throws, so a truncated or tampered file never
+  /// comes back as a shorter plaintext.
   static func decryptDownloadedFile(
     masterKeyHandle: MasterKeyHandle,
     fileId: String,
     encryptedFile: DownloadedEncryptedFile,
-    plaintextSize: Int
-  ) throws -> Data {
+    plaintextSize: Int,
+    to destination: URL,
+    shouldContinue: () -> Bool
+  ) throws {
     let fkh = try masterKeyHandle.deriveFileKey(fileId: Data(fileId.utf8))
     let safePlaintextSize = max(0, plaintextSize)
     let chunkSize = max(1, encryptedFile.chunkSize)
     let inferredChunkCount = max(1, Int(ceil(Double(safePlaintextSize) / Double(chunkSize))))
     let chunkCount = max(1, max(encryptedFile.chunkCount, inferredChunkCount))
 
-    var plaintext = Data(capacity: safePlaintextSize)
-    var offset = 0
+    let input = try FileHandle(forReadingFrom: encryptedFile.url)
+    defer { try? input.close() }
+    guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+      throw CocoaError(.fileWriteUnknown)
+    }
+    let output = try FileHandle(forWritingTo: destination)
+    defer { try? output.close() }
 
     for index in 0..<chunkCount {
+      guard shouldContinue() else { throw CancellationError() }
       let isLast = index == chunkCount - 1
       let chunkPlaintextSize: Int
       if chunkCount == 1 {
@@ -155,21 +179,29 @@ enum CryptoBridge {
       }
 
       let encryptedChunkSize = 12 + chunkPlaintextSize + 16
-      guard encryptedFile.data.count >= offset + encryptedChunkSize else {
-        throw CryptoBridgeError.decodeFailed
+      try autoreleasepool { () throws -> Void in
+        let chunk = try readExactly(input, count: encryptedChunkSize)
+        guard chunk.count == encryptedChunkSize else { throw CryptoBridgeError.decodeFailed }
+        let nonce = chunk.prefix(12)
+        let ciphertext = chunk.suffix(from: chunk.startIndex + 12)
+        try output.write(contentsOf: try fkh.decryptChunk(nonce: nonce, ciphertext: ciphertext))
       }
-      let chunk = encryptedFile.data.subdata(in: offset..<(offset + encryptedChunkSize))
-      guard chunk.count > 12 else { throw CryptoBridgeError.decodeFailed }
-      let nonce = chunk.prefix(12)
-      let ciphertext = chunk.suffix(from: 12)
-      plaintext.append(try fkh.decryptChunk(nonce: nonce, ciphertext: ciphertext))
-      offset += encryptedChunkSize
     }
 
-    guard offset == encryptedFile.data.count else {
+    // Bytes after the last expected chunk mean the layout did not match.
+    guard try readExactly(input, count: 1).isEmpty else {
       throw CryptoBridgeError.decodeFailed
     }
-    return plaintext
+  }
+
+  /// Reads `count` bytes, or fewer only at end of file.
+  private static func readExactly(_ handle: FileHandle, count: Int) throws -> Data {
+    guard var data = try handle.read(upToCount: count) else { return Data() }
+    while data.count < count {
+      guard let next = try handle.read(upToCount: count - data.count), !next.isEmpty else { break }
+      data.append(next)
+    }
+    return data
   }
 
   static func encryptChunkForUpload(

@@ -428,7 +428,10 @@ dev-client preference (not repo state), so it must be set again on any new sim, 
 - **The row "…" overflow menu is a native menu Maestro cannot tap.** `tapOn` reports COMPLETED, the
   menu stays open, and it blocks all further input until the app is terminated. Its items also carry
   a leading `", "` in their accessible name. Route to the share sheet with a row swipe RIGHT
-  ("Share <filename>") instead.
+  ("Share <filename>") instead. (2026-10-15, task 1722: on the Files screen `tapOn: id:
+  "file-row-actions-<file id>"` opened the custom `BBActionSheet` for a folder. Its rows are reached
+  by testID `sheet-action-<action>`, e.g. `sheet-action-delete`, then the "Move folder to Trash" alert
+  and "Move to Trash". `assertVisible: "Delete"` timed out while the row was on screen.)
 - **`UIDocumentPickerViewController` exposes only "Cancel" and the system keyboard to XCUITest** —
   no Recents/Browse rows, independent of file type, so a document cannot be seeded into the app by
   automation at all (confirmed by hierarchy dump, not just a flaky tap). Workaround: copy the file
@@ -757,6 +760,97 @@ back up `Library/Caches/`. Any path this app writes outside `Caches/` must be re
 - Verify with `bash scripts/verify-backup-exclusion.sh <sim-udid>`; the full inventory and the
   accepted-plaintext rationale live in `docs/0300-plaintext-lifecycle-audit.md`.
 
+
+## Files (File Provider extension) — testing it (task 1722)
+
+- **Behaviour tests run the shipped extension sources.** `src/lib/file-provider-extension-behaviour.test.ts`
+  compiles `targets/file-provider/{FileProviderExtension,FileProviderItem,FileProviderEnumerator,SyncEngine,
+  CachedHandleIdentity,CryptoBridge}.swift` on macOS against in-memory doubles (cache, API, keychain,
+  CryptoKit key fixtures) and drives `fetchContents`, `modifyItem`, `item(for:)`, `enumerator(for:)`
+  per scenario. Add a scenario there before changing extension behaviour; the CI `swift-gate` job runs
+  it with `BB_REQUIRE_NATIVE_SWIFT_HARNESSES=1`. Strings in its `String.raw` Swift must be ASCII (bun
+  rewrites non-ASCII in template literals to `·`, which Swift rejects: write `\u{00B7}`).
+- **The simulator CAN hold the Files Secure Enclave key** (Apple-silicon simulators emulate the
+  Secure Enclave). Correction to the 2026-10-03/14 notes that said the simulator can never load a key
+  in the extension: those builds only provisioned the Files key from `KeychainManager.store/load`,
+  whose DEBUG-simulator branch uses the software key and skips it. Since task 1722 the mount and every
+  unlocked foreground registration provision it from the verified in-memory handle
+  (`resumeFileProviderAuthenticationIfReady`), so on a simulator content opens from Files. What the
+  simulator still cannot show: device passcode/lock behaviour of the key, and jetsam limits.
+- **The Files key has one writer** (review round 2, 2026-10-15). Every write and delete of the Files
+  Secure Enclave key goes through `KeychainManager.syncFileProviderWrappedKey` /
+  `deleteFileProviderKey`: one `NSLock`, the consent rule read before and after the write, and
+  "provisioned" checked by unwrapping (one key under the tag, its blob opens to this vault key).
+  Never call `storeFileProviderWrappedKey` from a new path, and keep "consent off, then delete" in
+  every revoking path. `file-provider-key-policy.test.ts` models several keys under one tag and runs
+  two writers at once; extend it when this lifecycle changes.
+- **modifyItem returns what it does not apply as still pending** (`declinedFields`). Returning `[]`
+  for a `lastUsedDate` change put our nil on disk after every open. Whether iOS then stops sending
+  those fields (the header documents it for macOS 12+) is not yet observed on a simulator or device.
+- **iOS creates a default "Beebeeb" location** (`NSFileProviderDomainDefaultIdentifier`) from install,
+  shown whenever our `io.beebeeb.files` domain is not registered; it answers "Authentication Required"
+  and "Open Beebeeb" only opens the app. Registering our domain marks it `hidden` (it stays in
+  `Domains.plist`); removing ours brings it back within ~100 ms. Decision 1722 Q1 (Guus, 2026-10-15):
+  Files is on by default for a signed-in, unlocked account, so this location shows only while signed
+  out or after Files was turned off. So "signed out, Beebeeb gone from Files" means OUR domain is gone:
+  check fileproviderd's "Removing domain io.beebeeb.files" line and that the location now logs as
+  `io.beebeeb.app.file-provider/N{35}r` ("Trying to build a non-FPFS default domain"), not that the row
+  vanished. A Maestro `assertNotVisible: "Beebeeb"` on Locations fails by design.
+- **Files icon view: tapping a label can start an in-place rename.** In Maestro, switch Files to list
+  view ("…" → List) and tap the row's size/date text, or tap the tile, never the label.
+- **Files content is plaintext in App Group `temp/` only** (review I1, 2026-10-15). Never the File
+  Provider manager's `temporaryDirectoryURL()`: on a simulator it is `<device>/data/tmp`, outside every
+  app container, so no registry entry, protection or sign-out purge reaches it.
+  `src/lib/plaintext-storage.test.ts` fails on any system temp API in `targets/file-provider/`. After a
+  content open on a simulator, `temp/` in the App Group container should be empty again (the system
+  clones and unlinks what it takes).
+- **Folders Files already listed are never listed again** (review M3; iOS ignores signals for any
+  container but the working set). Since round 4 (2026-10-15) the working set carries the root's
+  children PLUS the children of every folder the system has materialized: the cache keeps them as
+  `sync_state` keys `materialized.container.<id>` (written when we list a folder, replaced from
+  `enumeratorForMaterializedItems()` on `materializedItemsDidChange`, epoch-gated, wiped by the
+  sign-out reset), and `SyncEngine.refreshMaterializedContainers` re-fetches those folders at most
+  every 300 s, 8 per pass, oldest first, in its own task. Upgrading from TestFlight 236 or earlier:
+  the first working-set enumeration after the upgrade expires its anchor once (the delivered set
+  grew), iOS re-lists the working set and every materialized folder, and the stale "Encrypted item ·"
+  labels heal on the first materialized refresh that has the key (simulator 2026-10-15: 06:23 upgrade,
+  names healed 06:28:41). Supersedes the round-3 note that they heal only on a later root change.
+  Cost: snapshot anchors have no change journal, so EVERY change in the root or a materialized folder
+  expires the working-set anchor and iOS re-enumerates the working set, the root and each materialized
+  folder (3 rescans in 8 s on the simulator while the app and the extension both wrote the cache). Not paged. Turning Files off and on still
+  rebuilds everything, but on iOS removing the domain deletes every item in it, including files
+  created through Files that have not uploaded yet (`NSFileProviderManager.remove`; the mode that
+  keeps them is macOS-only); the same holds for any `fileProviderDomainSchemaVersion` bump.
+- **The refresh `enumerateItems` starts rarely finishes** (observed 2026-10-15, pre-existing): fileproviderd
+  invalidates an enumerator within ~20-50 ms of the listing, and `invalidate()` cancels `refreshTask`
+  (25 "cancelled" refreshes in about 7 minutes on the simulator). Work that must complete, like the
+  materialized refresh, runs in its own detached task.
+- **The Files key lives in its own keychain group** (Guus Q3, 2026-10-15): `R8352WDJJR.io.beebeeb.files`,
+  entitled to the app and the File Provider only, never the Share extension or the widget
+  (`plugins/file-provider/withFileProvider.js` `APP_KEYCHAIN_ACCESS_GROUPS` / `extensionEntitlementsPlist`,
+  checked by `file-provider-key-access-group.test.ts`). Keep the shared group FIRST in the app's
+  `keychain-access-groups`: an add without `kSecAttrAccessGroup` lands in the first entry, and every
+  existing SecureStore/keychain item expects the shared group. Every Files-key query names the group;
+  a lookup without a group spans all of the process's groups. Items: SE key tag
+  `io.beebeeb.sekey.files.v2`, wrapped blob service `io.beebeeb.masterkey.files.v2`. The first unlock
+  after an upgrade deletes the v1 items from the shared group and provisions v2 (trace
+  `keychain.manager.files_key.legacy_removed`). On a simulator, check it in
+  `<device>/data/Library/Keychains/keychain-2-debug.db`: `keys.atag` and `genp.svce` are SHA-1 of the
+  tag/service, `agrp` is the group (read-only `sqlite3 "file:...?mode=ro"`).
+- **Files is on by default** (Guus Q1/Q2, 2026-10-15; `src/lib/files-mount-default.ts`). The registrar
+  mounts on every unlock unless this account turned Files off in Settings. That off is kept per account
+  in SecureStore (`beebeeb.files-mount-off.v1.<digest>`), NOT AsyncStorage: the sign-out purge deletes
+  `RCTAsyncLocalStorage_V1`, and until the app restarts every AsyncStorage write fails ("Failed to
+  write manifest file"; that bit the first build of this). The one-time upgrade check reads
+  `everMounted`, the App Group schema stamp `io.beebeeb.fileProviderDomainSchema`, which survives
+  sign-out. Read App Group defaults with PlistBuddy (`Print :io.beebeeb.fileProviderDomainSchema`):
+  `plutil -extract` treats the dots in our keys as a key path and reports a present key as absent.
+- **Deleting a simulator after Files was mounted: wait for the purgatory first** (2026-10-15). Sign-out
+  removes the domain, and fileproviderd parks its directory in
+  `<device>/data/Library/Application Support/FileProvider/Purgatory/` as a dataless directory. Shut the
+  sim down while it is still there and `simctl delete` and `simctl erase` fail with EPERM ("data"
+  couldn't be moved), the device stays `isDeleted`, and it can no longer boot to finish the job
+  (`bb-1722-r1`, 57C1B9B7, is stuck that way). Before `simctl shutdown`, check that `Purgatory/` is empty.
 
 ## Bottom sheets — one primitive (task 1586)
 

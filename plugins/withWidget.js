@@ -3,6 +3,24 @@ const path = require('path')
 const fs = require('fs')
 const { ensureExtensionTarget } = require('./lib/extension-target')
 
+/**
+ * The widget's entitlements file, as `expo prebuild` writes it. No keychain
+ * group at all: task 1722 round 4 (Q3) keeps the Files key's own group to the
+ * main app and the File Provider extension.
+ */
+function widgetEntitlementsPlist() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>group.io.beebeeb.shared</string>
+  </array>
+</dict>
+</plist>`
+}
+
 const withWidget = (config) => {
   config = withEntitlementsPlist(config, (cfg) => {
     cfg.modResults['com.apple.security.application-groups'] = [
@@ -46,16 +64,7 @@ const withWidget = (config) => {
   </dict>
 </dict>
 </plist>`)
-    fs.writeFileSync(path.join(widgetDir, 'BeebeebWidget.entitlements'), `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>com.apple.security.application-groups</key>
-  <array>
-    <string>group.io.beebeeb.shared</string>
-  </array>
-</dict>
-</plist>`)
+    fs.writeFileSync(path.join(widgetDir, 'BeebeebWidget.entitlements'), widgetEntitlementsPlist())
     // Wire the target through the shared helper (task 1305): xcode-lib's
     // addTarget() only dropped the .appex into a "Copy Files" entry and never
     // created the app→widget PBXTargetDependency, so EAS's target resolver did
@@ -77,5 +86,8 @@ const withWidget = (config) => {
   })
   return config
 }
+
+// Task 1722 round 4: exported for src/lib/file-provider-key-access-group.test.ts.
+withWidget.extensionEntitlementsPlist = widgetEntitlementsPlist
 
 module.exports = withWidget

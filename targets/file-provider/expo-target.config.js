@@ -12,6 +12,6 @@ module.exports = (config) => ({
   ],
   entitlements: {
     'com.apple.security.application-groups': ['group.io.beebeeb.shared'],
-    'keychain-access-groups': ['$(AppIdentifierPrefix)io.beebeeb.shared'],
+    'keychain-access-groups': ['$(AppIdentifierPrefix)io.beebeeb.shared', '$(AppIdentifierPrefix)io.beebeeb.files'],
   },
 })

@@ -45,7 +45,60 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     super.init()
     _ = domain
     _ = CacheManager.shared
+    _ = Self.leftoverContentSweep
+    _ = Self.materializedSetBootstrap
   }
+
+  /// Task 1722 round 4 (review round 2, minor 6): once per extension process, read the system's
+  /// materialized set. A phone upgraded from a build that did not track it (TestFlight 236) has
+  /// folders Files already listed that the working set must now cover, and the system calls
+  /// `materializedItemsDidChange` only when that set changes.
+  private static let materializedSetBootstrap: Bool = {
+    MaterializedSetTracker.shared.scheduleSync(after: 2)
+    return true
+  }()
+
+  /// Task 1722 round 4: Apple's contract for a replicated extension ("The file provider extension
+  /// should therefore keep a list of the identifiers of the materialized directories"). The work
+  /// is scheduled, the callback returns at once.
+  func materializedItemsDidChange(completionHandler: @escaping () -> Void) {
+    MaterializedSetTracker.shared.scheduleSync()
+    completionHandler()
+  }
+
+  /// Task 1722 review I1: deletes plaintext a previous extension process left
+  /// in the App Group `temp/` directory, once per process, at its first
+  /// instance.
+  ///
+  /// `fetchContents` streams plaintext into `temp/`, and the system "clones
+  /// and unlinks the received fileContents". A file is left behind only when
+  /// a process dies first: jetsam or a crash part-way through a decrypt (a
+  /// partial file), or before the system unlinked a finished one. Apple: such
+  /// a file "may unexpectedly still be on disk the next time an instance of
+  /// the extension is created. The extension is then responsible for deleting
+  /// that file" (NSFileProviderReplicatedExtension.h, fetchContents). The
+  /// sign-out purge deletes `temp/` as well; this closes the window until
+  /// then. Only the first instance of a process sweeps: before it existed,
+  /// nothing in this process could be writing there, while a later instance
+  /// could otherwise delete another instance's in-flight output. `pinned/` is
+  /// kept on purpose.
+  private static let leftoverContentSweep: Int = {
+    let directory = AppGroupContainer.temporaryContentDirectory
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+    var removed = 0
+    for name in names {
+      do {
+        try FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        removed += 1
+      } catch {
+        // Left for the next process start and the sign-out purge.
+      }
+    }
+    if removed > 0 {
+      NSLog("[Beebeeb] Files removed %ld leftover content file(s) from an earlier process", removed)
+    }
+    return removed
+  }()
 
   /// Task 1594 round 4 (Codex P1, FileProviderExtension.swift:73): `masterKey()`
   /// carries the owner ALONGSIDE the handle, so every caller that goes on to
@@ -128,9 +181,21 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       return progress
     }
 
-    if identifier == .trashContainer || identifier == .workingSet {
-      // We don't host a separate trash or working-set container yet; treat
-      // both as the same as the root for the system so it doesn't error out.
+    if identifier == .trashContainer {
+      // Task 1722 (e): Beebeeb has no Files trash (a delete goes to the
+      // server's trash). This used to answer with the ROOT item, so
+      // fileproviderd's trash create-item failed with
+      // itemMismatch(expected: nil, received: .root) and retried with
+      // backoff (7 times in ~3.5 min on the simulator). Unsupported is the
+      // documented answer for a provider without trash.
+      completionHandler(nil, Self.trashUnsupported)
+      progress.completedUnitCount = 1
+      return progress
+    }
+
+    if identifier == .workingSet {
+      // The working set is not a real container; keep answering with the
+      // root so a lookup of it does not error out.
       completionHandler(FileProviderItem(cached: .rootContainer()), nil)
       progress.completedUnitCount = 1
       return progress
@@ -173,23 +238,21 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     let epochAtStart = CacheManager.shared.currentPurgeEpoch()
 
     let task = Task.detached {
+      // Task 1722 (G4/G5): the plaintext is streamed into this file chunk by
+      // chunk; every abort path below deletes whatever part of it exists,
+      // including a chunk that fails to decode part-way (review I1).
+      var destination: URL?
       do {
         let masterKey = try self.masterKey().handle
         progress.completedUnitCount = 20
 
         let encrypted = try await ApiClient.shared.downloadEncrypted(fileId: cached.id)
+        // Ciphertext only, but it is ours to delete once decrypted.
+        defer { try? FileManager.default.removeItem(at: encrypted.url) }
         progress.completedUnitCount = 70
 
-        let plaintext = try CryptoBridge.decryptDownloadedFile(
-          masterKeyHandle: masterKey,
-          fileId: cached.id,
-          encryptedFile: encrypted,
-          plaintextSize: cached.sizeBytes
-        )
-        progress.completedUnitCount = 90
-
         // Task 1593 round 11 — re-check right after the (slow, unbounded)
-        // network + decrypt span and BEFORE the first plaintext write. A
+        // network span and BEFORE the first plaintext byte is written. A
         // purge landing anywhere during that span must not let a decrypted
         // temp copy reach disk at all.
         guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
@@ -198,17 +261,41 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           return
         }
 
-        let destination = AppGroupContainer.temporaryContentDirectory
+        // Task 1722 review I1: plaintext goes only into the registered App
+        // Group temp directory: excluded from backup and protected
+        // (`AppGroupContainer.temporaryContentDirectory` protects it before
+        // returning, and files created in it inherit both), deleted by every
+        // sign-out purge and its resweep, and swept at the next process start
+        // if this process dies part-way (`leftoverContentSweep`). Not the
+        // File Provider manager's own temporary directory: on a simulator that
+        // was <device>/data/tmp, outside every app container, which the purge
+        // cannot reach. Apple asks for "a regular file on the same volume as
+        // the user-visible URL"; the App Group container is on the same APFS
+        // data volume on iOS, and the framework hands fileproviderd a
+        // read-write sandbox extension for the URL we return, so it can still
+        // clone and unlink the file.
+        let output = AppGroupContainer.temporaryContentDirectory
           .appendingPathComponent("\(cached.id)-\(UUID().uuidString)")
-        try plaintext.write(to: destination, options: [.atomic])
+        destination = output
+        // Task 1722 (G5): decrypt and write one chunk at a time. The purge
+        // epoch (and cancellation) is re-checked before every chunk, so a
+        // purge that lands mid-stream stops the write within one chunk.
+        try CryptoBridge.decryptDownloadedFile(
+          masterKeyHandle: masterKey,
+          fileId: cached.id,
+          encryptedFile: encrypted,
+          plaintextSize: cached.sizeBytes,
+          to: output,
+          shouldContinue: { !Task.isCancelled && CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) }
+        )
+        progress.completedUnitCount = 90
 
         // Task 1593 round 11 — re-check again immediately after the write:
-        // the write itself takes real (if usually short) wall time, and a
-        // purge landing DURING it would otherwise leave this fresh temp copy
-        // on disk even though the check just above passed. Delete the
-        // partial output rather than hand it back to the system.
+        // a purge landing during its last chunk would otherwise leave this
+        // fresh temp copy on disk even though the per-chunk checks passed.
+        // Delete the output rather than hand it back to the system.
         guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
-          try? FileManager.default.removeItem(at: destination)
+          try? FileManager.default.removeItem(at: output)
           NSLog("[Beebeeb] fetchContents(\(cached.id)) aborted: purge epoch changed during write")
           completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
           return
@@ -216,15 +303,17 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         if cached.isPinned {
           let pinned = AppGroupContainer.pinnedContentDirectory.appendingPathComponent(cached.id)
-          // Replace any prior pinned copy atomically.
+          // Replace any prior pinned copy. A copy (an APFS clone) rather than
+          // a second decrypt: the system takes ownership of `output`.
           try? FileManager.default.removeItem(at: pinned)
-          try plaintext.write(to: pinned, options: [.atomic])
+          try FileManager.default.copyItem(at: output, to: pinned)
+          PlaintextStorageProtection.protect(pinned)
 
-          // Task 1593 round 11 — this is a SECOND, later write of the same
+          // Task 1593 round 11 — this is a SECOND, later copy of the same
           // plaintext bytes into a second, independently-purged directory;
-          // the two checks above only cover the `temp` write, not this one.
+          // the checks above only cover the `temp` write, not this one.
           guard CacheManager.shared.purgeEpochUnchanged(since: epochAtStart) else {
-            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.removeItem(at: output)
             try? FileManager.default.removeItem(at: pinned)
             NSLog("[Beebeeb] fetchContents(\(cached.id)) aborted: purge epoch changed during pinned write")
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
@@ -234,8 +323,17 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
 
         progress.completedUnitCount = 100
-        completionHandler(destination, FileProviderItem(cached: cached), nil)
+        completionHandler(output, FileProviderItem(cached: cached), nil)
       } catch {
+        if let destination { try? FileManager.default.removeItem(at: destination) }
+        if error is CancellationError {
+          // Stopped between chunks: a purge (the item is gone for this
+          // account) or the system cancelled the progress.
+          let purged = !CacheManager.shared.purgeEpochUnchanged(since: epochAtStart)
+          NSLog("[Beebeeb] fetchContents(\(cached.id)) stopped: \(purged ? "purge epoch changed during write" : "cancelled")")
+          completionHandler(nil, nil, purged ? NSFileProviderError(.noSuchItem) : CocoaError(.userCancelled))
+          return
+        }
         NSLog("[Beebeeb] fetchContents(\(cached.id)) failed: \(error)")
         completionHandler(nil, nil, Self.mapError(error))
       }
@@ -362,6 +460,25 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
   // MARK: - Modify (rename / move / content update)
 
+  /// Task 1722 review round 2 (item 6): the changed fields modifyItem does not
+  /// apply, returned as `stillPendingFields`. modifyItem applies the content
+  /// (uploaded), the name (sent, or for an undecrypted name deliberately kept,
+  /// so our label goes back on disk) and the parent. Beebeeb stores none of
+  /// the rest (lastUsedDate, tags, favorite rank, dates, flags, xattrs). The
+  /// NSFileProviderReplicatedExtension header: "If a field in the returned item
+  /// does not match the itemTemplate, and is not in the list of
+  /// stillPendingFields, the value from the item will be propagated to the
+  /// disk." Returning [] put our nil lastUsedDate on disk after every open
+  /// (Files builds Recents from it). The same header: a pending set identical
+  /// to the fields passed in makes the system treat them as unsupported and
+  /// "not send these fields to the provider again, until the item is
+  /// modified" (documented "starting in macOS 12.0"; on iOS this is a
+  /// simulator/device rung). A rename that carries lastUsedDate leaves it
+  /// pending, and the follow-up call with lastUsedDate alone is declined whole.
+  static func declinedFields(_ changedFields: NSFileProviderItemFields) -> NSFileProviderItemFields {
+    changedFields.subtracting([.contents, .filename, .parentItemIdentifier])
+  }
+
   func modifyItem(
     _ item: NSFileProviderItem,
     baseVersion version: NSFileProviderItemVersion,
@@ -399,6 +516,35 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     let task = Task.detached {
       do {
+        // Task 1722 (d): this row's real name could not be decrypted, so the
+        // filename Files reports is our "Encrypted item · …" label (or a
+        // bounce of it). Writing that to the server would replace the real
+        // name. Keep the server name; returning the item unchanged makes the
+        // system put the label back on disk. A move still works: it carries
+        // the existing ciphertext name.
+        let nameIsUnresolved = cached.hasUnresolvedName
+        let renamesOnServer = changedFields.contains(.filename) && !nameIsUnresolved
+        if changedFields.contains(.filename), nameIsUnresolved {
+          NSLog("[Beebeeb] modifyItem(\(cached.id)) kept the server name: the current name could not be decrypted")
+        }
+
+        // Task 1722 (review round 1, simulator log 2026-10-14): Files sends
+        // modifyItem(changedFields: lastUsedDate) after every open. Beebeeb
+        // stores none of lastUsedDate, tags, favorite rank, dates, flags or
+        // xattrs, so such a change has nothing to send and nothing to cache.
+        // It used to stamp updatedAt = now (and the system's content type)
+        // into the row: the returned item had a new content version, so
+        // fileproviderd downloaded, decrypted and wrote the same file again,
+        // and the listing snapshot changed. Return the item as it is, with
+        // those fields still pending (`declinedFields`).
+        let uploadsContent = changedFields.contains(.contents) && newContents != nil
+        let movesOnServer = changedFields.contains(.parentItemIdentifier)
+        guard uploadsContent || renamesOnServer || movesOnServer else {
+          progress.completedUnitCount = 100
+          completionHandler(FileProviderItem(cached: cached), Self.declinedFields(changedFields), false, nil)
+          return
+        }
+
         // `epochAtStart` (see above) gates the cache write below against
         // both network calls that can follow (`streamUpload` for a content
         // change, `patchFile` for a rename/move), each of unbounded
@@ -414,7 +560,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         var nextSizeBytes = cached.sizeBytes
         var nextUpdatedAt = ISO8601DateFormatter().string(from: Date())
 
-        if changedFields.contains(.filename) {
+        if renamesOnServer {
           nextName = item.filename
           nextNameEncrypted = try CryptoBridge.encryptFilename(
             masterKeyHandle: masterKey,
@@ -439,6 +585,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           if let existing = nextNameEncrypted {
             nameForUpload = existing
           } else {
+            // Task 1722 (d): no server name and no readable one: the only
+            // name available is our label, which must never become the
+            // file's name. Definitively unsyncable until the item changes.
+            guard !nameIsUnresolved else { throw NSFileProviderError(.cannotSynchronize) }
             nameForUpload = try CryptoBridge.encryptFilename(
               masterKeyHandle: masterKey,
               fileId: cached.id,
@@ -465,7 +615,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           progress.completedUnitCount = 80
         }
 
-        if changedFields.contains(.filename) || changedFields.contains(.parentItemIdentifier) {
+        if renamesOnServer || changedFields.contains(.parentItemIdentifier) {
           let patched = try await ApiClient.shared.patchFile(
             fileId: cached.id,
             nameEncrypted: nextNameEncrypted,
@@ -501,7 +651,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           NSLog("[Beebeeb] modifyItem cache write discarded — purge epoch changed during the operation")
         }
         progress.completedUnitCount = 100
-        completionHandler(FileProviderItem(cached: updated), [], false, nil)
+        completionHandler(FileProviderItem(cached: updated), Self.declinedFields(changedFields), false, nil)
       } catch {
         NSLog("[Beebeeb] modifyItem failed: \(error)")
         self.invalidateCacheOnAccountMismatch(error)
@@ -572,7 +722,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     for containerItemIdentifier: NSFileProviderItemIdentifier,
     request: NSFileProviderRequest
   ) throws -> NSFileProviderEnumerator {
+    // Task 1722 (e): "If containerItemIdentifier is NSFileProviderTrash-
+    // ContainerItemIdentifier and the extension does not support trashing
+    // items, then it should fail the call with the NSFeatureUnsupportedError
+    // error code from the NSCocoaErrorDomain domain" (NSFileProviderReplicatedExtension.h).
+    if containerItemIdentifier == .trashContainer {
+      throw Self.trashUnsupported
+    }
     return FileProviderEnumerator(containerIdentifier: containerItemIdentifier)
+  }
+
+  /// Task 1722 (e): the answer for every trash-container request.
+  private static var trashUnsupported: NSError {
+    NSError(domain: NSCocoaErrorDomain, code: NSFeatureUnsupportedError)
   }
 
   // MARK: - Streaming upload
@@ -677,9 +839,25 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
   // MARK: - Errors
 
+  /// `errSecInteractionNotAllowed`: a keychain item read while the device is
+  /// locked. Spelled out so this file needs no `import Security`.
+  private static let errSecInteractionNotAllowedStatus = -25308
+
   /// Map our internal errors into something `NSFileProviderError`-shaped so
   /// the Files app shows an actionable message.
-  private static func mapError(_ error: Error) -> Error {
+  ///
+  /// Task 1722 (c): every way the vault key can be unavailable to this
+  /// extension (no Files key provisioned yet, the device locked, an unwrap
+  /// the Secure Enclave refused, key bytes that do not form a key, an owner
+  /// that is not proven) is `.notAuthenticated` (-1000): Files shows
+  /// "Authentication Required" with "Open Beebeeb" and retries once the app
+  /// calls `signalErrorResolved`. These used to fall through to
+  /// `.cannotSynchronize` (-2005), a dead end Files never retries for
+  /// create/modify until the extension is updated.
+  static func mapError(_ error: Error) -> Error {
+    if error is BeebeebKeychainCore.LoadError {
+      return NSFileProviderError(.notAuthenticated)
+    }
     if let api = error as? ApiError {
       switch api {
       case .notAuthenticated: return NSFileProviderError(.notAuthenticated)
@@ -696,7 +874,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
     if let bridge = error as? CryptoBridge.CryptoBridgeError {
       switch bridge {
-      case .keyUnavailable, .decodeFailed: return NSFileProviderError(.cannotSynchronize)
+      case .keyUnavailable: return NSFileProviderError(.notAuthenticated)
+      // Content that fails to decode is not a key problem; retrying the same
+      // bytes cannot succeed.
+      case .decodeFailed: return NSFileProviderError(.cannotSynchronize)
       // Task 1594 round 2 (F3): the key exists but is not (yet, or no
       // longer) provably this account's — surface the same error Files.app
       // shows for "not authenticated", since using it would be exactly the
@@ -704,8 +885,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       case .ownerUnverified: return NSFileProviderError(.notAuthenticated)
       }
     }
-    if (error as NSError).domain == NSFileProviderErrorDomain {
+    let nsError = error as NSError
+    if nsError.domain == NSFileProviderErrorDomain {
       return error
+    }
+    if nsError.domain == NSOSStatusErrorDomain, nsError.code == errSecInteractionNotAllowedStatus {
+      return NSFileProviderError(.notAuthenticated)
     }
     return NSFileProviderError(.cannotSynchronize)
   }

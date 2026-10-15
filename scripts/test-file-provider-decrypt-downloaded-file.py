@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Task 1722 hostless harness for CryptoBridge.decryptDownloadedFile.
 
-Extracts the actual decryptDownloadedFile function body from targets/file-provider/
-CryptoBridge.swift at runtime, wraps it with minimal MasterKeyHandle/FileKeyHandle
-and DownloadedEncryptedFile stubs, then executes the generated Swift program.
+Extracts the actual decryptDownloadedFile function body (and its readExactly helper)
+from targets/file-provider/CryptoBridge.swift at runtime, wraps it with minimal
+MasterKeyHandle/FileKeyHandle and DownloadedEncryptedFile stubs, then executes the
+generated Swift program.
+
+Task 1722 (2026-10-14, G5): decryptDownloadedFile now streams from the downloaded
+ciphertext file into an output file. The same cases run against the streamed form;
+src/lib/file-provider-content-codec.test.ts (wired into CI) carries them too, with
+real AES-GCM.
 """
 
 from __future__ import annotations
@@ -74,13 +80,13 @@ def indent(text: str, spaces: int) -> str:
     return ''.join(prefix + line if line.strip() else line for line in text.splitlines(keepends=True))
 
 
-def build_swift(body: str) -> str:
+def build_swift(body: str, read_exactly: str) -> str:
     return textwrap.dedent(
         f'''
         import Foundation
 
         struct DownloadedEncryptedFile {{
-          var data: Data
+          let url: URL
           let chunkCount: Int
           let chunkSize: Int
         }}
@@ -120,11 +126,21 @@ def build_swift(body: str) -> str:
             masterKeyHandle: MasterKeyHandle,
             fileId: String,
             encryptedFile: DownloadedEncryptedFile,
-            plaintextSize: Int
-          ) throws -> Data {{
+            plaintextSize: Int,
+            to destination: URL,
+            shouldContinue: () -> Bool
+          ) throws {{
         {indent(body, 4).rstrip()}
           }}
+
+          private static func readExactly(_ handle: FileHandle, count: Int) throws -> Data {{
+        {indent(read_exactly, 4).rstrip()}
+          }}
         }}
+
+        let scratch = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("beebeeb-fp-decrypt-\\(UUID().uuidString)", isDirectory: true)
+        try! FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        private var fileCounter = 0
 
         private func encryptedChunk(_ plaintext: [UInt8], seed: UInt8) -> Data {{
           var data = Data(repeating: seed, count: 12)
@@ -133,16 +149,18 @@ def build_swift(body: str) -> str:
           return data
         }}
 
-        private func encryptedFile(chunks: [[UInt8]], chunkSize: Int, declaredChunkCount: Int? = nil) -> DownloadedEncryptedFile {{
+        private struct Wire {{
+          var data: Data
+          let chunkCount: Int
+          let chunkSize: Int
+        }}
+
+        private func encryptedFile(chunks: [[UInt8]], chunkSize: Int, declaredChunkCount: Int? = nil) -> Wire {{
           var data = Data()
           for (index, chunk) in chunks.enumerated() {{
             data.append(encryptedChunk(chunk, seed: UInt8(index + 1)))
           }}
-          return DownloadedEncryptedFile(
-            data: data,
-            chunkCount: declaredChunkCount ?? chunks.count,
-            chunkSize: chunkSize
-          )
+          return Wire(data: data, chunkCount: declaredChunkCount ?? chunks.count, chunkSize: chunkSize)
         }}
 
         private var passCount = 0
@@ -159,14 +177,20 @@ def build_swift(body: str) -> str:
           }}
         }}
 
-        private func decrypt(_ encryptedFile: DownloadedEncryptedFile, plaintextSize: Int) throws -> [UInt8] {{
-          let data = try CryptoBridge.decryptDownloadedFile(
+        private func decrypt(_ wire: Wire, plaintextSize: Int) throws -> [UInt8] {{
+          fileCounter += 1
+          let input = scratch.appendingPathComponent("in-\\(fileCounter).bin")
+          let output = scratch.appendingPathComponent("out-\\(fileCounter).bin")
+          try wire.data.write(to: input)
+          try CryptoBridge.decryptDownloadedFile(
             masterKeyHandle: MasterKeyHandle(),
             fileId: "file-1",
-            encryptedFile: encryptedFile,
-            plaintextSize: plaintextSize
+            encryptedFile: DownloadedEncryptedFile(url: input, chunkCount: wire.chunkCount, chunkSize: wire.chunkSize),
+            plaintextSize: plaintextSize,
+            to: output,
+            shouldContinue: {{ true }}
           )
-          return Array(data)
+          return Array(try Data(contentsOf: output))
         }}
 
         record("single chunk uses full plaintext size") {{
@@ -233,8 +257,8 @@ def build_swift(body: str) -> str:
 
 def remove_final_consumed_bytes_guard(body: str) -> str:
     mutated, count = re.subn(
-        r'\n\s*guard offset == encryptedFile\.data\.count else \{\n\s*throw CryptoBridgeError\.decodeFailed\n\s*\}',
-        '\n    // MUTATION: final consumed-bytes guard removed',
+        r'\n\s*guard try readExactly\(input, count: 1\)\.isEmpty else \{\n\s*throw CryptoBridgeError\.decodeFailed\n\s*\}',
+        '\n    // MUTATION: trailing-bytes guard removed',
         body,
         count=1,
     )
@@ -252,9 +276,10 @@ def main() -> int:
     source_path = repo / 'targets/file-provider/CryptoBridge.swift'
     source = source_path.read_text()
     body = extract_function_body(source, 'static func decryptDownloadedFile')
+    read_exactly = extract_function_body(source, 'private static func readExactly')
     if mutate_no_final_size_check:
         body = remove_final_consumed_bytes_guard(body)
-    program = build_swift(body)
+    program = build_swift(body, read_exactly)
     with tempfile.TemporaryDirectory(prefix='beebeeb-fp-decrypt-') as tmpdir:
         temp = Path(tmpdir) / 'DecryptDownloadedFileHarness.swift'
         temp.write_text(program)

@@ -111,6 +111,24 @@ describe('plaintext storage registry', () => {
     expect(unreviewed).toEqual([]);
   });
 
+  // Task 1722 review I1 (2026-10-15): a path that comes from a system API is invisible to the
+  // two checks above. Commit 7b57ac7 streamed decrypted Files content into
+  // `NSFileProviderManager.temporaryDirectoryURL()`, which on a simulator resolved to
+  // `<device>/data/tmp`: outside every app container, so not registered, not protected by
+  // `PlaintextStorageProtection`, and out of reach of the sign-out purge. The File Provider
+  // extension writes plaintext only into the registered App Group `temp/` and `pinned/`.
+  test('the File Provider extension never writes into a system temporary directory the purge cannot reach', () => {
+    const SYSTEM_TEMP_RE = /temporaryDirectoryURL|NSTemporaryDirectory\(|FileManager\.default\.temporaryDirectory|\.itemReplacementDirectory/g;
+    const offenders: string[] = [];
+    for (const file of walk(join(REPO_ROOT, 'targets', 'file-provider'), /\.swift$/)) {
+      const text = readFileSync(file, 'utf8');
+      for (const match of text.matchAll(SYSTEM_TEMP_RE)) {
+        offenders.push(`${file.replace(REPO_ROOT + '/', '')}: ${match[0]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   test('the TS mirror matches the Swift registry entry-for-entry', () => {
     const swift = readFileSync(REGISTRY_SWIFT, 'utf8');
     const swiftLeaves = [...swift.matchAll(/appendingPathComponent\("([^"]+)"/g)]

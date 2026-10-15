@@ -26,8 +26,10 @@ private let simulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProvide
 // `sessionTokenKey` / `apiBaseUrlKey` doc comment.
 private let sharedSessionTokenKey = BeebeebKeychainCore.sessionTokenKey
 private let sharedAPIBaseURLKey = BeebeebKeychainCore.apiBaseUrlKey
-private let fileProviderEnabledKey = "io.beebeeb.fileProvider.enabled"
-private let fileProviderTrustedMountKey = "io.beebeeb.fileProvider.trustedMountEnabled"
+// Task 1722 (G6): aliased from `BeebeebKeychainCore` (the keychain writer
+// ties the Files key to the same consent), never re-typed here.
+private let fileProviderEnabledKey = BeebeebKeychainCore.fileProviderEnabledKey
+private let fileProviderTrustedMountKey = BeebeebKeychainCore.fileProviderTrustedMountKey
 private let fileProviderAuthRequiredKey = "io.beebeeb.fileProvider.requireDeviceAuth"
 private let fileProviderUnlockedUntilKey = "io.beebeeb.fileProvider.unlockedUntilMs"
 private let fileProviderEnumeratorStatePrefix = "io.beebeeb.fileProvider.enumerator."
@@ -1112,6 +1114,8 @@ private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
   BeebeebKeychainCore.deleteString(key: sharedSessionTokenKey)
   BeebeebKeychainCore.deleteString(key: sharedAPIBaseURLKey)
   defaults?.removeObject(forKey: simulatorFileProviderMasterKeyKey)
+  // Task 1722 (G6): Files is off, so its no-prompt copy of the vault key goes.
+  KeychainManager.deleteFileProviderKey()
   // Task 1593 f3 (item 2) — this path REMOVES the domain outright (see
   // `removeMountedFileProviderDomain`, its only caller); there is no
   // subsequent add to gate, so `cacheResetOk` is not needed here.
@@ -1134,6 +1138,9 @@ private func clearFileProviderSharedState(defaults: UserDefaults?) -> Int {
 private func resetFileProviderShowInFilesConsent(defaults: UserDefaults?) {
   defaults?.set(false, forKey: fileProviderEnabledKey)
   defaults?.set(false, forKey: fileProviderTrustedMountKey)
+  // Task 1722 (G6): every sign-out purge revokes the Files consent, and with
+  // it the Files key (a no-prompt copy of the vault key).
+  KeychainManager.deleteFileProviderKey()
   // Task 1593 round 8 (R1) — stamp the generation here too, not only on a
   // successful ADD (`registerMountedFileProviderDomainLocked`). A consent
   // reset is exactly the kind of state change a pending stale-`.remove`
@@ -1480,6 +1487,14 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
 
   var ok = sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK
+  // Task 1722 (f): a database another writer created with only some of the
+  // tables (older `syncFileProviderCache` builds created `file_cache` alone)
+  // must still reset. Create anything missing inside this same transaction,
+  // so "reset" never fails on "no such table" and the forced-reset gate in
+  // `registerMountedFileProviderDomainLocked` only refuses a real failure.
+  for statement in fileProviderCacheSchemaStatements {
+    ok = ok && sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK
+  }
   ok = ok && sqlite3_exec(db, "DELETE FROM file_cache", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "DELETE FROM sync_state", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "DELETE FROM upload_queue", nil, nil, nil) == SQLITE_OK
@@ -1622,10 +1637,18 @@ private func fileProviderPrivacyState(defaults: UserDefaults? = sharedDefaults()
   let unlockedUntilMs = defaults?.double(forKey: fileProviderUnlockedUntilKey) ?? 0
   let cacheDatabaseReady = fileProviderCacheDatabaseExists()
   let locked = !showInFiles
+  // Task 1722 round 4 (Q1 "Files on by default"): the domain schema stamp is
+  // written only after a successful registration and never removed, so it
+  // says whether Files was ever mounted on this install. The app's one-time
+  // upgrade check (src/lib/files-mount-default.ts) reads it: off on an install
+  // that mounted before may be an explicit off (TestFlight 236 cleared the
+  // consent on every sign-out exactly as a toggle-off did).
+  let everMounted = defaults?.string(forKey: fileProviderDomainSchemaKey) != nil
 
   return [
     "supported": true,
     "showInFiles": showInFiles,
+    "everMounted": everMounted,
     "trustedMountEnabled": trustedMountEnabled,
     "mounted": showInFiles && cacheDatabaseReady,
     "cacheDatabaseReady": cacheDatabaseReady,
@@ -1996,6 +2019,7 @@ private func registerMountedFileProviderDomainLocked(
   defaults?.set(fileProviderDomainSchemaVersion, forKey: fileProviderDomainSchemaKey)
   defaults?.synchronize()
 
+  await resumeFileProviderAuthenticationIfReady(domain: domain, defaults: defaults)
   let rootError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .rootContainer)
   let workingSetError = await signalFileProviderEnumerator(domain: domain, itemIdentifier: .workingSet)
   let manager = NSFileProviderManager(for: domain)
@@ -2017,6 +2041,91 @@ private func registerMountedFileProviderDomainLocked(
     rootEnumerationError: rootError,
     workingSetEnumerationError: workingSetError
   )
+}
+
+/// Files throttles operations after notAuthenticated until the containing app
+/// explicitly resolves it. Enumerator signals alone do not lift that throttle.
+/// This only requests a retry; the extension still enforces its own SE/owner
+/// and server-session checks on every operation.
+@available(iOS 16.0, *)
+private func resumeFileProviderAuthenticationIfReady(
+  domain: NSFileProviderDomain,
+  defaults: UserDefaults?
+) async {
+  // Task 1722 review M1: read before the consent checks below, so a sign-out
+  // purge that lands anywhere after them moves it (see the re-check after the
+  // Files key write).
+  let purgeGenerationAtStart = currentFileProviderPurgeGeneration()
+  guard defaults?.bool(forKey: fileProviderTrustedMountKey) == true,
+        sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey),
+        !PlaintextStorageProtection.isPurgePending(),
+        let token = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.sessionTokenKey), !token.isEmpty,
+        let owner = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.masterKeyOwnerKey), !owner.isEmpty,
+        let user = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.sessionUserIdKey), user == owner
+  else { return }
+  let unlocked = BeebeebCryptoBridge.cachedMasterKeySnapshot()
+  guard let handle = unlocked.handle, unlocked.ownerId == user,
+        let manager = NSFileProviderManager(for: domain)
+  else { return }
+  // Task 1722 (G1): Files is mounted (checked above) and this is the
+  // verified owner's unlocked key, so make sure the extension's own key
+  // unwraps to it before asking Files to retry. Without this a user who
+  // mounted Files before upgrading, or whose unlock came from the in-process
+  // handle rather than a keychain load, had no Files key until a later unlock.
+  // Review round 3 (item 5): "both keychain items exist" is not enough. Two
+  // writers racing before round 3 could leave a blob wrapped by a key the
+  // lookup does not return, a -1000 nothing repaired; the writer now checks
+  // by unwrapping and replaces what does not unwrap to this key.
+  if var bytes = try? handle.exportForKeychain() {
+    let outcome = KeychainManager.syncFileProviderWrappedKey(
+      masterKeyBytes: bytes,
+      label: BeebeebCryptoBridge.kMasterKeyLabel,
+      allowed: {
+        // Task 1722 review M1: this runs on a Swift Task with no ordering
+        // against the purge queue, so a sign-out purge
+        // (`resetFileProviderShowInFilesConsent`) or a Settings toggle-off
+        // (`clearFileProviderSharedState`) can land at any point. Both turn
+        // the consent flags off before deleting the key, and a purge also
+        // moves the purge generation: the rule the domain add uses
+        // (`shouldUndoFileProviderAdd`) plus the purge marker. The writer
+        // reads it under the Files key lock before the write and after it.
+        !shouldUndoFileProviderAdd(
+          purgeGenerationBeforeAdd: purgeGenerationAtStart,
+          purgeGenerationAfterAdd: currentFileProviderPurgeGeneration(),
+          consentTrustedMount: defaults?.bool(forKey: fileProviderTrustedMountKey) ?? false,
+          consentEnabled: sharedBoolDefaultTrue(defaults, key: fileProviderEnabledKey)
+        ) && !PlaintextStorageProtection.isPurgePending()
+      }
+    )
+    bytes.withUnsafeMutableBytes { ptr in
+      if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
+    }
+    switch outcome {
+    case .revoked:
+      // Written, then undone under the lock: the consent went while writing.
+      RuntimeTrace.event("fileprovider.files_key.provision_undone")
+      return
+    case .notAllowed:
+      // The consent went after the checks above, before anything was written.
+      RuntimeTrace.event("fileprovider.authentication_retry.consent_revoked")
+      return
+    case .ready, .failed:
+      // `.failed` (no passcode, a Secure Enclave error) still lets Files
+      // retry, as before round 3; the extension then reports -1000 again.
+      break
+    }
+  }
+  // -1000 is what a missing/locked key reports now; -2005 is what builds
+  // before task 1722 reported for the same failure, and Files never retries
+  // those items on its own. Lift both throttles, independently.
+  for error in [NSFileProviderError(.notAuthenticated), NSFileProviderError(.cannotSynchronize)] {
+    do {
+      try await manager.signalErrorResolved(error)
+      RuntimeTrace.event("fileprovider.authentication_retry.resumed")
+    } catch {
+      RuntimeTrace.event("fileprovider.authentication_retry.failed")
+    }
+  }
 }
 
 @available(iOS 16.0, *)
@@ -3536,27 +3645,14 @@ public class BeebeebCryptoModule: Module {
       // the only defense it gets. Must be set before any DELETE runs.
       sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
 
-      // Ensure the table exists (idempotent)
-      let createSql = """
-      CREATE TABLE IF NOT EXISTS file_cache (
-        id TEXT PRIMARY KEY,
-        parent_id TEXT,
-        name_encrypted TEXT,
-        name_decrypted TEXT,
-        mime_type TEXT,
-        size_bytes INTEGER NOT NULL DEFAULT 0,
-        is_folder INTEGER NOT NULL DEFAULT 0,
-        is_pinned INTEGER NOT NULL DEFAULT 0,
-        has_thumbnail INTEGER NOT NULL DEFAULT 0,
-        thumbnail_data BLOB,
-        thumbnail_nonce BLOB,
-        created_at TEXT,
-        updated_at TEXT,
-        sync_anchor INTEGER NOT NULL DEFAULT 0,
-        is_materialized INTEGER NOT NULL DEFAULT 0
-      );
-      """
-      sqlite3_exec(db, createSql, nil, nil, nil)
+      // Task 1722 (f): the same schema `ensureFileProviderCacheDatabase` and
+      // the extension's `CacheManager` create (all idempotent). This used to
+      // create `file_cache` only, so on a fresh install the forced reset
+      // before the first mount failed on `DELETE FROM sync_state` ("no such
+      // table") and the domain add was refused.
+      for statement in fileProviderCacheSchemaStatements {
+        sqlite3_exec(db, statement, nil, nil, nil)
+      }
 
       let upsertSql = """
       INSERT INTO file_cache(
