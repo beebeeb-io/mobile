@@ -11,6 +11,12 @@ in `repos/mobile/docs/app-store/review-notes.md` §4, which points here.
 
 ## 1. Why the key must be `true`
 
+> **Superseded (2026-10-15, §7 + §8).** This section was written while the app was offered in France.
+> Since §7 (France, Russia and Belarus off sale, standard algorithms only per §2) Apple's own per-build
+> questionnaire scored every build `usesNonExemptEncryption = false` (builds 235–237, read back via the
+> App Store Connect API), and §8 now declares `ITSAppUsesNonExemptEncryption = false` in the Info.plist.
+> The argument below applies again only if France is put back on sale (§7 "Re-enabling France").
+
 Apple, "Complying with Encryption Export Regulations": *"Set the value to NO
 if your app… doesn't use encryption, or if it only uses forms of encryption
 that are exempt… Otherwise, set it to YES."* and *"the use of encryption
@@ -158,6 +164,9 @@ Notes, not re-litigated here):
   B.V. (decision 1398 §7).
 
 ## 6. Extension targets — no key needed
+
+> **Note (2026-10-15, §8):** the main app's `Info.plist` now carries `ITSAppUsesNonExemptEncryption = false`
+> (not `true` as described below); the extensions still need no key of their own.
 
 Only the main app target's `Info.plist` carries
 `ITSAppUsesNonExemptEncryption` — Apple's compliance questionnaire and the
