@@ -486,6 +486,19 @@ func noKeyRefusesAMixedFolder() async {
   check(outcome == .notAuthenticated, "no key, one name needs the key: refresh refused, got \(outcome)")
   check(CacheManager.shared.writes.isEmpty, "no key, mixed folder: nothing written, got \(CacheManager.shared.writes)")
   check(CacheManager.shared.item(id: "n1") == nil, "no key, mixed folder: no placeholder row for the undecrypted name")
+
+  // Review round 2, item 3 (mutation C): the upgrade from TestFlight 236, which cached rows with
+  // no decrypted name (Files showed "Open Beebeeb to Decrypt N"). Such a row is not a known name:
+  // without the key the listing is refused, not written again with "Encrypted item" labels.
+  for (label, cachedName) in [("no", nil), ("an empty", "")] as [(String, String?)] {
+    reset()
+    BeebeebKeychainCore.keyResult = .failure(BeebeebKeychainCore.LoadError.seKeyNotFound)
+    CacheManager.shared.rows["t1"] = row("t1", parent: "U", name: cachedName, encrypted: encryptedName("t1", "Taxes"), folder: true)
+    ApiClient.shared.listings["U"] = .success([dto("t1", parent: "U", name: encryptedName("t1", "Taxes"), folder: true)])
+    let upgraded = await SyncEngine.refreshContainer(containerId: "U")
+    check(upgraded == .notAuthenticated, "no key, a TF 236 row cached with \(label) name: refresh refused, got \(upgraded)")
+    check(CacheManager.shared.writes.isEmpty, "no key, a TF 236 row cached with \(label) name: nothing written, got \(CacheManager.shared.writes)")
+  }
 }
 
 func undecryptableNameGetsUniqueLabelWithoutRename() async {
@@ -523,40 +536,65 @@ final class Template: NSObject, NSFileProviderItem {
   }
 }
 
-func modify(_ template: NSFileProviderItem, _ fields: NSFileProviderItemFields) async -> (NSFileProviderItem?, NSError?) {
+/// modifyItem's completion: the returned item, the fields left still pending, the error.
+func modifyReturningPending(_ template: NSFileProviderItem, _ fields: NSFileProviderItemFields) async -> (NSFileProviderItem?, NSFileProviderItemFields, NSError?) {
   let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
   return await withCheckedContinuation { continuation in
     _ = ext.modifyItem(template, baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
-                       changedFields: fields, contents: nil, options: [], request: NSFileProviderRequest()) { item, _, _, error in
-      continuation.resume(returning: (item, error as NSError?))
+                       changedFields: fields, contents: nil, options: [], request: NSFileProviderRequest()) { item, pending, _, error in
+      continuation.resume(returning: (item, pending, error as NSError?))
     }
   }
+}
+
+func modify(_ template: NSFileProviderItem, _ fields: NSFileProviderItemFields) async -> (NSFileProviderItem?, NSError?) {
+  let (item, _, error) = await modifyReturningPending(template, fields)
+  return (item, error)
 }
 
 func renameOfUndecryptedItemNeverReachesTheServer() async {
   reset()
   CacheManager.shared.rows["u1"] = row("u1", parent: "H", name: nil, encrypted: undecryptable)
   let placeholder = FileProviderItem(cached: CacheManager.shared.rows["u1"]!).filename
-  let (renamed, renameError) = await modify(Template("u1", parent: "H", filename: "Folder 2"), [.filename])
+  let (renamed, renamePending, renameError) = await modifyReturningPending(Template("u1", parent: "H", filename: "Folder 2"), [.filename])
   check(renameError == nil, "rename of an undecrypted item: no error, got \(describe(renameError))")
   check(ApiClient.shared.count("patch") == 0, "rename of an undecrypted item: 0 server writes, got \(ApiClient.shared.calls)")
   check(renamed?.filename == placeholder, "rename of an undecrypted item: the label is kept (\(placeholder)), got \(renamed?.filename ?? "nil")")
+  check(renamePending.isEmpty, "rename of an undecrypted item: the name is not left pending (the label goes back on disk), got \(renamePending.rawValue)")
   check(CacheManager.shared.item(id: "u1")?.nameEncrypted == undecryptable, "the server name is untouched in the cache")
+
+  // Review round 2, item 6: with lastUsedDate riding along, the name is still put back and only
+  // lastUsedDate stays pending.
+  reset()
+  CacheManager.shared.rows["u1"] = row("u1", parent: "H", name: nil, encrypted: undecryptable)
+  let (_, mixedPending, mixedError) = await modifyReturningPending(Template("u1", parent: "H", filename: "Folder 2"), [.filename, .lastUsedDate])
+  check(mixedError == nil && ApiClient.shared.calls.isEmpty, "rename + lastUsedDate of an undecrypted item: no error, no server call, got \(ApiClient.shared.calls)")
+  check(mixedPending == .lastUsedDate, "rename + lastUsedDate of an undecrypted item: only lastUsedDate stays pending, got \(mixedPending.rawValue)")
 
   reset()
   CacheManager.shared.rows["u1"] = row("u1", parent: "H", name: nil, encrypted: undecryptable)
-  let (_, moveError) = await modify(Template("u1", parent: "K", filename: "Folder 2"), [.filename, .parentItemIdentifier])
+  let (_, movePending, moveError) = await modifyReturningPending(Template("u1", parent: "K", filename: "Folder 2"), [.filename, .parentItemIdentifier])
   check(moveError == nil, "move of an undecrypted item: no error, got \(describe(moveError))")
   check(ApiClient.shared.calls == ["patch u1 parent=K"], "move: one PATCH for the new parent, got \(ApiClient.shared.calls)")
   check(ApiClient.shared.patchedNames == [undecryptable], "move: carries the existing ciphertext name, never a new one")
+  check(movePending.isEmpty, "move: nothing left pending, got \(movePending.rawValue)")
 
   reset()
   CacheManager.shared.rows["r1"] = row("r1", parent: "H", name: "old.txt", encrypted: encryptedName("r1", "old.txt"))
-  let (readable, readableError) = await modify(Template("r1", parent: "H", filename: "new.txt"), [.filename])
+  let (readable, readablePending, readableError) = await modifyReturningPending(Template("r1", parent: "H", filename: "new.txt"), [.filename])
   check(readableError == nil && readable?.filename == "new.txt", "a decrypted item still renames, got \(describe(readableError))")
   let sent = ApiClient.shared.patchedNames.first ?? nil
   let sentName = sent.flatMap { try? CryptoBridge.decryptFilename(masterKeyHandle: fixtureMaster, fileId: "r1", nameEncrypted: $0) }
   check(ApiClient.shared.count("patch") == 1 && sentName == "new.txt", "the rename sends one ciphertext of the new name, got \(sentName ?? "nil")")
+  check(readablePending.isEmpty, "rename: nothing left pending, got \(readablePending.rawValue)")
+
+  // Review round 2, item 6: a rename that carries lastUsedDate renames on the server and leaves
+  // lastUsedDate pending (the system then asks for it alone, and it is declined as unsupported).
+  reset()
+  CacheManager.shared.rows["r1"] = row("r1", parent: "H", name: "old.txt", encrypted: encryptedName("r1", "old.txt"))
+  let (_, renamedPending, renamedError) = await modifyReturningPending(Template("r1", parent: "H", filename: "new.txt"), [.filename, .lastUsedDate])
+  check(renamedError == nil && ApiClient.shared.count("patch") == 1, "rename + lastUsedDate: one PATCH, got \(ApiClient.shared.calls)")
+  check(renamedPending == .lastUsedDate, "rename + lastUsedDate: lastUsedDate stays pending, got \(renamedPending.rawValue)")
 }
 
 // Task 1722 (review round 1, found on the simulator log): opening a file makes Files send
@@ -573,10 +611,14 @@ func metadataOnlyModifyKeepsTheItem() async {
     reset()
     CacheManager.shared.rows["r1"] = row("r1", name: "notes.md", encrypted: encryptedName("r1", "notes.md"), size: 207, mime: nil)
     let before = FileProviderItem(cached: CacheManager.shared.rows["r1"]!)
-    let (after, error) = await modify(Template("r1", parent: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "notes.md"), fields)
+    let (after, pending, error) = await modifyReturningPending(Template("r1", parent: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "notes.md"), fields)
     check(error == nil, "\(label): no error, got \(describe(error))")
     check(after?.itemVersion?.contentVersion == before.itemVersion.contentVersion, "\(label): the content version is unchanged (no re-download)")
     check(after?.itemVersion?.metadataVersion == before.itemVersion.metadataVersion, "\(label): the metadata version is unchanged")
+    // Review round 2, item 6: what Beebeeb does not store goes back still pending, so the system
+    // keeps the value on disk (Files builds Recents from lastUsedDate) instead of taking ours,
+    // which is nil. A set equal to changedFields marks those fields unsupported for this item.
+    check(pending == fields, "\(label): the declined fields come back still pending, got \(pending.rawValue)")
     check(CacheManager.shared.writes.isEmpty, "\(label): nothing written to the cache, got \(CacheManager.shared.writes)")
     check(ApiClient.shared.calls.isEmpty, "\(label): no server call, got \(ApiClient.shared.calls)")
   }
@@ -978,21 +1020,23 @@ describe('task 1722 (d): listings never vend placeholder names', () => {
   }, 300_000);
 
   // Review M2-A: `contains(where:)` -> `!isEmpty && allSatisfy` passed every other check.
-  nativeSwiftHarnessTest('with no key, a folder with ONE name that needs the key is refused whole (no placeholder rows)', () => {
-    expectScenario('no-key-mixed', 3);
+  // Review round 2, item 3: `return prior == nil` passed too; a TF 236 row with no name is now in it.
+  nativeSwiftHarnessTest('with no key, a folder with ONE name that needs the key is refused whole (no placeholder rows, TF 236 rows included)', () => {
+    expectScenario('no-key-mixed', 7);
   }, 300_000);
 
   nativeSwiftHarnessTest('an undecryptable name gets a unique id label and no rename capability', () => {
     expectScenario('undecryptable-label', 12);
   }, 300_000);
 
-  nativeSwiftHarnessTest('renaming an undecrypted item sends 0 server writes; a move keeps its ciphertext name', () => {
-    expectScenario('placeholder-rename', 9);
+  nativeSwiftHarnessTest('renaming an undecrypted item sends 0 server writes; a move keeps its ciphertext name; only unstored fields stay pending', () => {
+    expectScenario('placeholder-rename', 16);
   }, 300_000);
 
   // Found on the 2026-10-14 simulator log: Files sends modifyItem(lastUsedDate) after every open.
-  nativeSwiftHarnessTest('a change Beebeeb does not store (lastUsedDate, mtime, tags) keeps the item versions and writes nothing', () => {
-    expectScenario('metadata-modify', 20);
+  // Review round 2, item 6: those fields come back still pending (returning [] reset them on disk).
+  nativeSwiftHarnessTest('a change Beebeeb does not store (lastUsedDate, mtime, tags) keeps the item versions, writes nothing and stays pending', () => {
+    expectScenario('metadata-modify', 24);
   }, 300_000);
 });
 

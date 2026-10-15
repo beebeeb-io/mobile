@@ -442,6 +442,25 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
   // MARK: - Modify (rename / move / content update)
 
+  /// Task 1722 review round 2 (item 6): the changed fields modifyItem does not
+  /// apply, returned as `stillPendingFields`. modifyItem applies the content
+  /// (uploaded), the name (sent, or for an undecrypted name deliberately kept,
+  /// so our label goes back on disk) and the parent. Beebeeb stores none of
+  /// the rest (lastUsedDate, tags, favorite rank, dates, flags, xattrs). The
+  /// NSFileProviderReplicatedExtension header: "If a field in the returned item
+  /// does not match the itemTemplate, and is not in the list of
+  /// stillPendingFields, the value from the item will be propagated to the
+  /// disk." Returning [] put our nil lastUsedDate on disk after every open
+  /// (Files builds Recents from it). The same header: a pending set identical
+  /// to the fields passed in makes the system treat them as unsupported and
+  /// "not send these fields to the provider again, until the item is
+  /// modified" (documented "starting in macOS 12.0"; on iOS this is a
+  /// simulator/device rung). A rename that carries lastUsedDate leaves it
+  /// pending, and the follow-up call with lastUsedDate alone is declined whole.
+  static func declinedFields(_ changedFields: NSFileProviderItemFields) -> NSFileProviderItemFields {
+    changedFields.subtracting([.contents, .filename, .parentItemIdentifier])
+  }
+
   func modifyItem(
     _ item: NSFileProviderItem,
     baseVersion version: NSFileProviderItemVersion,
@@ -498,12 +517,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         // It used to stamp updatedAt = now (and the system's content type)
         // into the row: the returned item had a new content version, so
         // fileproviderd downloaded, decrypted and wrote the same file again,
-        // and the listing snapshot changed. Return the item as it is.
+        // and the listing snapshot changed. Return the item as it is, with
+        // those fields still pending (`declinedFields`).
         let uploadsContent = changedFields.contains(.contents) && newContents != nil
         let movesOnServer = changedFields.contains(.parentItemIdentifier)
         guard uploadsContent || renamesOnServer || movesOnServer else {
           progress.completedUnitCount = 100
-          completionHandler(FileProviderItem(cached: cached), [], false, nil)
+          completionHandler(FileProviderItem(cached: cached), Self.declinedFields(changedFields), false, nil)
           return
         }
 
@@ -613,7 +633,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           NSLog("[Beebeeb] modifyItem cache write discarded — purge epoch changed during the operation")
         }
         progress.completedUnitCount = 100
-        completionHandler(FileProviderItem(cached: updated), [], false, nil)
+        completionHandler(FileProviderItem(cached: updated), Self.declinedFields(changedFields), false, nil)
       } catch {
         NSLog("[Beebeeb] modifyItem failed: \(error)")
         self.invalidateCacheOnAccountMismatch(error)
