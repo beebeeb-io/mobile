@@ -17,7 +17,13 @@
  *     explicit off for the account signed in at that moment. Never mounted = never chosen = on.
  *
  * `./file-provider-mount` imports react-native and the native bridge, so this file mocks it, plus
- * `react-native`, the native module and AsyncStorage (see mobile/CLAUDE.md "Tests").
+ * `react-native`, the native module and expo-secure-store (see mobile/CLAUDE.md "Tests").
+ *
+ * Simulator, 2026-10-15 (round 4): the first version kept the choice in AsyncStorage. Every
+ * sign-out purge deletes RCTAsyncLocalStorage_V1 (a registered plaintext store), so the off choice
+ * and the upgrade marker did not survive a sign-out, and the next write in that process failed
+ * ("Failed to write manifest file"), which turned a successful turn-on into "Files mount failed".
+ * The choice now lives in SecureStore, like the per-account backup preferences.
  */
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 let platformOS = 'ios';
@@ -31,22 +37,23 @@ mock.module('react-native', () => ({
 
 const storage = new Map<string, string>();
 let storageFails = false;
+let deleteFails = false;
 /** Reads of keys with this prefix fail (an unreadable off choice). */
 let readFailsFor: string | null = null;
-mock.module('@react-native-async-storage/async-storage', () => ({
-  default: {
-    getItem: async (key: string) => {
-      if (storageFails || (readFailsFor && key.startsWith(readFailsFor))) throw new Error('storage unavailable');
-      return storage.has(key) ? storage.get(key) : null;
-    },
-    setItem: async (key: string, value: string) => {
-      if (storageFails) throw new Error('storage unavailable');
-      storage.set(key, value);
-    },
-    removeItem: async (key: string) => {
-      if (storageFails) throw new Error('storage unavailable');
-      storage.delete(key);
-    },
+mock.module('expo-secure-store', () => ({
+  AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY: 'afterFirstUnlockThisDeviceOnly',
+  getItemAsync: async (key: string) => {
+    if (storageFails || (readFailsFor && key.startsWith(readFailsFor))) throw new Error('keychain unavailable');
+    return storage.has(key) ? storage.get(key) : null;
+  },
+  setItemAsync: async (key: string, value: string) => {
+    if (storageFails) throw new Error('keychain unavailable');
+    if (!/^[A-Za-z0-9._-]+$/.test(key)) throw new Error(`invalid SecureStore key ${key}`);
+    storage.set(key, value);
+  },
+  deleteItemAsync: async (key: string) => {
+    if (storageFails || deleteFails) throw new Error('keychain unavailable');
+    storage.delete(key);
   },
 }));
 
@@ -107,6 +114,7 @@ function signOutResetsConsent() {
 afterEach(() => {
   storage.clear();
   storageFails = false;
+  deleteFails = false;
   readFailsFor = null;
   native = { supported: true, showInFiles: false, everMounted: false };
   calls.length = 0;
@@ -207,6 +215,16 @@ describe('the Settings switch still turns Files off, and that choice outlives si
     expect((await M.ensureFilesMountedByDefault('user-a')).action).toBe('mount');
   });
 
+  test('a turn-on that mounted Files is not reported as failed when the stored off cannot be cleared', async () => {
+    await M.setFilesMountedByUser({ userId: 'user-a', enabled: false, vaultUnlocked: true });
+    deleteFails = true;
+    const result = await M.setFilesMountedByUser({ userId: 'user-a', enabled: true, vaultUnlocked: true });
+    expect(result.registered).toBe(true);
+    expect(native.showInFiles).toBe(true);
+    // The stale off is the conservative side: the next sign-in leaves Files off.
+    expect(await M.hasFilesOptOut('user-a')).toBe(true);
+  });
+
   test('a failed turn-on keeps the earlier off choice', async () => {
     await M.setFilesMountedByUser({ userId: 'user-a', enabled: false, vaultUnlocked: true });
     mountFails = true;
@@ -226,7 +244,7 @@ describe('the Settings switch still turns Files off, and that choice outlives si
     await M.ensureFilesMountedByDefault('user-a');
     signOutResetsConsent();
     calls.length = 0;
-    readFailsFor = 'beebeeb:files-mount-off:';
+    readFailsFor = 'beebeeb.files-mount-off.';
     expect((await M.ensureFilesMountedByDefault('user-a')).action).toBe('stay-off');
     expect(calls).toEqual([]);
   });
@@ -304,5 +322,36 @@ describe('upgrade from TestFlight 236 (opt-in, cleared on every sign-out), check
     expect(calls).toEqual([]);
     storageFails = false;
     expect((await M.ensureFilesMountedByDefault('user-a')).action).toBe('stay-off');
+  });
+});
+
+describe('where the choice is kept', () => {
+  const { readFileSync } = require('node:fs');
+  const { join } = require('node:path');
+  const ROOT = join(import.meta.dir, '..', '..');
+  const source = readFileSync(join(ROOT, 'src/lib/files-mount-default.ts'), 'utf8');
+  const registry = readFileSync(join(ROOT, 'src/lib/plaintext-storage.ts'), 'utf8');
+  const app = readFileSync(join(ROOT, 'src/App.tsx'), 'utf8');
+
+  test('not in AsyncStorage: every sign-out purge deletes RCTAsyncLocalStorage_V1', () => {
+    expect(registry).toContain("'RCTAsyncLocalStorage_V1'");
+    expect(source).not.toContain('@react-native-async-storage/async-storage');
+    expect(source).toContain("from 'expo-secure-store'");
+  });
+
+  test('sign-out does not delete it', () => {
+    const start = app.indexOf('const signOut = useCallback(async () => {');
+    const signOut = app.slice(start, app.indexOf('}, [', start));
+    expect(signOut).not.toContain('files-mount');
+  });
+
+  test('stored keys are valid SecureStore keys and carry no account id', async () => {
+    await M.setFilesMountedByUser({ userId: '7f1c2a9e-0000-4000-8000-000000000001', enabled: false, vaultUnlocked: true });
+    const keys = [...storage.keys()];
+    expect(keys.length).toBe(2);
+    for (const key of keys) {
+      expect(key).toMatch(/^[A-Za-z0-9._-]+$/);
+      expect(key).not.toContain('7f1c2a9e');
+    }
   });
 });

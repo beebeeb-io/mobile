@@ -1,4 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { FileProviderDomainRegistrationResult } from '../../modules/beebeeb-crypto/src/BeebeebCrypto.types';
@@ -20,9 +20,12 @@ import { mountTrustedFileProvider, registerTrustedFileProviderDomain, removeTrus
  *   - consent off, this account said off  -> stay off
  *
  * The explicit off is kept per account, across sign-outs, because it is a privacy choice: a
- * session expiry must not undo it. It is stored on this device only (AsyncStorage: removed with
- * the app, not in backups of the keychain), keyed by a 64-bit digest of the account id rather
- * than the id itself, and holds nothing else.
+ * session expiry must not undo it. It is kept in SecureStore, where this app keeps the other
+ * preferences that outlive a sign-out (the per-account backup preferences, the Face ID lock):
+ * this device only, keyed by a 64-bit digest of the account id rather than the id itself, holding
+ * nothing else. Not AsyncStorage: every sign-out purge deletes RCTAsyncLocalStorage_V1 (a
+ * registered plaintext store), and until the app restarts AsyncStorage cannot write again
+ * (simulator, 2026-10-15: "Failed to write manifest file" after a sign-out).
  *
  * Upgrade from a build without the default (TestFlight 236 and earlier: opt-in, and every
  * sign-out cleared the consent the same way an explicit toggle-off did): checked once per
@@ -48,8 +51,12 @@ export function legacyFilesChoice(input: { consentOn: boolean; everMounted: bool
   return !input.consentOn && input.everMounted ? 'opt-out' : 'none';
 }
 
-const OPT_OUT_KEY_PREFIX = 'beebeeb:files-mount-off:v1:';
-const LEGACY_CHECKED_KEY = 'beebeeb:files-mount-default:legacy-checked:v1';
+// SecureStore keys: letters, digits, '.', '-', '_' only.
+const OPT_OUT_KEY_PREFIX = 'beebeeb.files-mount-off.v1.';
+const LEGACY_CHECKED_KEY = 'beebeeb.files-mount-default.legacy-checked.v1';
+const STORE_OPTIONS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
+};
 
 function fnv1a32(bytes: Uint8Array, offsetBasis: number): string {
   let hash = offsetBasis >>> 0;
@@ -79,7 +86,7 @@ function optOutKey(userId: string): string {
  */
 export async function hasFilesOptOut(userId: string): Promise<boolean> {
   try {
-    return (await AsyncStorage.getItem(optOutKey(userId))) === '1';
+    return (await SecureStore.getItemAsync(optOutKey(userId), STORE_OPTIONS)) === '1';
   } catch {
     return true;
   }
@@ -87,11 +94,11 @@ export async function hasFilesOptOut(userId: string): Promise<boolean> {
 
 /** Throws when the choice cannot be stored; callers then do not remove Files. */
 export async function recordFilesOptOut(userId: string): Promise<void> {
-  await AsyncStorage.setItem(optOutKey(userId), '1');
+  await SecureStore.setItemAsync(optOutKey(userId), '1', STORE_OPTIONS);
 }
 
 export async function clearFilesOptOut(userId: string): Promise<void> {
-  await AsyncStorage.removeItem(optOutKey(userId));
+  await SecureStore.deleteItemAsync(optOutKey(userId), STORE_OPTIONS);
 }
 
 let queue: Promise<unknown> = Promise.resolve();
@@ -111,11 +118,11 @@ export function withFilesMountLock<T>(task: () => Promise<T>): Promise<T> {
  * fails, so the caller mounts nothing on a guess and the check runs again next time.
  */
 async function settleUpgradeChoiceOnce(userId: string, consentOn: boolean, everMounted: boolean): Promise<void> {
-  if ((await AsyncStorage.getItem(LEGACY_CHECKED_KEY)) === '1') return;
+  if ((await SecureStore.getItemAsync(LEGACY_CHECKED_KEY, STORE_OPTIONS)) === '1') return;
   if (legacyFilesChoice({ consentOn, everMounted }) === 'opt-out') {
     await recordFilesOptOut(userId);
   }
-  await AsyncStorage.setItem(LEGACY_CHECKED_KEY, '1');
+  await SecureStore.setItemAsync(LEGACY_CHECKED_KEY, '1', STORE_OPTIONS);
 }
 
 /**
@@ -144,14 +151,16 @@ export async function ensureFilesMountedByDefault(userId: string | null | undefi
 
 /** An explicit choice on this device settles the upgrade check: there is nothing left to infer. */
 async function markUpgradeChecked(): Promise<void> {
-  await AsyncStorage.setItem(LEGACY_CHECKED_KEY, '1').catch(() => undefined);
+  await SecureStore.setItemAsync(LEGACY_CHECKED_KEY, '1', STORE_OPTIONS).catch(() => undefined);
 }
 
 /**
  * The Settings switch. Off: the choice is stored BEFORE Files is removed (if it cannot be stored,
  * nothing is removed and the caller shows the error, so the next unlock cannot undo a half-made
- * off). On: mounted, and the stored off is cleared only once Files is really mounted. Either way
- * the one-time upgrade check is settled, so it can never re-read a later sign-out as an off.
+ * off). On: mounted, and the stored off is cleared only once Files is really mounted; a clear that
+ * fails does not turn a working mount into an error (the stale off only means the next sign-in
+ * leaves Files off, the conservative side). Either way the one-time upgrade check is settled, so
+ * it can never re-read a later sign-out as an off.
  */
 export async function setFilesMountedByUser(options: {
   userId: string | null | undefined;
@@ -166,7 +175,7 @@ export async function setFilesMountedByUser(options: {
     }
     const result = await mountTrustedFileProvider({ vaultUnlocked: options.vaultUnlocked });
     if (options.userId && result.registered && result.cacheDatabaseReady !== false && !result.userVisibleRootError) {
-      await clearFilesOptOut(options.userId);
+      await clearFilesOptOut(options.userId).catch(() => undefined);
       await markUpgradeChecked();
     }
     return result;
