@@ -1,0 +1,40 @@
+# Task 1919 review (mobile#178, P1) — Encryption details names the city of
+# THIS file's pool, not "Europe", although the row it opens from (CRDT-backed)
+# carries no per-file location.
+# Precondition: signed in and unlocked on Drive against a LOCAL API with
+# several live datacenters (fsn1, hel1, nbg1), and two root files
+# region-hel-1.md (pool hel1) and region-nbg-1.md (pool nbg1).
+# Pass -e EVIDENCE_DIR=/abs/path. Starts from the running app (no launchApp).
+# The row's lock button is not exposed in the XCUITest hierarchy (the row
+# groups it; its "Encryption details for ..." label never shows up in
+# `maestro hierarchy`), so it is tapped by point. Points assume the Drive
+# order eu / nbg / hel below Backups on an iPhone 17-class sim (bb-qa-2).
+appId: io.beebeeb.app
+---
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 30000
+- assertVisible: "region-hel-1.md"
+- tapOn:
+    point: "81%,55%"
+- extendedWaitUntil:
+    visible: "Encryption details"
+    timeout: 10000
+- extendedWaitUntil:
+    visible: "Helsinki"
+    timeout: 15000
+- assertNotVisible: "Europe"
+- takeScreenshot: "${EVIDENCE_DIR}/1919-trust-sheet-helsinki"
+- tapOn: "Close"
+- extendedWaitUntil:
+    notVisible: "Encryption details"
+    timeout: 10000
+- tapOn:
+    point: "81%,47%"
+- extendedWaitUntil:
+    visible: "Nuremberg"
+    timeout: 15000
+- assertVisible: "region-nbg-1.md"
+- assertNotVisible: "Helsinki"
+- takeScreenshot: "${EVIDENCE_DIR}/1919-trust-sheet-nuremberg"
+- tapOn: "Close"
