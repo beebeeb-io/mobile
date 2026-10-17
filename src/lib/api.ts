@@ -1196,18 +1196,17 @@ export function storageLocation(poolId: string | null | undefined): StorageLocat
 }
 
 /**
- * Trust-display location for the encryption details panel.
- * Always names the city + provider — the brand voice rule.
+ * Trust-display location (upload toasts, preview details). Names a place, never the
+ * storage provider (task 1947 — brand/legal rule).
  */
 export interface TrustLocation {
   region: string; // "Europe"
   city: string;
-  provider: string;
 }
 
 export function trustLocation(poolId: string | null | undefined): TrustLocation {
-  if (!poolId) return { region: 'Europe', city: 'EU region', provider: 'Beebeeb network' };
-  return { region: 'Europe', city: 'EU region', provider: 'Beebeeb network' };
+  if (!poolId) return { region: 'Europe', city: 'EU region' };
+  return { region: 'Europe', city: 'EU region' };
 }
 
 export interface ListFilesResponse {

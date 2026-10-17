@@ -2,10 +2,11 @@
  * Trust Details bottom sheet — opened from the lock icon on a file row.
  *
  * Shows the encryption details we know about a file: algorithm, key source,
- * device, storage pool, provider. Bottom-actions launch the "Prove it"
+ * device, where it is stored. Bottom-actions launch the "Prove it"
  * verification view and the raw-ciphertext download.
  *
- * Brand voice: honest, name the city, don't reassure.
+ * Brand voice: honest, name the city, don't reassure. Never name the storage
+ * provider (task 1947, docs/canon/data-residency.md).
  */
 
 import React, { useEffect, useState } from 'react';
@@ -21,7 +22,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { fonts, onAmber, radii, spacing } from '../theme';
 import { BottomSheet, BottomSheetScrollView } from './sheet/BottomSheet';
 import { useTheme } from '../lib/theme-context';
-import { trustLocation, type FileEntry } from '../lib/api';
+import type { FileEntry } from '../lib/api';
 import { formatBytes as formatSize } from '../lib/format';
 import { useRegionCity } from '../lib/storage-region';
 import { storageLocationLabel } from '../lib/preview-info';
@@ -110,7 +111,6 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
   if (!shown) return null;
   const { file, fileName, mimeType } = shown;
 
-  const loc = trustLocation(file.storage_pool_id);
   const sheetVisible = !!fileProp && !proofOpen;
 
   const header = (
@@ -189,13 +189,6 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
               <DetailRow
                 label="Stored in"
                 value={storageLocationLabel({ city: regionCity ?? null })}
-                inkLabel={c.ink3}
-                inkValue={c.ink}
-                border={c.line}
-              />
-              <DetailRow
-                label="Provider"
-                value={loc.provider}
                 inkLabel={c.ink3}
                 inkValue={c.ink}
                 border={c.line}
