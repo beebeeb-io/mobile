@@ -24,7 +24,7 @@ import { useTheme } from '../lib/theme-context';
 import { trustLocation, type FileEntry } from '../lib/api';
 import { formatBytes as formatSize } from '../lib/format';
 import { useRegionCity } from '../lib/storage-region';
-import { storageLocationLabel } from '../lib/preview-info';
+import { storageLocationLabel, fileStorageCity } from '../lib/preview-info';
 import EncryptionProof from './EncryptionProof';
 import {
   TRUST_ENCRYPTED_ON_LABEL,
@@ -188,7 +188,7 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
               />
               <DetailRow
                 label="Stored in"
-                value={storageLocationLabel({ city: regionCity ?? null })}
+                value={storageLocationLabel({ city: fileStorageCity(file, regionCity ?? null) })}
                 inkLabel={c.ink3}
                 inkValue={c.ink}
                 border={c.line}

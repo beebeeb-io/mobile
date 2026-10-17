@@ -14,9 +14,9 @@ const source = readFileSync(join(import.meta.dir, 'EncryptionProof.tsx'), 'utf-8
 describe('"Stored in" city (task 1592 item 11)', () => {
   test('the pane is wired to the shared region source, not the trustLocation() filler', () => {
     expect(source).toContain("import { useRegionCity } from '../lib/storage-region';");
-    expect(source).toContain("import { storageLocationLabel } from '../lib/preview-info';");
+    expect(source).toContain("import { storageLocationLabel, fileStorageCity } from '../lib/preview-info';");
     expect(source).toContain('useRegionCity(visible)');
-    expect(source).toContain('storageLocationLabel({ city: regionCity ?? null })');
+    expect(source).toContain('storageLocationLabel({ city: fileStorageCity(file, regionCity ?? null) })');
     // The old filler path is gone entirely — no `trustLocation` import or call.
     expect(source).not.toContain('trustLocation');
   });

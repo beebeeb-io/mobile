@@ -14,9 +14,10 @@
  * "Falkenstein, Germany", no city reads "Europe" — never a filler.
  */
 import { useEffect, useState } from 'react';
-import { getRegion } from './api';
+import { getRegion, getStorageRegions, type StorageChoice } from './api';
 
 type RegionFetcher = () => Promise<{ city?: string | null }>;
+type ChoicesFetcher = () => Promise<readonly StorageChoice[]>;
 
 /** `undefined` = not fetched yet; `null` = the server named no city. */
 let cachedCity: string | null | undefined;
@@ -29,15 +30,31 @@ export function peekRegionCity(): string | null | undefined {
 
 /**
  * The storage city from `GET /api/v1/region` (cached after the first
- * success; concurrent callers share one request). Rejects when the call
+ * success; concurrent callers share one request). `null` also when several
+ * datacenters are live (see below). Rejects when the call
  * fails — callers fall back to "Europe", and a later call retries.
  */
-export function loadRegionCity(fetcher: RegionFetcher = getRegion): Promise<string | null> {
+export function loadRegionCity(
+  fetcher: RegionFetcher = getRegion,
+  choicesFetcher: ChoicesFetcher = getStorageRegions,
+): Promise<string | null> {
   if (cachedCity !== undefined) return Promise.resolve(cachedCity);
   if (!inflight) {
     inflight = fetcher()
-      .then((r) => {
-        const city = r?.city?.trim() || null;
+      .then(async (r) => {
+        let city = r?.city?.trim() || null;
+        // Task 1919: with more than one live datacenter the default pool's
+        // city says nothing about where a given file is (the app's file
+        // lists do not carry a per-file location), so name no city rather
+        // than the wrong one. A failed or missing list changes nothing.
+        try {
+          const live = (await choicesFetcher()).filter(
+            (c) => c.kind === 'datacenter' && c.status === 'live',
+          );
+          if (live.length > 1) city = null;
+        } catch {
+          // keep the default city
+        }
         cachedCity = city;
         return city;
       })

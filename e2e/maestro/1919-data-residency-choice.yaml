@@ -1,0 +1,27 @@
+# Task 1919 — Settings > Data residency is API-driven: "Europe" (the default,
+# any of our European datacenters), live datacenters, coming-soon datacenters.
+# Precondition: signed in and unlocked against a LOCAL API whose
+# GET /api/v1/storage-regions lists europe, fsn1, hel1, nbg1 (live) and ede
+# (coming soon). Pass -e EVIDENCE_DIR=/abs/path (see 1428-unlock-screen.yaml).
+# Starts from the running app (no launchApp) so a Metro target set with
+# `simctl launch ... --initialUrl` is kept.
+appId: io.beebeeb.app
+---
+- tapOn: "Settings"
+- scrollUntilVisible:
+    element: "Data residency"
+    direction: DOWN
+    timeout: 30000
+- scrollUntilVisible:
+    element: "Ede, Ede, Netherlands.*"
+    direction: DOWN
+    timeout: 10000
+- assertVisible: "Europe, Any of our European datacenters.*"
+- assertVisible: "Falkenstein, Falkenstein, Germany.*"
+- assertVisible: "Helsinki, Helsinki, Finland.*"
+- assertVisible: "Nuremberg, Nuremberg, Germany.*"
+- assertVisible: "Ede, Ede, Netherlands, coming soon"
+# A coming-soon row is not selectable: tapping it must not move the checkmark.
+- tapOn: "Ede, Ede, Netherlands, coming soon"
+- assertVisible: "Europe, Any of our European datacenters.*selected"
+- takeScreenshot: "${EVIDENCE_DIR}/1919-data-residency-choice"

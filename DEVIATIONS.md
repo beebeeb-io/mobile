@@ -4,6 +4,26 @@ Per the workspace `CLAUDE.md` → "How we work" → "Design before code": where 
 design artefact and the shipped code disagree, the deviation is recorded HERE,
 in the same commit as the code, with the ruling that caused it.
 
+## Task 1919 — Data residency: Europe (default) + datacenters from the API, "Force region" removed
+
+**Design:** no canvas artboard covers Settings > Data residency; the 1422 rows (one live region
+plus hardcoded "Helsinki" and "Ede" coming-soon rows) were a first pass.
+
+**Ruling (Guus, 2026-10-17, recorded in task 1919):** "Europe" is the default: no specific country,
+any of our European datacenters (the server places the data). Below it the person can choose one
+datacenter. Live ones are selectable, not-yet-live ones are listed as coming soon. The list comes
+from the API, never from a client list.
+
+**What shipped:** `GET /api/v1/storage-regions` drives every row (no static ids, cities, countries
+or coming-soon rows in the app); the choice is `PUT /api/v1/me/region` with the id verbatim. The
+local-only "Force region" switch is gone: the server has no force mode, so the control did
+nothing. If the list cannot be loaded the picker shows no rows and says so.
+
+**Per-file "Stored in":** the file rows say "Europe" (not the default pool's city) once more than one
+datacenter is live, because the app's file lists do not carry a per-file location. The Info sheet
+reads the file's own `storage_location.city`. Closing the row gap needs the server to include the
+location in the sync tree nodes (open question for the server lane).
+
 ## Task 1746 — native signup, first-run screen and account-stage screens (no canvas artboard)
 
 **Design:** `design/ios26-canvas/` has one auth artboard, Sign in. It has no artboard for

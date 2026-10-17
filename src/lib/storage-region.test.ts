@@ -3,10 +3,20 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
 let serverCalls = 0;
+// Task 1919: the list of storage choices decides whether the default pool's
+// city may stand in for "where is this file". One live datacenter: yes.
+// Several: no, a file may be in any of them.
+const dc = (id, status = 'live') => ({ id, kind: 'datacenter', name: id, city: id, status, selectable: status === 'live' });
+let choices = [{ id: 'europe', kind: 'region', name: 'Europe', status: 'live', selectable: true }, dc('Falkenstein'), dc('Ede', 'coming_soon')];
+let choicesFail = false;
 mock.module('./api', () => ({
   getRegion: async () => {
     serverCalls += 1;
     return { city: 'Falkenstein', region: 'europe', jurisdiction: 'EU' };
+  },
+  getStorageRegions: async () => {
+    if (choicesFail) throw new Error('boom');
+    return choices;
   },
 }));
 
@@ -16,6 +26,8 @@ const { storageLocationLabel } = await import('./preview-info');
 beforeEach(() => {
   __resetRegionCityForTests();
   serverCalls = 0;
+  choicesFail = false;
+  choices = [{ id: 'europe', kind: 'region', name: 'Europe', status: 'live', selectable: true }, dc('Falkenstein'), dc('Ede', 'coming_soon')];
 });
 
 describe('storage-region — one source for "Stored in" (task 1592 item 4)', () => {
@@ -53,5 +65,21 @@ describe('storage-region — one source for "Stored in" (task 1592 item 4)', () 
     const city = await loadRegionCity(async () => ({ city: '  ' }));
     expect(city).toBeNull();
     expect(storageLocationLabel({ city })).toBe('Europe');
+  });
+});
+
+describe('storage-region — more than one live datacenter (task 1919)', () => {
+  test('the default city no longer stands in for a file\'s location: null -> "Europe"', async () => {
+    choices = [choices[0], dc('Falkenstein'), dc('Helsinki'), dc('Nuremberg'), dc('Ede', 'coming_soon')];
+    const city = await loadRegionCity();
+    expect(city).toBeNull();
+    expect(storageLocationLabel({ city })).toBe('Europe');
+  });
+  test('coming-soon datacenters do not count as live', async () => {
+    expect(await loadRegionCity()).toBe('Falkenstein');
+  });
+  test('the list failing keeps the default city (single-datacenter servers, offline list)', async () => {
+    choicesFail = true;
+    expect(await loadRegionCity()).toBe('Falkenstein');
   });
 });

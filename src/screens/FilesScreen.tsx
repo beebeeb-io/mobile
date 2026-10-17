@@ -86,7 +86,7 @@ import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import { loadRegionCity } from '../lib/storage-region';
-import { storageLocationLabel } from '../lib/preview-info';
+import { storageLocationLabel, fileStorageCity } from '../lib/preview-info';
 import { rowNameDisplay } from '../lib/row-name';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -840,7 +840,7 @@ const FileRowItem = React.memo(function FileRowItem({
           <Text style={[styles.cryptoMeta, { color: c.ink4 }]} numberOfLines={1}>
             {isPendingUpload
               ? 'Waiting for encrypted chunks'
-              : `AES-256-GCM · ${storageLocationLabel({ city: regionCity })}`}
+              : `AES-256-GCM · ${storageLocationLabel({ city: fileStorageCity(item, regionCity) })}`}
           </Text>
         )}
       </View>
@@ -1055,7 +1055,7 @@ const FileGridItem = React.memo(function FileGridItem({
         </Text>
         {!isFolder && (
           <Text style={[styles.cryptoMetaGrid, { color: c.ink4 }]} numberOfLines={1}>
-            {isPendingUpload ? 'Waiting for chunks' : `AES-256-GCM · ${storageLocationLabel({ city: regionCity })}`}
+            {isPendingUpload ? 'Waiting for chunks' : `AES-256-GCM · ${storageLocationLabel({ city: fileStorageCity(item, regionCity) })}`}
           </Text>
         )}
       </View>
@@ -4075,7 +4075,7 @@ export default function FilesScreen() {
       // Task 1592 — the same "Stored in" source as the Info and Encryption
       // details sheets (GET /api/v1/region); "Europe" if it cannot be read.
       const city = await loadRegionCity().catch(() => null);
-      const storedIn = storageLocationLabel({ city });
+      const storedIn = storageLocationLabel({ city: fileStorageCity(item, city) });
       const lines = item.is_folder
         ? [
             `Name:      ${name}`,
