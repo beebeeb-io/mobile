@@ -261,3 +261,36 @@ The truthfulness of `false` rests on §2 (standard, published algorithms only) a
 Russia and Belarus off sale). If either changes — a proprietary algorithm, or France back on
 sale — this key must change with it (France: §7 "Re-enabling France", both keys together).
 The ANSSI and BIS obligations in §5 are unaffected.
+
+**Superseded for new builds (2026-10-16, §9).** France is going back on sale. Builds 236 and
+237 keep `usesNonExemptEncryption = false`. Build 238 onward carries both keys in §9.
+
+## 9. 2026-10-16 — France declaration approved; build 238
+
+**Guus, 2026-10-16:** "go with 238".
+
+Read back from the App Store Connect API the same morning:
+
+- Declaration `35c912e6-d4e4-4dcd-a5ed-22650cf41444` is `APPROVED`.
+- `codeValue` is `64c25f1a-bd4f-4c0f-98f8-9c80844890d0`.
+- `availableOnFrenchStore` is true. The attached document is
+  `01-Formulaire-AnnexeI-declaration-Beebeeb-signe.pdf`.
+- Declaration `92c7e83f` is still `CREATED` with no code. It is not used.
+- Builds 236 and 237 are `usesNonExemptEncryption = false`. Apple refuses to change that
+  flag on a processed build (409 on build 235). They are not the France binary.
+- Remote iOS build number before this build was `237`, so production `autoIncrement`
+  assigns **238**.
+- The iOS App Store version `1.0` (`325ca023-b8d7-494b-aa56-79b5b81ccaf3`) was
+  `DEVELOPER_REJECTED`, with build 236 still attached and no open review submission.
+  Marketing version on builds 236 and 237 is `1.0.1`, matching `app.json`.
+
+§7 "Re-enabling France" applies. `app.json` (`ios.infoPlist`) and `ios/Beebeeb/Info.plist`
+set both keys together:
+
+```
+ITSAppUsesNonExemptEncryption: true
+ITSEncryptionExportComplianceCode: 64c25f1a-bd4f-4c0f-98f8-9c80844890d0
+```
+
+Russia and Belarus stay unavailable. France is turned back on only once build 238 is the
+build selected on the version, then that version is submitted for review.
