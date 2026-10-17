@@ -1,144 +1,129 @@
 /**
- * Data-residency region picker data layer (task 1422).
+ * Data-residency picker data layer (task 1919, supersedes 1422).
  *
- * Server model (docs/canon/data-residency.md "The truth"): ONE live region
- * today (Falkenstein, Germany), with Helsinki (Finland) and Ede (Netherlands)
- * as committed roadmap regions (decision 1413, 2026-09-13 — Guus: "Coming
- * soon indeed" — keep naming them). `GET /api/v1/regions` (+ `GET
- * /api/v1/me/region` for the user's current preference) is the live source
- * of truth, so a region the server activates appears here without an App
- * Store release. The PLANNED list below exists ONLY to keep the honest
- * "Coming soon" rows for regions the API does not (yet) return — never
- * delete these rows, and never claim a planned region is live before the API
- * actually says so (this is exactly the mistake decision 1413 warns against).
+ * Product model (Guus, 2026-10-17): "Europe" is the DEFAULT. It means no
+ * specific country, any of our European datacenters; the server places the
+ * files. Below it the user can choose one specific datacenter. Datacenters
+ * that are not live yet are listed as "coming soon" and cannot be chosen.
  *
- * A planned region is matched against the live payload by CITY name
- * (case-insensitive), not by continent code: the server groups pools by
- * continent (`storage.rs::list_regions` — one row per continent, `continent`
- * is a coarse code like "europe"/"us"/"asia"), so a newly-live Helsinki pool
- * may or may not get its own distinct continent code depending on how it's
- * provisioned. Matching on city is the one thing that stays correct either
- * way, and it's what actually flips the row from "Coming soon" to live.
+ * EVERYTHING comes from the API. `GET /api/v1/storage-regions` (public) is the
+ * list, `GET /api/v1/me/region` is the user's preference (and carries the same
+ * list as `choices`). This file keeps no list of its own: no static ids, no
+ * city -> country map, no planned/coming-soon rows. When the server adds a
+ * datacenter or flips one from coming soon to live, the picker changes
+ * without an App Store release. Copy names cities only, never the provider.
+ *
+ * If nothing can be fetched the picker shows no rows and says so (it never
+ * invents a list).
  */
-import { getAvailableRegions, getUserRegion, setUserRegion, type AvailableRegion } from './api';
-
-export interface PlannedRegion {
-  /** Stable UI key. NEVER sent to the server — planned regions are not selectable. */
-  id: string;
-  label: string;
-  /** Matched case-insensitively against a live region's `example_city`. */
-  city: string;
-}
-
-// Decision 1413 (2026-09-13, Guus: "Coming soon indeed"): keep naming
-// Helsinki and Ede as committed roadmap regions. Do NOT delete these rows —
-// see docs/canon/data-residency.md "The truth".
-export const PLANNED_REGIONS: readonly PlannedRegion[] = [
-  { id: 'helsinki-fi', label: 'Helsinki', city: 'Helsinki' },
-  { id: 'ede-nl', label: 'Ede', city: 'Ede' },
-];
-
-// Shown only when the live fetch fails before anything else has loaded.
-// Mirrors today's one real live pool so the picker is never blank or wrong —
-// never a fabricated list.
-const STATIC_FALLBACK_REGIONS: readonly AvailableRegion[] = [{
-  continent: 'europe',
-  display_name: 'Europe',
-  example_city: 'Falkenstein',
-  provider: '',
-  is_default: true,
-}];
-
-// city -> country, for the same honest "name the city" subtitle web uses
-// (docs/canon/data-residency.md — never the hosting provider). Add an entry
-// here when a city can appear in the region list, live or coming-soon.
-const COUNTRY_BY_CITY: Record<string, string> = {
-  falkenstein: 'Germany',
-  helsinki: 'Finland',
-  ede: 'Netherlands',
-};
-
-function locationLabel(city: string): string {
-  const country = COUNTRY_BY_CITY[city.toLowerCase()];
-  return country ? `${city}, ${country}` : city;
-}
+import { getStorageRegions, getUserRegion, setUserRegion, type StorageChoice } from './api';
 
 export interface RegionRow {
-  /** Continent code for a live row (sent to `PUT /me/region`); the matching
-   *  `PlannedRegion.id` for a coming-soon row. */
+  /** The server id, sent verbatim to `PUT /me/region`. */
   id: string;
   label: string;
   subtitle: string;
+  /** Selectable: the server says it is live AND selectable. */
   available: boolean;
+  comingSoon: boolean;
+  /** True only for the "Europe" row (the server's `is_default`). */
   isDefault: boolean;
 }
 
-/** Merge a live `/api/v1/regions` payload with the honest coming-soon rows. */
-export function mergeRegions(apiRegions: readonly AvailableRegion[]): RegionRow[] {
-  const liveCities = new Set(
-    apiRegions
-      .map((r) => (r.example_city ?? r.city ?? '').toLowerCase())
-      .filter(Boolean),
-  );
-
-  const liveRows: RegionRow[] = apiRegions.map((r) => ({
-    id: r.continent,
-    label: r.display_name,
-    subtitle: locationLabel(r.example_city ?? r.city ?? r.display_name),
-    available: true,
-    isDefault: r.is_default,
-  }));
-
-  const comingSoonRows: RegionRow[] = PLANNED_REGIONS
-    .filter((p) => !liveCities.has(p.city.toLowerCase()))
-    .map((p) => ({
-      id: p.id,
-      label: p.label,
-      subtitle: 'Coming soon',
-      available: false,
-      isDefault: false,
-    }));
-
-  return [...liveRows, ...comingSoonRows];
+/** "Helsinki, Finland"; the city alone when the payload has no country. */
+function locationLabel(c: StorageChoice): string {
+  const city = c.city ?? c.name;
+  return c.country ? `${city}, ${c.country}` : city;
 }
 
-/** The picker's rows before any network round-trip completes, and the
- *  fallback shown if the live fetch fails. */
-export const DEFAULT_REGION_ROWS: readonly RegionRow[] = mergeRegions(STATIC_FALLBACK_REGIONS);
+/** Turn the API list into picker rows. Order is the server's order. */
+export function buildRegionRows(choices: readonly StorageChoice[]): RegionRow[] {
+  return choices.map((c) => {
+    const available = c.selectable === true && c.status === 'live';
+    return {
+      id: c.id,
+      label: c.name,
+      subtitle: c.kind === 'region'
+        ? 'Any of our European datacenters. We place your files.'
+        : locationLabel(c),
+      available,
+      comingSoon: c.status === 'coming_soon',
+      isDefault: c.is_default === true,
+    };
+  });
+}
+
+/**
+ * Which row shows as selected. No stored preference means the default
+ * (Europe) row. A stored datacenter that the API no longer lists as
+ * selectable selects NOTHING: showing Europe would misstate the saved value.
+ */
+export function effectiveSelection(
+  rows: readonly RegionRow[],
+  preferredRegion: string | null,
+): string | null {
+  if (preferredRegion == null) {
+    return rows.find((r) => r.isDefault && r.available)?.id ?? null;
+  }
+  const wanted = preferredRegion.toLowerCase();
+  return rows.find((r) => r.available && r.id.toLowerCase() === wanted)?.id ?? null;
+}
 
 export interface RegionsData {
   rows: RegionRow[];
+  /** The stored value from the server: null, "europe" or a datacenter id. */
   preferredRegion: string | null;
-  /** true when the live fetch failed and `rows` is the static fallback, not a real API answer. */
-  refreshFailed: boolean;
+  /** Row id to show as selected, or null. */
+  selectedId: string | null;
+  /** A datacenter is stored but the API does not list it as selectable now. */
+  preferredUnavailable: boolean;
+  /** `/me/region` failed, so the current choice is unknown. */
+  preferenceLoadFailed: boolean;
+  /** Neither the public list nor `/me/region` answered; `rows` is empty. */
+  failed: boolean;
 }
 
-/** Fetch + merge. Never throws — a failed fetch degrades to the static rows. */
+/** Fetch the list + the preference. Never throws. */
 export async function loadRegionsData(): Promise<RegionsData> {
-  try {
-    const [liveRegions, userRegion] = await Promise.all([
-      getAvailableRegions(),
-      getUserRegion(),
-    ]);
-    const live = liveRegions.length > 0 ? liveRegions : userRegion.available_regions;
+  const [list, pref] = await Promise.allSettled([getStorageRegions(), getUserRegion()]);
+
+  let choices: readonly StorageChoice[] | null = null;
+  if (list.status === 'fulfilled' && Array.isArray(list.value)) {
+    choices = list.value;
+  } else if (pref.status === 'fulfilled' && Array.isArray(pref.value.choices)) {
+    choices = pref.value.choices;
+  }
+
+  if (!choices) {
     return {
-      rows: mergeRegions(live),
-      preferredRegion: userRegion.preferred_region,
-      refreshFailed: false,
-    };
-  } catch {
-    return {
-      rows: [...DEFAULT_REGION_ROWS],
+      rows: [],
       preferredRegion: null,
-      refreshFailed: true,
+      selectedId: null,
+      preferredUnavailable: false,
+      preferenceLoadFailed: pref.status === 'rejected',
+      failed: true,
     };
   }
+
+  const rows = buildRegionRows(choices);
+  const preferenceLoadFailed = pref.status === 'rejected';
+  const preferredRegion = pref.status === 'fulfilled' ? (pref.value.preferred_region ?? null) : null;
+  // With an unknown preference (offline / failed) select nothing rather than guess.
+  const selectedId = preferenceLoadFailed ? null : effectiveSelection(rows, preferredRegion);
+  return {
+    rows,
+    preferredRegion,
+    selectedId,
+    preferredUnavailable: !preferenceLoadFailed && preferredRegion != null && selectedId === null,
+    preferenceLoadFailed,
+    failed: false,
+  };
 }
 
-/** Apply a region selection. No-ops (never calls the API) for a coming-soon row. */
+/** Apply a selection. No-ops (never calls the API) for a coming-soon row. */
 export async function selectRegion(
   row: Pick<RegionRow, 'id' | 'available'>,
-): Promise<{ preferred_region: string } | null> {
+): Promise<{ preferred_region: string | null } | null> {
   if (!row.available) return null;
   return setUserRegion(row.id);
 }

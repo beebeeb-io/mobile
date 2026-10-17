@@ -67,7 +67,6 @@ import { writeWidgetData } from '../utils/widgetData';
 import {
   getStorageUsage,
   getPreference,
-  setPreference,
   getSubscription,
   getRegion,
   getNotificationPreferences,
@@ -83,7 +82,6 @@ import { useAccountState } from '../lib/account-state-context';
 import {
   loadRegionsData,
   selectRegion,
-  DEFAULT_REGION_ROWS,
   type RegionRow,
 } from '../lib/regions';
 import {
@@ -161,7 +159,6 @@ function withTimeout<T>(promise: Promise<T>, fallback: T, timeoutMs: number): Pr
   });
 }
 
-type RegionMode = 'preference' | 'force';
 type C = Colors;
 
 interface NativePermissionResponse {
@@ -702,13 +699,19 @@ export default function SettingsScreen() {
   const [serverRegion, setServerRegion] = useState<Region | null>(null);
 
   // Data residency preference
-  const [storageRegion, setStorageRegion] = useState<string>('europe');
-  const [storageRegionMode, setStorageRegionMode] = useState<RegionMode>('preference');
+  /** Row id shown as selected (null = none: unknown, or the saved datacenter
+   *  is not available right now). */
+  const [storageRegion, setStorageRegion] = useState<string | null>(null);
   const [savingRegion, setSavingRegion] = useState(false);
-  /** Region rows derived from `/api/v1/regions` + `/me/region` (task 1422),
-   *  merged with the honest "Coming soon" rows for planned regions (1413). */
-  const [regionRows, setRegionRows] = useState<readonly RegionRow[]>(DEFAULT_REGION_ROWS);
+  /** Rows come ONLY from `GET /api/v1/storage-regions` (task 1919): Europe
+   *  (default, any datacenter), the datacenters, and coming-soon ones. There is
+   *  no client-side list; empty until the first answer arrives. */
+  const [regionRows, setRegionRows] = useState<readonly RegionRow[]>([]);
+  const [regionsLoaded, setRegionsLoaded] = useState(false);
   const [regionsRefreshFailed, setRegionsRefreshFailed] = useState(false);
+  const [regionPreferenceUnknown, setRegionPreferenceUnknown] = useState(false);
+  const [regionPreferredUnavailable, setRegionPreferredUnavailable] = useState(false);
+  const [regionSaveFailed, setRegionSaveFailed] = useState(false);
 
   // Backup per-category stats (sourced from BackupDatabase + .device.json manifest)
   const [photoStats, setPhotoStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
@@ -940,28 +943,15 @@ export default function SettingsScreen() {
   }, []);
 
   const loadStorageRegionPref = useCallback(async () => {
-    // Task 1422: rows always come from `/api/v1/regions` + `/me/region` (with
-    // the honest "Coming soon" rows merged in for planned regions, decision
-    // 1413) — never throws; a failed fetch degrades to the static rows.
+    // Task 1919: rows + preference come from the API (never throws). A failed
+    // fetch leaves the picker empty with an honest note; it never invents rows.
     const data = await loadRegionsData();
     setRegionRows(data.rows);
-    setRegionsRefreshFailed(data.refreshFailed);
-    if (data.preferredRegion) {
-      setStorageRegion(data.preferredRegion);
-      return;
-    }
-    if (!data.refreshFailed) return; // fetched fine, user just has no preference set yet
-
-    // Live fetch failed — fall back to any locally cached preference.
-    const raw = await getPreference('storage_region');
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as { pool_name?: string; mode?: RegionMode };
-      if (parsed.pool_name) setStorageRegion(parsed.pool_name);
-      if (parsed.mode === 'preference' || parsed.mode === 'force') setStorageRegionMode(parsed.mode);
-    } catch {
-      // Ignore malformed preference
-    }
+    setRegionsLoaded(true);
+    setRegionsRefreshFailed(data.failed);
+    setRegionPreferenceUnknown(data.preferenceLoadFailed);
+    setRegionPreferredUnavailable(data.preferredUnavailable);
+    setStorageRegion(data.selectedId);
   }, []);
 
   // Load deletion behavior preference
@@ -1608,27 +1598,23 @@ export default function SettingsScreen() {
   }, []);
 
   const handleRegionChange = useCallback(async (row: RegionRow) => {
-    if (!row.available) return;
+    if (!row.available || savingRegion || row.id === storageRegion) return;
+    const previous = storageRegion;
+    setRegionSaveFailed(false);
     setStorageRegion(row.id);
     setSavingRegion(true);
     try {
       await selectRegion(row);
-      await setPreference('storage_region', JSON.stringify({ pool_name: row.id, mode: storageRegionMode }));
+      setRegionPreferredUnavailable(false);
+      setRegionPreferenceUnknown(false);
     } catch {
-      await setPreference('storage_region', JSON.stringify({ pool_name: row.id, mode: storageRegionMode })).catch(() => {});
+      // The server did not store it: show what is actually stored.
+      setStorageRegion(previous);
+      setRegionSaveFailed(true);
     } finally {
       setSavingRegion(false);
     }
-  }, [storageRegionMode]);
-
-  const handleRegionModeChange = useCallback(async (mode: RegionMode) => {
-    setStorageRegionMode(mode);
-    try {
-      await setPreference('storage_region', JSON.stringify({ pool_name: storageRegion, mode }));
-    } catch {
-      // Best-effort
-    }
-  }, [storageRegion]);
+  }, [savingRegion, storageRegion]);
 
   // Task 1540 findings 3, 5, 9: this used to be a callback wiring an amber
   // primary-CTA button below to `navigation.navigate('Storage')` — but
@@ -2486,13 +2472,17 @@ export default function SettingsScreen() {
         <View style={layout.section}>
           <SectionHeader title="Data residency" c={c} />
           <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
-            {/* Rows derived from /api/v1/regions + /me/region (task 1422), merged
-                with the honest "Coming soon" rows for planned regions (1413). */}
-            {(() => {
-              const availableRowCount = regionRows.filter((r) => r.available).length;
-              return regionRows.map((row, i) => {
+            {/* Rows come from GET /api/v1/storage-regions (task 1919). */}
+            {regionRows.length === 0 && (
+              <View style={layout.row}>
+                <Text style={{ fontSize: 14, color: c.ink3 }}>
+                  {regionsLoaded ? 'Datacenters are not available right now.' : 'Loading datacenters...'}
+                </Text>
+              </View>
+            )}
+            {regionRows.map((row, i) => {
                 const isSelected = row.available && storageRegion === row.id;
-                const disabled = !row.available || savingRegion || availableRowCount <= 1;
+                const disabled = !row.available || savingRegion;
                 return (
                   <React.Fragment key={row.id}>
                     {i > 0 && <RowDivider c={c} />}
@@ -2501,7 +2491,8 @@ export default function SettingsScreen() {
                       activeOpacity={row.available ? 0.6 : 1}
                       onPress={() => void handleRegionChange(row)}
                       disabled={disabled}
-                      accessibilityLabel={`${row.label}${!row.available ? ', coming soon' : isSelected ? ', selected' : ''}`}
+                      testID={`region-row-${row.id}`}
+                      accessibilityLabel={`${row.label}, ${row.subtitle}${row.comingSoon ? ', coming soon' : isSelected ? ', selected' : ''}`}
                       accessibilityRole="radio"
                       accessibilityState={{ checked: isSelected, disabled: !row.available }}
                     >
@@ -2536,56 +2527,39 @@ export default function SettingsScreen() {
                       {isSelected && (
                         <Ionicons name="checkmark" size={16} color={c.amber} />
                       )}
-                      {!row.available && (
+                      {row.comingSoon && (
                         <Text style={{
                           fontSize: 10, color: c.ink4, fontWeight: '500' as const,
                           paddingHorizontal: 6, paddingVertical: 2,
                           borderRadius: 4, borderWidth: 1, borderColor: c.line2,
                           overflow: 'hidden' as const,
                         }}>
-                          Soon
+                          Coming soon
                         </Text>
                       )}
                     </TouchableOpacity>
                   </React.Fragment>
                 );
-              });
-            })()}
-
-            {storageRegion !== 'europe' && (
-              <>
-                <RowDivider c={c} />
-                <View style={layout.row}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>Force region</Text>
-                    {storageRegionMode === 'force' && (
-                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 4 }}>
-                        <Ionicons name="warning" size={12} color={c.amberDeep} />
-                        <Text style={{ fontSize: 11, color: c.amberDeep }}>Capacity limited</Text>
-                      </View>
-                    )}
-                  </View>
-                  <NativeSwitch
-                    value={storageRegionMode === 'force'}
-                    onValueChange={(v) => handleRegionModeChange(v ? 'force' : 'preference')}
-                    colors={c}
-                  />
-                </View>
-              </>
-            )}
+              })}
           </View>
           <SectionNote
-            text="New uploads go to your selected region. Existing files stay where they are. Need to migrate? Contact us."
+            text="Europe is the default: your files can be stored in any of our European datacenters, and we choose. Pick a city to keep new uploads in that datacenter. Existing files stay where they are. Need to move them? Contact us."
             c={c}
           />
-          <SectionNote
-            text={storageRegionMode === 'force'
-              ? 'Force: uploads only go to your selected region. May fail when at capacity.'
-              : 'Preference: uploads go to your region when possible, overflow to others if needed.'}
-            c={c}
-          />
+          {regionPreferredUnavailable && (
+            <SectionNote
+              text="The datacenter you picked is not available right now. New uploads go to another European datacenter until it is."
+              c={c}
+            />
+          )}
+          {regionSaveFailed && (
+            <SectionNote text="Could not save your choice. Check your connection and try again." c={c} />
+          )}
+          {regionPreferenceUnknown && !regionsRefreshFailed && (
+            <SectionNote text="Could not load your current choice. Pick one to set it." c={c} />
+          )}
           {regionsRefreshFailed && (
-            <SectionNote text="Could not refresh regions. Showing the last known list." c={c} />
+            <SectionNote text="Could not load the datacenter list. Check your connection and reopen Settings." c={c} />
           )}
         </View>
 

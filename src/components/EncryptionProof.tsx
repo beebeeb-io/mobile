@@ -57,7 +57,7 @@ import {
   type PlaintextPrefixState,
 } from '../lib/encryption-proof';
 import { useRegionCity } from '../lib/storage-region';
-import { storageLocationLabel } from '../lib/preview-info';
+import { storageLocationLabel, fileStorageCity } from '../lib/preview-info';
 
 interface Props {
   file: FileEntry;
@@ -176,7 +176,7 @@ export default function EncryptionProof({ file, fileName, mimeType, visible, onC
   // Encryption details sheets; "Europe" while loading, unknown, or on a
   // failed fetch — never the "EU region" filler.
   const regionCity = useRegionCity(visible);
-  const storedInCity = storageLocationLabel({ city: regionCity ?? null });
+  const storedInCity = storageLocationLabel({ city: fileStorageCity(file, regionCity ?? null) });
 
   return (
     <Modal

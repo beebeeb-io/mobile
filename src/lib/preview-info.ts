@@ -85,6 +85,23 @@ export function storageLocationLabel(region: { city?: string | null } | null | u
   return country ? `${city}, ${country}` : city;
 }
 
+/**
+ * Task 1919: the city a file is actually stored in. The server returns a
+ * per-file `storage_location` (the city of the pool the file landed in), which
+ * can differ from the default pool now that people choose where new uploads
+ * go. A missing or placeless value falls back to `fallbackCity` (the default
+ * pool's city from `GET /api/v1/region`), never to a filler.
+ */
+export function fileStorageCity(
+  file: { storage_location?: { city?: string | null } | null } | null | undefined,
+  fallbackCity: string | null | undefined,
+): string | null {
+  const own = file?.storage_location?.city?.trim() ?? '';
+  if (!NOT_A_CITY.has(own.toLowerCase())) return own;
+  const fb = fallbackCity?.trim() ?? '';
+  return fb === '' ? null : fb;
+}
+
 /** Where the Info sheet opens: the top, or scrolled to the Versions section
  * (the bottom bar's "Versions" button and the ⋯ menu's "Version history"). */
 export type InfoSheetFocus = 'info' | 'versions';

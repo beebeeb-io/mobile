@@ -1141,6 +1141,10 @@ export interface FileEntry {
   updated_at: string;
   version_number?: number;
   storage_pool_id?: string | null;
+  /** Task 1919: where THIS file is stored (the city of its pool). Present on
+   * file entries (not folders). Never carries more than region/city/provider
+   * from the server; the app shows the city only. */
+  storage_location?: { region?: string | null; city?: string | null; provider?: string | null } | null;
   /** Parent folder ID — null when the entry lives at the root. Populated by
    * /api/v1/files/all-images so the Photos screen can tag iOS-backup origin. */
   parent_id?: string | null;
@@ -4102,38 +4106,47 @@ export async function getPlans(): Promise<Plan[]> {
 // when billing migrated off Stripe to Mollie — the mobile app no longer creates
 // checkout/portal sessions itself (task 0958).
 
-// ─── Data residency (task 0051) ───────────────────────────────────────────────
+// ─── Data residency (tasks 0051, 1919) ────────────────────────────────────────
 
-export interface AvailableRegion {
-  continent: string;
-  display_name: string;
-  city?: string;
-  example_city?: string;
-  provider: string;
+/** One entry of the storage-region list (server `GET /api/v1/storage-regions`).
+ * `kind: "region"` is the default "Europe" entry (any datacenter, the server
+ * places the data); `kind: "datacenter"` is one specific city. The payload
+ * never carries a provider. Render from `status` + `selectable`; keep no
+ * client-side list of ids, cities or countries. */
+export interface StorageChoice {
+  id: string;
+  kind: 'region' | 'datacenter';
+  name: string;
+  city: string | null;
+  country: string | null;
+  country_code: string | null;
+  status: 'live' | 'coming_soon';
+  selectable: boolean;
   is_default: boolean;
 }
 
-/** GET /api/v1/regions — every live storage region (public, no auth).
- * Server (`routes/regions.rs::list_regions`) returns a bare JSON array, not
- * `{regions: [...]}`. */
-export async function getAvailableRegions(): Promise<AvailableRegion[]> {
-  return request<AvailableRegion[]>('GET', '/api/v1/regions', undefined, false);
+/** GET /api/v1/storage-regions: public, no auth, bare array. */
+export async function getStorageRegions(): Promise<StorageChoice[]> {
+  return request<StorageChoice[]>('GET', '/api/v1/storage-regions', undefined, false);
 }
 
-/** GET /api/v1/me/region — user's preferred region + available list */
+/** GET /api/v1/me/region: the stored preference (null, "europe" or a
+ * datacenter id) plus the same list as `choices`. `available_regions` is the
+ * legacy continent list and is not used by the app. */
 export async function getUserRegion(): Promise<{
   preferred_region: string | null;
-  available_regions: AvailableRegion[];
+  choices?: StorageChoice[];
 }> {
-  return request<{ preferred_region: string | null; available_regions: AvailableRegion[] }>(
+  return request<{ preferred_region: string | null; choices?: StorageChoice[] }>(
     'GET', '/api/v1/me/region',
   );
 }
 
-/** PUT /api/v1/me/region — set preferred region */
-export async function setUserRegion(continent: string): Promise<{ preferred_region: string }> {
-  return request<{ preferred_region: string }>(
-    'PUT', '/api/v1/me/region', { preferred_region: continent },
+/** PUT /api/v1/me/region: `"europe"` or a live datacenter id, verbatim from
+ * the list. `null` clears the choice. A coming-soon or unknown id is a 400. */
+export async function setUserRegion(id: string | null): Promise<{ preferred_region: string | null }> {
+  return request<{ preferred_region: string | null }>(
+    'PUT', '/api/v1/me/region', { preferred_region: id },
   );
 }
 

@@ -22,7 +22,7 @@ describe('row/grid "Stored in" city (task 1592 item 12)', () => {
   });
 
   test('both the list row and the grid card read the shared, cached region label', () => {
-    const occurrences = source.match(/`AES-256-GCM · \$\{storageLocationLabel\(\{ city: regionCity \}\)\}`/g) ?? [];
+    const occurrences = source.match(/`AES-256-GCM · \$\{storageLocationLabel\(\{ city: fileStorageCity\(item, regionCity\) \}\)\}`/g) ?? [];
     expect(occurrences.length).toBe(2); // list row + grid card
   });
 
