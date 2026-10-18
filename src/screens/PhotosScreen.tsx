@@ -33,7 +33,8 @@ import { NativePhotosGridView, type NativePhotoGridItem } from '../../modules/be
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { GlassCircle, GlassSurface, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial, useTabBarBottomInset } from '../components/glass';
-import { ApiError, getAllImages, getFileIndex, friendlyError, trashFiles } from '../lib/api';
+import { friendlyError, trashFiles } from '../lib/api';
+import { getPhotoCandidates } from '../lib/photo-index-source';
 import type { FileEntry } from '../lib/api';
 import { guessMimeType } from '../lib/media';
 // Task 1687c — the row-level Photos-tab media classification lives in
@@ -72,7 +73,7 @@ import { decryptToTempFile } from '../lib/native-decrypt';
 import { prunePhotoCacheForRemoteFiles } from '../lib/photo-cache';
 import { onFilesDeleted } from '../lib/delete-cascade';
 import { removeFromFileProviderCache } from '../lib/file-provider-mount';
-import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
+import { loadCachedFileIndex } from '../lib/file-index-cache';
 import { getRemoteCreatedAtMap, getRemoteToLocalMap, markRemoteDeleted } from '../services/BackupDatabase';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import { mapInBatches } from '../lib/async-batch';
@@ -91,7 +92,6 @@ import {
 import {
   getExcludedPhotoFolderIds,
   filterByExcludedFolders,
-  filterByExcludedFoldersDirect,
 } from '../lib/photo-library-prefs';
 
 // ---------------------------------------------------------------------------
@@ -130,45 +130,6 @@ function preparePhotoEntries(entries: FileEntry[]): FileEntry[] {
   return entries
     .filter((entry) => !entry.is_folder)
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-}
-
-async function getPhotoCandidates(
-  cachedIndex?: CachedFileIndex | null,
-  excludedFolderIds?: Set<string>,
-): Promise<FileEntry[]> {
-  const excluded = excludedFolderIds ?? new Set<string>();
-  try {
-    const existingIndex = cachedIndex ?? await loadCachedFileIndex();
-    const index = await getFileIndex(existingIndex?.hash);
-    if (!index.changed && existingIndex) {
-      // Pass the FULL index (folder rows included) so exclusion is transitive.
-      return filterByExcludedFolders(
-        existingIndex.files,
-        photoCandidatesFromIndex(existingIndex.files),
-        excluded,
-      );
-    }
-    if (index.files) {
-      await saveCachedFileIndex(index.hash, index.files);
-      return filterByExcludedFolders(
-        index.files,
-        photoCandidatesFromIndex(index.files),
-        excluded,
-      );
-    }
-  } catch (err) {
-    // Older API builds do not have /files/index yet. Because /files/{id}
-    // also exists, those builds may treat "index" as a UUID and return 400
-    // instead of 404. Fall back to the media endpoint in all unsupported-route
-    // cases, but keep auth/network/server errors visible.
-    if (!(err instanceof ApiError) || (err.status !== 400 && err.status !== 404 && err.status !== 405)) {
-      throw err;
-    }
-  }
-
-  // Legacy /files/media path has no folder tree — degrade to direct-parent
-  // exclusion (transitive exclusion only matters on the index path above).
-  return filterByExcludedFoldersDirect(await getAllImages(), excluded);
 }
 
 /**
