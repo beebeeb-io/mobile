@@ -37,6 +37,10 @@ import SQLite3
 //       account's rows are in the file.
 //   (d) control: with no JS connection the handle behaves as before
 //       (a pending reset is applied at open, a failure closes).
+//   (e) round 12 item 4: `finishAfterFailedReset(allowUnlink: false)` (JS's
+//       close failed) opens, resets, checkpoints and closes nothing while the
+//       JS connection may be open; the reset runs once JS confirms its close
+//       (the gate), adopting the outgoing account's pre-column rows first.
 
 var failures: [String] = []
 var total = 0
@@ -321,6 +325,53 @@ do {
   expect(h2.parkedConnectionCount == 0 && h2.closedConnectionCount == 1, "d2: closed, not parked")
   expect(fdsOn(path2) == 0, "d2: no fd left on the file")
   schemaBroken = false
+}
+
+// MARK: - (e) round 12 item 4: finish(allowUnlink: false) touches nothing while JS may hold the file
+
+do {
+  let path = manifestPath("e-unconfirmed")
+  let flag = PendingFlag()
+  let handle = BackupManifestHandle(path: path, pendingReset: flag.flag, now: { now }, prepareSchema: prepareSchema)
+  // The native launch open failed (no handle); JS was admitted and opened.
+  schemaBroken = true
+  let admitted = handle.admitPeerOpen(priorPeerHandlesClosed: true)
+  expect(admitted.admitted && handle.db == nil, "e0: JS admitted, no native handle (got \(admitted))")
+  schemaBroken = false
+  let js = connect(path)
+  prepareSchema(js)
+  seedA(js)
+  // A's upload from before `uploaded_account_id` existed, not marked yet.
+  exec(js, """
+  INSERT INTO backup_assets (local_asset_id, remote_file_id, created_at, asset_type, status)
+  VALUES ('a-old', 'f-a-old', '2026-09-01T00:00:00Z', 'photo', 'uploaded');
+  """)
+  // Sign-out of A: the reset cannot run (no native handle); it is pending.
+  expect(!handle.resetForSignOut(outgoingAccountId: accountA), "e1: the sign-out reset is pending")
+  // JS's closeAsync() rejected: its connection may still be open (it is,
+  // and idle: no lock, so a native reset WOULD succeed under it).
+  let fdsBefore = fdsOn(path)
+  let walBefore = fileSize(path + "-wal")
+  let walInode = inode(path + "-wal")
+  let closesBefore = handle.closedConnectionCount
+  let opensBefore = handle.openCount
+  let finished = handle.finishAfterFailedReset(allowUnlink: false)
+  expect(!finished.ok && !finished.unlinked && !finished.reopened, "e2: nothing recovered, unlinked or reopened (got \(finished))")
+  expect(finished.reopenFailure == .pendingResetDeferred, "e2: deferred until JS confirms its close (got \(String(describing: finished.reopenFailure)))")
+  expect(fdsOn(path) == fdsBefore, "e3: no connection opened on the file (fds \(fdsOn(path)) vs \(fdsBefore))")
+  expect(handle.closedConnectionCount == closesBefore && handle.openCount == opensBefore, "e3: none closed, none opened by the handle")
+  expect(fileSize(path + "-wal") == walBefore && inode(path + "-wal") == walInode, "e4: the WAL was not checkpointed or replaced under JS")
+  expect(scalar(js, rowsSQL) == 3, "e4: the reset did not run under the JS connection (rows \(scalar(js, rowsSQL)))")
+  expect(handle.db == nil && flag.pending && handle.peerMayHoldFile, "e5: no native handle; reset pending; JS may hold the file")
+  // start() / the background task meanwhile: deferred, nothing opened.
+  expect(handle.openIfClosed() == .pendingResetDeferred && fdsOn(path) == fdsBefore, "e6: openIfClosed defers and opens nothing")
+  // JS retries its close at its next call and asks the gate: confirmed now.
+  expect(sqlite3_close(js) == SQLITE_OK, "e7: JS's connection closed")
+  let gate = handle.admitPeerOpen(priorPeerHandlesClosed: true)
+  expect(gate.admitted && handle.db != nil && !flag.pending, "e8: the reset runs once JS confirmed, then JS is admitted (got \(gate))")
+  expect(scalar(handle.db!, rowsSQL) == 0, "e8: A's rows are gone")
+  expect(scalar(handle.db!, "SELECT COUNT(*) FROM backup_pending_marks WHERE account_id = '\(accountA)' AND local_asset_id = 'a-old' AND remote_file_id = 'f-a-old'") == 1,
+         "e9: A's pre-column unmarked upload is kept as A's pending mark (adopted at the deferred reset)")
 }
 
 print("manifest-js-peer-test: \(failures.isEmpty ? "PASS" : "FAIL")")

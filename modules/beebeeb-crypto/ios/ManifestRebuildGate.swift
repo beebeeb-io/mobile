@@ -98,12 +98,16 @@ enum ManifestRebuildGate {
   }
 
   /// How long uploads stay paused after `reason`. nil = no backoff (the
-  /// device id arrives from JS; the next batch checks again).
+  /// next batch checks again).
+  ///
+  /// Task 1667 round 12 (review item 7): `noDeviceId` backs off like a failed
+  /// fetch instead of re-running every 5 s; JS handing the id over ends the
+  /// backoff (`NativeBackupEngine.backupDeviceId`).
   static func backoff(for reason: DeferReason, consecutiveFailures: Int) -> TimeInterval? {
     switch reason {
-    case .noDeviceId, .accountChanged:
+    case .accountChanged:
       return nil
-    case .fetchFailed:
+    case .noDeviceId, .fetchFailed:
       return fetchFailureBackoff
     case .checkFailed, .applyMapFailed, .applyKeptFailed:
       return databaseFailureBackoff(consecutiveFailures: consecutiveFailures)

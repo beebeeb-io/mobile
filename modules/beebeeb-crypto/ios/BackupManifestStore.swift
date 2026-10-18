@@ -321,7 +321,14 @@ enum BackupManifestStore {
     }
     // Rollback journal (no -wal/-shm) so the closed staging file is complete
     // on its own; the engine switches the replaced file to WAL on open.
+    // Round 12 (review item 5): the new file carries the JS layer's schema
+    // version. Built with `user_version` 0, JS `openAndMigrate` took it for a
+    // legacy file and ran the one-time status migration again, turning live
+    // 'uploading' rows (the engine's, written before JS's first open) into
+    // 'uploaded' with no file id: never retried, never checked, missing from
+    // the backup. A new file holds no legacy rows, so the migration is moot.
     let built = sqlite3_exec(fresh, "PRAGMA journal_mode = DELETE", nil, nil, nil) == SQLITE_OK
+      && sqlite3_exec(fresh, "PRAGMA user_version = \(jsSchemaVersion)", nil, nil, nil) == SQLITE_OK
       && sqlite3_exec(fresh, pendingMarksTableSQL, nil, nil, nil) == SQLITE_OK
       && insertPendingMarks(fresh, carrying)
     let closed = closeConnection(fresh)
@@ -343,6 +350,12 @@ enum BackupManifestStore {
     }
     return (true, true)
   }
+
+  /// Round 12 (review item 5): `PRAGMA user_version` of a manifest whose
+  /// rows need no JS legacy status migration. Must equal
+  /// `LEGACY_STATUS_ENUM_MIGRATION_VERSION` in src/services/BackupDatabase.ts
+  /// (pinned by native-backup-manifest-wiring.test.ts).
+  static let jsSchemaVersion: Int32 = 1
 
   private static func openConnection(_ path: String) -> OpaquePointer? {
     var db: OpaquePointer?
@@ -676,6 +689,16 @@ enum BackupManifestStore {
   /// statement could not be prepared or the batch did not commit.
   @discardableResult
   static func insertScannedAssets(_ db: OpaquePointer, _ assets: [ScannedAsset], nowMs: Int64) -> Bool {
+    insertScannedAssetsCounting(db, assets, nowMs: nowMs) != nil
+  }
+
+  /// Round 12 (review item 10): `insertScannedAssets`, returning how many
+  /// rows ENTERED the pending queue: inserted, or revived from
+  /// `local_missing`. An upsert of a row that was already there (the common
+  /// case: every full scan re-upserts the whole library) counts 0. nil when
+  /// the insert failed (rolled back). The engine requests a bulk server check
+  /// only for a count above 0; before, every full scan owed one.
+  static func insertScannedAssetsCounting(_ db: OpaquePointer, _ assets: [ScannedAsset], nowMs: Int64) -> Int? {
     let sql = """
     INSERT INTO backup_assets
       (local_asset_id, content_hash, file_size, created_at, asset_type, status, queued_at)
@@ -698,16 +721,36 @@ enum BackupManifestStore {
       END
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
+    // Round 12: the row's status before the upsert (no row: a new one).
+    var probe: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "SELECT status FROM backup_assets WHERE local_asset_id = ?", -1, &probe, nil) == SQLITE_OK else {
+      return nil
+    }
+    defer { sqlite3_finalize(probe) }
 
     // Round 7 sweep: every step is checked. Before, a failed BEGIN or a
     // failed row (writer lock, I/O) was ignored and COMMIT reported the
     // batch inserted; the rebuild gate could then apply the server map to a
     // manifest missing those rows, and they uploaded again once a later
     // scan inserted them.
-    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
+    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
+    var entered = 0
     for asset in assets {
+      bindText(probe, 1, asset.localAssetId)
+      let probeRc = sqlite3_step(probe)
+      let enters: Bool
+      if probeRc == SQLITE_DONE {
+        enters = true
+      } else if probeRc == SQLITE_ROW {
+        enters = sqlite3_column_text(probe, 0).map { String(cString: $0) } == "local_missing"
+      } else {
+        sqlite3_reset(probe)
+        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        return nil
+      }
+      sqlite3_reset(probe)
       bindText(stmt, 1, asset.localAssetId)
       bindText(stmt, 2, asset.createdAt)
       bindText(stmt, 3, asset.assetType)
@@ -716,14 +759,15 @@ enum BackupManifestStore {
       sqlite3_reset(stmt)
       guard rc == SQLITE_DONE else {
         sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
-        return false
+        return nil
       }
+      if enters { entered += 1 }
     }
     guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
       sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
-      return false
+      return nil
     }
-    return true
+    return entered
   }
 
   /// The scan's album selection: with no album selection every row is

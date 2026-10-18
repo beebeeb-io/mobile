@@ -39,6 +39,21 @@ import Foundation
 ///   stop takes. The PhotoKit change observer replaces it only while it is
 ///   still the result it diffed against.
 ///
+///
+/// Round 12 (review of mobile#182 at e9a93077):
+/// - Item 3: who runs the engine is explicit (`RunOwner`). A background task
+///   that set `isRunning` owns the run until the user starts backup on the
+///   same account; from then on the task's exit no longer idles it
+///   (`endBackgroundRun`). Before, the task idled on exit whenever it had set
+///   `isRunning` and the account generation was unchanged, so the backup the
+///   user had just started stopped in the foreground.
+/// - Item 8: `userStart(prepare:_:)` / `runRetry(_:prepare:_:)` run `prepare`
+///   (the master-key load, which can show a keychain or Face ID prompt)
+///   OUTSIDE the transition lock, then the body inside it, which re-validates
+///   what `prepare` saw. Before, the lock was held across that prompt, and
+///   every scan's `acceptFetchResult` (a cooperative-pool thread each) and a
+///   sign-out's `stop()` waited on it.
+///
 /// Pure (no PhotoKit, no Network), so
 /// `scripts/swift-tests/backup-engine-lifecycle-test.swift` drives it from
 /// real threads.
@@ -60,6 +75,19 @@ final class BackupEngineLifecycle {
   private var _observerRegistrations = 0
   private var _monitorStarts = 0
   private var _monitorCancels = 0
+  private var _runOwner: RunOwner = .none
+  /// Round 12: user stops so far (a start whose key load spans one yields).
+  private var _userStops: UInt64 = 0
+
+  /// Round 12 (review item 3): who set the engine running.
+  enum RunOwner: Equatable {
+    case none
+    /// A `BGProcessingTask` set `isRunning` itself; its exit idles the engine.
+    case background
+    /// The user's start (or its retry) set up the run: observer, monitor and
+    /// drain loop. Only a stop ends it.
+    case user
+  }
 
   init() {}
 
@@ -94,6 +122,42 @@ final class BackupEngineLifecycle {
     }
   }
 
+  /// What a start body asks of its caller.
+  enum StartStep: Equatable {
+    case done
+    /// What `prepare` saw changed before the body ran (another account, the
+    /// key cache, the engine stopped meanwhile): prepare again, then run the
+    /// body again.
+    case prepareAgain
+  }
+
+  /// How many times a start prepares (outside the lock) and runs (inside it)
+  /// before giving up on a state that keeps changing under it.
+  static let maxStartAttempts = 2
+
+  /// Round 12 (review item 8): the user's start with a slow `prepare` (the
+  /// master-key load) that runs OUTSIDE the transition lock. `body` then runs
+  /// as one transition with what `prepare` returned, and re-validates it
+  /// there. A user stop that lands while `prepare` runs wins: the start then
+  /// does nothing (with the lock held across the load, as before, the stop
+  /// waited and came second; the order of the user's two actions is kept).
+  /// Returns whether a body ran and said `.done`.
+  @discardableResult
+  func userStart<P>(prepare: () -> P, _ body: (P) -> StartStep) -> Bool {
+    for _ in 0..<Self.maxStartAttempts {
+      let stopsBefore = read { _userStops }
+      let prepared = prepare()
+      let step: StartStep? = locked {
+        guard read({ _userStops == stopsBefore }) else { return nil }
+        write { _wantsRunning = true }
+        return body(prepared)
+      }
+      guard let step else { return false }
+      if step == .done { return true }
+    }
+    return false
+  }
+
   /// The user (or sign-out, teardown, a confirmed account mismatch) stopped
   /// backup. Clears the intent and voids every scheduled retry and every
   /// running scan's fetch result, then runs the engine's stop.
@@ -104,6 +168,8 @@ final class BackupEngineLifecycle {
         _retryToken &+= 1
         _stopGeneration &+= 1
         _fetchResult = nil
+        _runOwner = .none
+        _userStops &+= 1
       }
       body()
     }
@@ -116,10 +182,55 @@ final class BackupEngineLifecycle {
       write {
         _stopGeneration &+= 1
         _fetchResult = nil
+        _runOwner = .none
       }
       body()
     }
   }
+
+  // MARK: run ownership (round 12, review item 3)
+
+  /// The user's start set up the run (both of `startLocked`'s running
+  /// branches). MUST be called inside a transition.
+  func claimUserRun() {
+    locked { write { _runOwner = .user } }
+  }
+
+  /// The background task's start, as one transition: when the engine is not
+  /// running, `setRunning` runs and the task owns the run. Returns whether it
+  /// was running already (then the task owns nothing and never idles it).
+  func beginBackgroundRun(isRunning: () -> Bool, setRunning: () -> Void) -> Bool {
+    locked {
+      if isRunning() { return true }
+      setRunning()
+      write { _runOwner = .background }
+      return false
+    }
+  }
+
+  /// The background task's exit, as one transition: `idle` runs only while
+  /// the task still owns the run (no user start, stop or other start since)
+  /// and `stillCurrent` (the task's account generation) holds. Returns
+  /// whether it idled.
+  ///
+  /// Ownership, not `wantsRunning` alone: a user start that was REFUSED (no
+  /// key, an unconfirmed key owner, no token) leaves `wantsRunning` set
+  /// without setting anything up. Keeping `isRunning` then would leave a
+  /// running flag with no observer, monitor or drain loop, and the next
+  /// `start()` would take its "already running" branch, which skips the
+  /// master-key and owner checks. Only a start that set the run up claims it
+  /// (`claimUserRun`), and after that the task's exit never idles it.
+  @discardableResult
+  func endBackgroundRun(stillCurrent: () -> Bool, idle: () -> Void) -> Bool {
+    locked {
+      guard read({ _runOwner == .background }), stillCurrent() else { return false }
+      idle()
+      write { _runOwner = .none }
+      return true
+    }
+  }
+
+  var runOwner: RunOwner { read { _runOwner } }
 
   var wantsRunning: Bool { read { _wantsRunning } }
 
@@ -148,6 +259,26 @@ final class BackupEngineLifecycle {
       body()
       return true
     }
+  }
+
+  /// Round 12 (review item 8): the retry with its `prepare` outside the lock
+  /// (see `userStart(prepare:_:)`). The intent and token are checked in the
+  /// lock before each body. Returns whether a body ran.
+  @discardableResult
+  func runRetry<P>(_ token: UInt64, prepare: () -> P, _ body: (P) -> StartStep) -> Bool {
+    var ran = false
+    for _ in 0..<Self.maxStartAttempts {
+      guard read({ _wantsRunning && token == _retryToken }) else { return ran }
+      let prepared = prepare()
+      let step: StartStep? = locked {
+        guard read({ _wantsRunning && token == _retryToken }) else { return nil }
+        return body(prepared)
+      }
+      guard let step else { return ran }
+      ran = true
+      if step == .done { return true }
+    }
+    return ran
   }
 
   // MARK: observer / monitor

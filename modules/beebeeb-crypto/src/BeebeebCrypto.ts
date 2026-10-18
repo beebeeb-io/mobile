@@ -1522,6 +1522,15 @@ export interface NativeBackupProgress {
    * `null`/undefined otherwise.
    */
   manifestUnavailableReason?: string | null
+  /**
+   * Task 1667 round 12 — set while camera-roll uploads are paused on the
+   * server check: the server cannot say which photos this device already
+   * backed up (no `backed_up`, task 2036), the check failed, or the device id
+   * is not available yet. Native retries on its own and clears it on the next
+   * check that answers, on stop and on sign-out. The honest message to show;
+   * `null`/undefined otherwise.
+   */
+  serverCheckPausedReason?: string | null
 }
 
 export type NativeBackupDiagnostics = Record<string, unknown>

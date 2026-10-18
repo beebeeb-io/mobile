@@ -342,7 +342,10 @@ do {
   expect(ManifestRebuildGate.databaseFailureBackoff(consecutiveFailures: Int.max) == 30, "never above 30 s")
   expect(ManifestRebuildGate.backoff(for: .fetchFailed, consecutiveFailures: 1) == 30, "fetch failure keeps its 30 s")
   expect(ManifestRebuildGate.backoff(for: .applyMapFailed, consecutiveFailures: 1) == 2, "a failed apply retries after 2 s")
-  expect(ManifestRebuildGate.backoff(for: .noDeviceId, consecutiveFailures: 3) == nil, "no device id: no backoff")
+  // Task 1667 round 12 (review item 7): was nil (a 5 s spin with no upload
+  // until JS ran); now the fetch backoff, ended early when JS hands the id over.
+  expect(ManifestRebuildGate.backoff(for: .noDeviceId, consecutiveFailures: 3) == 30, "no device id: 30 s backoff, not a 5 s spin")
+  expect(ManifestRebuildGate.backoff(for: .accountChanged, consecutiveFailures: 3) == nil, "account changed: no backoff")
 }
 
 // MARK: - Report

@@ -744,6 +744,92 @@ do {
 }
 #endif
 
+// MARK: - 9. Round 12 (review item 5): a replaced file carries the JS schema version
+
+/// src/services/BackupDatabase.ts `openAndMigrate`'s one-time legacy status
+/// migration, verbatim: it runs when `user_version` < 1 (the JS constant
+/// `LEGACY_STATUS_ENUM_MIGRATION_VERSION`; native-backup-manifest-wiring.test.ts
+/// pins that it equals `BackupManifestStore.jsSchemaVersion`).
+func jsOpenAndMigrate(_ db: OpaquePointer) {
+  let legacyStatusEnumMigrationVersion = 1
+  if scalar(db, "PRAGMA user_version") < legacyStatusEnumMigrationVersion {
+    exec(db, """
+    UPDATE backup_assets SET status = 'pending_upload' WHERE status = 'pending';
+    UPDATE backup_assets SET status = 'uploaded' WHERE status = 'uploading';
+    PRAGMA user_version = \(legacyStatusEnumMigrationVersion);
+    """)
+  }
+}
+
+do {
+  // The sign-out reset and the in-place recovery both fail (a writer holds the
+  // lock), and JS confirmed its close: the file is replaced.
+  let path = root.appendingPathComponent("replaced-version.db").path
+  let a = open(path)
+  exec(a, schema)
+  BackupManifestStore.migrate(a)
+  insert(a, "p1", status: "uploaded", remote: "f1", owner: "acct-A")
+  sqlite3_close_v2(a)
+  let locker = open(path)
+  exec(locker, "BEGIN IMMEDIATE")
+  let replaced = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now, allowUnlink: true)
+  exec(locker, "ROLLBACK")
+  sqlite3_close_v2(locker)
+  expect(replaced.ok && replaced.unlinked, "r12-5.0: the file was replaced")
+  // The next account's engine opens it first (its schema) and starts an upload.
+  let engine = open(path)
+  expect(scalar(engine, "PRAGMA user_version") == Int(BackupManifestStore.jsSchemaVersion),
+         "r12-5.1: the replaced file carries user_version \(BackupManifestStore.jsSchemaVersion) (got \(scalar(engine, "PRAGMA user_version")))")
+  exec(engine, schema)
+  BackupManifestStore.migrate(engine)
+  insert(engine, "b-live", status: "uploading", owner: "acct-B")
+  // JS's first lazy open runs openAndMigrate.
+  let js = open(path)
+  jsOpenAndMigrate(js)
+  expect(text(js, "SELECT status FROM backup_assets WHERE local_asset_id = 'b-live'") == "uploading",
+         "r12-5.2: the engine's live 'uploading' row is untouched by JS's open (got \(text(js, "SELECT status FROM backup_assets WHERE local_asset_id = 'b-live'") ?? "nil"))")
+  expect(BackupManifestStore.pendingMarkCount(js, accountId: "acct-A") == 1, "r12-5.3: the carried mark is still there")
+  sqlite3_close_v2(js)
+  sqlite3_close_v2(engine)
+
+  // Control: a file at user_version 0 (the round 11 replacement) is migrated.
+  let control = root.appendingPathComponent("replaced-version-control.db").path
+  let c = open(control)
+  exec(c, schema)
+  BackupManifestStore.migrate(c)
+  insert(c, "b-live", status: "uploading", owner: "acct-B")
+  jsOpenAndMigrate(c)
+  expect(text(c, "SELECT status FROM backup_assets WHERE local_asset_id = 'b-live'") == "uploaded",
+         "r12-5.4: control: at user_version 0 JS flips 'uploading' to 'uploaded' (the bug the version prevents)")
+  sqlite3_close_v2(c)
+}
+
+// MARK: - 10. Round 12 (review item 10): rows that ENTERED the queue
+
+do {
+  let db = open(root.appendingPathComponent("insert-count.db").path)
+  exec(db, schema)
+  BackupManifestStore.migrate(db)
+  func scanned(_ ids: [String]) -> [BackupManifestStore.ScannedAsset] {
+    ids.map { BackupManifestStore.ScannedAsset(localAssetId: $0, createdAt: "2026-10-18T10:00:00Z", assetType: "photo") }
+  }
+  expect(BackupManifestStore.insertScannedAssetsCounting(db, scanned(["c1", "c2", "c3"]), nowMs: now) == 3, "r12-10.1: three new rows entered")
+  expect(BackupManifestStore.insertScannedAssetsCounting(db, scanned(["c1", "c2", "c3"]), nowMs: now) == 0, "r12-10.2: the same full scan again: 0 (upserted unchanged)")
+  exec(db, "UPDATE backup_assets SET status = 'uploaded' WHERE local_asset_id = 'c1'")
+  exec(db, "UPDATE backup_assets SET status = 'local_missing' WHERE local_asset_id = 'c2'")
+  expect(BackupManifestStore.insertScannedAssetsCounting(db, scanned(["c1", "c2", "c3", "c4"]), nowMs: now) == 2,
+         "r12-10.3: one new row and one back from local_missing entered; uploaded and pending rows did not")
+  expect(text(db, "SELECT status FROM backup_assets WHERE local_asset_id = 'c2'") == "pending_upload", "r12-10.3: c2 is queued again")
+  expect(BackupManifestStore.insertScannedAssets(db, scanned(["c5"]), nowMs: now), "r12-10.4: the Bool form still reports success")
+  let locker = open(root.appendingPathComponent("insert-count.db").path)
+  exec(locker, "BEGIN IMMEDIATE")
+  sqlite3_busy_timeout(db, 0)
+  expect(BackupManifestStore.insertScannedAssetsCounting(db, scanned(["c9"]), nowMs: now) == nil, "r12-10.5: a failed insert is nil, never 0")
+  exec(locker, "ROLLBACK")
+  sqlite3_close_v2(locker)
+  sqlite3_close_v2(db)
+}
+
 // MARK: - Report
 
 if failures.isEmpty {

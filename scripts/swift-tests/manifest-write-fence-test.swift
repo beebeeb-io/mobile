@@ -377,7 +377,7 @@ do {
   let group = DispatchGroup()
   startScan(m, account: "acct-B", photoKit: photoKitB, done: scanB, group: group)
   _ = group.wait(timeout: .now() + 5)
-  expect(scanB.get() == .wrote(.written(inserted: true)), "b3: B's scan wrote its rows")
+  expect(scanB.get() == .wrote(.written(inserted: true, entered: cameraRollA.count)), "b3: B's scan wrote its rows (round 12: all of them entered the queue)")
   fetchRelease.signal()
   expect(gateDone.wait(timeout: .now() + 10) == .success, "b3: A's rebuild finished")
   expect(outcome.get() == .deferred(.applyMapFailed), "b3: A's server map write was dropped, the gate deferred (got \(String(describing: outcome.get())))")
@@ -411,7 +411,7 @@ do {
   let group = DispatchGroup()
   startScan(m, account: "acct-B", photoKit: photoKit, done: done, group: group)
   expect(group.wait(timeout: .now() + 5) == .success, "c1: B's scan finished")
-  expect(done.get() == .wrote(.written(inserted: true)), "c1: B's scan wrote (got \(String(describing: done.get())))")
+  expect(done.get() == .wrote(.written(inserted: true, entered: cameraRollA.count)), "c1: B's scan wrote (got \(String(describing: done.get())))")
   expect(onDisk(m.path, allRows) == cameraRollA.count, "c1: \(cameraRollA.count) rows queued for B (got \(onDisk(m.path, allRows)))")
   expect(m.dropped.isEmpty, "c1: nothing dropped (got \(m.dropped))")
 

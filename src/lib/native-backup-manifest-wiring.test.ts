@@ -150,23 +150,25 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
 
   test('a reset still pending is applied on EVERY open, after the schema, and an open that cannot apply it keeps no handle', () => {
     const open = body(handleSwift, 'func openIfClosed() -> OpenFailure? {');
-    const [schema, check, pendingGet, retry, close, fail, assign] = order(
+    // Round 12 (review item 4): a deferred recovery's outgoing account adopts
+    // its pre-column rows first; either failure closes and keeps no handle.
+    const [schema, check, pendingGet, adopt, retry, close, assign] = order(
       open,
       'prepareSchema(opened)',
       'BackupManifestStore.tableExistsChecked(opened, "backup_assets") == true',
       'var appliedPendingReset = false\n    if pendingReset.get() {',
+      'if let adoptAccountId = recoveryAccountId, BackupManifestStore.adoptUnowned(opened, accountId: adoptAccountId) == nil {\n        close(opened)\n        return .pendingResetFailed',
       'BackupManifestStore.resetInPlace(opened, nowMs: now(), discard: activeDiscard)',
-      'close(opened)\n        return .pendingResetFailed',
-      'return .pendingResetFailed',
+      'discard: activeDiscard) else {\n        close(opened)\n        return .pendingResetFailed',
       'db = opened',
     );
     expect(schema).toBeGreaterThan(-1);
     expect(check).toBeGreaterThan(schema);
     expect(pendingGet).toBeGreaterThan(check);
-    expect(retry).toBeGreaterThan(pendingGet);
+    expect(adopt).toBeGreaterThan(pendingGet);
+    expect(retry).toBeGreaterThan(adopt);
     expect(close).toBeGreaterThan(retry);
-    expect(fail).toBeGreaterThan(close);
-    expect(assign).toBeGreaterThan(fail);
+    expect(assign).toBeGreaterThan(close);
     expect(open).toMatch(/if awaitingPurgeFinish \{ return \.purgeInFlight \}/);
     // Round 10 (review finding 5): while JS may hold the file, a pending
     // reset is not applied (no open, no checkpoint, no close), BEFORE the open.
@@ -179,11 +181,13 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     expect(sqlOpen).toBeGreaterThan(deferred);
     // A connection that opened the file is parked, not closed, while JS may
     // hold it; the only closes left are the failed open (no fd on the file)
-    // and the pending-reset failure (only reached with no JS connection open).
+    // and the pending-reset failures (adoption, round 12, or the reset; only
+    // reached with no JS connection open).
     expect(open).toMatch(/closeOrPark\(opened, \.unreadable\)/);
     expect(open).toMatch(/if let handle \{ close\(handle\) \}\s*return \.openFailed/);
     expect(open).toMatch(/close\(opened\)\s*return \.pendingResetFailed/);
-    expect((open.match(/\bclose\(/g) ?? []).length).toBe(2);
+    expect((open.match(/\bclose\(/g) ?? []).length).toBe(3);
+    expect((open.match(/close\(opened\)\s*return \.pendingResetFailed/g) ?? []).length).toBe(2);
     expect(open).toMatch(/if peerMayHoldFile, let parked = parkedConnections\.popLast\(\) \{\s*opened = parked/);
   });
 
@@ -195,7 +199,8 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     expect(confirmed).toMatch(/for connection in parked \{ close\(connection\) \}/);
     // Only two callers confirm JS closed: the JS gate (prior handles closed) and the purge's finish with allowUnlink.
     expect((code(handleSwift).match(/peerConfirmedClosed\(\)/g) ?? []).length).toBe(3);
-    expect(body(handleSwift, 'func finishAfterFailedReset(allowUnlink: Bool) -> FinishResult {')).toMatch(/if allowUnlink \{ peerConfirmedClosed\(\) \}/);
+    // Round 12 (review item 4): only past the allowUnlink guard.
+    expect(body(handleSwift, 'func finishAfterFailedReset(allowUnlink: Bool) -> FinishResult {')).toMatch(/guard allowUnlink else \{[\s\S]*?\}[\s\S]*peerConfirmedClosed\(\)/);
     const gate = body(handleSwift, 'func admitPeerOpen(priorPeerHandlesClosed: Bool) -> PeerOpenGate {');
     const [confirm, openCall, pending, admit] = order(
       gate,
@@ -508,14 +513,14 @@ describe('5. round 5: route 404s and the kept-marks expiry', () => {
 
 describe('6. round 6: the native manifest handle is reopened, and nothing runs without it', () => {
   // Round 11: start()'s body is startLocked(), run inside lifecycle.userStart.
-  const start = () => body(engine, '  private func startLocked() {');
+  const start = () => body(engine, '  private func startLocked(prepared: PreparedStartKey?) -> BackupEngineLifecycle.StartStep {');
   const ensureForStart = () => body(engine, 'private func ensureManifestOpenForStart(accountId: String) -> Bool {');
 
   test('start() checks the manifest after the account guard and BEFORE both the running branch and isRunning = true', () => {
     const [accountGuard, ensure, runningBranch, setRunning] = order(
       start(),
       'guard let accountId = currentAccountId, !accountId.isEmpty else {',
-      'guard ensureManifestOpenForStart(accountId: accountId) else { return }',
+      'guard ensureManifestOpenForStart(accountId: accountId) else { return .done }',
       'if isRunning {',
       'isRunning = true',
     );
@@ -549,8 +554,9 @@ describe('6. round 6: the native manifest handle is reopened, and nothing runs w
     // Round 11 (review finding 3): the retry runs start()'s body inside
     // lifecycle.runRetry (one transition with the intent + token check).
     expect(retry).toMatch(/let token = lifecycle\.scheduleRetry\(\)/);
-    expect(retry).toMatch(/self\.lifecycle\.runRetry\(token\) \{\s*guard self\.currentAccountId == accountId else \{ return \}/);
-    expect(retry).toMatch(/self\.startLocked\(\)/);
+    // Round 12 (review item 8): with the key prepared outside the lock.
+    expect(retry).toMatch(/self\.lifecycle\.runRetry\(token, prepare: \{ self\.prepareStartMasterKey\(\) \}\) \{ prepared in\s*guard self\.currentAccountId == accountId else \{ return \.done \}/);
+    expect(retry).toMatch(/return self\.startLocked\(prepared: prepared\)/);
     expect(retry).not.toMatch(/self\.start\(\)/);
     expect(retry).toMatch(/_manifestOpenRetry\?\.cancel\(\)/);
     expect(ensureForStart()).toMatch(/case \.proceed:\s*cancelManifestOpenRetry\(\)\s*return true/);
@@ -642,11 +648,12 @@ describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondit
     // Round 8: the insert is FencedManifestWrites.scanInsert; the engine
     // records its outcome in the same dbQueue block (recordScanInsert).
     const ins = body(fenceSwift, 'static func scanInsert(');
-    expect(ins).toMatch(/let inserted = BackupManifestStore\.insertScannedAssets\(db, assets, nowMs: nowMs\)/);
-    expect(ins).toMatch(/return \.written\(inserted: inserted\)/);
+    // Round 12 (review item 10): the counting form; a failed insert is nil.
+    expect(ins).toMatch(/let entered = BackupManifestStore\.insertScannedAssetsCounting\(db, assets, nowMs: nowMs\)\s*let inserted = entered != nil/);
+    expect(ins).toMatch(/return \.written\(inserted: inserted, entered: entered \?\? 0\)/);
     // Round 10 (review finding 4): sticky; only a full scan's success clears it (ScanInsertHealth).
     const rec = body(engine, 'private func recordScanInsert(\n    _ written: FencedManifestWrites.ScanWrite, assets: Int, source: ScanInsertHealth.Source\n  ) {');
-    expect(rec).toMatch(/case \.written\(let inserted\):\s*manifestHandle\.scanInsertHealth\.record\(inserted: inserted, source: source\)/);
+    expect(rec).toMatch(/case \.written\(let inserted, let entered\):\s*manifestHandle\.scanInsertHealth\.record\(inserted: inserted, source: source\)/);
     expect(body(engine, READY_SIG)).toMatch(/scanInsertFailed: self\.manifestHandle\.scanInsertHealth\.failed/);
     expect(code(engine)).not.toMatch(/lastScanInsertFailed/);
     const scan = body(engine, 'func scanPhotoLibraryForPendingUploads(reason: String, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async -> Bool {');
@@ -730,10 +737,11 @@ describe('round 10 (review of mobile#182 at 060bfeb0): the server check is the d
     expect((code(engine).match(/\.uploadSingleAsset\(/g) ?? []).length).toBe(1);
   });
 
-  test('every fresh row not covered by a bulk pass is checked; only the server\'s hits are left out; a deferral backs off', () => {
+  test('every fresh row is checked (round 12: covered or not); only the server\'s hits are left out; a deferral backs off', () => {
     const fn = body(engine, 'private func rowsCheckedAgainstServer(');
-    expect(fn).toMatch(/let freshAll = pending\.filter \{ \$0\.stagedFileId == nil \}\.map\(\\\.localAssetId\)/);
-    expect(fn).toMatch(/let fresh = uncoveredByBulkServerCheck\(freshAll, accountId: accountId, generation: ticket\.generation\)/);
+    expect(fn).toMatch(/let fresh = PendingUploadServerCheck\.batchCandidates\(\s*pending\.map \{ \(id: \$0\.localAssetId, staged: \$0\.stagedFileId != nil\) \}\s*\)/);
+    // Round 12 (review item 1): no coverage on the per-batch path.
+    expect(fn).not.toMatch(/coverage|Coverage|uncovered/);
     expect(fn).toMatch(/PendingUploadServerCheck\.run\(candidates: fresh, steps: steps\)/);
     expect(fn).toMatch(/return pending\.filter \{ !skip\.contains\(\$0\.localAssetId\) \}/);
     expect(fn).toMatch(/case let \.deferred\(reason\):[\s\S]*if let wait \{ backoffUntil = Date\(\)\.addingTimeInterval\(wait\) \}[\s\S]*return nil/);
@@ -789,7 +797,7 @@ describe('round 11 (review of mobile#182 at de23774e)', () => {
     expect(run).toMatch(/guard let promoted = steps\.promote\(hits\) else \{ return \.deferred\(\.applyFailed\) \}/);
     expect(checkSwift).toMatch(/error is PhotoBackupServerResponses\.ServerLacksBackedUp \? \.serverLacksBackedUp : \.checkFailed/);
     expect(body(checkSwift, 'static func backoff(for reason: DeferReason, consecutiveFailures: Int) -> TimeInterval? {'))
-      .toMatch(/case \.checkFailed, \.serverLacksBackedUp:\s*return ManifestRebuildGate\.fetchFailureBackoff/);
+      .toMatch(/case \.noDeviceId, \.checkFailed, \.serverLacksBackedUp:\s*return ManifestRebuildGate\.fetchFailureBackoff/);
     // Logged once per process.
     const note = body(engine, 'private func noteServerBackedUpSupport(_ supported: Bool) {');
     expect(note).toMatch(/if !supported, PendingUploadServerCheck\.serverLacksBackedUpNotice\.shouldFire\(\) \{/);
@@ -798,8 +806,10 @@ describe('round 11 (review of mobile#182 at de23774e)', () => {
 
   test('finding 2: the rebuild uses the identifiers map only, and defers once the server was seen without backed_up', () => {
     const ready = body(engine, READY_SIG);
-    const [lacks, fetch] = order(ready, 'guard !self.serverLacksBackedUp else {', 'return try await self.fetchServerIdentifierMap(');
-    expect(lacks).toBeGreaterThan(-1);
+    // Round 12 (review item 2): through rebuildFetch, which probes once per period.
+    const [via, lacks, fetch] = order(ready, 'return try await PendingUploadServerCheck.rebuildFetch(', 'lacksBackedUp: { self.serverLacksBackedUp },', 'try await self.fetchServerIdentifierMap(');
+    expect(via).toBeGreaterThan(-1);
+    expect(lacks).toBeGreaterThan(via);
     expect(fetch).toBeGreaterThan(lacks);
   });
 
@@ -823,7 +833,7 @@ describe('round 11 (review of mobile#182 at de23774e)', () => {
     expect(body(engine, 'private func startDrainLoop(reason: String) {')).toMatch(/requestBulkServerCheck\(\)/);
     expect(body(engine, 'private func handleBackgroundTask(_ task: BGProcessingTask) {')).toMatch(/self\.requestBulkServerCheck\(\)/);
     expect(body(engine, 'private func recordScanInsert(\n    _ written: FencedManifestWrites.ScanWrite, assets: Int, source: ScanInsertHealth.Source\n  ) {'))
-      .toMatch(/requestBulkServerCheck\(\)/);
+      .toMatch(/\} else if entered > 0 \{\s*requestBulkServerCheck\(\)/);
     expect(checkSwift).toMatch(/static let maxIdentifiersPerCheck = 500/);
   });
 
@@ -833,19 +843,20 @@ describe('round 11 (review of mobile#182 at de23774e)', () => {
   });
 
   test('finding 3: start/stop/retry/observer/monitor go through ONE lifecycle lock', () => {
-    expect(engine).toMatch(/  func start\(\) \{\n    lifecycle\.userStart \{ startLocked\(\) \}\n  \}/);
+    // Round 12 (review item 8): the key is prepared outside the lock.
+    expect(engine).toMatch(/  func start\(\) \{\n    lifecycle\.userStart\(prepare: \{ prepareStartMasterKey\(\) \}\) \{ startLocked\(prepared: \$0\) \}\n  \}/);
     expect(engine).toMatch(/  func stop\(\) \{\n    lifecycle\.userStop \{ stopLocked\(\) \}\n  \}/);
-    // startLocked() appears 3 times: its definition, start() and the retry.
-    expect((code(engine).match(/startLocked\(\)/g) ?? []).length).toBe(3);
+    // startLocked( appears 3 times: its definition, start() and the retry.
+    expect((code(engine).match(/startLocked\(/g) ?? []).length).toBe(3);
     expect(body(engine, 'private func registerPhotoObserver() {')).toMatch(/lifecycle\.registerObserverOnce \{ PHPhotoLibrary\.shared\(\)\.register\(self\) \}/);
     expect(body(engine, 'private func startNetworkMonitor() {')).toMatch(/lifecycle\.startMonitorIfNeeded \{/);
     expect(body(engine, 'private func stopNetworkMonitor() {')).toMatch(/lifecycle\.stopMonitor \{/);
     expect((code(engine).match(/PHPhotoLibrary\.shared\(\)\.register\(self\)/g) ?? []).length).toBe(1);
     expect(code(engine)).not.toMatch(/networkMonitor = /);
-    // The background task's running flips are transitions too.
+    // The background task's running flips are transitions too (round 12: with ownership).
     const bg = body(engine, 'private func handleBackgroundTask(_ task: BGProcessingTask) {');
-    expect(bg).toMatch(/let batchStart: Bool = self\.lifecycle\.locked \{/);
-    expect(bg).toMatch(/let idled: Bool = self\.lifecycle\.locked \{/);
+    expect(bg).toMatch(/let batchStart: Bool = self\.lifecycle\.beginBackgroundRun\(isRunning: \{ self\.isRunning \}\) \{/);
+    expect(bg).toMatch(/let idled: Bool = !batchStart && self\.lifecycle\.endBackgroundRun\(/);
     // The lifecycle's retry checks the intent and the token in the lock.
     expect(body(lifecycleSwift, 'func runRetry(_ token: UInt64, _ body: () -> Void) -> Bool {'))
       .toMatch(/locked \{\s*guard read\(\{ _wantsRunning && token == _retryToken \}\) else \{ return false \}\s*body\(\)/);
@@ -882,5 +893,130 @@ describe('round 11 (review of mobile#182 at de23774e)', () => {
   test('finding 1: an inherited deletion flag forces "discard every mark"', () => {
     expect(body(handleSwift, 'var activeDiscard: BackupManifestStore.MarkDiscard {'))
       .toMatch(/let inheritedDeletion = discardPending\.get\(\) && !discardPendingSetByThisProcess\s*let all = discardAllPending \|\| inheritedDeletion/);
+  });
+});
+
+describe('round 12 (review of mobile#182 at e9a93077)', () => {
+  const IOS_DIR = IOS;
+  const { existsSync } = require('node:fs');
+  const read = (f: string) => (existsSync(join(IOS_DIR, f)) ? readFileSync(join(IOS_DIR, f), 'utf8') : '');
+  const lifecycleSwift = read('BackupEngineLifecycle.swift');
+  const storeSwift = read('BackupManifestStore.swift');
+  const deviceIdSwift = read('BackupDeviceId.swift');
+  const checkSwift = read('PendingUploadServerCheck.swift');
+  // A missing signature reads as '' so each test fails on its own assertion
+  // (the red run at e9a9307 has none of the round-12 signatures).
+  const lazyBody = (src: string, sig: string): string => {
+    try {
+      return body(src, sig);
+    } catch {
+      return '';
+    }
+  };
+  const batch = lazyBody(engine, 'func processBatch(limit: Int = 12, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async throws -> Int {');
+  const startLocked = lazyBody(engine, 'private func startLocked(prepared: PreparedStartKey?) -> BackupEngineLifecycle.StartStep {');
+  const stopLocked = lazyBody(engine, '  private func stopLocked() {');
+
+  test('item 1: the per-batch guard asks about every fresh row; the coverage only feeds the bulk pass', () => {
+    expect(lazyBody(checkSwift, 'static func batchCandidates(_ rows: [(id: String, staged: Bool)]) -> [String] {'))
+      .toMatch(/deduplicated\(rows\.filter \{ !\$0\.staged \}\.map\(\\\.id\)\)/);
+    expect(code(engine)).not.toMatch(/uncoveredByBulkServerCheck/);
+    const uses = (code(engine).match(/\.uncovered\(/g) ?? []).length;
+    expect(uses).toBe(1);
+    expect(lazyBody(engine, 'private func bulkServerCheckIfRequested(')).toMatch(/coverage\.uncovered\(all,/);
+  });
+
+  test('item 2: the "lacks backed_up" state is reset at sign-out and probed by the rebuild', () => {
+    const prep = lazyBody(engine, 'func prepareForStoragePurge(');
+    expect(prep).toMatch(/_backedUpSupport\.reset\(\)/);
+    const ready = lazyBody(engine, READY_SIG);
+    expect(ready).toMatch(/takeProbeSlot: \{ self\.takeBackedUpProbeSlot\(\) \}/);
+    expect(ready).toMatch(/_ = try await probeSteps\.check\(\[PendingUploadServerCheck\.capabilityProbeIdentifier\]\)/);
+    // The probe goes through the check step that records the answer.
+    expect(lazyBody(engine, 'private func serverCheckSteps(')).toMatch(/self\?\.noteServerBackedUpSupport\(true\)/);
+    expect(code(engine)).not.toMatch(/_serverLacksBackedUp/);
+  });
+
+  test('item 3: the background task owns only its own run; the user start claims it; stop removes everything', () => {
+    expect((startLocked.match(/lifecycle\.claimUserRun\(\)/g) ?? []).length).toBe(2);
+    const [claimRunning, wake] = order(startLocked, 'lifecycle.claimUserRun()', 'wakeDrainLoop(reason: "start")');
+    expect(claimRunning).toBeGreaterThan(-1);
+    expect(wake).toBeGreaterThan(claimRunning);
+    const [unreg, monitor, guardRunning] = order(
+      stopLocked,
+      'lifecycle.unregisterObserver { PHPhotoLibrary.shared().unregisterChangeObserver(self) }',
+      'stopNetworkMonitor()',
+      'guard isRunning else { return }',
+    );
+    expect(unreg).toBeGreaterThan(-1);
+    expect(monitor).toBeGreaterThan(unreg);
+    expect(guardRunning).toBeGreaterThan(monitor);
+    expect(lazyBody(lifecycleSwift, 'func endBackgroundRun(stillCurrent: () -> Bool, idle: () -> Void) -> Bool {'))
+      .toMatch(/guard read\(\{ _runOwner == \.background \}\), stillCurrent\(\) else \{ return false \}/);
+  });
+
+  test('item 8: no keychain or Face ID read inside the lifecycle lock; the retry prepares outside too', () => {
+    expect(startLocked).not.toMatch(/loadMasterKey/);
+    expect(lazyBody(engine, 'private func prepareStartMasterKey() -> PreparedStartKey? {')).toMatch(/BeebeebCryptoBridge\.loadMasterKeyUncached\(\)/);
+    expect(code(engine)).not.toMatch(/BeebeebCryptoBridge\.loadMasterKey\(\)/);
+    expect(lazyBody(engine, 'private func scheduleManifestOpenRetry(accountId: String, after delay: TimeInterval) {'))
+      .toMatch(/self\.lifecycle\.runRetry\(token, prepare: \{ self\.prepareStartMasterKey\(\) \}\)/);
+    const userStart = lazyBody(lifecycleSwift, 'func userStart<P>(prepare: () -> P, _ body: (P) -> StartStep) -> Bool {');
+    const [prep, lock] = order(userStart, 'let prepared = prepare()', 'locked {');
+    expect(prep).toBeGreaterThan(-1);
+    expect(lock).toBeGreaterThan(prep);
+  });
+
+  test('item 9: processBatch takes the batch slot BEFORE the rebuild gate', () => {
+    const [begin, ready] = order(batch, 'if !beginBatchProcessing() {', 'guard await ensureManifestReadyForUploads(');
+    expect(begin).toBeGreaterThan(-1);
+    expect(ready).toBeGreaterThan(begin);
+  });
+
+  test('item 6: the pause reason reaches the progress dict, cleared at stop and sign-out', () => {
+    expect(lazyBody(engine, 'func currentProgress() -> [String: Any] {')).toMatch(/"serverCheckPausedReason": serverCheckPausedReason \?\? NSNull\(\)/);
+    expect(lazyBody(engine, 'private func rowsCheckedAgainstServer(')).toMatch(/recordServerCheckPause\(reason\)/);
+    expect(lazyBody(engine, READY_SIG)).toMatch(/recordRebuildPause\(reason\)/);
+    expect(lazyBody(engine, 'private func bulkServerCheckIfRequested(')).toMatch(/recordServerCheckPause\(stopped\)/);
+    expect(stopLocked).toMatch(/clearServerCheckPause\(\)/);
+    expect(lazyBody(engine, 'func prepareForStoragePurge(')).toMatch(/_serverCheckPause\.clear\(\)/);
+    const ts = readFileSync(join(import.meta.dir, '../../modules/beebeeb-crypto/src/BeebeebCrypto.ts'), 'utf8');
+    expect(ts).toMatch(/serverCheckPausedReason\?: string \| null/);
+    expect(backupContext).toMatch(/setServerCheckPausedReason\(nativeServerCheckPausedReason\(p\)\)/);
+    expect(backupContext).toMatch(/opt\(a\.serverCheckPausedReason\) === opt\(b\.serverCheckPausedReason\)/);
+    const settings = readFileSync(join(import.meta.dir, '../screens/SettingsScreen.tsx'), 'utf8');
+    expect(settings).toMatch(/if \(serverCheckPausedReason\) return serverCheckPausedReason;/);
+  });
+
+  test('item 7: native reads the canonical id without JS and never mints one; JS hands it over at every launch', () => {
+    const getter = lazyBody(engine, 'var backupDeviceId: String? {');
+    expect(getter).toMatch(/BackupDeviceId\.resolve\(/);
+    expect(getter).toMatch(/secureStore: \{ BackupDeviceId\.readSecureStore\(\$0\) \}/);
+    expect(code(deviceIdSwift)).not.toMatch(/UUID\(\)|randomUUID|SecItemAdd|SecItemUpdate/);
+    const identity = readFileSync(join(import.meta.dir, 'device-identity.ts'), 'utf8');
+    expect(identity).toMatch(/export const DEVICE_ID_KEY = 'bb_sync_device_id';/);
+    expect(identity).toMatch(/const LEGACY_BACKUP_DEVICE_ID_KEY = 'beebeeb_device_id';/);
+    expect(deviceIdSwift).toMatch(/static let canonicalSecureStoreKey = "bb_sync_device_id"/);
+    expect(deviceIdSwift).toMatch(/static let legacySecureStoreKey = "beebeeb_device_id"/);
+    expect(backupContext).toMatch(/useEffect\(\(\) => \{\s*void syncBackupDeviceIdToNative\(\);\s*\}, \[\]\);/);
+  });
+
+  test('item 5: a replaced manifest carries the JS schema version (equal constants)', () => {
+    const backupDb = readFileSync(join(import.meta.dir, '../services/BackupDatabase.ts'), 'utf8');
+    const js = backupDb.match(/const LEGACY_STATUS_ENUM_MIGRATION_VERSION = (\d+);/);
+    const swift = storeSwift.match(/static let jsSchemaVersion: Int32 = (\d+)/);
+    expect(js?.[1]).toBeDefined();
+    expect(swift?.[1]).toBe(js?.[1]);
+    expect(backupDb).toMatch(/if \(schemaVersion < LEGACY_STATUS_ENUM_MIGRATION_VERSION\) \{/);
+    expect(lazyBody(storeSwift, 'private static func replaceFile(path: String, carrying: [PendingMark]) -> (ok: Bool, unlinked: Bool) {'))
+      .toMatch(/PRAGMA user_version = \\\(jsSchemaVersion\)/);
+  });
+
+  test('item 4: a recovery without JS\'s confirmed close touches no connection', () => {
+    const finish = lazyBody(handleSwift, 'func finishAfterFailedReset(allowUnlink: Bool) -> FinishResult {');
+    const [guardAt, recover] = order(finish, 'guard allowUnlink else {', 'BackupManifestStore.recoverAfterFailedReset(');
+    expect(guardAt).toBeGreaterThan(-1);
+    expect(recover).toBeGreaterThan(guardAt);
+    expect(finish.slice(guardAt, recover)).toMatch(/peerMayHoldFile = true/);
   });
 });

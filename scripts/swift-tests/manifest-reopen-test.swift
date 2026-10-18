@@ -333,19 +333,31 @@ do {
   var availability = ManifestAvailability()
   let attempt = signInAndScan(seedHandle, &availability)
   expect(attempt.decision != .proceed, "b6: start() refuses while the pending reset cannot be applied")
-  expect(availability.failure == .pendingResetFailed, "b6: named pending_reset_failed (got \(String(describing: availability.failure)))")
+  // Task 1667 round 12 (review item 4): JS's close was not confirmed, so the
+  // reset is not even tried (nothing opened or checkpointed under JS): the
+  // open defers (was pending_reset_failed, after a reset attempt under JS).
+  expect(availability.failure == .pendingResetDeferred, "b6: named pending_reset_deferred (got \(String(describing: availability.failure)))")
   expect(seedHandle.db == nil, "b6: no handle open on A's rows")
   expect(flag.pending, "b6: the reset is still pending")
   exec(js, "ROLLBACK")
   expect(onDisk(path, allRowsSQL) == 3, "b6: A's rows were not read into a running engine, and not half-deleted")
+  // Round 12: still deferred while JS has not confirmed its close.
+  let stillDeferred = signInAndScan(seedHandle, &availability)
+  expect(stillDeferred.decision != .proceed && availability.failure == .pendingResetDeferred,
+         "b6: still deferred until JS confirms its close (got \(String(describing: availability.failure)))")
+  // JS closes its connection and confirms it at its next open (the gate).
+  sqlite3_close_v2(js)
+  let gate = seedHandle.admitPeerOpen(priorPeerHandlesClosed: true)
+  expect(gate.admitted, "b6: JS admitted once its close is confirmed (got \(gate))")
   // The JS lock goes away: the retry applies the reset, then proceeds.
   let retry = signInAndScan(seedHandle, &availability)
   expect(retry.decision == .proceed, "b7: the retry applies the reset and proceeds")
+  // Round 12: the gate's open applied it (on the native connection, with no JS
+  // connection open), before JS was admitted.
   expect(seedHandle.lastOpenAppliedPendingReset, "b7: the open applied the pending reset")
   expect(!flag.pending, "b7: flag cleared")
   expect(onDisk(path, keptSQL) == 1, "b7: A's unmarked upload kept as a pending mark")
   expect(onDiskStrings(path, queuedIdsSQL) == ["b1", "b2", "b3"], "b7: only B's scan is queued, none of A's rows")
-  sqlite3_close_v2(js)
 }
 
 do {

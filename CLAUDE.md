@@ -785,7 +785,9 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   adopted, another account's rows are re-queued. Never trust `status = 'uploaded'` without it.
 - **Server map:** every completed upload is recorded with `POST /api/v1/files/photo-backup/mark`
   (`X-Beebeeb-Device-Id` = the canonical `getDeviceId()`, handed to native by
-  `setBackupDeviceId`); `server_marked_at` tracks it and scans catch up on unmarked rows. A manifest
+  `setBackupDeviceId` at every launch (BackupProvider mount) and at enable; round 12: before the
+  first launch of a build, native reads the same id from expo-secure-store's keychain item
+  `bb_sync_device_id`, `BackupDeviceId.swift`, and NEVER mints one); `server_marked_at` tracks it and scans catch up on unmarked rows. A manifest
   holding nothing the account uploaded is rebuilt from `GET /api/v1/files/photo-backup/identifiers`
   BEFORE the first upload (`ensureManifestReadyForUploads`, gated in `processBatch`); if that GET
   fails, no upload starts. The rebuild is only a FAST PATH (round 10): it runs once per account, on
@@ -801,12 +803,19 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   uploads. Two passes: a BULK pass over ALL fresh pending rows (no staged file), chunks of 500,
   before the drain selects a batch (once per drain start / background task, and again after a scan
   inserted rows; covered "needs backup" rows are kept per account + fence generation for 15 min,
-  `ServerCheckCoverage`), and the per-batch guard for fresh rows no bulk pass covered. Any failed
-  step defers the WHOLE batch with a backoff (30 s for a server read, 2..30 s for a write): nothing
-  uploads on a failure.
+  `ServerCheckCoverage`, and only keep the NEXT bulk pass from asking again), and the per-batch
+  guard for EVERY fresh row of the batch (round 12: coverage never lets a row skip it,
+  `PendingUploadServerCheck.batchCandidates`; a row re-queued by the JS reconcile or restored from the
+  Trash after the bulk answer uploaded twice in round 11). Any failed step defers the WHOLE batch
+  with a backoff (30 s for a server read or a missing device id, 2..30 s for a write): nothing
+  uploads on a failure. A deferral shows `serverCheckPausedReason` (progress dict, status surfaces,
+  Settings) until a check answers, a stop, or sign-out (round 12).
 - **A server without `backed_up` (no task 2036) fails closed (round 11).** Nothing is promoted and
-  nothing of the batch uploads (`serverLacksBackedUp`, 30 s backoff), and once that was seen in the
-  process the rebuild fast path applies no identifiers map either. Logged ONCE per process:
+  nothing of the batch uploads (`serverLacksBackedUp`, 30 s backoff), and once that was seen the
+  rebuild fast path applies no identifiers map either. Round 12: that state (`BackedUpSupport`) is
+  reset at sign-out, and while it is set the rebuild sends ONE capability probe `/check` per backoff
+  period (`PendingUploadServerCheck.rebuildFetch`, a non-PhotoKit id), so a deploy of 2036 is picked
+  up in-process; never gate it on a `/check` that runs after the rebuild. Logged ONCE per process:
   `server lacks backed_up (task 2036)`. Task 2036 must be deployed to prod before a build with this
   reaches TestFlight. Native code has NO liveness read and never calls `GET /api/v1/files/index`
   (the rule below; `native-backup-manifest-wiring.test.ts` fails on any native caller).
@@ -829,7 +838,10 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   failed reset the file is still KEPT (never unlinked under the JS handle): native closes its
   handle and sets `io.beebeeb.backupManifestResetPending`, JS closes its handle, then
   `finishBackupManifestPurge` resets (or replaces, carrying the kept marks) with no connection
-  open; JS reopens lazily. The flag makes every later open apply the reset first.
+  open; JS reopens lazily. The flag makes every later open apply the reset first. A replacement file
+  carries `PRAGMA user_version` = `BackupManifestStore.jsSchemaVersion` (round 12; = JS
+  `LEGACY_STATUS_ENUM_MIGRATION_VERSION`), or JS's one-time legacy migration turns live
+  'uploading' rows into 'uploaded' with no file id.
 - **JS opens the manifest only through the native gate (round 10).** `BackupDatabase.openAndMigrate`
   asks `admitBackupManifestJsOpen(priorHandlesClosed)` (`src/lib/backup-manifest-js-open-gate.ts`,
   registered by `account-cleanup.ts`; no gate = refuse) before EVERY open. Native applies a reset
@@ -839,7 +851,9 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
 - **Native never closes or checkpoints while JS may hold the file, outside the purge hold (round 10).**
   `BackupManifestHandle.peerMayHoldFile` is set when JS is admitted and cleared only when JS confirms
   every handle closed (the gate with `priorHandlesClosed`, or `finishAfterFailedReset(allowUnlink:
-  true)` under the hold). While set, `openIfClosed` does not apply a pending reset
+  true)` under the hold). `finishAfterFailedReset(allowUnlink: false)` (JS's close failed) opens,
+  resets and closes NOTHING (round 12): the reset stays pending until JS confirms its close at the
+  gate. While set, `openIfClosed` does not apply a pending reset
   (`pending_reset_deferred`, nothing opened) and PARKS a connection it cannot use instead of closing
   it (a retry reuses it; JS's confirmed close closes it). The two copies are the root cause (task
   1667 finding 12); until one owner exists, every new close/checkpoint path needs this rule.
@@ -853,6 +867,13 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   `manifestUnavailableReason` (progress dict, status `needsAttention`, Settings) and retries 2, 4, 8,
   16, then every 30 s; `stop()` and sign-out cancel the retry. Never add a path that leaves `db` nil
   silently.
+- **Engine lifecycle (rounds 11-12, `BackupEngineLifecycle.swift`).** start/stop/retry/observer/monitor
+  run as ONE transition. Never hold that lock across a keychain or Face ID read: `start()` loads the
+  key in `prepareStartMasterKey()` (outside, `loadMasterKeyUncached`) and `startLocked(prepared:)`
+  re-validates it inside. A background task that set `isRunning` owns the run only until a user
+  start claims it (`claimUserRun`); its exit idles only its own run (`endBackgroundRun`). `stop()`
+  removes the observer and monitor whatever `isRunning` says. `processBatch` takes the batch slot
+  (`beginBatchProcessing`) before the rebuild gate.
 - **Every manifest write is fenced (round 8, `ManifestWriteFence.swift`).** An async producer (scan,
   photo-library callback, background task, batch, rebuild step, mark record, sign-out flush, chunk
   PUT) takes a write ticket with `manifestWriteTicket(...)` BEFORE its slow step (PhotoKit fetch,

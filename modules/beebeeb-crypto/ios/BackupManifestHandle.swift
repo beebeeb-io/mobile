@@ -310,12 +310,21 @@ final class BackupManifestHandle {
     if pendingReset.get() {
       // Only reached with `peerMayHoldFile` false (checked above): no JS
       // connection is open, so the checkpoint and the close are safe.
+      // Round 12 (review item 4): a sign-out in THIS process whose recovery
+      // was deferred (JS's close unconfirmed) still knows the outgoing
+      // account; its pre-column rows are adopted first, as the recovery
+      // would have, so the reset keeps their associations.
+      if let adoptAccountId = recoveryAccountId, BackupManifestStore.adoptUnowned(opened, accountId: adoptAccountId) == nil {
+        close(opened)
+        return .pendingResetFailed
+      }
       guard BackupManifestStore.resetInPlace(opened, nowMs: now(), discard: activeDiscard) else {
         close(opened)
         return .pendingResetFailed
       }
       pendingReset.set(false)
       discardApplied()
+      recoveryAccountId = nil
       appliedPendingReset = true
     }
     db = opened
@@ -469,13 +478,33 @@ final class BackupManifestHandle {
   /// Round 7 sweep: the file is never replaced while a connection this
   /// handle closed may still be open (`closeUnconfirmed`), even when JS
   /// confirmed its own close.
+  ///
+  /// Round 12 (review item 4): `allowUnlink` false means JS's `closeAsync()`
+  /// failed, so its expo-sqlite connection may still be open. Then NOTHING is
+  /// opened, reset (checkpointed) or closed here: before, the recovery opened
+  /// a system-SQLite connection, reset in place (TRUNCATE checkpoint) and
+  /// closed it, which in the app removes `-wal`/`-shm` and drops the
+  /// process's POSIX locks under the live JS connection, and on success
+  /// reopened the native handle next to it. Now the reset stays pending,
+  /// `peerMayHoldFile` is set (the round 10 rule), and the reset runs once JS
+  /// confirms its handles closed: JS retries the close on its next call and
+  /// asks the open gate (`admitPeerOpen(priorPeerHandlesClosed: true)`), or
+  /// the next process applies it at open. Until then `openIfClosed` answers
+  /// `.pendingResetDeferred` and `start()` shows the manifest reason.
   func finishAfterFailedReset(allowUnlink: Bool) -> FinishResult {
+    guard allowUnlink else {
+      // Only the native handle could be open here, and the failed reset
+      // already closed it (`resetForSignOut`); nothing else of ours is open.
+      peerMayHoldFile = true
+      awaitingPurgeFinish = false
+      return FinishResult(ok: false, unlinked: false, reopened: false, reopenFailure: .pendingResetDeferred)
+    }
     if let db {
       close(db)
       self.db = nil
     }
     // Round 10: `allowUnlink` is JS's confirmed close, under the purge hold.
-    if allowUnlink { peerConfirmedClosed() }
+    peerConfirmedClosed()
     let recovered = BackupManifestStore.recoverAfterFailedReset(
       path: path, nowMs: now(), allowUnlink: allowUnlink && !closeUnconfirmed, adoptAccountId: recoveryAccountId,
       discard: activeDiscard

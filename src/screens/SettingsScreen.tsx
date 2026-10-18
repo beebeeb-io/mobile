@@ -653,6 +653,7 @@ export default function SettingsScreen() {
     ownerUnconfirmedReason,
     accountRefusalReason,
     manifestUnavailableReason,
+    serverCheckPausedReason,
   } = useBackup();
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
@@ -1740,6 +1741,9 @@ export default function SettingsScreen() {
     // Task 1667 round 6: native could not open its backup list and is
     // retrying; say so instead of a progress line that is not moving.
     if (manifestUnavailableReason) return manifestUnavailableReason;
+    // Task 1667 round 12: native holds uploads because the server check
+    // cannot answer; say so instead of a progress line that is not moving.
+    if (serverCheckPausedReason) return serverCheckPausedReason;
     if (backupPaused) {
       return `Paused · waiting for Wi-Fi${cameraTotalCount > 0 ? ` · ${cameraBackedUpCount.toLocaleString()} of ${cameraTotalCount.toLocaleString()} ${cameraItemLabel}` : ''}${cameraIssueSuffix}`;
     }
@@ -1765,7 +1769,7 @@ export default function SettingsScreen() {
 
     return 'Waiting for first scan';
   })();
-  const cameraRollSummaryColor = backupBlockedReason || accountMismatchReason || ownerUnconfirmedReason || accountRefusalReason || manifestUnavailableReason || (cameraIssueCount > 0 && !cameraBackupActive)
+  const cameraRollSummaryColor = backupBlockedReason || accountMismatchReason || ownerUnconfirmedReason || accountRefusalReason || manifestUnavailableReason || serverCheckPausedReason || (cameraIssueCount > 0 && !cameraBackupActive)
     ? c.red
     : c.ink3;
   const cameraRollStatusDotColor = backupPaused

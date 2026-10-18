@@ -28,6 +28,13 @@ import Foundation
 //       sign-out fence seal, or a cancel; the change observer's replace is
 //       refused after a stop; the sign-out order (stop, a scan that starts
 //       before the reset, the reset, the clear) leaves no result.
+//   (d) round 12 item 3: a background task that set `isRunning` does not
+//       idle a run the user started on the same account meanwhile (observer
+//       and monitor registered exactly once; stop then removes everything);
+//       a REFUSED user start does not keep a running flag after the task.
+//   (e) round 12 item 8: the master-key load (`prepare`) runs outside the
+//       transition lock: a slow load does not block `acceptFetchResult`;
+//       `prepareAgain` re-prepares, bounded; a voided retry does not run.
 
 var failures: [String] = []
 var total = 0
@@ -76,33 +83,57 @@ final class Engine {
   let observerRegisterCalls = Counter()
   let observerUnregisterCalls = Counter()
   /// Called inside start()'s body between its `isRunning` check and its
-  /// write (where the engine loads the master key and opens the manifest).
+  /// write (where the engine opens the manifest and applies the key).
   var slowStep: () -> Void = {}
+  /// Round 12: `prepareStartMasterKey` (outside the lock; nil = no key in
+  /// the keychain, a refused start).
+  var keyLoad: () -> String? = { "key" }
+  var refusedStarts = 0
 
-  func start() { lifecycle.userStart { startLocked() } }
+  /// Round 12 (item 8): `start()` -> `userStart(prepare:)`.
+  func start() { lifecycle.userStart(prepare: { self.keyLoad() }) { self.startLocked(prepared: $0) } }
   func stop() { lifecycle.userStop { stopLocked() } }
 
-  func startLocked() {
+  @discardableResult
+  func startLocked(prepared: String?) -> BackupEngineLifecycle.StartStep {
     guard manifestOpens else {
       if isRunning { lifecycle.internalStop { stopLocked() } }
-      return
+      return .done
     }
     if isRunning {
       registerPhotoObserver()
       startNetworkMonitor()
-      return
+      lifecycle.claimUserRun()
+      return .done
+    }
+    guard prepared != nil else {
+      refusedStarts += 1
+      return .done
     }
     slowStep()
     isRunning = true
+    lifecycle.claimUserRun()
     registerPhotoObserver()
     startNetworkMonitor()
+    return .done
   }
 
+  /// Round 12 (item 3): the observer and monitor go before the guard.
   func stopLocked() {
-    guard isRunning else { return }
-    isRunning = false
     lifecycle.unregisterObserver { observerUnregisterCalls.add() }
     lifecycle.stopMonitor { ($0 as? FakeMonitor)?.cancel() }
+    guard isRunning else { return }
+    isRunning = false
+  }
+
+  /// `handleBackgroundTask`'s two transitions (round 12, item 3).
+  func backgroundTaskBegins() -> Bool {
+    lifecycle.beginBackgroundRun(isRunning: { self.isRunning }) { self.isRunning = true }
+  }
+
+  @discardableResult
+  func backgroundTaskEnds(batchStart: Bool, sameAccountGeneration: Bool = true) -> Bool {
+    !batchStart && lifecycle.endBackgroundRun(stillCurrent: { sameAccountGeneration }) { self.isRunning = false }
   }
 
   func registerPhotoObserver() {
@@ -117,7 +148,7 @@ final class Engine {
   func scheduleRetry(after delay: TimeInterval, done: DispatchSemaphore) {
     let token = lifecycle.scheduleRetry()
     DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-      self.lifecycle.runRetry(token) { self.startLocked() }
+      self.lifecycle.runRetry(token, prepare: { self.keyLoad() }) { self.startLocked(prepared: $0) }
       done.signal()
     }
   }
@@ -169,7 +200,7 @@ do {
   let token = engine.lifecycle.scheduleRetry()
   engine.stop() // ...and stopped again before the retry fired
   DispatchQueue.global().async {
-    let ran = engine.lifecycle.runRetry(token) { engine.startLocked() }
+    let ran = engine.lifecycle.runRetry(token) { engine.startLocked(prepared: "key") }
     expect(!ran, "a4: the retry after a stop does not run")
     late.signal()
   }
@@ -368,6 +399,152 @@ do {
     if engine.lifecycle.fetchResult != nil { leaked += 1 }
   }
   expect(leaked == 0, "c9: in 300 races a fetch result never survives the stop (survived \(leaked))")
+}
+
+// MARK: - (d) round 12 item 3: the background task vs the user's start
+
+do {
+  FakeMonitor.alive.add(-FakeMonitor.alive.get)
+  let engine = Engine()
+  // A BGProcessingTask runs: it sets isRunning itself (no observer, no monitor).
+  let batchStart = engine.backgroundTaskBegins()
+  expect(!batchStart && engine.isRunning && engine.lifecycle.runOwner == .background, "d1: the task set the engine running and owns it")
+  expect(engine.observerRegisterCalls.get == 0 && FakeMonitor.alive.get == 0, "d1: no observer or monitor yet")
+  // The user opens the app: enablePhotoBackup -> start() on the SAME account.
+  engine.start()
+  expect(engine.lifecycle.runOwner == .user, "d2: the user's start claimed the run")
+  expect(engine.observerRegisterCalls.get == 1 && engine.lifecycle.monitorStarts == 1, "d2: observer and monitor registered once")
+  // The task's batch returns.
+  let idled = engine.backgroundTaskEnds(batchStart: batchStart)
+  expect(!idled, "d3: the task's exit does NOT idle the user's backup")
+  expect(engine.isRunning, "d3: backup is still running in the foreground")
+  expect(engine.observerRegisterCalls.get == 1 && engine.lifecycle.monitorStarts == 1 && FakeMonitor.alive.get == 1,
+         "d3: observer and monitor registered exactly once (observer \(engine.observerRegisterCalls.get), monitors \(engine.lifecycle.monitorStarts), alive \(FakeMonitor.alive.get))")
+  // Another start() adds nothing.
+  engine.start()
+  expect(engine.observerRegisterCalls.get == 1 && engine.lifecycle.monitorStarts == 1, "d3: a later start adds nothing")
+  // stop() afterwards removes everything.
+  engine.stop()
+  expect(!engine.isRunning && !engine.lifecycle.observerRegistered && engine.observerUnregisterCalls.get == 1,
+         "d4: stop unregisters the observer")
+  expect(FakeMonitor.alive.get == 0 && engine.lifecycle.monitor == nil, "d4: stop cancels the monitor (alive \(FakeMonitor.alive.get))")
+}
+
+do {
+  // A REFUSED user start (no key) before the task: the task still idles at
+  // its end (no running flag left without observer, monitor or drain loop).
+  FakeMonitor.alive.add(-FakeMonitor.alive.get)
+  let engine = Engine()
+  engine.keyLoad = { nil }
+  engine.start()
+  expect(engine.refusedStarts == 1 && !engine.isRunning && engine.lifecycle.wantsRunning, "d5: the user's start was refused (intent kept)")
+  let batchStart = engine.backgroundTaskBegins()
+  expect(engine.backgroundTaskEnds(batchStart: batchStart), "d5: the task idles at its end")
+  expect(!engine.isRunning && engine.lifecycle.runOwner == .none, "d5: not running, no owner")
+  // A task alone idles (control); a task on an engine the user started does nothing.
+  let e2 = Engine()
+  let b2 = e2.backgroundTaskBegins()
+  expect(e2.backgroundTaskEnds(batchStart: b2) && !e2.isRunning, "d6: control: a task alone idles at its end")
+  e2.start()
+  let b3 = e2.backgroundTaskBegins()
+  expect(b3 && !e2.backgroundTaskEnds(batchStart: b3) && e2.isRunning, "d6: a task on a running engine owns nothing")
+  // An account switch while the task ran: the newer run is not stopped.
+  let e3 = Engine()
+  let b4 = e3.backgroundTaskBegins()
+  expect(!e3.backgroundTaskEnds(batchStart: b4, sameAccountGeneration: false) && e3.isRunning, "d7: a newer account generation is not idled")
+  // A stop during the task ends its ownership: its exit does nothing more.
+  let e4 = Engine()
+  let b5 = e4.backgroundTaskBegins()
+  e4.stop()
+  expect(e4.lifecycle.runOwner == .none && !e4.backgroundTaskEnds(batchStart: b5), "d8: after a stop the task's exit idles nothing")
+  e2.stop()
+  e3.stop()
+}
+
+do {
+  // stop() removes the observer and the monitor even when isRunning is
+  // already false (the round 11 leak: they stayed registered).
+  FakeMonitor.alive.add(-FakeMonitor.alive.get)
+  let engine = Engine()
+  engine.registerPhotoObserver()
+  engine.startNetworkMonitor()
+  expect(!engine.isRunning && engine.lifecycle.observerRegistered && FakeMonitor.alive.get == 1, "d9: registered while not running")
+  engine.stop()
+  expect(!engine.lifecycle.observerRegistered && FakeMonitor.alive.get == 0, "d9: stop removes both anyway")
+}
+
+// MARK: - (e) round 12 item 8: the key load runs outside the transition lock
+
+do {
+  let engine = Engine()
+  let fence = ManifestWriteFence()
+  fence.bind(accountId: "acct-A")
+  let loading = DispatchSemaphore(value: 0)
+  // The keychain read shows Face ID: 800 ms until the user answers.
+  engine.keyLoad = {
+    loading.signal()
+    usleep(800_000)
+    return "key"
+  }
+  let started = DispatchSemaphore(value: 0)
+  DispatchQueue.global().async {
+    engine.start()
+    started.signal()
+  }
+  expect(loading.wait(timeout: .now() + 5) == .success, "e1: start() is loading the key")
+  // A scan finishes its PhotoKit fetch meanwhile and stores its result.
+  let ticket = fence.issue(for: "acct-A")
+  let t0 = Date()
+  let stored = engine.lifecycle.acceptFetchResult(FakeFetchResult(), stopGeneration: engine.lifecycle.stopGeneration,
+                                                  cancelled: false, stillAdmitted: { fence.isCurrent(ticket) })
+  let waited = Date().timeIntervalSince(t0)
+  expect(stored, "e1: the scan's result is stored")
+  expect(waited < 0.3, "e1: acceptFetchResult did not wait for the key prompt (waited \(String(format: "%.3f", waited)) s)")
+  wait(started, "e1: start")
+  expect(engine.isRunning, "e2: start() finished with the loaded key")
+  engine.stop()
+
+  // A stop that arrives during the key load is not blocked either.
+  let e2 = Engine()
+  let loading2 = DispatchSemaphore(value: 0)
+  e2.keyLoad = { loading2.signal(); usleep(800_000); return "key" }
+  let started2 = DispatchSemaphore(value: 0)
+  DispatchQueue.global().async { e2.start(); started2.signal() }
+  expect(loading2.wait(timeout: .now() + 5) == .success, "e3: loading")
+  let s0 = Date()
+  e2.stop()
+  expect(Date().timeIntervalSince(s0) < 0.3, "e3: a sign-out's stop() did not wait for the key prompt")
+  wait(started2, "e3: start")
+  // The user's order is kept: start, then stop -> stopped.
+  expect(!e2.isRunning && !e2.lifecycle.wantsRunning, "e3: the stop that came second wins (not running, no intent)")
+
+  // prepareAgain: what prepare saw changed under the lock; prepare runs again.
+  let lifecycle = BackupEngineLifecycle()
+  var prepares = 0
+  var bodies = 0
+  let done = lifecycle.userStart(prepare: { () -> Int in prepares += 1; return prepares }) { attempt -> BackupEngineLifecycle.StartStep in
+    bodies += 1
+    return attempt == 1 ? .prepareAgain : .done
+  }
+  expect(done && prepares == 2 && bodies == 2, "e4: re-prepared once, then done (prepares \(prepares), bodies \(bodies))")
+  prepares = 0
+  let gaveUp = lifecycle.userStart(prepare: { () -> Int in prepares += 1; return prepares }) { _ in .prepareAgain }
+  expect(!gaveUp && prepares == BackupEngineLifecycle.maxStartAttempts, "e5: bounded at \(BackupEngineLifecycle.maxStartAttempts) attempts (prepares \(prepares))")
+
+  // The retry: a stop during its prepare voids it; it never runs the body.
+  let token = lifecycle.scheduleRetry()
+  var retryBodies = 0
+  let ran = lifecycle.runRetry(token, prepare: { lifecycle.userStop {} }) { _ -> BackupEngineLifecycle.StartStep in
+    retryBodies += 1
+    return .done
+  }
+  expect(!ran && retryBodies == 0, "e6: a retry voided while preparing does not run")
+  var retryPrepares = 0
+  let notWanted = lifecycle.runRetry(lifecycle.scheduleRetry(), prepare: { retryPrepares += 1 }) { _ in .done }
+  expect(!notWanted && retryPrepares == 0, "e7: no intent: the retry does not even prepare")
+  lifecycle.userStart {}
+  let t2 = lifecycle.scheduleRetry()
+  expect(lifecycle.runRetry(t2, prepare: { 1 }) { _ in .done }, "e8: control: the latest retry with the intent runs")
 }
 
 print("backup-engine-lifecycle-test: \(failures.isEmpty ? "PASS" : "FAIL")")

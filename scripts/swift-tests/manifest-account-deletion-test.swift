@@ -413,7 +413,11 @@ do {
   expect(!finished.ok, "a7.3: the recovery fails while JS still holds the lock")
   exec(js, "ROLLBACK")
   sqlite3_close_v2(js)
-  expect(next.openIfClosed() == nil && next.lastOpenAppliedPendingReset, "a7.4: the next open applies the pending reset")
+  // Task 1667 round 12 (review item 4): with JS's close unconfirmed nothing
+  // is opened until JS confirms it (its next open asks the gate).
+  expect(next.openIfClosed() == .pendingResetDeferred, "a7.4: deferred while JS's close is unconfirmed")
+  expect(next.admitPeerOpen(priorPeerHandlesClosed: true).admitted && next.lastOpenAppliedPendingReset,
+         "a7.4: JS's confirmed close lets the open apply the pending reset")
   expect(onDisk(path, marksA) == 0, "a7.5: 0 of A's marks remain (got \(onDisk(path, marksA)))")
   expect(bytesNameA(path).isEmpty, "a7.6: none of A's identifiers in the bytes (found \(bytesNameA(path)))")
 }
@@ -489,8 +493,8 @@ do {
   )
   exec(js, "ROLLBACK")
   sqlite3_close_v2(js)
-  expect(written == .written(inserted: false), "d1: A's scan insert failed (got \(written))")
-  if case .written(let inserted) = written { handle.scanInsertHealth.record(inserted: inserted, source: .fullScan) }
+  expect(written == .written(inserted: false, entered: 0), "d1: A's scan insert failed (got \(written))")
+  if case .written(let inserted, _) = written { handle.scanInsertHealth.record(inserted: inserted, source: .fullScan) }
   expect(handle.scanInsertHealth.failed, "d1: the failure is recorded for A")
 
   // A signs out (prepareForStoragePurge -> resetForSignOut).

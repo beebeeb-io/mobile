@@ -908,11 +908,20 @@ final class NativeBackupEngine: NSObject {
   /// and scan insert; consumed by the next batch). Guarded by `engineStateLock`.
   private var _bulkServerCheckRequested = true
   /// Round 11 (review finding 2): the server answered `/check` without
-  /// `backed_up` (no task 2036) in this process. While set, the rebuild fast
-  /// path does not apply the identifiers map either (on such a server that
-  /// map includes files in the Trash). Cleared by the next `/check` that
-  /// carries the field. Guarded by `engineStateLock`.
-  private var _serverLacksBackedUp = false
+  /// `backed_up` (no task 2036). While set, the rebuild fast path does not
+  /// apply the identifiers map either (on such a server that map includes
+  /// files in the Trash). Cleared by a `/check` that carries the field.
+  /// Round 12 (review item 2): reset at sign-out (`prepareForStoragePurge`),
+  /// and the rebuild probes the server once per backoff period while it is
+  /// set (`PendingUploadServerCheck.rebuildFetch`), because every other
+  /// `/check` runs after the rebuild gate. Before, nothing cleared it in
+  /// that process: deploying 2036 changed nothing until the app was killed.
+  /// Guarded by `engineStateLock`.
+  private var _backedUpSupport = BackedUpSupport()
+  /// Round 12 (review item 6): why uploads are paused on the server check
+  /// (`serverCheckPausedReason` in the progress dict). Guarded by
+  /// `engineStateLock`.
+  private var _serverCheckPause = ServerCheckPause()
   /// Round 10: rows the last batch's server check promoted (they count as
   /// progress for the drain loop, which otherwise waits 5 s after a batch
   /// that uploaded nothing). Guarded by `engineStateLock`.
@@ -1020,13 +1029,35 @@ final class NativeBackupEngine: NSObject {
   /// and the rebuild must send the same value. A device property, not an
   /// account one: it survives sign-out like the JS-side id does. Persisted so
   /// a background relaunch (no JS yet) still has it.
+  ///
+  /// Round 12 (review item 7): before the first launch of this build JS has
+  /// not handed it over yet (a background task can run first). The getter
+  /// then reads the same id from expo-secure-store's keychain item
+  /// (`BackupDeviceId.resolve`, never minting one) and keeps it in
+  /// `UserDefaults`. The setter (JS, at every launch and at enable) ends a
+  /// `noDeviceId` pause at once.
   var backupDeviceId: String? {
-    get { UserDefaults.standard.string(forKey: "io.beebeeb.backupDeviceId") }
+    get {
+      let resolution = BackupDeviceId.resolve(
+        defaults: { UserDefaults.standard.string(forKey: BackupDeviceId.defaultsKey) },
+        secureStore: { BackupDeviceId.readSecureStore($0) },
+        persist: { UserDefaults.standard.set($0, forKey: BackupDeviceId.defaultsKey) }
+      )
+      if let source = resolution.source, source != .defaults {
+        RuntimeTrace.event("backup.native.device_id.adopted_from_secure_store", ["source": source.rawValue])
+      }
+      return resolution.id
+    }
     set {
       if let newValue, !newValue.isEmpty {
-        UserDefaults.standard.set(newValue, forKey: "io.beebeeb.backupDeviceId")
+        UserDefaults.standard.set(newValue, forKey: BackupDeviceId.defaultsKey)
+        if serverCheckPauseCause == .noDeviceId {
+          clearServerCheckPause()
+          backoffUntil = nil
+          wakeDrainLoop(reason: "device-id")
+        }
       } else {
-        UserDefaults.standard.removeObject(forKey: "io.beebeeb.backupDeviceId")
+        UserDefaults.standard.removeObject(forKey: BackupDeviceId.defaultsKey)
       }
     }
   }
@@ -2181,19 +2212,83 @@ final class NativeBackupEngine: NSObject {
   /// on another queue either finished before it or waits until it is done,
   /// and the manifest-open retry runs the same body only while that intent
   /// is still set (`scheduleManifestOpenRetry`).
+  ///
+  /// Round 12 (review item 8): the master key is loaded OUTSIDE that
+  /// transition (`prepareStartMasterKey`; the keychain read can show a Face ID
+  /// prompt), and `startLocked` re-validates it inside. Before, the lock was
+  /// held across the prompt, and every scan's `acceptFetchResult` and a
+  /// sign-out's `stop()` waited for the user to answer it.
   func start() {
-    lifecycle.userStart { startLocked() }
+    lifecycle.userStart(prepare: { prepareStartMasterKey() }) { startLocked(prepared: $0) }
+  }
+
+  /// Round 12 (review item 8): what `prepareStartMasterKey` found, OUTSIDE
+  /// the lifecycle lock, for `startLocked` to re-validate inside it.
+  struct PreparedStartKey {
+    enum Outcome {
+      /// The bridge cache's handle, whose recorded owner `mayAdopt` accepted.
+      case cached(MasterKeyHandle)
+      /// A handle `loadMasterKey()` read from the keychain (cache miss).
+      case loaded(MasterKeyHandle)
+      case refusedCachedOwner
+      case missing
+      case failed(String)
+      /// The engine was running when prepared: no key needed (the running
+      /// branch). If it stopped before the lock, `startLocked` asks again.
+      case notNeeded
+    }
+    let accountId: String
+    let outcome: Outcome
+  }
+
+  /// Round 12 (review item 8): the slow half of the start, with no lock held.
+  /// Reads the bridge cache and, on a miss, the keychain
+  /// (`loadMasterKeyUncached()`, which can prompt, and unlike
+  /// `loadMasterKey()` caches nothing: `startLocked` caches the handle with
+  /// its owner only once it decided to use it). Writes no engine state.
+  private func prepareStartMasterKey() -> PreparedStartKey? {
+    guard let accountId = currentAccountId, !accountId.isEmpty else { return nil }
+    if isRunning { return PreparedStartKey(accountId: accountId, outcome: .notNeeded) }
+    // Task 1599 followups (round 2, item 3): a cached handle existing is NOT,
+    // by itself, proof it belongs to `accountId`. Read the "is there a cached
+    // handle" flag and its owner from ONE locked snapshot
+    // (`cachedMasterKeySnapshot()`); a cache whose recorded owner is set and
+    // differs from `accountId` refuses, never reaching `masterKeyHandle`.
+    let cacheSnapshot = BeebeebCryptoBridge.cachedMasterKeySnapshot()
+    RuntimeTrace.event("backup.native.start.master_key_request", [
+      "promptMayAppear": masterKeyHandle == nil && cacheSnapshot.handle == nil,
+      "bridgeCacheAvailable": cacheSnapshot.handle != nil
+    ])
+    if let snapshotHandle = cacheSnapshot.handle {
+      guard CachedKeyOwnership.mayAdopt(cachedOwnerId: cacheSnapshot.ownerId, currentAccountId: accountId) else {
+        return PreparedStartKey(accountId: accountId, outcome: .refusedCachedOwner)
+      }
+      // Task 1599 followups round 3 (P2): the SAME handle object the
+      // ownership guard just verified, never a second `loadMasterKey()` read.
+      return PreparedStartKey(accountId: accountId, outcome: .cached(snapshotHandle))
+    }
+    do {
+      guard let loaded = try BeebeebCryptoBridge.loadMasterKeyUncached() else {
+        return PreparedStartKey(accountId: accountId, outcome: .missing)
+      }
+      return PreparedStartKey(accountId: accountId, outcome: .loaded(loaded))
+    } catch {
+      return PreparedStartKey(accountId: accountId, outcome: .failed(error.localizedDescription))
+    }
   }
 
   /// `start()`'s body. MUST run inside a `lifecycle` transition (`start()`,
-  /// or the retry's `runRetry`).
-  private func startLocked() {
+  /// or the retry's `runRetry`). Round 12 (review item 8): `prepared` was
+  /// read outside the lock; anything it relied on that changed since (the
+  /// account, the cache's handle or owner, the running state) asks the
+  /// caller to prepare again (`.prepareAgain`) instead of loading here.
+  private func startLocked(prepared: PreparedStartKey?) -> BackupEngineLifecycle.StartStep {
     guard let accountId = currentAccountId, !accountId.isEmpty else {
       RuntimeTrace.event("backup.native.start.refused_no_account", [
         "isRunning": isRunning
       ])
       NSLog("[NativeBackupEngine] No current account id — refusing to start (queue kept for later)")
-      return
+      return .done
     }
 
     // Task 1667 round 6 (Codex P2 "Reopen the native manifest after
@@ -2202,7 +2297,7 @@ final class NativeBackupEngine: NSObject {
     // it, and a launch open can fail. Reopen here, or refuse visibly
     // (`manifestUnavailableReason`) and retry; before, every scan, manifest
     // check and upload silently no-oped on `db == nil` until a relaunch.
-    guard ensureManifestOpenForStart(accountId: accountId) else { return }
+    guard ensureManifestOpenForStart(accountId: accountId) else { return .done }
 
     if isRunning {
       // Task 1531 [P2-C] (round 5 delta review): `handleBackgroundTask`
@@ -2231,138 +2326,118 @@ final class NativeBackupEngine: NSObject {
         accountRefusalStopReason = nil
         isPaused = false
       }
+      // Round 12 (review item 3): this run is the user's now; a background
+      // task that set `isRunning` no longer idles it when it ends.
+      lifecycle.claimUserRun()
       wakeDrainLoop(reason: "start")
-      return
+      return .done
     }
 
-    do {
-      // Task 1599 followups (round 2, item 3): a cached handle existing is
-      // NOT, by itself, proof it belongs to `accountId` — reusing the SAME
-      // `CachedKeyOwnership.mayAdopt` decision the background-task
-      // adoption site below already applies. Read the cache's recorded
-      // owner BEFORE calling `loadMasterKey()` (which would otherwise just
-      // hand back the same unverified cached handle) — a cache whose
-      // recorded owner is SET and differs from `accountId` refuses here,
-      // never reaching `masterKeyHandle`.
-      //
-      // Task 1599 followups round 2 review (P1): read the "is there a
-      // cached handle" flag and its owner from ONE locked snapshot
-      // (`cachedMasterKeySnapshot()`), not two separate locked calls — same
-      // fix, same reason, as the background-task adoption site below (a
-      // concurrent `setCachedMasterKey`/`clearCachedMasterKey` between two
-      // separate reads could pair a stale handle with a newer owner id).
-      let cacheSnapshot = BeebeebCryptoBridge.cachedMasterKeySnapshot()
-      let bridgeCacheAvailable = cacheSnapshot.handle != nil
-      let cachedOwnerBeforeLoad = cacheSnapshot.ownerId
-      RuntimeTrace.event("backup.native.start.master_key_request", [
-        "promptMayAppear": masterKeyHandle == nil && !bridgeCacheAvailable,
-        "bridgeCacheAvailable": bridgeCacheAvailable
-      ])
-      if bridgeCacheAvailable,
-         !CachedKeyOwnership.mayAdopt(cachedOwnerId: cachedOwnerBeforeLoad, currentAccountId: accountId) {
-        RuntimeTrace.event("backup.native.start.refused_cached_key_owner_mismatch")
-        NSLog("[NativeBackupEngine] Cached master key owner unconfirmed or mismatched — refusing to start")
-        // Task 1599 followups round 3 (P2): this refusal never reaches a
-        // server (no request is ever built), so `accountMismatchStopReason`
-        // — which only fires on a server-confirmed 409 — would never surface
-        // it. Without this, Settings just kept showing whatever stale
-        // progress line it had, with no indication backup was refusing to
-        // even start. Cleared on this function's own next successful run.
-        ownerUnconfirmedStopReason = Self.ownerUnconfirmedStopReasonMessage
-        return
+    // Round 12 (review item 8): the key was read outside the lock, for this
+    // account, with the engine not running. Anything else: read it again.
+    guard let prepared, prepared.accountId == accountId else { return .prepareAgain }
+    let mk: MasterKeyHandle
+    let bridgeCacheAvailable: Bool
+    switch prepared.outcome {
+    case .notNeeded:
+      return .prepareAgain
+    case .refusedCachedOwner:
+      // Re-checked under the lock: the cache may have changed since.
+      let now = BeebeebCryptoBridge.cachedMasterKeySnapshot()
+      if now.handle == nil || CachedKeyOwnership.mayAdopt(cachedOwnerId: now.ownerId, currentAccountId: accountId) {
+        return .prepareAgain
       }
-      let mk: MasterKeyHandle
-      if let snapshotHandle = cacheSnapshot.handle {
-        // Task 1599 followups round 3 (P2): use the SAME handle object the
-        // ownership guard above just verified, instead of calling
-        // `loadMasterKey()` again — that call takes its OWN separate lock on
-        // `BeebeebCryptoBridge`'s cache, a non-atomic re-read of state
-        // already read once into `cacheSnapshot` above. If the cache were
-        // cleared by another thread (a confirmed mismatch, a sign-out) in
-        // the window between the snapshot and this second read,
-        // `loadMasterKey()` would silently fall through to its own
-        // Keychain-read fallback and cache THAT unconfirmed handle with no
-        // owner — while this function's `bridgeCacheAvailable` flag, still
-        // reflecting the OLDER snapshot, would wrongly take the "cache
-        // already verified" branch below and skip the mirror-owner check
-        // entirely for a handle that was never actually checked. Using
-        // `cacheSnapshot.handle` directly closes that window: the exact
-        // handle the guard above verified is the exact handle used here,
-        // with no second read in between to go stale.
-        mk = snapshotHandle
-      } else {
-        guard let loaded = try BeebeebCryptoBridge.loadMasterKey() else {
-          RuntimeTrace.event("backup.native.start.master_key_missing")
-          NSLog("[NativeBackupEngine] No master key in keychain — cannot start")
-          return
-        }
-        mk = loaded
-      }
-      if bridgeCacheAvailable {
-        // The guard above already confirmed the CACHE's recorded owner
-        // matches `accountId`, and `mk` above is that SAME cached handle —
-        // nothing further to attest before trusting it.
-        masterKeyHandle = mk
-      } else {
-        // Task 1599 followups (round 2, item 3): the cache was empty, so
-        // this handle came straight off the per-app Keychain
-        // (`KeychainManager.load`, inside `loadMasterKey()`'s cache-miss
-        // branch) — there is no JS-confirmed `confirmMasterKeyHandle`
-        // ownership verdict for THIS load. Only trust it for `accountId`,
-        // and only then record that trust in the bridge cache, when the
-        // SHARED "proven vault key owner" mirror
-        // (`BeebeebKeychainCore.masterKeyOwnerKey` — written by
-        // `key-ownership.ts`'s `writeKeyOwner`, the exact signal task
-        // 1594's File Provider / Share Extension already gate their own
-        // key access on) independently agrees. Reusing
-        // `CachedKeyOwnership.mayAdopt` here too keeps "nil/mismatched
-        // owner refuses" a single decision, not two copies that can drift.
-        let mirroredOwner = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.masterKeyOwnerKey)
-        guard CachedKeyOwnership.mayAdopt(cachedOwnerId: mirroredOwner, currentAccountId: accountId) else {
-          RuntimeTrace.event("backup.native.start.refused_unmirrored_key_owner")
-          NSLog("[NativeBackupEngine] Master key owner not confirmed by the shared keychain mirror — refusing to start")
-          // Task 1599 followups round 3 (P2): same local-refusal-needs-a-
-          // reason fix as the cached-owner-mismatch branch above.
-          ownerUnconfirmedStopReason = Self.ownerUnconfirmedStopReasonMessage
-          return
-        }
-        masterKeyHandle = mk
-      }
-      // Task 1599 followups round 3 (P2): this run got past both ownership
-      // guards above — whatever previously refused a start (if anything) no
-      // longer applies. Clear unconditionally rather than only inside the
-      // two refusal branches, so a stale reason from an EARLIER failed
-      // `start()` attempt never survives a later successful one.
-      ownerUnconfirmedStopReason = nil
-      // Task 1605: same unconditional clear, same rationale — see
-      // `accountRefusalStopReason`'s doc comment for why clearing here (a
-      // FRESH start, `isRunning` was false) is the "next start" resume
-      // point. `isPaused` is already reset to `false` a few lines below
-      // (this function's own tail), so there is nothing further to flip.
-      accountRefusalStopReason = nil
-      // Task 1599 followup 3: `currentAccountId` here is `start()`'s OWN
-      // persisted account id (Keychain-backed — see its property doc), which
-      // is only ever WRITTEN by `bindAccount(userId:)`, called by JS only
-      // after ITS OWN ownership verdict succeeds (task 1599's own grounding:
-      // `enablePhotoBackup`'s `currentAccountId = userId` is gated on
-      // `crypto-context.tsx`'s `isUnlocked`, which flips true only right
-      // after `confirmMasterKeyHandle` for that SAME owner). So re-stamping
-      // the bridge cache with it here is safe — both branches above already
-      // proved this SPECIFIC load's owner (cache-owner match, or the shared
-      // mirror) before this line is ever reached.
-      BeebeebCryptoBridge.setCachedMasterKey(mk, ownerId: currentAccountId)
-      RuntimeTrace.event("backup.native.start.master_key_ready")
-    } catch {
+      RuntimeTrace.event("backup.native.start.refused_cached_key_owner_mismatch")
+      NSLog("[NativeBackupEngine] Cached master key owner unconfirmed or mismatched — refusing to start")
+      // Task 1599 followups round 3 (P2): this refusal never reaches a
+      // server (no request is ever built), so `accountMismatchStopReason`
+      // — which only fires on a server-confirmed 409 — would never surface
+      // it. Cleared on this function's own next successful run.
+      ownerUnconfirmedStopReason = Self.ownerUnconfirmedStopReasonMessage
+      return .done
+    case .missing:
+      RuntimeTrace.event("backup.native.start.master_key_missing")
+      NSLog("[NativeBackupEngine] No master key in keychain — cannot start")
+      return .done
+    case .failed(let message):
       RuntimeTrace.event("backup.native.start.master_key_failed", [
-        "error": error.localizedDescription
+        "error": message
       ])
-      NSLog("[NativeBackupEngine] Failed to load master key: \(error.localizedDescription)")
-      return
+      NSLog("[NativeBackupEngine] Failed to load master key: \(message)")
+      return .done
+    case .cached(let handle):
+      // Re-validated under the lock: the SAME handle is still cached and its
+      // recorded owner still matches (a sign-out or a confirmed mismatch in
+      // between clears or changes it).
+      let now = BeebeebCryptoBridge.cachedMasterKeySnapshot()
+      guard let current = now.handle, current === handle,
+            CachedKeyOwnership.mayAdopt(cachedOwnerId: now.ownerId, currentAccountId: accountId) else {
+        return .prepareAgain
+      }
+      mk = handle
+      bridgeCacheAvailable = true
+    case .loaded(let handle):
+      // Read from the keychain outside the lock; owner-checked below (the
+      // shared mirror) before it is used or cached.
+      mk = handle
+      bridgeCacheAvailable = false
     }
+
+    if bridgeCacheAvailable {
+      // The cached handle and its recorded owner were confirmed for
+      // `accountId` above, under the lock (task 1599 followups round 3: the
+      // exact handle the guard verified is the one used, no second read).
+      masterKeyHandle = mk
+    } else {
+      // Task 1599 followups (round 2, item 3): the cache was empty, so
+      // this handle came straight off the per-app Keychain
+      // (`KeychainManager.load`, inside `loadMasterKey()`'s cache-miss
+      // branch) — there is no JS-confirmed `confirmMasterKeyHandle`
+      // ownership verdict for THIS load. Only trust it for `accountId`,
+      // and only then record that trust in the bridge cache, when the
+      // SHARED "proven vault key owner" mirror
+      // (`BeebeebKeychainCore.masterKeyOwnerKey` — written by
+      // `key-ownership.ts`'s `writeKeyOwner`, the exact signal task
+      // 1594's File Provider / Share Extension already gate their own
+      // key access on) independently agrees. Reusing
+      // `CachedKeyOwnership.mayAdopt` here too keeps "nil/mismatched
+      // owner refuses" a single decision, not two copies that can drift.
+      // Read here, under the lock, against the account it binds to.
+      let mirroredOwner = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.masterKeyOwnerKey)
+      guard CachedKeyOwnership.mayAdopt(cachedOwnerId: mirroredOwner, currentAccountId: accountId) else {
+        RuntimeTrace.event("backup.native.start.refused_unmirrored_key_owner")
+        NSLog("[NativeBackupEngine] Master key owner not confirmed by the shared keychain mirror — refusing to start")
+        // Task 1599 followups round 3 (P2): same local-refusal-needs-a-
+        // reason fix as the cached-owner-mismatch branch above.
+        ownerUnconfirmedStopReason = Self.ownerUnconfirmedStopReasonMessage
+        return .done
+      }
+      masterKeyHandle = mk
+    }
+    // Task 1599 followups round 3 (P2): this run got past both ownership
+    // guards above — whatever previously refused a start (if anything) no
+    // longer applies. Clear unconditionally rather than only inside the
+    // two refusal branches, so a stale reason from an EARLIER failed
+    // `start()` attempt never survives a later successful one.
+    ownerUnconfirmedStopReason = nil
+    // Task 1605: same unconditional clear, same rationale — see
+    // `accountRefusalStopReason`'s doc comment for why clearing here (a
+    // FRESH start, `isRunning` was false) is the "next start" resume
+    // point. `isPaused` is already reset to `false` a few lines below
+    // (this function's own tail), so there is nothing further to flip.
+    accountRefusalStopReason = nil
+    // Task 1599 followup 3: `currentAccountId` here is `start()`'s OWN
+    // persisted account id (Keychain-backed — see its property doc), which
+    // is only ever WRITTEN by `bindAccount(userId:)`, called by JS only
+    // after ITS OWN ownership verdict succeeds. Both branches above already
+    // proved this SPECIFIC load's owner (cache-owner match, or the shared
+    // mirror) before this line is ever reached.
+    BeebeebCryptoBridge.setCachedMasterKey(mk, ownerId: currentAccountId)
+    RuntimeTrace.event("backup.native.start.master_key_ready")
 
     guard token != nil, apiBaseUrl != nil else {
       NSLog("[NativeBackupEngine] Missing token or apiBaseUrl — cannot start")
-      return
+      return .done
     }
 
     // Task 1531 [P0]: before draining anything, drop any staged asset whose
@@ -2377,6 +2452,9 @@ final class NativeBackupEngine: NSObject {
     dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: accountId) }
 
     isRunning = true
+    // Round 12 (review item 3): the user's run (a background task that ends
+    // later never idles it).
+    lifecycle.claimUserRun()
     perfLog("start", [
       "total": totalAssets,
       "completed": completedAssets
@@ -2393,6 +2471,7 @@ final class NativeBackupEngine: NSObject {
     logDiagnosticSnapshot(reason: "start")
 
     NSLog("[NativeBackupEngine] Started — \(totalAssets) total, \(completedAssets) completed")
+    return .done
   }
 
   /// Stop the backup engine. Cancels the drain loop and unregisters observers.
@@ -2453,6 +2532,16 @@ final class NativeBackupEngine: NSObject {
     // (`userStop` / `internalStop` clear it and advance the generation a scan
     // must still match to store its result, `acceptFetchResult`).
 
+    // Round 12 (review item 3): the observer and the monitor go whatever
+    // `isRunning` says. Before, they were removed only past the guard below,
+    // so a stop after a background task had idled the engine under a user
+    // start left both registered. Both calls are no-ops when nothing is
+    // registered.
+    lifecycle.unregisterObserver { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
+    stopNetworkMonitor()
+    // Round 12 (review item 6): a stopped engine is not "paused on the server".
+    clearServerCheckPause()
+
     guard isRunning else { return }
     isRunning = false
     isPaused = false
@@ -2460,9 +2549,6 @@ final class NativeBackupEngine: NSObject {
     drainTask?.cancel()
     drainTask = nil
     pendingDrainWakeReason = nil
-
-    lifecycle.unregisterObserver { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
-    stopNetworkMonitor()
 
     uploadTaskMap.removeAll()
     // Task 1605: sibling cleanup for `chunkResponseBodyBuffers` — cancelled
@@ -2666,6 +2752,10 @@ final class NativeBackupEngine: NSObject {
       // Task 1667 round 6: `start()` could not open the backup manifest and
       // is retrying (`ensureManifestOpenForStart`). Null otherwise.
       "manifestUnavailableReason": manifestUnavailableStopReason ?? NSNull(),
+      // Task 1667 round 12 (review item 6): uploads are paused on the server
+      // check (server without backed_up, a failed check, no device id), with
+      // the reason. Null otherwise.
+      "serverCheckPausedReason": serverCheckPausedReason ?? NSNull(),
     ]
   }
 
@@ -2841,14 +2931,11 @@ final class NativeBackupEngine: NSObject {
       ])
 
       // Round 11 (review finding 3): the check-and-set is one `lifecycle`
-      // transition, like start() and stop().
-      let batchStart: Bool = self.lifecycle.locked {
-        let wasRunning = self.isRunning
-        if !wasRunning {
-          self.isRunning = true
-          self.isPaused = false
-        }
-        return wasRunning
+      // transition, like start() and stop(). Round 12 (review item 3): when it
+      // sets `isRunning`, this task owns the run until a user start claims it.
+      let batchStart: Bool = self.lifecycle.beginBackgroundRun(isRunning: { self.isRunning }) {
+        self.isRunning = true
+        self.isPaused = false
       }
       if !batchStart {
         self.updateBackupStatusSurfaces(reason: "Background backup running")
@@ -2875,10 +2962,16 @@ final class NativeBackupEngine: NSObject {
       // `taskGeneration` was captured, a newer `start()`/account-switch
       // began while this task's `processBatch` was awaiting — that newer
       // run owns `isRunning` now, and this stale task must not stop it.
-      let idled: Bool = self.lifecycle.locked {
-        guard !batchStart && self.accountGenerationSnapshot() == taskGeneration else { return false }
+      // Round 12 (review item 3): nor when the user started backup on the
+      // SAME account meanwhile (no generation bump): `start()` claimed the
+      // run (`claimUserRun`), and only a stop ends it. Before, the task's
+      // exit set `isRunning = false` under the user's foreground backup, and
+      // `stop()` then returned early, leaving the observer and the monitor
+      // registered.
+      let idled: Bool = !batchStart && self.lifecycle.endBackgroundRun(
+        stillCurrent: { self.accountGenerationSnapshot() == taskGeneration }
+      ) {
         self.isRunning = false
-        return true
       }
       if idled {
         self.updateBackupStatusSurfaces()
@@ -3397,18 +3490,24 @@ final class NativeBackupEngine: NSObject {
       return 0
     }
 
+    // Round 12 (review item 9): only the caller that runs the batch goes on.
+    // Before, the claim write, the identifiers fetch, the map/kept-marks
+    // transactions and any backoff ran for every concurrent caller (drain
+    // loop, background task, manual trigger), and all but one then returned
+    // at 'already-processing'; a deferral from a caller that never ran a
+    // batch pushed `backoffUntil` onto the one that did.
+    if !beginBatchProcessing() {
+      perfLog("batch.skip", ["reason": "already-processing", "limit": limit])
+      return 0
+    }
+    defer { finishBatchProcessing() }
+
     // Task 1667: never upload into a manifest that does not yet know what
     // this account already backed up from this device (after a sign-out the
     // manifest is empty; uploading would duplicate every photo).
     guard await ensureManifestReadyForUploads(accountId: batchAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket) else {
       return 0
     }
-
-    if !beginBatchProcessing() {
-      perfLog("batch.skip", ["reason": "already-processing", "limit": limit])
-      return 0
-    }
-    defer { finishBatchProcessing() }
 
     // Recover stuck uploads on each batch start
     dbQueue.sync {
@@ -5269,12 +5368,15 @@ final class NativeBackupEngine: NSObject {
     switch written {
     case .fenced, .noHandle:
       return
-    case .written(let inserted):
+    case .written(let inserted, let entered):
       manifestHandle.scanInsertHealth.record(inserted: inserted, source: source)
       if !inserted {
         RuntimeTrace.event("backup.native.scan.insert_failed", ["assets": assets])
-      } else if assets > 0 {
-        // Round 11 (review finding 9): new rows owe a bulk check.
+      } else if entered > 0 {
+        // Round 11 (review finding 9): new rows owe a bulk check. Round 12
+        // (review item 10): only rows that ENTERED the queue (new, or back
+        // from local_missing); `assets` is the scanned count, and every full
+        // scan re-upserts the whole library.
         requestBulkServerCheck()
       }
     }
@@ -6174,11 +6276,23 @@ final class NativeBackupEngine: NSObject {
           // no longer reads `GET /files/index` (task 1959). On a server that
           // answered `/check` without `backed_up` (no task 2036) the map may
           // still include trashed files: the fetch fails (the gate defers).
-          guard !self.serverLacksBackedUp else {
-            throw PhotoBackupServerResponses.ServerLacksBackedUp()
-          }
-          return try await self.fetchServerIdentifierMap(
-            authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId
+          // Round 12 (review item 2): unless one lightweight `/check` (at most
+          // one per backoff period) finds the server has `backed_up` now.
+          let probeSteps = self.serverCheckSteps(
+            accountId: accountId, authToken: authToken, baseURL: baseURL, ticket: ticket
+          )
+          return try await PendingUploadServerCheck.rebuildFetch(
+            lacksBackedUp: { self.serverLacksBackedUp },
+            takeProbeSlot: { self.takeBackedUpProbeSlot() },
+            probe: {
+              RuntimeTrace.event("backup.native.server_check.capability_probe")
+              _ = try await probeSteps.check([PendingUploadServerCheck.capabilityProbeIdentifier])
+            },
+            fetch: {
+              try await self.fetchServerIdentifierMap(
+                authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId
+              )
+            }
           )
         } catch {
           RuntimeTrace.event("backup.native.manifest_rebuild.fetch_error", [
@@ -6204,6 +6318,8 @@ final class NativeBackupEngine: NSObject {
     case let .ready(rebuilt, promoted, keptApplied):
       manifestReadyForAccount = accountId
       manifestRebuildFailures = 0
+      // Round 12 (review item 6): the map fetch reached the server.
+      if rebuilt { clearServerCheckPause() }
       if rebuilt {
         RuntimeTrace.event("backup.native.manifest_rebuild.done", [
           "promoted": promoted,
@@ -6216,6 +6332,9 @@ final class NativeBackupEngine: NSObject {
       manifestRebuildFailures = failures
       let wait = ManifestRebuildGate.backoff(for: reason, consecutiveFailures: failures)
       if let wait { backoffUntil = Date().addingTimeInterval(wait) }
+      // Round 12 (review item 6): say why (fetch failed, server without
+      // backed_up, no device id).
+      recordRebuildPause(reason)
       RuntimeTrace.event("backup.native.manifest_rebuild.deferred", [
         "reason": reason.rawValue,
         "consecutive": failures,
@@ -6313,7 +6432,60 @@ final class NativeBackupEngine: NSObject {
 
   private var serverLacksBackedUp: Bool {
     engineStateLock.lock(); defer { engineStateLock.unlock() }
-    return _serverLacksBackedUp
+    return _backedUpSupport.lacksBackedUp
+  }
+
+  /// Round 12 (review item 2): the rebuild's probe slot (one per backoff
+  /// period while the server lacks `backed_up`).
+  private func takeBackedUpProbeSlot() -> Bool {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _backedUpSupport.takeProbeSlot(now: Date())
+  }
+
+  // MARK: - Server-check pause reason (round 12, review item 6)
+
+  /// The reason Settings shows while uploads are paused on the server check.
+  private var serverCheckPausedReason: String? {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _serverCheckPause.stopReason
+  }
+
+  private var serverCheckPauseCause: ServerCheckPause.Cause? {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _serverCheckPause.cause
+  }
+
+  /// Records a deferred `/check` and, when the reason changed, publishes it
+  /// to the status surfaces (once per change, not once per deferred batch).
+  private func recordServerCheckPause(_ reason: PendingUploadServerCheck.DeferReason) {
+    engineStateLock.lock()
+    let changed = _serverCheckPause.record(reason)
+    let message = _serverCheckPause.stopReason
+    engineStateLock.unlock()
+    publishServerCheckPause(changed: changed, message: message)
+  }
+
+  private func recordRebuildPause(_ reason: ManifestRebuildGate.DeferReason) {
+    engineStateLock.lock()
+    let changed = _serverCheckPause.recordRebuild(reason, lacksBackedUp: _backedUpSupport.lacksBackedUp)
+    let message = _serverCheckPause.stopReason
+    engineStateLock.unlock()
+    publishServerCheckPause(changed: changed, message: message)
+  }
+
+  private func clearServerCheckPause() {
+    engineStateLock.lock()
+    let changed = _serverCheckPause.clear()
+    engineStateLock.unlock()
+    if changed { RuntimeTrace.event("backup.native.server_check.pause_cleared") }
+  }
+
+  private func publishServerCheckPause(changed: Bool, message: String?) {
+    guard changed, let message else { return }
+    RuntimeTrace.event("backup.native.server_check.paused", [
+      "cause": serverCheckPauseCause?.rawValue ?? NSNull(),
+    ])
+    updateBackupStatusSurfaces(reason: message)
   }
 
   /// Round 11: the `/check` steps both passes share. Every answer also tells
@@ -6353,7 +6525,7 @@ final class NativeBackupEngine: NSObject {
   /// batch is still traced.
   private func noteServerBackedUpSupport(_ supported: Bool) {
     engineStateLock.lock()
-    _serverLacksBackedUp = !supported
+    _backedUpSupport.note(supported: supported)
     engineStateLock.unlock()
     if !supported, PendingUploadServerCheck.serverLacksBackedUpNotice.shouldFire() {
       NSLog("[NativeBackupEngine] \(PendingUploadServerCheck.serverLacksBackedUpMessage): camera-roll uploads stay paused")
@@ -6378,11 +6550,6 @@ final class NativeBackupEngine: NSObject {
     engineStateLock.lock(); defer { engineStateLock.unlock() }
     _serverCheckCoverage.record(outcome.needsBackup, accountId: accountId, generation: generation, now: Date())
     _lastBatchServerPromoted += outcome.promoted.count
-  }
-
-  private func uncoveredByBulkServerCheck(_ ids: [String], accountId: String, generation: UInt64) -> [String] {
-    engineStateLock.lock(); defer { engineStateLock.unlock() }
-    return _serverCheckCoverage.uncovered(ids, accountId: accountId, generation: generation, now: Date())
   }
 
   private func noteServerCheckSucceeded(promoted: Int) {
@@ -6436,6 +6603,11 @@ final class NativeBackupEngine: NSObject {
       return self.isRunning && !Task.isCancelled && self.currentAccountId == accountId
     }
     recordBulkServerCheck(outcome, accountId: accountId, generation: ticket.generation)
+    if let stopped = outcome.stopped {
+      recordServerCheckPause(stopped)
+    } else if outcome.requests > 0 {
+      clearServerCheckPause()
+    }
     RuntimeTrace.event("backup.native.server_check.bulk", [
       "candidates": candidates.count, "requests": outcome.requests, "promoted": outcome.promoted.count,
       "needsBackup": outcome.needsBackup.count, "stopped": outcome.stopped?.rawValue ?? NSNull(),
@@ -6457,10 +6629,19 @@ final class NativeBackupEngine: NSObject {
     _ pending: [BackupAssetRow], accountId: String, authToken: String, baseURL: String,
     ticket: ManifestWriteFence.Ticket
   ) async -> [BackupAssetRow]? {
-    let freshAll = pending.filter { $0.stagedFileId == nil }.map(\.localAssetId)
-    guard !freshAll.isEmpty else { return pending }
-    let fresh = uncoveredByBulkServerCheck(freshAll, accountId: accountId, generation: ticket.generation)
-    guard !fresh.isEmpty else { return pending }
+    // Round 12 (review item 1, duplicate upload): EVERY fresh row of the
+    // batch is asked, whatever an earlier bulk pass answered for it. In round
+    // 11 a covered row skipped this check for 15 minutes, so a row the JS
+    // reconcile re-queued after it uploaded, or whose file came back out of
+    // the Trash, uploaded a second time.
+    let fresh = PendingUploadServerCheck.batchCandidates(
+      pending.map { (id: $0.localAssetId, staged: $0.stagedFileId != nil) }
+    )
+    guard !fresh.isEmpty else {
+      // Nothing to ask: staged rows resume uploads checked before staging.
+      clearServerCheckPause()
+      return pending
+    }
     let steps = serverCheckSteps(
       accountId: accountId, authToken: authToken, baseURL: baseURL, ticket: ticket
     )
@@ -6468,6 +6649,7 @@ final class NativeBackupEngine: NSObject {
     switch outcome {
     case let .proceed(skip, promoted, _):
       noteServerCheckSucceeded(promoted: promoted.count)
+      clearServerCheckPause()
       if !skip.isEmpty {
         RuntimeTrace.event("backup.native.server_check.applied", [
           "checked": fresh.count, "promoted": promoted.count, "skipped": skip.count,
@@ -6478,6 +6660,8 @@ final class NativeBackupEngine: NSObject {
       let failures = noteServerCheckDeferred()
       let wait = PendingUploadServerCheck.backoff(for: reason, consecutiveFailures: failures)
       if let wait { backoffUntil = Date().addingTimeInterval(wait) }
+      // Round 12 (review item 6): Settings says backup is paused, and why.
+      recordServerCheckPause(reason)
       RuntimeTrace.event("backup.native.server_check.deferred", [
         "reason": reason.rawValue, "checked": fresh.count, "consecutive": failures,
         "backoffSeconds": wait.map { Int($0) } ?? 0,
@@ -6695,11 +6879,16 @@ final class NativeBackupEngine: NSObject {
     // Round 10: the batch check's server state belongs to the outgoing account.
     // Round 11: the bulk coverage (the file-index and identifier-map caches
     // are gone with the liveness read).
+    // Round 12 (review items 2 and 6): whether the server lacks `backed_up`
+    // and the pause reason are the outgoing session's; the next account
+    // starts from "not seen" (a probe is never needed to clear it).
     engineStateLock.lock()
     _serverCheckCoverage.clear()
     _bulkServerCheckRequested = true
     _serverCheckFailures = 0
     _lastBatchServerPromoted = 0
+    _backedUpSupport.reset()
+    _serverCheckPause.clear()
     engineStateLock.unlock()
     let dbPath = Self.backupDatabaseURL().standardizedFileURL.path
     let kept: Set<String> = [dbPath, dbPath + "-wal", dbPath + "-shm"]
@@ -6825,10 +7014,12 @@ final class NativeBackupEngine: NSObject {
     let token = lifecycle.scheduleRetry()
     let retry = DispatchWorkItem { [weak self] in
       guard let self else { return }
-      let ran = self.lifecycle.runRetry(token) {
-        guard self.currentAccountId == accountId else { return }
+      // Round 12 (review item 8): the key is read outside the lock, like
+      // `start()`'s.
+      let ran = self.lifecycle.runRetry(token, prepare: { self.prepareStartMasterKey() }) { prepared in
+        guard self.currentAccountId == accountId else { return .done }
         RuntimeTrace.event("backup.native.manifest.open_retry")
-        self.startLocked()
+        return self.startLocked(prepared: prepared)
       }
       if !ran { RuntimeTrace.event("backup.native.manifest.open_retry_void") }
     }

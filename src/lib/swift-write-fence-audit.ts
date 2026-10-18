@@ -30,7 +30,7 @@ import { stripSwift } from './swift-db-queue-audit';
 
 /** `BackupManifestStore` functions that write. */
 export const STORE_WRITES = [
-  'insertScannedAssets', 'updateSelectionScope', 'markUploaded', 'claim', 'applyServerMap',
+  'insertScannedAssets', 'insertScannedAssetsCounting', 'updateSelectionScope', 'markUploaded', 'claim', 'applyServerMap',
   'applyPendingMarks', 'expirePendingMarks', 'adoptUnowned', 'recordServerMarked', 'insertPendingMarks',
   'resetInPlace', 'migrate',
 ];

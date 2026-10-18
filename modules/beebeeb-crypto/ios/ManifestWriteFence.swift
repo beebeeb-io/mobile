@@ -128,8 +128,10 @@ enum FencedManifestWrites {
     case fenced
     /// No handle is open: nothing written.
     case noHandle
-    /// Written; `inserted` is the insert's own result.
-    case written(inserted: Bool)
+    /// Written; `inserted` is the insert's own result. Round 12 (review item
+    /// 10): `entered` is how many rows entered the pending queue (new, or
+    /// revived from `local_missing`); 0 when the insert failed.
+    case written(inserted: Bool, entered: Int)
   }
 
   /// What a scan learned about album selection.
@@ -152,13 +154,14 @@ enum FencedManifestWrites {
   ) -> ScanWrite {
     guard fence.admits(ticket, writer: writer) else { return .fenced }
     guard let db else { return .noHandle }
-    let inserted = BackupManifestStore.insertScannedAssets(db, assets, nowMs: nowMs)
+    let entered = BackupManifestStore.insertScannedAssetsCounting(db, assets, nowMs: nowMs)
+    let inserted = entered != nil
     if let selection {
       _ = BackupManifestStore.updateSelectionScope(
         db, allowedAssetIds: selection.allowedAssetIds, hasAlbumSelection: selection.hasAlbumSelection
       )
     }
-    return .written(inserted: inserted)
+    return .written(inserted: inserted, entered: entered ?? 0)
   }
 
   /// Rebuild step 1: claim the manifest for the account (a write), then "does

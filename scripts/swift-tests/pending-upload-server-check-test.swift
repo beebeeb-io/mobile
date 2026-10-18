@@ -304,7 +304,17 @@ struct Candidate {
 
 final class EngineState {
   var coverage = ServerCheckCoverage()
-  var lacksBackedUp = false
+  /// Round 12: the engine's `BackedUpSupport` (was a bare flag).
+  var support = BackedUpSupport()
+  /// Round 12: the engine's `ServerCheckPause` (the progress dict's reason).
+  var pause = ServerCheckPause()
+  var lacksBackedUp: Bool { support.lacksBackedUp }
+  /// `prepareForStoragePurge`'s round 12 resets.
+  func signOutReset() {
+    coverage.clear()
+    support.reset()
+    pause.clear()
+  }
 }
 
 func steps(_ handle: BackupManifestHandle, ticket: ManifestWriteFence.Ticket?, device: String = deviceId,
@@ -315,10 +325,10 @@ func steps(_ handle: BackupManifestHandle, ticket: ManifestWriteFence.Ticket?, d
     check: { ids in
       do {
         let hits = try await c.check(ids)
-        state.lacksBackedUp = false
+        state.support.note(supported: true)
         return hits
       } catch let error as PhotoBackupServerResponses.ServerLacksBackedUp {
-        state.lacksBackedUp = true
+        state.support.note(supported: false)
         throw error
       }
     },
@@ -333,16 +343,19 @@ func steps(_ handle: BackupManifestHandle, ticket: ManifestWriteFence.Ticket?, d
 }
 
 /// `rowsCheckedAgainstServer`: the rows the batch would upload, or nil
-/// (deferred: nothing uploads).
+/// (deferred: nothing uploads). Round 12 (review item 1): the candidates come
+/// from the REAL `PendingUploadServerCheck.batchCandidates` (every fresh row;
+/// no coverage), and the pause reason is recorded as the engine does.
 func checkBatch(
   _ handle: BackupManifestHandle, ticket: ManifestWriteFence.Ticket?, candidates: [Candidate],
   state: EngineState = EngineState(), device: String = deviceId, current: @escaping () -> Bool = { true },
   outcome outBox: Box<PendingUploadServerCheck.Outcome>? = nil
 ) -> [String]? {
-  let freshAll = candidates.filter { !$0.staged }.map(\.id)
-  guard !freshAll.isEmpty else { return candidates.map(\.id) }
-  let fresh = state.coverage.uncovered(freshAll, accountId: accountA, generation: ticket?.generation ?? 0, now: Date())
-  guard !fresh.isEmpty else { return candidates.map(\.id) }
+  let fresh = PendingUploadServerCheck.batchCandidates(candidates.map { (id: $0.id, staged: $0.staged) })
+  guard !fresh.isEmpty else {
+    state.pause.clear()
+    return candidates.map(\.id)
+  }
   let st = steps(handle, ticket: ticket, device: device, state: state, current: current)
   guard let outcome = runBounded({ await PendingUploadServerCheck.run(candidates: fresh, steps: st) }) else {
     expect(false, "the check finished within the watchdog")
@@ -351,8 +364,10 @@ func checkBatch(
   outBox?.set(outcome)
   switch outcome {
   case let .proceed(skip, _, _):
+    state.pause.clear()
     return candidates.map(\.id).filter { !skip.contains($0) }
-  case .deferred:
+  case let .deferred(reason):
+    state.pause.record(reason)
     return nil
   }
 }
@@ -381,8 +396,15 @@ func runRebuildGate(_ handle: BackupManifestHandle, ticket: ManifestWriteFence.T
     },
     hasDeviceId: { true },
     fetchMap: {
-      guard !state.lacksBackedUp else { throw PhotoBackupServerResponses.ServerLacksBackedUp() }
-      return try await c.identifierMap()
+      // Round 12 (review item 2): the engine's fetch, through the REAL
+      // `rebuildFetch`, with its capability probe (one /check per period).
+      let probeSteps = steps(handle, ticket: ticket, state: state)
+      return try await PendingUploadServerCheck.rebuildFetch(
+        lacksBackedUp: { state.support.lacksBackedUp },
+        takeProbeSlot: { state.support.takeProbeSlot(now: probeClock) },
+        probe: { _ = try await probeSteps.check([PendingUploadServerCheck.capabilityProbeIdentifier]) },
+        fetch: { try await c.identifierMap() }
+      )
     },
     isStillCurrent: { true },
     applyMap: { map in
@@ -393,8 +415,17 @@ func runRebuildGate(_ handle: BackupManifestHandle, ticket: ManifestWriteFence.T
       FencedManifestWrites.applyKept(handle.db, fence: handle.writeFence, ticket: ticket, accountId: accountA, nowMs: now)
     }
   )
-  return runBounded { await ManifestRebuildGate.run(alreadyReady: alreadyReady, steps: steps) }
+  let outcome = runBounded { await ManifestRebuildGate.run(alreadyReady: alreadyReady, steps: steps) }
+  if case let .deferred(reason)? = outcome {
+    state.pause.recordRebuild(reason, lacksBackedUp: state.support.lacksBackedUp)
+  } else if case .ready(true, _, _)? = outcome {
+    state.pause.clear()
+  }
+  return outcome
 }
+
+/// The clock the rebuild's probe slot reads (tests move it).
+var probeClock = Date()
 
 let checkPath = "/api/v1/files/photo-backup/check"
 let idsPath = "/api/v1/files/photo-backup/identifiers"
@@ -656,17 +687,20 @@ do {
          "h1: 900 promoted, 300 covered as needs backup (got \(String(describing: bulk)))")
   expect(status(db, "k0") == "uploaded" && remote(db, "k0") == "f-k0", "h2: a hit is uploaded with its file id")
   expect(status(db, "k950") == "pending_upload", "h2: the trashed one stays queued")
-  // The per-batch guard skips covered rows: no request for a batch of them.
+  // Round 12 (review item 1): the per-batch guard asks about covered rows
+  // too (round 11 skipped them, which let a row changed since the bulk
+  // answer upload twice; sections (l) and (l2)). One /check per batch.
   server.with { $0.log = [] }
   let batch = checkBatch(handle, ticket: ticket, candidates: ["k950", "k951", "k952"].map { Candidate(id: $0, staged: false) }, state: state)
-  expect(batch == ["k950", "k951", "k952"], "h3: covered rows upload")
-  expect(server.requests(checkPath).isEmpty, "h3: and cost no /check")
-  // A row inserted after the pass is checked per batch (only it).
+  expect(batch == ["k950", "k951", "k952"], "h3: covered rows the server still lacks upload")
+  expect(server.requests(checkPath).map(\.checkCount) == [3], "h3: after one /check of the batch's 3 rows (round 12; round 11 sent none)")
+  // A row inserted after the pass is checked per batch, with the rest.
   expect(insert(db, ["k-new"]), "h4: a new row")
   onServer("k-new", "f-k-new")
+  server.with { $0.log = [] }
   let mixed = checkBatch(handle, ticket: ticket, candidates: ["k951", "k-new"].map { Candidate(id: $0, staged: false) }, state: state)
   expect(mixed == ["k951"], "h4: the new row (on the server) is promoted, the covered one uploads (got \(String(describing: mixed)))")
-  expect(server.requests(checkPath).map(\.checkCount) == [1], "h4: one /check with just the uncovered row")
+  expect(server.requests(checkPath).map(\.checkCount) == [2], "h4: one /check with both rows")
   // A second bulk pass asks only about uncovered rows (none now).
   server.with { $0.log = [] }
   let again = bulkPass(handle, ticket: ticket, state: state)
@@ -722,7 +756,7 @@ do {
   if let partial { state2.coverage.record(partial.needsBackup, accountId: accountA, generation: t2.generation, now: Date()) }
   expect(status(db2, "m0000") == "pending_upload", "h8: the failed chunk's hit is not promoted")
   let guardBatch = checkBatch(h2, ticket: t2, candidates: [Candidate(id: "m0000", staged: false), Candidate(id: "m0500", staged: false)], state: state2)
-  expect(guardBatch == ["m0500"], "h8: the per-batch guard checks the uncovered rows: the hit is promoted (got \(String(describing: guardBatch)))")
+  expect(guardBatch == ["m0500"], "h8: the per-batch guard checks the rows: the hit is promoted (got \(String(describing: guardBatch)))")
   expect(status(db2, "m0000") == "uploaded", "h8: m0000 promoted by the guard")
 }
 
@@ -768,6 +802,171 @@ do {
   expect(!health.failed, "j4: a successful full scan clears it")
   health.record(inserted: false, source: .incremental)
   expect(health.failed, "j5: a failed observer insert sets it too")
+}
+
+// MARK: - (l) round 12 item 1: a row re-queued after a bulk answer is checked again
+
+do {
+  resetServer()
+  let (handle, db) = manifest("l-requeue")
+  let ticket = handle.writeFence.issue(for: accountA)!
+  expect(insert(db, ["x1", "y1"]), "l0: rows queued")
+  let state = EngineState()
+  // Drain start: the bulk pass covers x1 and y1 ("needs backup").
+  let bulk = bulkPass(handle, ticket: ticket, state: state)
+  expect(bulk?.needsBackup == ["x1", "y1"], "l1: the bulk pass covers both (got \(String(describing: bulk)))")
+  // x1 uploads (the batch's upload and its mark): the server has it now.
+  exec(db, "UPDATE backup_assets SET status = 'uploaded', remote_file_id = 'f-x1', uploaded_account_id = '\(accountA)', server_marked_at = \(now) WHERE local_asset_id = 'x1'")
+  onServer("x1", "f-x1")
+  // The JS reconcile (its /files/index read predates x1's file) re-queues x1
+  // (BackupDatabase.resetUploadedState: pending_upload, no file id).
+  exec(db, "UPDATE backup_assets SET status = 'pending_upload', remote_file_id = NULL, uploaded_at = NULL, staged_file_id = NULL WHERE local_asset_id = 'x1'")
+  expect(state.coverage.uncovered(["x1"], accountId: accountA, generation: ticket.generation, now: Date()).isEmpty,
+         "l2: x1 is still inside the 15-minute bulk window")
+  server.with { $0.log = [] }
+  let upload = checkBatch(handle, ticket: ticket, candidates: [Candidate(id: "x1", staged: false), Candidate(id: "y1", staged: false)], state: state)
+  let checks = server.requests(checkPath)
+  expect(checks.count == 1 && checks[0].checkCount == 2, "l3: the next batch asks /check about x1 (and y1) (got \(checks.map(\.checkCount)))")
+  expect(upload == ["y1"], "l4: x1 is NOT uploaded again; only y1 uploads (got \(String(describing: upload)))")
+  expect(status(db, "x1") == "uploaded" && remote(db, "x1") == "f-x1", "l4: x1 is promoted back to uploaded with its file id")
+}
+
+// MARK: - (l2) round 12 item 1: a file restored from the Trash inside the window
+
+do {
+  resetServer()
+  let (handle, db) = manifest("l2-restore")
+  let ticket = handle.writeFence.issue(for: accountA)!
+  onServer("r9", "f-r9", trashed: true)
+  expect(insert(db, ["r9"]), "l2.0: row queued")
+  let state = EngineState()
+  let bulk = bulkPass(handle, ticket: ticket, state: state)
+  expect(bulk?.needsBackup == ["r9"] && bulk?.promoted.isEmpty == true, "l2.1: the trashed file is not a backup: r9 covered as needs backup")
+  // The user restores the file from the Trash (web) inside the window.
+  server.with { $0.files["f-r9"] = false }
+  let upload = checkBatch(handle, ticket: ticket, candidates: [Candidate(id: "r9", staged: false)], state: state)
+  expect(upload == [], "l2.2: r9 is not uploaded a second time (got \(String(describing: upload)))")
+  expect(status(db, "r9") == "uploaded" && remote(db, "r9") == "f-r9", "l2.3: r9 is promoted to the restored file")
+  expect(server.requests(checkPath).count == 2, "l2.3: the batch asked /check again (bulk + batch: \(server.requests(checkPath).count))")
+}
+
+// MARK: - (m) round 12 item 2: "server lacks backed_up" never stalls a process
+
+do {
+  // (m1) Same process, no sign-out: the server is updated (2036 deployed).
+  resetServer()
+  server.with { $0.task2036 = false }
+  let (handle, db) = manifest("m1-probe")
+  let ticket = handle.writeFence.issue(for: accountA)!
+  onServer("q1", "f-q1")
+  expect(insert(db, ["q1", "q2"]), "m1.0: an emptied manifest (needs a rebuild)")
+  let state = EngineState()
+  probeClock = Date()
+  // A /check against the old server sets the flag.
+  _ = checkBatch(handle, ticket: ticket, candidates: [Candidate(id: "q1", staged: false)], state: state)
+  expect(state.lacksBackedUp, "m1.1: the flag is set by an answer without backed_up")
+  expect(state.pause.stopReason == ServerCheckPause.serverLacksBackedUpMessage, "m1.1: Settings says why backup is paused")
+  // The rebuild probes once, still on the old server: deferred.
+  server.with { $0.log = [] }
+  let first = runRebuildGate(handle, ticket: ticket, alreadyReady: false, state: state)
+  expect(first == .deferred(.fetchFailed), "m1.2: deferred on the old server (got \(String(describing: first)))")
+  let probes = server.requests(checkPath)
+  expect(probes.count == 1 && probes[0].checkCount == 1, "m1.2: ONE lightweight /check (got \(probes.map(\.checkCount)))")
+  expect(server.requests(idsPath).isEmpty, "m1.2: no identifiers map from the old server")
+  // Inside the backoff period: no second probe.
+  server.with { $0.log = [] }
+  _ = runRebuildGate(handle, ticket: ticket, alreadyReady: false, state: state)
+  expect(server.requests(checkPath).isEmpty, "m1.3: no probe again inside the period")
+  // 2036 is deployed. The next period's probe clears the flag in-process.
+  server.with { $0.task2036 = true }
+  probeClock = probeClock.addingTimeInterval(BackedUpSupport.probeInterval + 1)
+  server.with { $0.log = [] }
+  let after = runRebuildGate(handle, ticket: ticket, alreadyReady: false, state: state)
+  expect(after == .ready(rebuilt: true, promoted: 1, keptApplied: 0), "m1.4: the rebuild runs once the server has backed_up (got \(String(describing: after)))")
+  expect(!state.lacksBackedUp, "m1.4: the probe cleared the flag")
+  expect(server.requests(checkPath).count == 1 && server.requests(idsPath).count == 1, "m1.4: one probe, then the map")
+  expect(state.pause.stopReason == nil, "m1.4: the pause reason is gone")
+  expect(status(db, "q1") == "uploaded" && remote(db, "q1") == "f-q1", "m1.5: the server's photo is promoted")
+  let resumed = checkBatch(handle, ticket: ticket, candidates: [Candidate(id: "q2", staged: false)], state: state)
+  expect(resumed == ["q2"], "m1.5: backup resumes in-process: q2 uploads (got \(String(describing: resumed)))")
+
+  // (m2) The flag is set, then sign-out, sign-in, and 2036 is deployed.
+  resetServer()
+  server.with { $0.task2036 = false }
+  let (h2, db2) = manifest("m2-signout")
+  let t2 = h2.writeFence.issue(for: accountA)!
+  expect(insert(db2, ["s1"]), "m2.0: a row")
+  let st2 = EngineState()
+  probeClock = Date()
+  _ = checkBatch(h2, ticket: t2, candidates: [Candidate(id: "s1", staged: false)], state: st2)
+  _ = runRebuildGate(h2, ticket: t2, alreadyReady: false, state: st2) // takes this period's probe slot
+  expect(st2.lacksBackedUp, "m2.1: flag set, probe slot used")
+  // Sign-out (prepareForStoragePurge) and sign-in, same process, same period.
+  expect(h2.resetForSignOut(outgoingAccountId: accountA), "m2.2: sign-out reset")
+  st2.signOutReset()
+  h2.writeFence.bind(accountId: accountA)
+  let t3 = h2.writeFence.issue(for: accountA)!
+  server.with { $0.task2036 = true }
+  onServer("s1", "f-s1")
+  expect(insert(h2.db!, ["s1", "s2"]), "m2.3: the new session's scan")
+  server.with { $0.log = [] }
+  let gate = runRebuildGate(h2, ticket: t3, alreadyReady: false, state: st2)
+  expect(gate == .ready(rebuilt: true, promoted: 1, keptApplied: 0), "m2.4: the rebuild runs at once after the sign-in (got \(String(describing: gate)))")
+  expect(server.requests(checkPath).isEmpty, "m2.4: no probe needed: the flag went with the sign-out")
+  let up = checkBatch(h2, ticket: t3, candidates: [Candidate(id: "s2", staged: false)], state: st2)
+  expect(up == ["s2"] && status(db2, "s1") == "uploaded", "m2.5: backup resumes in-process (got \(String(describing: up)))")
+
+  // (m3) BackedUpSupport itself.
+  var support = BackedUpSupport()
+  let t0 = Date()
+  expect(!support.takeProbeSlot(now: t0), "m3.1: no probe while the server is not known to lack backed_up")
+  support.note(supported: false)
+  expect(support.takeProbeSlot(now: t0), "m3.2: the first probe is due at once")
+  expect(!support.takeProbeSlot(now: t0.addingTimeInterval(BackedUpSupport.probeInterval - 1)), "m3.3: one per period")
+  expect(support.takeProbeSlot(now: t0.addingTimeInterval(BackedUpSupport.probeInterval)), "m3.4: the next period's probe")
+  expect(support.takeProbeSlot(now: t0.addingTimeInterval(-60)), "m3.5: a clock that went back does not block the probe")
+  support.note(supported: true)
+  expect(!support.lacksBackedUp, "m3.6: an answer with backed_up clears it")
+  support.note(supported: false)
+  support.reset()
+  expect(support == BackedUpSupport(), "m3.7: the sign-out reset forgets it")
+  expect(PendingUploadServerCheck.capabilityProbeIdentifier.isEmpty == false && !PendingUploadServerCheck.capabilityProbeIdentifier.contains("/L0/"),
+         "m3.8: the probe id is not a PhotoKit local identifier")
+}
+
+// MARK: - (n) round 12 item 6: the pause reason
+
+do {
+  var pause = ServerCheckPause()
+  expect(pause.stopReason == nil, "n1: no reason at first")
+  expect(pause.record(.serverLacksBackedUp) && pause.stopReason == ServerCheckPause.serverLacksBackedUpMessage, "n2: server without backed_up")
+  expect(!pause.record(.serverLacksBackedUp), "n2: the same reason again is not a change (published once)")
+  expect(pause.record(.checkFailed) && pause.stopReason == ServerCheckPause.checkFailedMessage, "n3: a failed or malformed check")
+  expect(pause.record(.noDeviceId) && pause.stopReason == ServerCheckPause.noDeviceIdMessage, "n4: no device id")
+  expect(!pause.record(.accountChanged) && !pause.record(.applyFailed) && pause.cause == .noDeviceId, "n5: an account change or a local write failure leaves it")
+  expect(pause.clear() && pause.stopReason == nil, "n6: an answer clears it")
+  expect(pause.recordRebuild(.fetchFailed, lacksBackedUp: true) && pause.cause == .serverLacksBackedUp, "n7: rebuild fetch, old server")
+  expect(pause.recordRebuild(.fetchFailed, lacksBackedUp: false) && pause.cause == .checkFailed, "n7: rebuild fetch failed")
+  expect(pause.recordRebuild(.noDeviceId, lacksBackedUp: false) && pause.cause == .noDeviceId, "n7: rebuild without a device id")
+  expect(!pause.recordRebuild(.applyMapFailed, lacksBackedUp: false), "n7: a local rebuild step leaves it")
+  for message in [ServerCheckPause.serverLacksBackedUpMessage, ServerCheckPause.checkFailedMessage, ServerCheckPause.noDeviceIdMessage] {
+    expect(message.hasPrefix("Backup paused: ") && message.unicodeScalars.allSatisfy { $0.value < 0x2000 }, "n8: honest copy, no emoji: \(message)")
+  }
+  // Through the batch guard: a malformed backed_up body, then an answer.
+  resetServer()
+  let (handle, db) = manifest("n-batch")
+  let ticket = handle.writeFence.issue(for: accountA)!
+  expect(insert(db, ["w1"]), "n9: row")
+  let state = EngineState()
+  server.with { $0.failing = [checkPath: FakeServer.json(["already_backed_up": [], "needs_backup": ["w1"], "backed_up": "nope"])] }
+  _ = checkBatch(handle, ticket: ticket, candidates: [Candidate(id: "w1", staged: false)], state: state)
+  expect(state.pause.stopReason == ServerCheckPause.checkFailedMessage, "n9: a malformed backed_up pauses with a reason")
+  server.with { $0.failing = [:] }
+  _ = checkBatch(handle, ticket: ticket, candidates: [Candidate(id: "w1", staged: false)], state: state)
+  expect(state.pause.stopReason == nil, "n10: the next answer clears it")
+  _ = checkBatch(handle, ticket: ticket, candidates: [Candidate(id: "w1", staged: false)], state: state, device: "")
+  expect(state.pause.stopReason == ServerCheckPause.noDeviceIdMessage, "n11: no device id pauses with its reason")
+  expect(PendingUploadServerCheck.backoff(for: .noDeviceId, consecutiveFailures: 1) == 30, "n11: and backs off 30 s (was nil: a 5 s spin)")
 }
 
 // MARK: - (k) round 11 finding 2: no request ever reached GET /files/index
