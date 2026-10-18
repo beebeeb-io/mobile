@@ -30,6 +30,10 @@ import SQLite3
 ///   (`resetForSignOut` returned false, `finishAfterFailedReset` not yet
 ///   called), `openIfClosed` refuses: the JS handle is still open on the
 ///   file and the recovery may replace it.
+/// - Round 10: while the JS layer may hold the file (`peerMayHoldFile`,
+///   set by `admitPeerOpen`), the handle never closes a connection that
+///   opened the file and never checkpoints outside the purge hold; and JS is
+///   admitted to open only when no sign-out reset is pending.
 ///
 /// Not thread-safe by design: every member MUST run on the owner's private
 /// serial queue (`NativeBackupEngine.dbQueue`). `swift-db-queue-audit.ts`
@@ -73,6 +77,14 @@ final class BackupManifestHandle {
     /// A sign-out whose reset failed has not finished yet (JS has not closed
     /// its handle and called `finishBackupManifestPurge`).
     case purgeInFlight = "purge_in_flight"
+    /// Round 10: a sign-out reset is still pending, but the JS layer may
+    /// still hold the file open (its close was not confirmed). Applying the
+    /// reset would checkpoint the WAL under that connection, and a failure
+    /// would close a native connection under it (expo-sqlite is a separate
+    /// SQLite copy: neither sees the other's locks). Nothing is opened; it is
+    /// retried once JS confirms its handle closed (the next purge hold, or the
+    /// JS open gate, `admitPeerOpen`).
+    case pendingResetDeferred = "pending_reset_deferred"
   }
 
   struct FinishResult: Equatable {
@@ -145,6 +157,28 @@ final class BackupManifestHandle {
   /// the next reset (`MarkDiscard.all`). Cleared once a reset ran with it.
   private(set) var discardAllPending = false
 
+  /// Round 10 (review finding 5, "openIfClosed closes the native connection
+  /// while the JS expo-sqlite copy may still be open"): the JS layer's
+  /// expo-sqlite connection may be open on the file. expo-sqlite bundles its
+  /// own SQLite: a native close or WAL checkpoint cannot see that connection,
+  /// so a native close deletes `-wal`/`-shm` under it and drops the process's
+  /// POSIX locks it relies on. Set when JS is admitted to open
+  /// (`admitPeerOpen`); cleared only when JS confirms every handle of it is
+  /// closed (`admitPeerOpen(priorPeerHandlesClosed: true)`, or
+  /// `finishAfterFailedReset(allowUnlink: true)` under the purge hold). False
+  /// at process start: JS opens only through `admitPeerOpen`
+  /// (`BackupDatabase.openAndMigrate`).
+  private(set) var peerMayHoldFile = false
+  /// Round 10: connections `openIfClosed` opened and could not use while JS
+  /// may hold the file. They are NOT closed then (the rule above), never used
+  /// for reads or writes while parked, and closed once JS confirms its
+  /// handles closed. At most one: a retry reuses it instead of opening
+  /// another, and adopts it as the handle when the retry succeeds.
+  private var parkedConnections: [OpaquePointer] = []
+  /// Diagnostics and tests: connections closed / parked by this handle.
+  private(set) var closedConnectionCount = 0
+  var parkedConnectionCount: Int { parkedConnections.count }
+
   private let pendingReset: ResetPendingFlag
   /// Round 9: "the pending reset is a deletion's", kept across launches (a
   /// boolean, no account id). A new process does not know which account was
@@ -194,19 +228,41 @@ final class BackupManifestHandle {
 
   /// Opens the manifest when no handle is open. Returns nil when a handle is
   /// open on return, and the reason otherwise; a failure never leaves a
-  /// handle open.
+  /// handle open (round 10: a parked connection is not a handle, see below).
+  ///
+  /// Round 10 (review finding 5): while JS may hold the file
+  /// (`peerMayHoldFile`), this never closes a connection that opened the file
+  /// and never checkpoints. A pending reset is not applied
+  /// (`.pendingResetDeferred`, nothing opened); it runs once JS confirms its
+  /// handles closed, which happens only under the purge hold
+  /// (`finishAfterFailedReset(allowUnlink: true)`) or in the JS open gate
+  /// (`admitPeerOpen`). A connection that opened but cannot be used is parked
+  /// instead of closed (`closeOrPark`), and the next attempt retries on it.
   @discardableResult
   func openIfClosed() -> OpenFailure? {
     if db != nil { return nil }
     if awaitingPurgeFinish { return .purgeInFlight }
-    try? FileManager.default.createDirectory(
-      at: URL(fileURLWithPath: path).deletingLastPathComponent(),
-      withIntermediateDirectories: true
-    )
-    var handle: OpaquePointer?
-    guard sqlite3_open_v2(path, &handle, Self.openFlags, nil) == SQLITE_OK, let opened = handle else {
-      if let handle { close(handle) }
-      return .openFailed
+    if peerMayHoldFile, pendingReset.get() { return .pendingResetDeferred }
+    let opened: OpaquePointer
+    if peerMayHoldFile, let parked = parkedConnections.popLast() {
+      // Retry on the connection parked by an earlier attempt instead of
+      // opening another. No JS close can have happened since it was parked:
+      // JS confirms its closes first (`peerConfirmedClosed`), which closes
+      // every parked connection.
+      opened = parked
+    } else {
+      try? FileManager.default.createDirectory(
+        at: URL(fileURLWithPath: path).deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+      var handle: OpaquePointer?
+      guard sqlite3_open_v2(path, &handle, Self.openFlags, nil) == SQLITE_OK, let fresh = handle else {
+        // A failed open holds no file descriptor on the manifest: closing it
+        // cannot touch a JS connection's WAL or locks.
+        if let handle { close(handle) }
+        return .openFailed
+      }
+      opened = fresh
     }
     // WAL for concurrent access with the JS layer. Its result is not the
     // check: another connection can briefly hold the lock a mode change
@@ -214,11 +270,13 @@ final class BackupManifestHandle {
     sqlite3_exec(opened, "PRAGMA journal_mode = WAL", nil, nil, nil)
     prepareSchema(opened)
     guard BackupManifestStore.tableExistsChecked(opened, "backup_assets") == true else {
-      close(opened)
+      closeOrPark(opened, .unreadable)
       return .unreadable
     }
     var appliedPendingReset = false
     if pendingReset.get() {
+      // Only reached with `peerMayHoldFile` false (checked above): no JS
+      // connection is open, so the checkpoint and the close are safe.
       guard BackupManifestStore.resetInPlace(opened, nowMs: now(), discard: activeDiscard) else {
         close(opened)
         return .pendingResetFailed
@@ -302,9 +360,64 @@ final class BackupManifestHandle {
 
   /// Every close of a manifest connection goes through here (round 7).
   private func close(_ connection: OpaquePointer) {
+    closedConnectionCount += 1
     if !BackupManifestStore.closeConnection(connection) {
       closeUnconfirmed = true
     }
+  }
+
+  /// Round 10: `openIfClosed`'s failure close. While JS may hold the file
+  /// the connection is parked (kept open, unused) instead of closed.
+  private func closeOrPark(_ connection: OpaquePointer, _ failure: OpenFailure) {
+    if peerMayHoldFile {
+      parkedConnections.append(connection)
+    } else {
+      close(connection)
+    }
+  }
+
+  /// Round 10: JS confirmed every expo-sqlite connection of it is closed (it
+  /// holds none until it is admitted again). Parked connections are closed
+  /// now: no JS connection can lose its WAL or locks to it.
+  func peerConfirmedClosed() {
+    peerMayHoldFile = false
+    let parked = parkedConnections
+    parkedConnections = []
+    for connection in parked { close(connection) }
+  }
+
+  /// Round 10 (review finding 7, "after ok:0 from finishBackupManifestPurge,
+  /// JS reopens lazily and serves the previous account's rows"): the JS
+  /// layer's gate before EVERY expo-sqlite open of the manifest
+  /// (`BackupDatabase.openAndMigrate`). JS is admitted only when no sign-out
+  /// reset is pending on return: a pending reset is applied here first (on
+  /// the native connection, with no JS connection open), so JS never reads
+  /// the outgoing account's rows.
+  ///
+  /// `priorPeerHandlesClosed`: JS holds no connection on the file now (it
+  /// calls this only when it has no current handle; false while a connection
+  /// whose close failed is still tracked). Only then may a pending reset run.
+  /// Refused while a failed sign-out is between its two halves.
+  struct PeerOpenGate: Equatable {
+    let admitted: Bool
+    /// Why not (or, when admitted, why the native handle is still closed).
+    let failure: OpenFailure?
+  }
+
+  func admitPeerOpen(priorPeerHandlesClosed: Bool) -> PeerOpenGate {
+    if awaitingPurgeFinish { return PeerOpenGate(admitted: false, failure: .purgeInFlight) }
+    if priorPeerHandlesClosed {
+      peerConfirmedClosed()
+    } else {
+      // A JS connection whose close failed may still be open.
+      peerMayHoldFile = true
+    }
+    let failure = openIfClosed()
+    if pendingReset.get() {
+      return PeerOpenGate(admitted: false, failure: failure ?? .pendingResetFailed)
+    }
+    peerMayHoldFile = true
+    return PeerOpenGate(admitted: true, failure: failure)
   }
 
   /// Second half of a sign-out whose reset failed; called once the JS
@@ -323,6 +436,8 @@ final class BackupManifestHandle {
       close(db)
       self.db = nil
     }
+    // Round 10: `allowUnlink` is JS's confirmed close, under the purge hold.
+    if allowUnlink { peerConfirmedClosed() }
     let recovered = BackupManifestStore.recoverAfterFailedReset(
       path: path, nowMs: now(), allowUnlink: allowUnlink && !closeUnconfirmed, adoptAccountId: recoveryAccountId,
       discard: activeDiscard

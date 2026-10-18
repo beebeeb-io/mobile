@@ -46,6 +46,12 @@ mock.module('expo-sqlite', () => ({
 const { advanceAccountEpoch } = await import('../lib/account-epoch');
 const { backupWriteTicket } = await import('../lib/backup-write-ticket');
 
+// Task 1667 round 10: BackupDatabase opens only through the native JS-open
+// gate (backup-manifest-js-open-gate.ts); with none registered it refuses.
+// These tests are about other behaviour: admit every open.
+const { registerBackupManifestJsOpenGate } = await import('../lib/backup-manifest-js-open-gate');
+registerBackupManifestJsOpenGate(async () => ({ ok: 1, reason: null }));
+
 async function loadBackupDatabase() {
   const db = await import(`./BackupDatabase?backupDatabaseWriteFenceTest=${Math.random()}`);
   await db.initDatabase();

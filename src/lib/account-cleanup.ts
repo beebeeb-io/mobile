@@ -35,6 +35,10 @@ import {
   type PlaintextStoragePurgeResult,
   type StoragePurgeMode,
 } from '../../modules/beebeeb-crypto';
+// Namespace import: a test's native mock without the gate leaves it undefined
+// (no gate registered: BackupDatabase refuses to open), never a load error.
+import * as NativeCrypto from '../../modules/beebeeb-crypto';
+import { registerBackupManifestJsOpenGate } from './backup-manifest-js-open-gate';
 import { purgeCachesPlaintext } from './caches-plaintext-registry';
 import { clearLocalIdentifierMap } from './local-identifier-map';
 // Task 1683f — sign-out sweeps the upload resume states (SecureStore keys that
@@ -51,6 +55,14 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { OFFLINE_DIR, offlineManager } from './offline-manager';
 
 export type { PlaintextStoragePurgeResult, StoragePurgeMode };
+
+// Task 1667 round 10 (review finding 7): BackupDatabase opens the manifest only
+// through the native gate, which applies a sign-out reset still pending first.
+// Registered here, at load (App.tsx imports this module at the top), because
+// this module owns the other half of that protocol (the purge below and
+// `finishBackupManifestPurge`). With no gate registered BackupDatabase refuses
+// to open (fail closed).
+registerBackupManifestJsOpenGate(NativeCrypto.admitBackupManifestJsOpen);
 
 /**
  * Task 1667 round 9 (Codex P1 "Delete retained marks during permanent account
@@ -185,6 +197,12 @@ export async function purgeAllPlaintextCaches(options: PurgeAllOptions = {}): Pr
         });
         if (!purged.backupManifestResetFailed) return purged;
         const closed = await closeHandles();
+        // Round 10 (review finding 7): on `ok: 0` the reset stays pending
+        // natively and the file may still hold the outgoing account's rows.
+        // BackupDatabase reopens lazily after `resume`, but only through the
+        // native gate (backup-manifest-js-open-gate.ts), which applies the
+        // pending reset first and refuses while it cannot: JS never reads
+        // those rows.
         const finished = await finishBackupManifestPurge(closed).catch(() => ({ ok: 0, unlinked: 0 }));
         return {
           removed: purged.removed + (finished.unlinked ? 1 : 0),

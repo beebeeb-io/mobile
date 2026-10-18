@@ -40,6 +40,67 @@ enum PhotoBackupServerResponses {
     return map
   }
 
+  /// Task 1667 round 10: `POST /api/v1/files/photo-backup/check` (server
+  /// `photo_backup.rs` `check`): `{"already_backed_up": [...], "needs_backup":
+  /// [...]}` for this device. Returns the identifiers already backed up.
+  /// Throws for any status outside 2xx (404 included) and for a body that is
+  /// not exactly that shape: a non-string or empty entry, an identifier the
+  /// request did not ask about, one in both lists, or a requested identifier
+  /// in neither. A body the client cannot read is never "nothing backed up".
+  static func checkHits(statusCode: Int, data: Data, requested: [String]) throws -> Set<String> {
+    guard (200..<300).contains(statusCode) else {
+      throw UnexpectedResponse(statusCode: statusCode, reason: "photo-backup/check status")
+    }
+    let bad = UnexpectedResponse(statusCode: statusCode, reason: "unexpected photo-backup/check body")
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let hitsRaw = object["already_backed_up"] as? [Any],
+          let needsRaw = object["needs_backup"] as? [Any] else { throw bad }
+    let asked = Set(requested)
+    func strings(_ raw: [Any]) throws -> Set<String> {
+      var out = Set<String>()
+      for value in raw {
+        guard let s = value as? String, !s.isEmpty, asked.contains(s) else { throw bad }
+        out.insert(s)
+      }
+      return out
+    }
+    let hits = try strings(hitsRaw)
+    let needs = try strings(needsRaw)
+    guard hits.isDisjoint(with: needs), hits.union(needs) == asked else { throw bad }
+    return hits
+  }
+
+  /// Task 1667 round 10: `GET /api/v1/files/index[?hash=]` (server
+  /// `files.rs` `file_index`): every file of the account that is NOT in the
+  /// Trash (`WHERE f.user_id = $1 AND f.is_trashed = FALSE`).
+  struct FileIndex: Equatable {
+    let hash: String
+    let changed: Bool
+    /// The live file ids; nil when the server answered "unchanged".
+    let ids: Set<String>?
+  }
+
+  /// Throws for any status outside 2xx and for a body of the wrong shape: no
+  /// hash, no `changed`, `changed: true` without a `files` array, or a file
+  /// entry without a string id.
+  static func fileIndex(statusCode: Int, data: Data) throws -> FileIndex {
+    guard (200..<300).contains(statusCode) else {
+      throw UnexpectedResponse(statusCode: statusCode, reason: "files/index status")
+    }
+    let bad = UnexpectedResponse(statusCode: statusCode, reason: "unexpected files/index body")
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let hash = object["hash"] as? String, !hash.isEmpty,
+          let changed = object["changed"] as? Bool else { throw bad }
+    guard changed else { return FileIndex(hash: hash, changed: false, ids: nil) }
+    guard let files = object["files"] as? [Any] else { throw bad }
+    var ids = Set<String>()
+    for entry in files {
+      guard let file = entry as? [String: Any], let id = file["id"] as? String, !id.isEmpty else { throw bad }
+      ids.insert(id.lowercased())
+    }
+    return FileIndex(hash: hash, changed: true, ids: ids)
+  }
+
   enum MarkOutcome: Equatable {
     /// 2xx: the server's map has the association.
     case marked

@@ -190,6 +190,25 @@ enum FencedManifestWrites {
     )
   }
 
+  /// Round 10: the batch's server check (`PendingUploadServerCheck`). The
+  /// live hits `/photo-backup/check` reported, fetched over the network after
+  /// the batch started, become `uploaded`. nil = fenced or failed.
+  static func promoteCheckedHits(
+    _ db: OpaquePointer?,
+    fence: ManifestWriteFence,
+    ticket: ManifestWriteFence.Ticket?,
+    accountId: String,
+    hits: [String: String],
+    uploadedAtIso: String,
+    nowMs: Int64
+  ) -> Set<String>? {
+    guard fence.admits(ticket, writer: "batch.promote_checked") else { return nil }
+    guard let db else { return nil }
+    return BackupManifestStore.promoteServerBackedUp(
+      db, accountId: accountId, localToFileId: hits, uploadedAtIso: uploadedAtIso, nowMs: nowMs
+    )
+  }
+
   /// Rebuild step 3 (and every batch): promote the account's kept sign-out
   /// marks. nil = fenced or failed.
   static func applyKept(

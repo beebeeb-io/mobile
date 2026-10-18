@@ -25,6 +25,11 @@ import {
   type BackupWriteTicket,
 } from '../lib/backup-write-ticket';
 import { registerStoragePurgeParticipant, type StoragePurgeHold } from '../lib/storage-purge-participants';
+import {
+  BackupManifestNotReadyError,
+  PENDING_RESET_DEFERRED,
+  backupManifestJsOpenGate,
+} from '../lib/backup-manifest-js-open-gate';
 
 export type BackupAssetType = 'photo' | 'video' | 'contact' | 'calendar';
 export type BackupAssetStatus =
@@ -148,10 +153,25 @@ function whenIdle(): Promise<void> {
   return inFlight === 0 ? Promise.resolve() : new Promise((resolve) => { idleWaiters.push(resolve); });
 }
 
+/**
+ * Task 1667 round 10: starts an open and installs it as the handle (callers
+ * also assign the result, which keeps TypeScript's narrowing). An open
+ * the native gate refused opened NOTHING; it is dropped so the next call asks
+ * the gate again (any other failure keeps the rejected handle, as before).
+ */
+function startOpen(): Promise<SQLite.SQLiteDatabase> {
+  const opening = openAndMigrate();
+  dbPromise = opening;
+  opening.catch((err) => {
+    if (err instanceof BackupManifestNotReadyError && dbPromise === opening) dbPromise = null;
+  });
+  return opening;
+}
+
 /** The real handle: opened lazily, never while a purge holds the module. */
 async function openHandle(): Promise<SQLite.SQLiteDatabase> {
   while (purgeBarrier) await purgeBarrier;
-  if (!dbPromise) dbPromise = openAndMigrate();
+  if (!dbPromise) dbPromise = startOpen();
   return dbPromise;
 }
 
@@ -169,7 +189,7 @@ async function openHandle(): Promise<SQLite.SQLiteDatabase> {
  */
 async function onHandle<T>(call: (db: SQLite.SQLiteDatabase) => Promise<T>): Promise<T> {
   while (purgeBarrier) await purgeBarrier;
-  if (!dbPromise) dbPromise = openAndMigrate();
+  if (!dbPromise) dbPromise = startOpen();
   const handle = dbPromise;
   const db = await handle;
   callStarted();
@@ -233,7 +253,7 @@ async function onHandleFenced<T>(
   dropped: T,
 ): Promise<T> {
   while (purgeBarrier) await purgeBarrier;
-  if (!dbPromise) dbPromise = openAndMigrate();
+  if (!dbPromise) dbPromise = startOpen();
   const db = await dbPromise;
   if (!admitsBackupWrite(ticket)) {
     droppedWrites.push(writer);
@@ -379,7 +399,38 @@ async function migrateLocalMissingRowsIfNeeded(db: SQLite.SQLiteDatabase): Promi
   await localMissingMigrationInFlight;
 }
 
+/**
+ * Task 1667 round 10 (review findings 5 + 7): asks the native gate before
+ * EVERY open (backup-manifest-js-open-gate.ts). The native side applies a
+ * sign-out reset still pending first, so this module never opens a file that
+ * still holds the previous account's rows (after `finishBackupManifestPurge`
+ * answered `ok: 0`, the lazy reopen used to serve them to the next account).
+ * No gate registered, or a refusal: nothing is opened
+ * (`BackupManifestNotReadyError`), and the next call asks again.
+ *
+ * `priorHandlesClosed` tells native whether a connection of ours may still be
+ * open (a close that failed, `unclosedHandles`): while one may be, native
+ * neither applies the reset (its WAL checkpoint) nor closes anything. When
+ * that is the only obstacle (`pending_reset_deferred`), the leftover
+ * connections are closed here and the gate asked once more. Safe outside the
+ * purge hold: with a reset pending the engine has no connection in use on the
+ * file (its handle is closed), and nothing writes it until the gate admits.
+ */
+async function admitJsOpen(): Promise<void> {
+  const gate = backupManifestJsOpenGate();
+  if (!gate) throw new BackupManifestNotReadyError('no_gate');
+  let verdict = await gate(unclosedHandles.size === 0);
+  if (verdict.ok !== 1 && verdict.reason === PENDING_RESET_DEFERRED && unclosedHandles.size > 0) {
+    for (const leftover of [...unclosedHandles]) {
+      if (await closeWithRetry(leftover)) unclosedHandles.delete(leftover);
+    }
+    verdict = await gate(unclosedHandles.size === 0);
+  }
+  if (verdict.ok !== 1) throw new BackupManifestNotReadyError(verdict.reason ?? 'refused');
+}
+
 async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
+  await admitJsOpen();
   const db = await SQLite.openDatabaseAsync(DB_NAME);
   try {
     return await migrate(db);

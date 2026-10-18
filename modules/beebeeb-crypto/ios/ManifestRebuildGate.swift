@@ -110,3 +110,35 @@ enum ManifestRebuildGate {
     }
   }
 }
+
+/// Task 1667 round 10 (review of mobile#182 at 060bfeb0, finding 4): whether
+/// a camera-roll insert into the manifest failed since the last FULL scan
+/// inserted successfully. While set, the rebuild gate does not apply the
+/// server map onto a manifest a scan could not fill.
+///
+/// Before round 10 the engine kept only the LAST insert's result, so a
+/// successful one-photo insert from `photoLibraryDidChange` cleared the full
+/// scan's failure, and the next gate rebuilt over a manifest missing the
+/// full scan's rows. Now a failure of any insert is sticky, and only a
+/// successful insert of a full scan (`scanPhotoLibraryForPendingUploads`,
+/// every asset in the backup scope) clears it. Uploads no longer depend on
+/// it for dedupe (`PendingUploadServerCheck` checks every batch); it keeps
+/// the rebuild fast path from promoting a partial manifest.
+struct ScanInsertHealth: Equatable {
+  private(set) var failed = false
+
+  enum Source: Equatable {
+    /// The scan of the whole backup scope.
+    case fullScan
+    /// An incremental insert (`photoLibraryDidChange`).
+    case incremental
+  }
+
+  mutating func record(inserted: Bool, source: Source) {
+    if !inserted {
+      failed = true
+    } else if source == .fullScan {
+      failed = false
+    }
+  }
+}

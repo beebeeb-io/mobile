@@ -2450,6 +2450,17 @@ public class BeebeebCryptoModule: Module {
       return ["ok": r.ok ? 1 : 0, "unlinked": r.unlinked ? 1 : 0, "reopened": r.reopened ? 1 : 0]
     }
 
+    // Task 1667 round 10 (review findings 5 + 7): JS calls this before EVERY
+    // expo-sqlite open of the manifest (`BackupDatabase.openAndMigrate`).
+    // `priorHandlesClosed` = JS holds no connection on the file. `ok` 1 = JS
+    // may open: no sign-out reset is pending (one still pending was applied
+    // here first, natively, with no JS connection open). `ok` 0 = JS must not
+    // open now (`reason` says why); it asks again on its next call.
+    AsyncFunction("admitBackupManifestJsOpen") { (priorHandlesClosed: Bool) -> [String: Any] in
+      let gate = NativeBackupEngine.shared.admitJsManifestOpen(priorHandlesClosed: priorHandlesClosed)
+      return ["ok": gate.admitted ? 1 : 0, "reason": gate.failure?.rawValue ?? NSNull()]
+    }
+
     // Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
     // server map"): JS sign-out calls this BEFORE revoking the session, so
     // every upload the server's per-device map does not know yet is marked

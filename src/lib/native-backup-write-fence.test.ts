@@ -178,7 +178,8 @@ describe('BackupManifestHandle.swift: every reset advances the fence first', () 
     const code = stripSwift(fenceSwift);
     const enumBody = body(code, 'enum FencedManifestWrites {');
     const fns = [...enumBody.matchAll(/static func (\w+)\(/g)].map((m) => m[1]);
-    expect(fns.length).toBe(6);
+    // Round 10: + promoteCheckedHits (the batch server check).
+    expect(fns.length).toBe(7);
     for (const f of fns) {
       const b = body(enumBody, `static func ${f}(`);
       expect(before(b, 'fence.admits(ticket, writer:', 'guard let db else')).toBe(true);

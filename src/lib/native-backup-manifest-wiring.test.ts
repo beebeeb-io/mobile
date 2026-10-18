@@ -154,7 +154,7 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
       open,
       'prepareSchema(opened)',
       'BackupManifestStore.tableExistsChecked(opened, "backup_assets") == true',
-      'if pendingReset.get() {',
+      'var appliedPendingReset = false\n    if pendingReset.get() {',
       'BackupManifestStore.resetInPlace(opened, nowMs: now(), discard: activeDiscard)',
       'close(opened)\n        return .pendingResetFailed',
       'return .pendingResetFailed',
@@ -168,6 +168,70 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     expect(fail).toBeGreaterThan(close);
     expect(assign).toBeGreaterThan(fail);
     expect(open).toMatch(/if awaitingPurgeFinish \{ return \.purgeInFlight \}/);
+    // Round 10 (review finding 5): while JS may hold the file, a pending
+    // reset is not applied (no open, no checkpoint, no close), BEFORE the open.
+    const [deferred, sqlOpen] = order(
+      open,
+      'if peerMayHoldFile, pendingReset.get() { return .pendingResetDeferred }',
+      'sqlite3_open_v2(path, &handle, Self.openFlags, nil)',
+    );
+    expect(deferred).toBeGreaterThan(-1);
+    expect(sqlOpen).toBeGreaterThan(deferred);
+    // A connection that opened the file is parked, not closed, while JS may
+    // hold it; the only closes left are the failed open (no fd on the file)
+    // and the pending-reset failure (only reached with no JS connection open).
+    expect(open).toMatch(/closeOrPark\(opened, \.unreadable\)/);
+    expect(open).toMatch(/if let handle \{ close\(handle\) \}\s*return \.openFailed/);
+    expect(open).toMatch(/close\(opened\)\s*return \.pendingResetFailed/);
+    expect((open.match(/\bclose\(/g) ?? []).length).toBe(2);
+    expect(open).toMatch(/if peerMayHoldFile, let parked = parkedConnections\.popLast\(\) \{\s*opened = parked/);
+  });
+
+  test('round 10: closeOrPark parks while JS may hold the file; parked connections close only on JS\'s confirmed close', () => {
+    const park = body(handleSwift, 'private func closeOrPark(_ connection: OpaquePointer, _ failure: OpenFailure) {');
+    expect(park).toMatch(/if peerMayHoldFile \{\s*parkedConnections\.append\(connection\)/);
+    const confirmed = body(handleSwift, 'func peerConfirmedClosed() {');
+    expect(confirmed).toMatch(/peerMayHoldFile = false/);
+    expect(confirmed).toMatch(/for connection in parked \{ close\(connection\) \}/);
+    // Only two callers confirm JS closed: the JS gate (prior handles closed) and the purge's finish with allowUnlink.
+    expect((code(handleSwift).match(/peerConfirmedClosed\(\)/g) ?? []).length).toBe(3);
+    expect(body(handleSwift, 'func finishAfterFailedReset(allowUnlink: Bool) -> FinishResult {')).toMatch(/if allowUnlink \{ peerConfirmedClosed\(\) \}/);
+    const gate = body(handleSwift, 'func admitPeerOpen(priorPeerHandlesClosed: Bool) -> PeerOpenGate {');
+    const [confirm, openCall, pending, admit] = order(
+      gate,
+      'if priorPeerHandlesClosed {\n      peerConfirmedClosed()',
+      'let failure = openIfClosed()',
+      'if pendingReset.get() {\n      return PeerOpenGate(admitted: false',
+      'peerMayHoldFile = true\n    return PeerOpenGate(admitted: true',
+    );
+    expect(confirm).toBeGreaterThan(-1);
+    expect(openCall).toBeGreaterThan(confirm);
+    expect(pending).toBeGreaterThan(openCall);
+    expect(admit).toBeGreaterThan(pending);
+  });
+
+  test('round 10: the module exposes the JS-open gate and JS opens the manifest only through it', () => {
+    const fn = body(moduleSwift, 'AsyncFunction("admitBackupManifestJsOpen") { (priorHandlesClosed: Bool) -> [String: Any] in');
+    expect(fn).toMatch(/NativeBackupEngine\.shared\.admitJsManifestOpen\(priorHandlesClosed: priorHandlesClosed\)/);
+    expect(fn).toMatch(/"ok": gate\.admitted \? 1 : 0/);
+    expect(body(engine, 'func admitJsManifestOpen(priorHandlesClosed: Bool) -> BackupManifestHandle.PeerOpenGate {'))
+      .toMatch(/dbQueue\.sync \{\s*manifestHandle\.admitPeerOpen\(priorPeerHandlesClosed: priorHandlesClosed\)/);
+    const db = readFileSync(join(import.meta.dir, '../services/BackupDatabase.ts'), 'utf8');
+    const open = body(db, 'async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {');
+    const [gate, sqlOpen] = order(open, 'await admitJsOpen();', 'SQLite.openDatabaseAsync(DB_NAME)');
+    expect(gate).toBeGreaterThan(-1);
+    expect(sqlOpen).toBeGreaterThan(gate);
+    // The only open in the module.
+    expect((code(db).match(/openDatabaseAsync\(/g) ?? []).length).toBe(1);
+    const admit = body(db, 'async function admitJsOpen(): Promise<void> {');
+    expect(admit).toMatch(/if \(!gate\) throw new BackupManifestNotReadyError\('no_gate'\)/);
+    expect(admit).toMatch(/await gate\(unclosedHandles\.size === 0\)/);
+    expect(admit).toMatch(/if \(verdict\.ok !== 1\) throw new BackupManifestNotReadyError/);
+    // Registered at load by account-cleanup (App.tsx imports it at the top).
+    const cleanup = readFileSync(join(import.meta.dir, 'account-cleanup.ts'), 'utf8');
+    expect(code(cleanup)).toMatch(/\nregisterBackupManifestJsOpenGate\(NativeCrypto\.admitBackupManifestJsOpen\);/);
+    const app = readFileSync(join(import.meta.dir, '../App.tsx'), 'utf8');
+    expect(app).toMatch(/from '\.\/lib\/account-cleanup'/);
   });
 });
 
@@ -366,9 +430,16 @@ describe('3. an empty manifest is rebuilt before any upload; uploads are marked 
   test('the map calls send the device id the server keys photo_backup_state by', () => {
     const fetch = body(engine, 'private func fetchServerIdentifierMap(');
     const mark = body(engine, 'func markOnServer(');
-    for (const b of [fetch, mark]) expect(b).toMatch(/setValue\(deviceId, forHTTPHeaderField: "X-Beebeeb-Device-Id"\)/);
-    expect(fetch).toMatch(/\/api\/v1\/files\/photo-backup\/identifiers/);
+    expect(mark).toMatch(/setValue\(deviceId, forHTTPHeaderField: "X-Beebeeb-Device-Id"\)/);
     expect(mark).toMatch(/\/api\/v1\/files\/photo-backup\/mark/);
+    // Round 10: the identifiers GET (and /check, /files/index) go through PhotoBackupServerClient.
+    expect(fetch).toMatch(/photoBackupServerClient\(authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId\)/);
+    expect(fetch).toMatch(/try await client\.identifierMap\(\)/);
+    const client = readFileSync(join(IOS, 'PhotoBackupServerClient.swift'), 'utf8');
+    expect(body(client, 'private func request(_ path: String, method: String) throws -> URLRequest {'))
+      .toMatch(/setValue\(deviceId, forHTTPHeaderField: "X-Beebeeb-Device-Id"\)/);
+    expect(client).toMatch(/"\/api\/v1\/files\/photo-backup\/identifiers"/);
+    expect(client).toMatch(/"\/api\/v1\/files\/photo-backup\/check"/);
   });
 });
 
@@ -397,7 +468,12 @@ describe('5. round 5: route 404s and the kept-marks expiry', () => {
     const fetch = body(engine, 'private func fetchServerIdentifierMap(');
     expect(fetch).not.toMatch(/404/);
     expect(fetch).not.toMatch(/return \[:\]/);
-    expect(fetch).toMatch(/return try PhotoBackupServerResponses\.identifierMap\(statusCode: statusCode, data: data\)\s*$/);
+    // Round 10: through PhotoBackupServerClient, whose answer is the shipped classifier's.
+    expect(fetch).toMatch(/let map = try await client\.identifierMap\(\)/);
+    const client = readFileSync(join(IOS, 'PhotoBackupServerClient.swift'), 'utf8');
+    const map = body(client, 'func identifierMap() async throws -> [String: String] {');
+    expect(map).not.toMatch(/404/);
+    expect(map).toMatch(/return try PhotoBackupServerResponses\.identifierMap\(statusCode: status, data: data\)\s*$/);
     // The "server without the route" compatibility path is gone, prose included.
     expect(engine).not.toMatch(/server without the route/);
   });
@@ -563,9 +639,16 @@ describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondit
     const ins = body(fenceSwift, 'static func scanInsert(');
     expect(ins).toMatch(/let inserted = BackupManifestStore\.insertScannedAssets\(db, assets, nowMs: nowMs\)/);
     expect(ins).toMatch(/return \.written\(inserted: inserted\)/);
-    const rec = body(engine, 'private func recordScanInsert(_ written: FencedManifestWrites.ScanWrite, assets: Int) {');
-    expect(rec).toMatch(/case \.written\(let inserted\):\s*lastScanInsertFailed = !inserted/);
-    expect(body(engine, READY_SIG)).toMatch(/scanInsertFailed: self\.lastScanInsertFailed/);
+    // Round 10 (review finding 4): sticky; only a full scan's success clears it (ScanInsertHealth).
+    const rec = body(engine, 'private func recordScanInsert(\n    _ written: FencedManifestWrites.ScanWrite, assets: Int, source: ScanInsertHealth.Source\n  ) {');
+    expect(rec).toMatch(/case \.written\(let inserted\):\s*scanInsertHealth\.record\(inserted: inserted, source: source\)/);
+    expect(body(engine, READY_SIG)).toMatch(/scanInsertFailed: self\.scanInsertHealth\.failed/);
+    expect(code(engine)).not.toMatch(/lastScanInsertFailed/);
+    const scan = body(engine, 'func scanPhotoLibraryForPendingUploads(reason: String, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async -> Bool {');
+    expect(scan).toMatch(/self\.recordScanInsert\(written, assets: scanned\.count, source: \.fullScan\)/);
+    expect(body(engine, 'func photoLibraryDidChange(_ changeInstance: PHChange) {'))
+      .toMatch(/self\.recordScanInsert\(written, assets: inserted\.count, source: \.incremental\)/);
+    expect(code(engine).match(/recordScanInsert\(written/g)?.length).toBe(2);
     expect(body(fenceSwift, 'static func needsRebuild(')).toMatch(/if needs && scanInsertFailed \{ return nil \}\s*return needs/);
   });
 
@@ -615,5 +698,68 @@ describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondit
     const load = body(fenceSwift, 'static func loadSignOutMarks(');
     expect(load).toMatch(/let adoptFailed = BackupManifestStore\.adoptUnowned\(db, accountId: accountId\) == nil/);
     expect(load).toMatch(/BackupManifestStore\.pendingServerMarks\(db, accountId: accountId, limit: Int\(Int32\.max\)\)/);
+  });
+});
+
+describe('round 10 (review of mobile#182 at 060bfeb0): the server check is the dedupe guarantee', () => {
+  const batch = body(engine, 'func processBatch(limit: Int = 12, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async throws -> Int {');
+
+  test('processBatch asks the server about the selected rows BEFORE any upload starts, and uploads nothing when it cannot', () => {
+    const [select, check, deferred, group, upload] = order(
+      batch,
+      'let selected = dbQueue.sync { getPendingUploads(limit: limit) }',
+      'guard let pending = await rowsCheckedAgainstServer(\n      selected, accountId: batchAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket\n    ) else {\n      return 0\n    }',
+      'return 0',
+      'await withTaskGroup(of: Bool.self)',
+      'self.uploadSingleAsset(',
+    );
+    expect(select).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(select);
+    expect(group).toBeGreaterThan(check);
+    expect(upload).toBeGreaterThan(group);
+    // The task group uploads only what the check returned.
+    expect(batch.slice(group)).toMatch(/let asset = pending\[index\]/);
+    expect(batch.slice(group)).not.toMatch(/selected\[/);
+    expect(deferred).toBeGreaterThan(-1);
+    // uploadSingleAsset has exactly one caller: this batch.
+    expect((code(engine).match(/\.uploadSingleAsset\(/g) ?? []).length).toBe(1);
+  });
+
+  test('every fresh row is checked; only the live hits are left out; a deferral backs off', () => {
+    const fn = body(engine, 'private func rowsCheckedAgainstServer(');
+    expect(fn).toMatch(/let fresh = pending\.filter \{ \$0\.stagedFileId == nil \}\.map\(\\\.localAssetId\)/);
+    expect(fn).toMatch(/PendingUploadServerCheck\.run\(candidates: fresh, steps: steps\)/);
+    expect(fn).toMatch(/return pending\.filter \{ !skip\.contains\(\$0\.localAssetId\) \}/);
+    expect(fn).toMatch(/case let \.deferred\(reason\):[\s\S]*if let wait \{ backoffUntil = Date\(\)\.addingTimeInterval\(wait\) \}[\s\S]*return nil/);
+    expect(fn).toMatch(/FencedManifestWrites\.promoteCheckedHits\(/);
+    expect(fn).toMatch(/try await self\.liveFileIds\(client: client, accountId: accountId\)/);
+  });
+
+  test('the rebuild fast path promotes only photos whose server file is out of the Trash', () => {
+    const ready = body(engine, READY_SIG);
+    const [fetch, live] = order(ready, 'let map = try await self.fetchServerIdentifierMap(', 'return try await PendingUploadServerCheck.liveOnly(map)');
+    expect(fetch).toBeGreaterThan(-1);
+    expect(live).toBeGreaterThan(fetch);
+    // Nothing returns the unfiltered map in between.
+    expect(ready.slice(fetch, live)).not.toMatch(/\breturn\b/);
+  });
+
+  test('the server caches are cleared at every sign-out, and a mark keeps the map cache in step', () => {
+    const prep = body(engine, 'func prepareForStoragePurge(');
+    expect(prep).toMatch(/_liveFileIndexCache\.clear\(\)/);
+    expect(prep).toMatch(/_identifierMapCache\.clear\(\)/);
+    expect(body(engine, 'func markOnServer(')).toMatch(/_identifierMapCache\.record\(local: assetId, fileId: fileId, accountId: accountId, deviceId: deviceId\)/);
+  });
+
+  test('stop() drops the fetch result the PhotoKit change observer diffs against (review finding 3)', () => {
+    const stop = body(engine, 'func stop() {');
+    const [drop, guardRunning] = order(stop, 'currentFetchResult = nil', 'guard isRunning else { return }');
+    expect(drop).toBeGreaterThan(-1);
+    // Unconditional: before the isRunning early return.
+    expect(guardRunning).toBeGreaterThan(drop);
+  });
+
+  test('a batch of server-promoted rows is progress for the drain loop', () => {
+    expect(engine).toMatch(/let progressed = uploaded \+ self\.takeLastBatchServerPromoted\(\)\n\s*if progressed == 0, !self\.dbQueue\.sync/);
   });
 });

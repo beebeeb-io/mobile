@@ -913,8 +913,24 @@ enum BackupManifestStore {
     uploadedAtIso: String,
     nowMs: Int64
   ) -> Int? {
+    promoteServerBackedUp(
+      db, accountId: accountId, localToFileId: localToFileId, uploadedAtIso: uploadedAtIso, nowMs: nowMs
+    )?.count
+  }
+
+  /// Task 1667 round 10: `applyServerMap`, returning WHICH rows it promoted
+  /// (the batch's server check skips exactly those, and every other live
+  /// hit). Same statement, same all-or-nothing transaction; nil on any
+  /// failure.
+  static func promoteServerBackedUp(
+    _ db: OpaquePointer,
+    accountId: String,
+    localToFileId: [String: String],
+    uploadedAtIso: String,
+    nowMs: Int64
+  ) -> Set<String>? {
     guard !accountId.isEmpty else { return nil }
-    guard !localToFileId.isEmpty else { return 0 }
+    guard !localToFileId.isEmpty else { return [] }
     let sql = """
     UPDATE backup_assets
        SET status = 'uploaded',
@@ -932,8 +948,8 @@ enum BackupManifestStore {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
     guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
-    var promoted = 0
-    for (local, fileId) in localToFileId {
+    var promoted = Set<String>()
+    for (local, fileId) in localToFileId.sorted(by: { $0.key < $1.key }) {
       bindText(stmt, 1, fileId)
       bindText(stmt, 2, uploadedAtIso)
       bindText(stmt, 3, accountId)
@@ -946,7 +962,7 @@ enum BackupManifestStore {
         sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
         return nil
       }
-      promoted += Int(sqlite3_changes(db))
+      if sqlite3_changes(db) > 0 { promoted.insert(local) }
     }
     guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
       sqlite3_exec(db, "ROLLBACK", nil, nil, nil)

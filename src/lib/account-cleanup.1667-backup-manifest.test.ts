@@ -126,6 +126,8 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   // mock is registered (seen: ac-alone4/5.log).
   purgePlaintextStorage: async () => nativePurge(),
   finishBackupManifestPurge: async (allowUnlink: boolean) => nativeFinish(allowUnlink),
+  // Round 10: the native gate before every JS open of the manifest.
+  admitBackupManifestJsOpen: async (priorHandlesClosed: boolean) => nativeAdmit(priorHandlesClosed),
   hardenPlaintextStorage: async () => ({}),
   auditPlaintextStorage: async () => [],
   decryptLocalFileNative: async () => { throw new Error('not exercised in this file'); },
@@ -174,12 +176,16 @@ class FakeDb {
     if (/COUNT/i.test(sql)) return { n: 0, c: 0, count: 0 } as T;
     return null;
   }
-  async getAllAsync(): Promise<unknown[]> {
+  async getAllAsync(sql?: string): Promise<unknown[]> {
     this.use();
     if (readGate) {
       events.push(`read-start:${this.id}`);
       await readGate;
       events.push(`read-end:${this.id}`);
+    }
+    // Round 10: the rows the manifest file holds on disk right now.
+    if (sql && /SELECT remote_file_id FROM backup_assets/.test(sql)) {
+      return fileRows.map((remote_file_id) => ({ remote_file_id }));
     }
     return [];
   }
@@ -234,7 +240,31 @@ async function nativeFinish(allowUnlink: boolean) {
   events.push(`native-finish:${allowUnlink}`);
   finishCalls.push(allowUnlink);
   liveAtFinish = live();
+  // Round 10: a failed recovery leaves the reset pending natively.
+  if (fileRows.length > 0 && !finishResult.ok) nativeResetPending = true;
+  if (finishResult.ok) fileRows = [];
   return finishResult;
+}
+
+// Round 10 (review finding 7): a model of the native side of the JS-open gate
+// (BackupManifestHandle.admitPeerOpen), over the rows the manifest file holds.
+// A pending reset is applied before JS is admitted, unless it cannot run now
+// (`nativeResetBlocked`), or a JS connection may still be open
+// (`priorHandlesClosed` false: deferred, like the native rule).
+let fileRows: string[] = [];
+let nativeResetPending = false;
+let nativeResetBlocked = false;
+const admitCalls: Array<{ prior: boolean; liveJs: number }> = [];
+async function nativeAdmit(priorHandlesClosed: boolean) {
+  admitCalls.push({ prior: priorHandlesClosed, liveJs: live() });
+  events.push(`native-admit:${priorHandlesClosed}`);
+  if (nativeResetPending) {
+    if (!priorHandlesClosed) return { ok: 0, reason: 'pending_reset_deferred' };
+    if (nativeResetBlocked) return { ok: 0, reason: 'pending_reset_failed' };
+    fileRows = [];
+    nativeResetPending = false;
+  }
+  return { ok: 1, reason: null };
 }
 
 const BackupDatabase = await import('../services/BackupDatabase');
@@ -506,5 +536,80 @@ describe('sign-out clears the backup folder cache (1962 Bug 4)', () => {
     await purgeAllPlaintextCaches();
     expect(secure.has('beebeeb_backup_folders')).toBe(false);
     expect(secure.get('unrelated_key')).toBe('kept');
+  });
+});
+
+describe('round 10 (review finding 7): after finishBackupManifestPurge ok:0, JS never reads the previous account\'s rows', () => {
+  test('the lazy reopen asks the native gate first; while the pending reset cannot run, nothing is opened or read', async () => {
+    await BackupDatabase.initDatabase();
+    // Account A's uploads are in the file.
+    fileRows = ['f-a1', 'f-a2'];
+    expect([...(await BackupDatabase.getAllUploadedRemoteIds())].sort()).toEqual(['f-a1', 'f-a2']);
+    // A's sign-out: the native reset fails, JS closes, and the recovery fails too.
+    nativeResult = { removed: 0, failed: 0, backupManifestResetFailed: 1 };
+    finishResult = { ok: 0, unlinked: 0 };
+    nativeResetBlocked = true;
+    const result = await purgeAllPlaintextCaches();
+    nativeResult = { removed: 0, failed: 0 };
+    finishResult = { ok: 1, unlinked: 1 };
+    expect(result.failed).toBeGreaterThanOrEqual(1);
+    expect(nativeResetPending).toBe(true);
+    expect(fileRows).toEqual(['f-a1', 'f-a2']);
+
+    // Account B's session: every read is refused, and no connection is opened.
+    const openedBefore = opened;
+    admitCalls.length = 0;
+    const bReads: string[][] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const ids = await BackupDatabase.getAllUploadedRemoteIds().then((s) => [...s], (e) => {
+        expect(e?.name).toBe('BackupManifestNotReadyError');
+        return null;
+      });
+      if (ids) bReads.push(ids);
+    }
+    // The bug: the lazy reopen served A's ids to B (its reconcile then
+    // re-queued them as orphans).
+    expect(bReads).toEqual([]);
+    expect(opened).toBe(openedBefore);
+    expect(admitCalls.length).toBe(3);
+    expect(admitCalls.every((c) => c.liveJs === 0)).toBe(true);
+
+    // The native reset can run: the next call is admitted after it, on an emptied file.
+    nativeResetBlocked = false;
+    const after = await BackupDatabase.getAllUploadedRemoteIds();
+    expect([...after]).toEqual([]);
+    expect(opened).toBe(openedBefore + 1);
+    expect(nativeResetPending).toBe(false);
+    const admit = events.lastIndexOf('native-admit:true');
+    expect(admit).toBeGreaterThan(-1);
+  });
+
+  test('a JS connection whose close failed: the gate defers, JS closes it, then the reset runs before the open', async () => {
+    await BackupDatabase.initDatabase();
+    fileRows = ['f-a3'];
+    nativeResult = { removed: 0, failed: 0, backupManifestResetFailed: 1 };
+    finishResult = { ok: 0, unlinked: 0 };
+    closeFails = true;
+    nativeResetBlocked = false;
+    await purgeAllPlaintextCaches();
+    closeFails = false;
+    nativeResult = { removed: 0, failed: 0 };
+    finishResult = { ok: 1, unlinked: 1 };
+    expect(finishCalls[finishCalls.length - 1]).toBe(false);
+    expect(nativeResetPending).toBe(true);
+    expect(BackupDatabase.unclosedHandleCount()).toBe(1);
+
+    admitCalls.length = 0;
+    events.length = 0;
+    const ids = await BackupDatabase.getAllUploadedRemoteIds();
+    expect([...ids]).toEqual([]);
+    // First ask: a connection may still be open -> deferred; it is closed,
+    // then the second ask runs the reset with no JS connection open.
+    expect(admitCalls.map((c) => c.prior)).toEqual([false, true]);
+    expect(admitCalls[1].liveJs).toBe(0);
+    const close = events.findIndex((e) => e.startsWith('close:'));
+    expect(close).toBeGreaterThan(events.indexOf('native-admit:false'));
+    expect(events.indexOf('native-admit:true')).toBeGreaterThan(close);
+    expect(BackupDatabase.unclosedHandleCount()).toBe(0);
   });
 });

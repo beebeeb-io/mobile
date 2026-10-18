@@ -1636,6 +1636,29 @@ export async function finishBackupManifestPurge(
 }
 
 /**
+ * Task 1667 round 10: the native gate before EVERY JS (expo-sqlite) open of
+ * the backup manifest (`BackupDatabase.openAndMigrate`). `priorHandlesClosed`
+ * = JS holds no connection on the file right now. `ok` 1: JS may open (no
+ * sign-out reset is pending; one still pending was applied natively first).
+ * `ok` 0: JS must not open now; `reason` is the native `OpenFailure`.
+ * Resolves `{ ok: 1, reason: 'no_native_manifest' }` on a native build
+ * without it: no native engine owns the file there (Android), so no native
+ * reset can be pending on it.
+ */
+export async function admitBackupManifestJsOpen(
+  priorHandlesClosed: boolean,
+): Promise<{ ok: number; reason: string | null }> {
+  if (typeof BeebeebCryptoModule.admitBackupManifestJsOpen !== 'function') {
+    return { ok: 1, reason: 'no_native_manifest' }
+  }
+  const r = (await BeebeebCryptoModule.admitBackupManifestJsOpen(priorHandlesClosed)) as {
+    ok: number
+    reason?: string | null
+  }
+  return { ok: r.ok, reason: r.reason ?? null }
+}
+
+/**
  * Task 1667 round 2: mark every completed camera-roll upload the server's
  * per-device map does not know yet, while the session still works. Call from
  * sign-out BEFORE the session is revoked. Bounded natively (~8 s); what is

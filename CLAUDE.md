@@ -776,9 +776,10 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   work, handle open (`storage-purge-participants.ts`); native `prepareForStoragePurge()` stops and
   unbinds the engine, clears `photoBackupParentFolderId`, empties the manifest IN PLACE through its
   handle (`BackupManifestStore.resetInPlace`), and `PlaintextStorageProtection.purgeAll(preserving:)`
-  keeps that file while removing the rest of `SQLite/`. If the reset fails the engine closes its
-  handle and the file is unlinked as before. The `beebeeb_backup_folders` SecureStore cache is
-  cleared too (`backup-folder-cache.ts`).
+  keeps that file while removing the rest of `SQLite/`. If the reset fails, the file is still
+  KEPT, never unlinked under the JS handle (see "A reset counts only if the WAL was truncated"
+  below for what happens instead). The `beebeeb_backup_folders` SecureStore cache is cleared too
+  (`backup-folder-cache.ts`).
 - **Ownership:** `backup_assets.uploaded_account_id` names the account a row's remote file belongs
   to. `bindAccount` / every scan run `BackupManifestStore.claim`: rows from before the column are
   adopted, another account's rows are re-queued. Never trust `status = 'uploaded'` without it.
@@ -787,8 +788,20 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   `setBackupDeviceId`); `server_marked_at` tracks it and scans catch up on unmarked rows. A manifest
   holding nothing the account uploaded is rebuilt from `GET /api/v1/files/photo-backup/identifiers`
   BEFORE the first upload (`ensureManifestReadyForUploads`, gated in `processBatch`); if that GET
-  fails, no upload starts. Photos uploaded before the map existed and lost from the manifest are not
-  in the map: they upload once more (content-hash dedup is task 1667 plan item 6).
+  fails, no upload starts. The rebuild is only a FAST PATH (round 10): it runs once per account, on
+  the rows present at that moment. Photos uploaded before the map existed and lost from the manifest
+  are not in the map: they upload once more (content-hash dedup is task 1667 plan item 6).
+- **The dedupe guarantee is the per-batch server check (round 10, `PendingUploadServerCheck.swift`).**
+  Before any row starts a NEW upload (no staged file), `processBatch` asks
+  `POST /api/v1/files/photo-backup/check` (<= 500 ids per call, per device). For the hits it takes the
+  file ids from the identifiers map (cached per account; refetched when a hit is unknown) and keeps
+  only files that are NOT in the Trash, from `GET /api/v1/files/index` (non-trashed files only,
+  revalidated by `?hash=` every time). Live hits become `uploaded` with their server file id
+  (fenced write) and are left out of the batch; a hit whose file is trashed or gone uploads. Any failed
+  step defers the WHOLE batch with a backoff (30 s for a server read, 2..30 s for a write): nothing
+  uploads on a failure. The rebuild applies the same Trash filter. Neither `/check` nor
+  `/identifiers` filters trashed files server-side (`photo_backup_state` cascades only on permanent
+  delete); never trust a hit without the liveness read until the server filters it.
 - **Route 404s (round 5, `PhotoBackupServerResponses.swift`):** the identifiers handler never
   answers 404, so an identifiers 404 is a failed fetch (the gate defers and retries), never an empty
   map. A mark 404 is "file gone, done" ONLY with the API's own `ApiError::NotFound` body
@@ -809,6 +822,19 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   handle and sets `io.beebeeb.backupManifestResetPending`, JS closes its handle, then
   `finishBackupManifestPurge` resets (or replaces, carrying the kept marks) with no connection
   open; JS reopens lazily. The flag makes every later open apply the reset first.
+- **JS opens the manifest only through the native gate (round 10).** `BackupDatabase.openAndMigrate`
+  asks `admitBackupManifestJsOpen(priorHandlesClosed)` (`src/lib/backup-manifest-js-open-gate.ts`,
+  registered by `account-cleanup.ts`; no gate = refuse) before EVERY open. Native applies a reset
+  still pending first, on its own connection with no JS connection open, and admits JS only when none
+  is pending: after `finishBackupManifestPurge` answered `ok: 0`, the next account never reads the
+  previous account's rows. A refusal opens nothing and the next call asks again.
+- **Native never closes or checkpoints while JS may hold the file, outside the purge hold (round 10).**
+  `BackupManifestHandle.peerMayHoldFile` is set when JS is admitted and cleared only when JS confirms
+  every handle closed (the gate with `priorHandlesClosed`, or `finishAfterFailedReset(allowUnlink:
+  true)` under the hold). While set, `openIfClosed` does not apply a pending reset
+  (`pending_reset_deferred`, nothing opened) and PARKS a connection it cannot use instead of closing
+  it (a retry reuses it; JS's confirmed close closes it). The two copies are the root cause (task
+  1667 finding 12); until one owner exists, every new close/checkpoint path needs this rule.
 - **The engine's handle lives in `BackupManifestHandle.swift` (round 6).** It is the only code that
   opens, resets, closes or reopens the native connection; the engine's `db` is a read-only view of it
   and `swift-db-queue-audit.ts` holds `manifestHandle` to the same dbQueue rule as `db`.
@@ -832,10 +858,10 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   check fails `src/lib/native-backup-write-fence.test.ts` (`swift-write-fence-audit.ts`); an
   exemption needs a reason in its `EXEMPT` table.
 - Tests: `scripts/swift-tests/backup-manifest-store-test.swift` (real SQLite, two connections,
-  lsof), `scripts/swift-tests/{manifest-rebuild-gate,sign-out-mark-flush,photo-backup-route-responses,manifest-reopen,manifest-write-fence}-test.swift`,
+  lsof), `scripts/swift-tests/{manifest-rebuild-gate,sign-out-mark-flush,photo-backup-route-responses,manifest-reopen,manifest-write-fence,manifest-js-peer,pending-upload-server-check}-test.swift`,
   `src/lib/account-cleanup.1667-backup-manifest.test.ts`,
   `src/lib/native-backup-manifest-wiring.test.ts`, `src/lib/native-backup-write-fence.test.ts`,
-  `src/services/BackupDatabase.1667-write-fence.test.ts`.
+  `src/services/BackupDatabase.1667-write-fence.test.ts`, `src/services/BackupDatabase.1667-js-open-gate.test.ts`.
 
 
 ## Files (File Provider extension) — testing it (task 1722)
