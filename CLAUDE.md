@@ -768,8 +768,12 @@ sign-out purge did, the process kept using the deleted inode, and the next cold 
 an empty manifest and uploaded every photo again into the same folder (sim evidence
 `_qa-evidence/1962/sim-dup/`).
 
-- **Sign-out** (`purgeAllPlaintextCaches` → native `purgePlaintextStorage`): JS closes its handle and
-  holds new opens (`storage-purge-participants.ts`); native `prepareForStoragePurge()` stops and
+- **Never close the JS handle on it.** expo-sqlite compiles its own SQLite (`node_modules/expo-sqlite/ios/sqlite3.c`);
+  the engine links the system one. Two SQLite copies in one process cannot see each other's
+  connections: a JS `closeAsync()` concluded it was the last connection and deleted `-wal`/`-shm`
+  under the engine's open handle (simulator, task 1667).
+- **Sign-out** (`purgeAllPlaintextCaches` → native `purgePlaintextStorage`): JS holds its database
+  work, handle open (`storage-purge-participants.ts`); native `prepareForStoragePurge()` stops and
   unbinds the engine, clears `photoBackupParentFolderId`, empties the manifest IN PLACE through its
   handle (`BackupManifestStore.resetInPlace`), and `PlaintextStorageProtection.purgeAll(preserving:)`
   keeps that file while removing the rest of `SQLite/`. If the reset fails the engine closes its

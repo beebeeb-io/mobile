@@ -9,10 +9,11 @@
  * next cold launch, which then started from an empty manifest and uploaded
  * every photo again (`_qa-evidence/1962/sim-dup/00-summary.txt`).
  *
- * A participant closes its handle and blocks new opens until the purge is
- * done (`suspend`), and gets a `resume` callback afterwards; the next use
- * reopens lazily. Only a module that has actually loaded registers, so a
- * module that never opened its handle costs nothing here.
+ * A participant holds its own work until the purge is done (`suspend`) and
+ * gets a `resume` callback afterwards. It must NOT close a handle the native
+ * side keeps (expo-sqlite bundles its own SQLite; its close deletes the WAL
+ * under the engine's connection — see BackupDatabase.suspendForStoragePurge).
+ * Only a module that has actually loaded registers.
  *
  * Dependency-free on purpose: account-cleanup.ts imports it, and every test
  * that loads account-cleanup must not have to mock expo-sqlite for it.
@@ -31,7 +32,7 @@ export function registerStoragePurgeParticipant(suspend: StoragePurgeParticipant
 }
 
 /**
- * close every registered handle -> run `purge` -> let them reopen lazily.
+ * hold every participant -> run `purge` -> resume them.
  * A participant that fails to suspend does not stop the purge (sign-out must
  * never be blocked); `resume` always runs, even when `purge` throws.
  */

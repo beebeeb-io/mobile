@@ -101,9 +101,9 @@ export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeRe
       // native counts registry paths, the sweep counts caches entries, the
       // sets are disjoint by construction (the native registry deliberately
       // excludes Library/Caches).
-      // Task 1667: JS handles on files the native purge touches (the backup
-      // manifest's expo-sqlite connection) are closed first and reopen
-      // lazily afterwards; the native side empties the manifest in place.
+      // Task 1667: JS work on files the native purge touches (the backup
+      // manifest's expo-sqlite connection) is held until the native side has
+      // emptied the manifest in place; the handle itself stays open.
       const native = await withStoragePurgeParticipantsSuspended(() => purgePlaintextStorage())
         .catch(() => ({ removed: 0, failed: 0 }) as PlaintextStoragePurgeResult);
       return {

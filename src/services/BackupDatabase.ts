@@ -72,7 +72,7 @@ let localMissingMigrationInFlight: Promise<void> | null = null;
 const LOCAL_MISSING_MIGRATION_MIN_INTERVAL_MS = 60_000;
 
 // Task 1667: set while the sign-out storage purge runs. getDb() waits for it,
-// so nothing reopens the file mid-purge; afterwards it reopens lazily.
+// so no JS read or write lands while the native side empties the manifest.
 let purgeBarrier: Promise<void> | null = null;
 
 async function getDb(): Promise<SQLite.SQLiteDatabase> {
@@ -82,13 +82,19 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
 }
 
 /**
- * Task 1667 — close this module's handle for the sign-out storage purge and
- * hold every new open until the returned `resume` runs. The native side
- * empties the manifest in place (`NativeBackupEngine.prepareForStoragePurge`)
- * and only unlinks the file when it could not; either way no JS connection is
- * left pointing at a deleted inode, which is what made the old manifest
- * outlive sign-out in the same process and vanish at the next cold launch
- * (every photo re-uploaded; `_qa-evidence/1962/sim-dup/00-summary.txt`).
+ * Task 1667 — hold this module's database work for the duration of the
+ * sign-out storage purge. The native side empties the manifest IN PLACE
+ * through its own handle (`NativeBackupEngine.prepareForStoragePurge`), so
+ * this module's handle stays valid and sees the emptied file afterwards.
+ *
+ * The handle is deliberately NOT closed. expo-sqlite compiles its own copy of
+ * SQLite (node_modules/expo-sqlite/ios/sqlite3.c); the engine links the
+ * system one. Two SQLite copies in one process cannot see each other's
+ * connections, so a close on this side concluded it was the last connection
+ * and deleted `-wal`/`-shm` under the engine's open handle (simulator rung,
+ * task 1667: lsof showed the engine's WAL/SHM fds on deleted inodes right
+ * after sign-out). Waiting for an open in flight is all this needs to do;
+ * every new call waits on the barrier until `resume`.
  */
 export async function suspendForStoragePurge(): Promise<() => void> {
   let release!: () => void;
@@ -96,15 +102,9 @@ export async function suspendForStoragePurge(): Promise<() => void> {
   const previousBarrier = purgeBarrier;
   purgeBarrier = barrier;
   const open = dbPromise;
-  dbPromise = null;
   if (open) {
-    try {
-      const db = await open;
-      await db.closeAsync();
-    } catch {
-      // A failed open has nothing to close; a failed close is no worse than
-      // before — the native side still empties the manifest in place.
-    }
+    // Let a migration already running finish before the reset; never close.
+    await open.catch(() => undefined);
   }
   return () => {
     if (purgeBarrier === barrier) purgeBarrier = previousBarrier;

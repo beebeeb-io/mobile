@@ -9,10 +9,11 @@
  * cold launch started from an empty manifest and uploaded every photo again.
  *
  * Asserted here, with the REAL account-cleanup.ts and BackupDatabase.ts and a
- * fake expo-sqlite that counts open handles:
- *   - no JS handle on the backup database is open while the native purge runs;
- *   - a JS call made during the purge does not reopen it until the purge is
- *     done, and the next call afterwards reopens it;
+ * fake expo-sqlite that counts open/close:
+ *   - the JS handle is never closed at sign-out: expo-sqlite bundles its own
+ *     SQLite, and its close deleted -wal/-shm under the engine's connection
+ *     (simulator rung, task 1667); the native side empties the file in place;
+ *   - a JS database call made during the purge waits until the purge is done;
  *   - the `beebeeb_backup_folders` cache does not survive sign-out.
  * Mocks follow account-cleanup.test.ts (isolated runner rule).
  */
@@ -184,37 +185,36 @@ const BackupDatabase = await import('../services/BackupDatabase');
 const { purgeAllPlaintextCaches } = await import('./account-cleanup');
 
 describe('sign-out and the backup manifest JS handle (task 1667)', () => {
-  test('the JS handle is closed while the native purge runs, and reopens lazily after', async () => {
+  test('the JS handle is NOT closed (expo-sqlite\'s own SQLite copy would delete the engine\'s WAL) and is still the one used after', async () => {
     await BackupDatabase.initDatabase();
-    expect(live()).toBe(1);
-
+    const openedBefore = opened;
     await purgeAllPlaintextCaches();
     expect(purgeCalls).toContain('native');
-    // The bug: the purge unlinked the file under this still-open handle.
-    expect(liveAtNativePurge).toBe(0);
-
-    // Next use after sign-out reopens (the file the native side kept, or a
-    // fresh one when it had to unlink).
-    const openedBefore = opened;
+    expect(closed).toBe(0);
+    expect(liveAtNativePurge).toBe(1);
+    // Same handle afterwards: the native side kept the file and emptied it in place.
     await BackupDatabase.getUploadedCount();
-    expect(opened).toBe(openedBefore + 1);
-    expect(live()).toBe(1);
+    expect(opened).toBe(openedBefore);
   });
 
-  test('a manifest read issued DURING the purge waits for it instead of reopening the file mid-purge', async () => {
+  test('a manifest call issued DURING the purge waits until the native reset is done', async () => {
     await BackupDatabase.initDatabase();
     let readDone = false;
+    let readDoneAtNativeEnd: boolean | null = null;
     let read: Promise<unknown> | null = null;
     duringPurge = async () => {
       read = BackupDatabase.getUploadedCount().then(() => { readDone = true; });
       await new Promise((r) => setTimeout(r, 15));
+      readDoneAtNativeEnd = readDone;
     };
     await purgeAllPlaintextCaches();
     duringPurge = null;
-    expect(liveAtNativePurgeEnd).toBe(0);
+    // The bug this guards: a JS write landing between the native reset and
+    // the registry purge (or in the middle of the reset) on the shared file.
+    expect(readDoneAtNativeEnd).toBe(false);
     await read;
     expect(readDone).toBe(true);
-    expect(live()).toBe(1);
+    expect(closed).toBe(0);
   });
 });
 
