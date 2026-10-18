@@ -789,11 +789,19 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   BEFORE the first upload (`ensureManifestReadyForUploads`, gated in `processBatch`); if that GET
   fails, no upload starts. Photos uploaded before the map existed and lost from the manifest are not
   in the map: they upload once more (content-hash dedup is task 1667 plan item 6).
+- **Route 404s (round 5, `PhotoBackupServerResponses.swift`):** the identifiers handler never
+  answers 404, so an identifiers 404 is a failed fetch (the gate defers and retries), never an empty
+  map. A mark 404 is "file gone, done" ONLY with the API's own `ApiError::NotFound` body
+  (`application/json`, exactly `{"error":"not found"}`, server `error.rs`); any other 404 is a
+  failure and the row stays a pending mark. Do not add a "server without the route" path back.
 - **Kept across sign-out (round 2):** `backup_pending_marks` in the same file holds, per account,
   (user id, PhotoKit local id, server file id, time) for uploads the server's map did not have yet.
   The reset moves them there in its own transaction; the next sign-in of THAT account promotes
   them after the server rebuild (`applyPendingMarks`, scoped by account) and the mark catch-up
-  sends them. 30-day expiry. No name, content, key or hash. JS sign-out first calls
+  sends them. 30-day expiry for EVERY account, as its own step (round 5): at every sign-in
+  (`confirmMasterKeyHandle`) and bind, before every batch's kept-marks step (ahead of its account
+  count) and at the sign-out reset, so rows of an account that never comes back still go. No name,
+  content, key or hash. JS sign-out first calls
   `flushBackupServerMarksForSignOut` (before `logout()` revokes the token, ~8 s, no row cap).
 - **A reset counts only if the WAL was truncated** (`sqlite3_wal_checkpoint_v2` TRUNCATE rc, retried).
   JS drains calls already running before the reset (`inFlight` in `BackupDatabase.ts`). On a
@@ -803,7 +811,8 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   open; JS reopens lazily, the engine's handle stays closed until the next launch (its one open
   is the `init()` enqueue). The flag makes the next open retry the reset.
 - Tests: `scripts/swift-tests/backup-manifest-store-test.swift` (real SQLite, two connections,
-  lsof), `src/lib/account-cleanup.1667-backup-manifest.test.ts`,
+  lsof), `scripts/swift-tests/{manifest-rebuild-gate,sign-out-mark-flush,photo-backup-route-responses}-test.swift`,
+  `src/lib/account-cleanup.1667-backup-manifest.test.ts`,
   `src/lib/native-backup-manifest-wiring.test.ts`.
 
 

@@ -312,12 +312,34 @@ enum BackupManifestStore {
     return Int(sqlite3_column_int64(stmt, 0))
   }
 
+  /// Round 5 (Codex P2 "Expire pending marks even when the current account
+  /// has none"): drops the kept marks of EVERY account older than
+  /// `pendingMarksRetentionMs`. Its own statement, gated on nothing: before
+  /// round 5 the only batch-time expiry sat inside `applyPendingMarks`, after
+  /// its "does THIS account have kept marks?" early return, so an account
+  /// that never came back kept its rows for as long as only other accounts
+  /// used the device. Triggers: every sign-in and bind
+  /// (`NativeBackupEngine.expireKeptPendingMarks`), every kept-marks step
+  /// before a batch (`applyPendingMarks`, first thing), and the sign-out
+  /// reset (`resetInPlace`). Returns the rows deleted; 0 when the table does
+  /// not exist yet; nil when it could not run (writer lock, unreadable table).
+  @discardableResult
+  static func expirePendingMarks(_ db: OpaquePointer, nowMs: Int64) -> Int? {
+    guard let exists = tableExistsChecked(db, "backup_pending_marks") else { return nil }
+    guard exists else { return 0 }
+    let deleted = run(db, "DELETE FROM backup_pending_marks WHERE created_at_ms < ?") { stmt in
+      sqlite3_bind_int64(stmt, 1, nowMs - pendingMarksRetentionMs)
+    }
+    return deleted >= 0 ? deleted : nil
+  }
+
   /// Next sign-in of `accountId`: every kept association whose photo is in
   /// the manifest and not uploaded or mid-upload becomes `uploaded` again
   /// (owner `accountId`, `server_marked_at = NULL`, so the mark catch-up
   /// sends it to the server), and its kept row is consumed. Kept rows whose
-  /// photo has no manifest row yet stay for the next call. Expired rows of
-  /// any account are dropped. Another account's rows are never read.
+  /// photo has no manifest row yet stay for the next call. Another account's
+  /// rows are never read. Expired rows of any account are dropped first, as
+  /// their own step, whatever this account holds (round 5).
   ///
   /// Round 4 (Codex P1 "Fail closed when applying the server identifier
   /// map"): nil when it could not run or commit (e.g. another connection
@@ -325,13 +347,15 @@ enum BackupManifestStore {
   /// caller must not start uploads on nil, or every kept photo uploads again.
   @discardableResult
   static func applyPendingMarks(_ db: OpaquePointer, accountId: String, nowMs: Int64) -> Int? {
+    // Round 5: the expiry is NOT behind the account checks below, and its
+    // result gates nothing: a row it could not delete is still never promoted
+    // (the promote only reads rows inside the retention window), and the next
+    // trigger deletes it.
+    expirePendingMarks(db, nowMs: nowMs)
     guard !accountId.isEmpty else { return 0 }
     guard let count = pendingMarkCountChecked(db, accountId: accountId) else { return nil }
     guard count > 0 else { return 0 }
     guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
-    let expired = run(db, "DELETE FROM backup_pending_marks WHERE created_at_ms < ?") { stmt in
-      sqlite3_bind_int64(stmt, 1, nowMs - pendingMarksRetentionMs)
-    }
     let promoteSQL = """
     UPDATE backup_assets
        SET status = 'uploaded',
@@ -344,12 +368,14 @@ enum BackupManifestStore {
            retry_count = 0
      WHERE staged_file_id IS NULL
        AND status IN (\(rebuildableStatuses))
-       AND local_asset_id IN (SELECT local_asset_id FROM backup_pending_marks WHERE account_id = ?1)
+       AND local_asset_id IN (SELECT local_asset_id FROM backup_pending_marks
+                               WHERE account_id = ?1 AND created_at_ms >= ?3)
     """
     let iso = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(nowMs) / 1000))
     let promoted = run(db, promoteSQL) { stmt in
       bindText(stmt, 1, accountId)
       bindText(stmt, 2, iso)
+      sqlite3_bind_int64(stmt, 3, nowMs - pendingMarksRetentionMs)
     }
     // Consume every kept row the manifest now carries for this account (just
     // promoted, or already uploaded with that same file).
@@ -362,7 +388,7 @@ enum BackupManifestStore {
                       AND a.uploaded_account_id = ?1
                       AND a.remote_file_id = backup_pending_marks.remote_file_id)
     """) { stmt in bindText(stmt, 1, accountId) }
-    guard expired >= 0, promoted >= 0, consumed >= 0, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+    guard promoted >= 0, consumed >= 0, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
       sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
       return nil
     }

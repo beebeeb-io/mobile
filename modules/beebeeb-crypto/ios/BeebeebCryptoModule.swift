@@ -3132,6 +3132,11 @@ public class BeebeebCryptoModule: Module {
       // owner-unconfirmed refusal reason — same genuine-new-authentication
       // choke point.
       NativeBackupEngine.shared.clearOwnerUnconfirmedStopReasonOnNewAuthentication()
+      // Task 1667 round 5 (Codex P2 "Expire pending marks even when the
+      // current account has none"): every sign-in expires kept sign-out marks
+      // of ANY account older than 30 days, also when this account has none
+      // and photo backup is off.
+      NativeBackupEngine.shared.expireKeptPendingMarks(trigger: "sign_in")
       RuntimeTrace.event("keychain.bridge.confirm_handle", ["handleId": handleId, "hasOwner": normalizedOwnerId != nil])
       return true
     }

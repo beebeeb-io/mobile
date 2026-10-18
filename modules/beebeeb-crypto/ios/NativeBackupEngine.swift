@@ -1892,6 +1892,9 @@ final class NativeBackupEngine: NSObject {
     // of the SAME account too (a relaunch keeps `currentAccountId` in the
     // Keychain), so an upgraded install adopts its rows on the first bind.
     claimManifest(forAccount: userId)
+    // Round 5: kept marks of ANY account older than 30 days go at every bind
+    // (Codex P2), whatever this account holds.
+    expireKeptPendingMarks(trigger: "bind")
     guard currentAccountId != userId else { return }
     dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: userId) }
     currentAccountId = userId
@@ -5837,6 +5840,31 @@ final class NativeBackupEngine: NSObject {
   ///
   /// Round 4: nil when they could not be applied (no handle, writer lock);
   /// the gate then keeps uploads paused instead of uploading those photos.
+  /// Round 5 (Codex P2 "Expire pending marks even when the current account
+  /// has none"): the 30-day expiry of `backup_pending_marks`, for EVERY
+  /// account, as its own step. Runs at every sign-in (`confirmMasterKeyHandle`)
+  /// and bind, besides the sign-out reset and every kept-marks step before a
+  /// batch (`BackupManifestStore.applyPendingMarks`, before its account
+  /// count). So an account that never signs in on this device again does not
+  /// leave its user id and PhotoKit/file ids here past 30 days because only
+  /// other accounts use the device. Best-effort: nil (no handle, writer lock)
+  /// is traced, and the next trigger expires the rows.
+  @discardableResult
+  func expireKeptPendingMarks(trigger: String) -> Int? {
+    let expired: Int? = dbQueue.sync {
+      guard let db = self.db else { return nil }
+      return BackupManifestStore.expirePendingMarks(db, nowMs: self.nowMs())
+    }
+    if let expired {
+      if expired > 0 {
+        RuntimeTrace.event("backup.native.pending_marks.expired", ["expired": expired, "trigger": trigger])
+      }
+    } else {
+      RuntimeTrace.event("backup.native.pending_marks.expire_failed", ["trigger": trigger])
+    }
+    return expired
+  }
+
   func applyKeptPendingMarks(accountId: String) -> Int? {
     let promoted: Int? = dbQueue.sync {
       guard let db = self.db else { return nil }
@@ -5849,8 +5877,11 @@ final class NativeBackupEngine: NSObject {
   }
 
   /// `GET /api/v1/files/photo-backup/identifiers` for this device, as
-  /// local identifier -> file id. A 404 (a server without the route) reads
-  /// as an empty map; any other failure throws.
+  /// local identifier -> file id. Any failure throws, a 404 included (round
+  /// 5, Codex P1 "Fail closed when the identifier route returns 404"): the
+  /// handler never answers 404, so one is a routing or proxy failure, and
+  /// `ManifestRebuildGate` defers on it like on any failed fetch. Only a 2xx
+  /// `{"identifiers": {}}` is an empty map (`PhotoBackupServerResponses`).
   private func fetchServerIdentifierMap(
     authToken: String, baseURL: String, accountId: String, deviceId: String
   ) async throws -> [String: String] {
@@ -5870,20 +5901,19 @@ final class NativeBackupEngine: NSObject {
       handleConfirmedAccountMismatch()
       throw BackupError.accountMismatchConfirmed
     }
-    if statusCode == 404 { return [:] }
-    guard (200..<300).contains(statusCode) else {
-      throw BackupError.httpStatus(statusCode, String(data: data, encoding: .utf8) ?? "")
-    }
-    guard let map = BackupManifestStore.parseIdentifierMap(data) else {
-      throw BackupError.httpStatus(statusCode, "unexpected photo-backup/identifiers body")
-    }
-    return map
+    return try PhotoBackupServerResponses.identifierMap(statusCode: statusCode, data: data)
   }
 
   /// `POST /api/v1/files/photo-backup/mark` for one completed upload, then
   /// `server_marked_at` on success. Best-effort: a failure leaves the row
   /// unmarked for `flushServerMarks` to retry. Returns false when the caller
   /// should stop sending more marks now (network, 429, 5xx, account change).
+  ///
+  /// Round 5 (Codex P1 "Fail closed when the identifier route returns 404"):
+  /// a 404 is done ("file gone, nothing to map") ONLY with the API's own
+  /// NotFound body (`PhotoBackupServerResponses.markOutcome`). Any other 404
+  /// is a failure: no `server_marked_at`, so the row stays a pending mark,
+  /// the sign-out reset keeps it and the next sign-in promotes it.
   @discardableResult
   func markOnServer(
     assetId: String, fileId: String, authToken: String, baseURL: String, accountId: String,
@@ -5908,16 +5938,23 @@ final class NativeBackupEngine: NSObject {
     ])
     do {
       let (data, response) = try await metadataSession.data(for: request)
-      let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+      let http = response as? HTTPURLResponse
+      let statusCode = http?.statusCode ?? 0
       if statusCode == 409, AccountMismatchDetection.isAccountMismatch(data) {
         handleConfirmedAccountMismatch()
         return false
       }
-      // 404: the file is gone or not this account's; nothing to map, and
-      // asking again would not change that.
-      guard (200..<300).contains(statusCode) || statusCode == 404 else {
+      let outcome = PhotoBackupServerResponses.markOutcome(
+        statusCode: statusCode,
+        contentType: http?.value(forHTTPHeaderField: "Content-Type"),
+        data: data
+      )
+      guard outcome.recordsServerMark else {
         RuntimeTrace.event("backup.native.server_mark.failed", ["status": statusCode])
         return false
+      }
+      if outcome == .fileGone {
+        RuntimeTrace.event("backup.native.server_mark.file_gone")
       }
       dbQueue.sync {
         guard let db = self.db else { return }

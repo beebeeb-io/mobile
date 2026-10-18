@@ -343,3 +343,40 @@ describe('4. JS hands the canonical device id to native first', () => {
     }
   });
 });
+
+describe('5. round 5: route 404s and the kept-marks expiry', () => {
+  test('an identifiers 404 is a failed fetch: no 404 special case, the shipped classifier decides', () => {
+    const fetch = body(engine, 'private func fetchServerIdentifierMap(');
+    expect(fetch).not.toMatch(/404/);
+    expect(fetch).not.toMatch(/return \[:\]/);
+    expect(fetch).toMatch(/return try PhotoBackupServerResponses\.identifierMap\(statusCode: statusCode, data: data\)\s*$/);
+    // The "server without the route" compatibility path is gone, prose included.
+    expect(engine).not.toMatch(/server without the route/);
+  });
+
+  test('a mark is recorded only when the shipped classifier says so (2xx, or 404 with the API NotFound body)', () => {
+    const mark = body(engine, 'func markOnServer(');
+    expect(mark).not.toMatch(/statusCode == 404/);
+    expect(mark).toMatch(/PhotoBackupServerResponses\.markOutcome\(/);
+    expect(mark).toMatch(/contentType: http\?\.value\(forHTTPHeaderField: "Content-Type"\)/);
+    const [guard, record] = order(mark, 'guard outcome.recordsServerMark else {', 'BackupManifestStore.recordServerMarked(');
+    expect(guard).toBeGreaterThan(-1);
+    expect(record).toBeGreaterThan(guard);
+    expect((mark.match(/recordServerMarked\(/g) ?? []).length).toBe(1);
+  });
+
+  test('every sign-in expires kept marks, whatever the signed-in account holds', () => {
+    const confirm = body(moduleSwift, 'AsyncFunction("confirmMasterKeyHandle") { [self] (handleId: Int, ownerId: String?) throws -> Bool in');
+    expect(confirm).toMatch(/NativeBackupEngine\.shared\.expireKeptPendingMarks\(trigger: "sign_in"\)/);
+    const bind = body(engine, 'func bindAccount(userId: String) {');
+    const [expire, early] = order(bind, 'expireKeptPendingMarks(trigger: "bind")', 'guard currentAccountId != userId else { return }');
+    expect(expire).toBeGreaterThan(-1);
+    expect(early).toBeGreaterThan(expire);
+  });
+
+  test('the expiry is its own step: no account count or promote result gates it', () => {
+    const fn = body(engine, 'func expireKeptPendingMarks(trigger: String) -> Int? {');
+    expect(fn).toMatch(/BackupManifestStore\.expirePendingMarks\(db, nowMs: self\.nowMs\(\)\)/);
+    expect(fn).not.toMatch(/accountId|applyPendingMarks|pendingMarkCount/);
+  });
+});

@@ -626,6 +626,124 @@ do {
   sqlite3_close_v2(db)
 }
 
+// MARK: - 8. Round 5 (Codex P2 "Expire pending marks even when the current account has none")
+//
+// acct-A leaves kept marks and never signs in on this device again; only
+// acct-B and acct-C do, each with 0 kept marks of its own. acct-A's rows
+// (its user id + PhotoKit/file ids) must still go after 30 days.
+// Compiled with -D RED_HEAD for the red run against the 491475a9 store, which
+// has no `expirePendingMarks`; those calls are left out of that build only.
+
+/// acct-A signs out at `at` with these unmarked uploads: the real reset keeps
+/// them as pending marks dated `at`.
+func signOutLeavingMarks(_ db: OpaquePointer, _ ids: [String], at: Int64) {
+  for id in ids { insert(db, id, status: "uploaded", remote: "f-\(id)", owner: "acct-A") }
+  expect(BackupManifestStore.resetInPlace(db, nowMs: at), "acct-A's sign-out reset commits")
+}
+
+func countA(_ db: OpaquePointer, _ prefix: String) -> Int {
+  scalar(db, "SELECT COUNT(*) FROM backup_pending_marks WHERE account_id = 'acct-A' AND local_asset_id LIKE '\(prefix)%'")
+}
+
+/// acct-A's history on this device: an old session (33 days ago) and a recent
+/// one (5 days ago), each signing out with unmarked uploads. 33, not more: the
+/// recent sign-out's own reset already expires anything older than 35 days.
+func deviceUsedByA(_ name: String) -> OpaquePointer {
+  let db = newManifest(name)
+  signOutLeavingMarks(db, ["old-1", "old-2"], at: now - 33 * day)
+  signOutLeavingMarks(db, ["fresh-1", "fresh-2", "fresh-3"], at: now - 5 * day)
+  expect(countA(db, "old-") == 2 && countA(db, "fresh-") == 3, "fixture: acct-A left 2 old + 3 fresh kept marks")
+  return db
+}
+
+do {
+  // acct-B signs in with 0 kept marks; its batch runs the kept-marks step.
+  let db = deviceUsedByA("expiry-b-batch.db")
+  insert(db, "b-photo", status: "pending_upload")
+  _ = BackupManifestStore.claim(db, accountId: "acct-B", nowMs: now)
+  let promoted: Int? = BackupManifestStore.applyPendingMarks(db, accountId: "acct-B", nowMs: now)
+  expect(promoted == 0, "acct-B has nothing kept: 0 promoted (got \(String(describing: promoted)))")
+  expect(countA(db, "old-") == 0, "acct-B's batch expires acct-A's marks older than 30 days (left \(countA(db, "old-")))")
+  expect(countA(db, "fresh-") == 3, "acct-A's marks younger than 30 days are kept (left \(countA(db, "fresh-")))")
+  // acct-C, then acct-B again: still nothing of acct-A's under 30 days is lost.
+  expect(BackupManifestStore.applyPendingMarks(db, accountId: "acct-C", nowMs: now + day) == 0, "acct-C: 0 promoted")
+  expect(countA(db, "fresh-") == 3, "a day later the fresh marks are still kept")
+  // 26 days later (fresh marks now 31 days old) only other accounts used the device.
+  expect(BackupManifestStore.applyPendingMarks(db, accountId: "acct-C", nowMs: now + 26 * day) == 0, "acct-C 26 days on: 0 promoted")
+  expect(scalar(db, "SELECT COUNT(*) FROM backup_pending_marks") == 0,
+         "after 30 days nothing of acct-A remains, though acct-A never signed in again")
+  sqlite3_close_v2(db)
+}
+
+do {
+  // The expiry runs before the account check too: an empty account id
+  // (nothing bound yet) still expires.
+  let db = deviceUsedByA("expiry-empty-account.db")
+  _ = BackupManifestStore.applyPendingMarks(db, accountId: "", nowMs: now)
+  expect(countA(db, "old-") == 0 && countA(db, "fresh-") == 3, "applyPendingMarks with no account still expires the old rows")
+  sqlite3_close_v2(db)
+}
+
+do {
+  // An expired kept row that the expiry could NOT delete is still never
+  // promoted: acct-A comes back after 33 days, a trigger refuses the expiry's
+  // DELETE of old rows (standing in for any failure of that step). It lets
+  // the consume step delete a row whose photo is uploaded, so a promote of
+  // the old rows would commit and show up as 5, not fail as a whole.
+  let db = deviceUsedByA("expiry-blocked.db")
+  exec(db, """
+  CREATE TRIGGER refuse_expiry BEFORE DELETE ON backup_pending_marks
+  WHEN OLD.created_at_ms < \(now - BackupManifestStore.pendingMarksRetentionMs)
+   AND NOT EXISTS (SELECT 1 FROM backup_assets a
+                    WHERE a.local_asset_id = OLD.local_asset_id AND a.status = 'uploaded')
+  BEGIN SELECT RAISE(ABORT, 'refused'); END
+  """)
+  for id in ["old-1", "old-2", "fresh-1", "fresh-2", "fresh-3"] { insert(db, id, status: "pending_upload") }
+  _ = BackupManifestStore.claim(db, accountId: "acct-A", nowMs: now)
+  let promoted: Int? = BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now)
+  expect(countA(db, "old-") == 2, "fixture: the expiry was refused, both old rows are still there")
+  expect(promoted == 3, "only the 3 marks inside 30 days are promoted (got \(String(describing: promoted)))")
+  expect(scalar(db, "SELECT COUNT(*) FROM backup_assets WHERE local_asset_id LIKE 'old-%' AND status = 'pending_upload'") == 2,
+         "the 2 expired photos upload again instead of reviving a 33-day-old association")
+  sqlite3_close_v2(db)
+}
+
+#if !RED_HEAD
+do {
+  // Sign-in of acct-B (no batch yet): the standalone expiry step.
+  let db = deviceUsedByA("expiry-b-sign-in.db")
+  let expired: Int? = BackupManifestStore.expirePendingMarks(db, nowMs: now)
+  expect(expired == 2, "acct-B's sign-in expires acct-A's 2 old marks (got \(String(describing: expired)))")
+  expect(countA(db, "old-") == 0, "old marks gone after the sign-in step")
+  expect(countA(db, "fresh-") == 3, "fresh marks kept after the sign-in step")
+  expect(BackupManifestStore.expirePendingMarks(db, nowMs: now) == 0, "idempotent: a second run expires nothing")
+
+  // Boundary: exactly 30 days is kept, one millisecond more is not.
+  exec(db, "DELETE FROM backup_pending_marks")
+  exec(db, "INSERT INTO backup_pending_marks VALUES ('acct-A', 'edge-keep', 'f-k', \(now - BackupManifestStore.pendingMarksRetentionMs))")
+  exec(db, "INSERT INTO backup_pending_marks VALUES ('acct-A', 'edge-drop', 'f-d', \(now - BackupManifestStore.pendingMarksRetentionMs - 1))")
+  expect(BackupManifestStore.expirePendingMarks(db, nowMs: now) == 1, "only the row past 30 days expires")
+  expect(countA(db, "edge-keep") == 1 && countA(db, "edge-drop") == 0, "30 days exactly is kept, 30 days + 1 ms is not")
+
+  // Another connection holds the writer lock: a failure, not "0 expired".
+  let locker = open(root.appendingPathComponent("expiry-b-sign-in.db").path)
+  exec(locker, "BEGIN IMMEDIATE")
+  expect(BackupManifestStore.expirePendingMarks(db, nowMs: now + 400 * day) == nil, "under a writer lock the expiry reports failure (nil)")
+  exec(locker, "ROLLBACK")
+  sqlite3_close_v2(locker)
+  expect(BackupManifestStore.expirePendingMarks(db, nowMs: now + 400 * day) == 1, "after the lock is released the next trigger expires it")
+  sqlite3_close_v2(db)
+}
+
+do {
+  // A manifest from before round 2 has no kept-marks table: nothing to expire.
+  let db = open(root.appendingPathComponent("expiry-no-table.db").path)
+  exec(db, schema)
+  expect(BackupManifestStore.expirePendingMarks(db, nowMs: now) == 0, "no backup_pending_marks table: 0, not a failure")
+  sqlite3_close_v2(db)
+}
+#endif
+
 // MARK: - Report
 
 if failures.isEmpty {
