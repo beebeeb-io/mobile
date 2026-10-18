@@ -121,6 +121,12 @@ export async function auditPlaintextStorage(): Promise<PlaintextStorageAuditRow[
 export interface PlaintextStoragePurgeResult {
   removed: number
   failed: number
+  /**
+   * Task 1667 round 2 (iOS): 1 when the camera-roll backup manifest could not
+   * be emptied in place. The file was KEPT (the JS handle is still open on
+   * it); the caller closes that handle and calls `finishBackupManifestPurge`.
+   */
+  backupManifestResetFailed?: number
 }
 
 /**
@@ -1580,6 +1586,29 @@ export async function setBackupDeviceId(deviceId: string): Promise<boolean> {
   if (typeof BeebeebCryptoModule.setBackupDeviceId !== 'function') return false
   await BeebeebCryptoModule.setBackupDeviceId(deviceId)
   return true
+}
+
+/**
+ * Task 1667 round 2: second half of a sign-out whose native in-place reset of
+ * the backup manifest failed (`purgePlaintextStorage()` reported
+ * `backupManifestResetFailed`). Call only after the JS expo-sqlite handle on
+ * the manifest is closed; `allowUnlink` = that close succeeded. Resolves
+ * `{ ok: 0, unlinked: 0 }` on a native build without it.
+ */
+export async function finishBackupManifestPurge(allowUnlink: boolean): Promise<{ ok: number; unlinked: number }> {
+  if (typeof BeebeebCryptoModule.finishBackupManifestPurge !== 'function') return { ok: 0, unlinked: 0 }
+  return (await BeebeebCryptoModule.finishBackupManifestPurge(allowUnlink)) as { ok: number; unlinked: number }
+}
+
+/**
+ * Task 1667 round 2: mark every completed camera-roll upload the server's
+ * per-device map does not know yet, while the session still works. Call from
+ * sign-out BEFORE the session is revoked. Bounded natively (~8 s); what is
+ * left is kept for that account's next sign-in on this device.
+ */
+export async function flushBackupServerMarksForSignOut(): Promise<{ candidates: number; marked: number }> {
+  if (typeof BeebeebCryptoModule.flushBackupServerMarksForSignOut !== 'function') return { candidates: 0, marked: 0 }
+  return (await BeebeebCryptoModule.flushBackupServerMarksForSignOut()) as { candidates: number; marked: number }
 }
 
 export async function enablePhotoBackup(authToken: string, userId: string): Promise<void> {

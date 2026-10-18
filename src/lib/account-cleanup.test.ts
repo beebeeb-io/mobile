@@ -124,6 +124,8 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   // index.js — bun checks named bindings against the real file even when a
   // mock is registered (seen: ac-alone4/5.log).
   purgePlaintextStorage: async () => { purgeCalls.push('native'); return { removed: 0, failed: 0 }; },
+  // Task 1667 round 2: account-cleanup.ts imports it (failed-reset follow-up).
+  finishBackupManifestPurge: async () => ({ ok: 1, unlinked: 0 }),
   hardenPlaintextStorage: async () => ({}),
   auditPlaintextStorage: async () => [],
   decryptLocalFileNative: async () => { throw new Error('not exercised in this file'); },

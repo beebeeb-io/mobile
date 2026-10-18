@@ -2410,13 +2410,42 @@ public class BeebeebCryptoModule: Module {
       // engine's open handle (and the engine stopped + unbound) before the
       // registry sweep, which then keeps that file instead of unlinking it
       // under the engine's and the JS layer's live connections. The JS layer
-      // closes its own handle around this call (storage-purge-participants.ts).
-      let keptBackupDatabase = NativeBackupEngine.shared.prepareForStoragePurge()
+      // holds (never closes) its handle around this call
+      // (storage-purge-participants.ts). Round 2: the file is kept even when
+      // the reset failed — the JS handle is still open on it — and
+      // `backupManifestResetFailed` tells JS to close that handle and call
+      // `finishBackupManifestPurge`, which resets or replaces it with no
+      // connection open.
+      let manifest = NativeBackupEngine.shared.prepareForStoragePurge()
       // Task 1593 round 7 (C1) — moved LAST (was first). See the block
       // comment above this AsyncFunction for why.
-      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: keptBackupDatabase)
+      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)
       failed += result.failed
-      return ["removed": result.removed, "failed": failed]
+      return [
+        "removed": result.removed,
+        "failed": failed,
+        "backupManifestResetFailed": manifest.resetFailed ? 1 : 0,
+      ]
+    }
+
+    // Task 1667 round 2 (Codex P1 "Reopen the JS database after a reset
+    // failure"): the second half of a sign-out whose in-place manifest reset
+    // failed. JS calls it after closing its own expo-sqlite handle;
+    // `allowUnlink` is whether that close succeeded. `ok` 1 = the manifest
+    // is empty (reset, or replaced when `unlinked` is 1). The engine's handle
+    // stays closed until the next launch (its only open is in `init()`).
+    AsyncFunction("finishBackupManifestPurge") { (allowUnlink: Bool) -> [String: Int] in
+      let r = NativeBackupEngine.shared.finishStoragePurgeAfterFailedReset(allowUnlink: allowUnlink)
+      return ["ok": r.ok ? 1 : 0, "unlinked": r.unlinked ? 1 : 0]
+    }
+
+    // Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
+    // server map"): JS sign-out calls this BEFORE revoking the session, so
+    // every upload the server's per-device map does not know yet is marked
+    // while the token still works. Bounded by time, not by a row cap.
+    AsyncFunction("flushBackupServerMarksForSignOut") { () async -> [String: Int] in
+      let r = await NativeBackupEngine.shared.flushServerMarksForSignOut()
+      return ["candidates": r.candidates, "marked": r.marked]
     }
 
     AsyncFunction("generateRandomBytes") { (length: Int) throws -> Data in

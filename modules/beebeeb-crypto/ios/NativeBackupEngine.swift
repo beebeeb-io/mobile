@@ -817,6 +817,18 @@ final class NativeBackupEngine: NSObject {
   /// `ensureManifestReadyForUploads`. In memory on purpose: a relaunch checks
   /// once more (one GET), and `prepareForStoragePurge()` clears it.
   private var _manifestReadyForAccount: String?
+  /// Task 1667 round 2: the account `currentAccountId` held before it was
+  /// last cleared (guarded by `accountIdLock`, written in its setter).
+  private var _lastUnboundAccountId: String?
+  private var lastUnboundAccountId: String? {
+    accountIdLock.lock(); defer { accountIdLock.unlock() }; return _lastUnboundAccountId
+  }
+  /// Task 1667 round 2: set when a sign-out could not empty the manifest in
+  /// place; cleared once it was emptied (or replaced). While set, the next
+  /// open of the database empties it first (`openDatabase`), so the
+  /// outgoing account's rows never outlive a failed purge by more than one
+  /// launch even if the JS follow-up never ran.
+  static let manifestResetPendingKey = "io.beebeeb.backupManifestResetPending"
   private var manifestReadyForAccount: String? {
     get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _manifestReadyForAccount }
     set { engineStateLock.lock(); _manifestReadyForAccount = newValue; engineStateLock.unlock() }
@@ -993,6 +1005,10 @@ final class NativeBackupEngine: NSObject {
         try? KeychainManager.storeString(normalizedNew, key: backupCurrentAccountIdKey)
       } else {
         KeychainManager.deleteString(key: backupCurrentAccountIdKey)
+        // Task 1667 round 2: the sign-out reset keeps this account's
+        // not-yet-marked uploads under its id; `clearToken()` unbinds the
+        // engine before the purge runs, so remember who it was.
+        if let previous { _lastUnboundAccountId = previous }
       }
       // Task 1531 [P1-3]: a REAL change is a new account epoch — see
       // `accountGeneration`'s doc comment above. Round 5 (P2-C) narrowed
@@ -4761,6 +4777,14 @@ final class NativeBackupEngine: NSObject {
 
     // Ensure tables exist (safe to call even if JS already created them)
     ensureTables()
+
+    // Task 1667 round 2: a sign-out whose in-place reset failed left the
+    // outgoing account's rows here; empty them before anything reads them.
+    if UserDefaults.standard.bool(forKey: Self.manifestResetPendingKey), let db {
+      let reset = BackupManifestStore.resetInPlace(db)
+      if reset { UserDefaults.standard.removeObject(forKey: Self.manifestResetPendingKey) }
+      RuntimeTrace.event("backup.native.manifest_reset.retried_at_open", ["ok": reset])
+    }
   }
 
   private func ensureTables() {
@@ -5711,7 +5735,10 @@ final class NativeBackupEngine: NSObject {
   /// batch asks again. Never deletes anything.
   func ensureManifestReadyForUploads(accountId: String, authToken: String, baseURL: String) async -> Bool {
     guard !accountId.isEmpty else { return false }
-    if manifestReadyForAccount == accountId { return true }
+    if manifestReadyForAccount == accountId {
+      applyKeptPendingMarks(accountId: accountId)
+      return true
+    }
     let needsRebuild: Bool? = dbQueue.sync {
       guard let db = self.db else { return nil }
       BackupManifestStore.claim(db, accountId: accountId, nowMs: self.nowMs())
@@ -5720,6 +5747,7 @@ final class NativeBackupEngine: NSObject {
     guard let needsRebuild else { return false }
     if !needsRebuild {
       manifestReadyForAccount = accountId
+      applyKeptPendingMarks(accountId: accountId)
       return true
     }
     guard let deviceId = backupDeviceId, !deviceId.isEmpty else {
@@ -5755,7 +5783,27 @@ final class NativeBackupEngine: NSObject {
       "serverEntries": map.count,
       "promoted": promoted,
     ])
+    // AFTER the server rebuild (it is decided on "nothing uploaded yet"):
+    // uploads the server's map did not have at the last sign-out.
+    applyKeptPendingMarks(accountId: accountId)
     return true
+  }
+
+  /// Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
+  /// server map"): uploads this account made from this device that were not
+  /// yet in the server's map when it signed out (`backup_pending_marks`)
+  /// become `uploaded` again in the manifest instead of being uploaded a
+  /// second time; the mark catch-up then sends them to the server. Local
+  /// only, scoped to `accountId`; runs before every batch because rows the
+  /// scan has not inserted yet can only be matched later.
+  func applyKeptPendingMarks(accountId: String) {
+    let promoted: Int = dbQueue.sync {
+      guard let db = self.db else { return 0 }
+      return BackupManifestStore.applyPendingMarks(db, accountId: accountId, nowMs: self.nowMs())
+    }
+    if promoted > 0 {
+      RuntimeTrace.event("backup.native.pending_marks.applied", ["promoted": promoted])
+    }
   }
 
   /// `GET /api/v1/files/photo-backup/identifiers` for this device, as
@@ -5859,19 +5907,62 @@ final class NativeBackupEngine: NSObject {
     RuntimeTrace.event("backup.native.server_mark.catch_up", ["candidates": rows.count, "marked": marked])
   }
 
+  /// Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
+  /// server map"): called by the JS sign-out BEFORE the session is revoked.
+  /// Sends EVERY upload of the signed-in account that the server's map does
+  /// not have yet (no 300-row cap), each with up to `attemptsPerRow`
+  /// attempts, until `deadline` seconds have passed. Whatever is still
+  /// unmarked afterwards is kept by the reset (`backup_pending_marks`).
+  /// Returns (candidates, marked).
+  func flushServerMarksForSignOut(deadline: TimeInterval = 8, attemptsPerRow: Int = 2) async -> (candidates: Int, marked: Int) {
+    guard let accountId = currentAccountId, !accountId.isEmpty,
+          let authToken = token, let baseURL = apiBaseUrl,
+          backupDeviceId?.isEmpty == false else { return (0, 0) }
+    // Rows from before `uploaded_account_id` belong to this account too.
+    let rows: [(assetId: String, fileId: String)] = dbQueue.sync {
+      guard let db = self.db else { return [] }
+      BackupManifestStore.adoptUnowned(db, accountId: accountId)
+      return BackupManifestStore.pendingServerMarks(db, accountId: accountId, limit: Int(Int32.max))
+    }
+    guard !rows.isEmpty else { return (0, 0) }
+    let stopAt = Date().addingTimeInterval(deadline)
+    var marked = 0
+    rowLoop: for row in rows {
+      for attempt in 1...max(1, attemptsPerRow) {
+        if Task.isCancelled || Date() > stopAt { break rowLoop }
+        if await markOnServer(
+          assetId: row.assetId, fileId: row.fileId, authToken: authToken, baseURL: baseURL, accountId: accountId
+        ) {
+          marked += 1
+          continue rowLoop
+        }
+        if currentAccountId != accountId { break rowLoop }
+        if attempt < attemptsPerRow { try? await Task.sleep(nanoseconds: 200_000_000) }
+      }
+      // This row failed every attempt: the server is not taking marks now.
+      break rowLoop
+    }
+    RuntimeTrace.event("backup.native.server_mark.sign_out_flush", ["candidates": rows.count, "marked": marked])
+    return (rows.count, marked)
+  }
+
   /// Sign-out (every path reaches the native `purgePlaintextStorage`): stop
   /// and unbind the engine, empty the manifest THROUGH the open handle, and
-  /// forget the previous account's backup folder. Returns the database files
-  /// the purge must keep (emptied in place, still open here and in the JS
-  /// layer). Before task 1667 the purge unlinked the file under both
-  /// handles: the process kept writing a deleted inode and the next cold
-  /// launch re-uploaded every photo into the same folder.
+  /// forget the previous account's backup folder. Before task 1667 the purge
+  /// unlinked the file under both handles: the process kept writing a
+  /// deleted inode and the next cold launch re-uploaded every photo into the
+  /// same folder.
   ///
-  /// If the manifest cannot be emptied, the engine closes its own handle
-  /// instead (nothing in this process may write a file the purge unlinks)
-  /// and returns no paths, so the purge removes the file as before. Backup
-  /// then stays off until the next launch reopens it.
-  func prepareForStoragePurge() -> Set<String> {
+  /// `kept` is ALWAYS the database and its sidecars: the JS layer's
+  /// expo-sqlite connection is still open on them, and nothing may be
+  /// unlinked beneath it (round 2, Codex P1 "Reopen the JS database after a
+  /// reset failure"). When the reset fails (`resetFailed`), the engine
+  /// closes its own handle, records `manifestResetPendingKey`, and the JS
+  /// side closes its handle and calls `finishStoragePurgeAfterFailedReset`,
+  /// which resets (or, failing that, replaces) the file with no connection
+  /// open and reopens the engine on it.
+  func prepareForStoragePurge() -> (kept: Set<String>, resetFailed: Bool) {
+    let outgoingAccountId = currentAccountId ?? lastUnboundAccountId
     stop()
     backupClientSessionId = nil
     clearAccountAndPurgeStaged()
@@ -5879,17 +5970,52 @@ final class NativeBackupEngine: NSObject {
     parentFolderId = nil
     manifestReadyForAccount = nil
     let dbPath = Self.backupDatabaseURL().standardizedFileURL.path
-    let kept: Set<String> = dbQueue.sync {
-      guard let db = self.db else { return [] }
-      if BackupManifestStore.resetInPlace(db) {
-        return [dbPath, dbPath + "-wal", dbPath + "-shm"]
+    let kept: Set<String> = [dbPath, dbPath + "-wal", dbPath + "-shm"]
+    let resetOK: Bool = dbQueue.sync {
+      guard let db = self.db else { return false }
+      if let outgoingAccountId {
+        BackupManifestStore.adoptUnowned(db, accountId: outgoingAccountId)
+      }
+      if BackupManifestStore.resetInPlace(db, nowMs: self.nowMs()) {
+        return true
       }
       sqlite3_close_v2(db)
       self.db = nil
-      return []
+      return false
     }
-    RuntimeTrace.event("backup.native.storage_purge.prepared", ["resetInPlace": !kept.isEmpty])
-    return kept
+    if resetOK {
+      UserDefaults.standard.removeObject(forKey: Self.manifestResetPendingKey)
+    } else {
+      UserDefaults.standard.set(true, forKey: Self.manifestResetPendingKey)
+    }
+    RuntimeTrace.event("backup.native.storage_purge.prepared", ["resetInPlace": resetOK])
+    return (kept, !resetOK)
+  }
+
+  /// Second half of a sign-out whose in-place reset failed; JS calls it once
+  /// its own handle is closed (`allowUnlink` = that close succeeded). With
+  /// no connection open, the reset is retried on a connection of its own; if
+  /// it still fails and `allowUnlink`, the file is replaced, carrying the
+  /// kept pending marks over. No handle in this process points at a deleted
+  /// inode afterwards: JS reopens lazily on the resulting file, and the
+  /// engine's handle stays closed until the next launch opens it (its only
+  /// open is the one `init()` enqueues — native-backup-engine-db-queue.test.ts),
+  /// so on this rare path camera-roll backup resumes after a relaunch.
+  func finishStoragePurgeAfterFailedReset(allowUnlink: Bool) -> (ok: Bool, unlinked: Bool) {
+    let path = Self.backupDatabaseURL().standardizedFileURL.path
+    let result: (ok: Bool, unlinked: Bool) = dbQueue.sync {
+      if let db = self.db {
+        sqlite3_close_v2(db)
+        self.db = nil
+      }
+      let r = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: self.nowMs(), allowUnlink: allowUnlink)
+      if r.ok { UserDefaults.standard.removeObject(forKey: Self.manifestResetPendingKey) }
+      return r
+    }
+    RuntimeTrace.event("backup.native.storage_purge.recovered", [
+      "ok": result.ok, "unlinked": result.unlinked, "allowUnlink": allowUnlink,
+    ])
+    return result
   }
 
   /// Refresh progress counters from the database.

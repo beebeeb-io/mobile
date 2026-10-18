@@ -1060,6 +1060,14 @@ export default function App() {
   const signOut = useCallback(async () => {
     // Remove the push token before clearing the session.
     void unregisterPushToken();
+    // Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
+    // server map"): mark every completed camera-roll upload the server's
+    // per-device map does not have yet WHILE the session still works (the
+    // purge below runs after logout() revoked it). Bounded natively (~8 s);
+    // what is left is kept for this account's next sign-in on this device.
+    if (Platform.OS === 'ios') {
+      await BeebeebCrypto.flushBackupServerMarksForSignOut().catch(() => null);
+    }
     try {
       await logout();
     } catch {

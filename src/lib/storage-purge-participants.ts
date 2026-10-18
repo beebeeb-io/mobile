@@ -9,17 +9,28 @@
  * next cold launch, which then started from an empty manifest and uploaded
  * every photo again (`_qa-evidence/1962/sim-dup/00-summary.txt`).
  *
- * A participant holds its own work until the purge is done (`suspend`) and
- * gets a `resume` callback afterwards. It must NOT close a handle the native
- * side keeps (expo-sqlite bundles its own SQLite; its close deletes the WAL
- * under the engine's connection — see BackupDatabase.suspendForStoragePurge).
- * Only a module that has actually loaded registers.
+ * A participant holds its own work until the purge is done (`suspend`: no
+ * new call starts, every call already running has finished) and gets a
+ * `resume` callback afterwards. It must NOT close a handle the native side
+ * keeps (expo-sqlite bundles its own SQLite; its close deletes the WAL under
+ * the engine's connection — see BackupDatabase.suspendForStoragePurge).
+ * `closeHandle` exists for the one case the native side asks for it: its
+ * in-place reset failed and it has closed its own handle (round 2, Codex P1
+ * "Reopen the JS database after a reset failure"). Only a module that has
+ * actually loaded registers.
  *
  * Dependency-free on purpose: account-cleanup.ts imports it, and every test
  * that loads account-cleanup must not have to mock expo-sqlite for it.
  */
 
-export type StoragePurgeParticipant = () => Promise<() => void>;
+export interface StoragePurgeHold {
+  /** Lift the hold; work queued meanwhile runs (on a reopened handle if closed). */
+  resume: () => void;
+  /** Close the handle for good. Resolves true when it is closed (or none was open). */
+  closeHandle: () => Promise<boolean>;
+}
+
+export type StoragePurgeParticipant = () => Promise<StoragePurgeHold>;
 
 const participants = new Set<StoragePurgeParticipant>();
 
@@ -31,26 +42,53 @@ export function registerStoragePurgeParticipant(suspend: StoragePurgeParticipant
   };
 }
 
+export interface StoragePurgeControl {
+  /**
+   * Close every participant's handle (still under the hold). Resolves true
+   * only when every participant reported its handle closed: a participant
+   * that could not even be held, or whose close failed, makes it false, and
+   * the caller must then not unlink anything that handle may point at.
+   */
+  closeHandles: () => Promise<boolean>;
+}
+
 /**
  * hold every participant -> run `purge` -> resume them.
  * A participant that fails to suspend does not stop the purge (sign-out must
  * never be blocked); `resume` always runs, even when `purge` throws.
  */
-export async function withStoragePurgeParticipantsSuspended<T>(purge: () => Promise<T>): Promise<T> {
-  const resumes: Array<() => void> = [];
+export async function withStoragePurgeParticipantsSuspended<T>(
+  purge: (control: StoragePurgeControl) => Promise<T>,
+): Promise<T> {
+  const holds: StoragePurgeHold[] = [];
+  let unheld = 0;
   for (const suspend of [...participants]) {
     try {
-      resumes.push(await suspend());
+      holds.push(await suspend());
     } catch {
       // Best-effort: the native side still empties the manifest in place.
+      unheld += 1;
     }
   }
+  const control: StoragePurgeControl = {
+    closeHandles: async () => {
+      let allClosed = unheld === 0;
+      for (const hold of holds) {
+        try {
+          if (!(await hold.closeHandle())) allClosed = false;
+        } catch {
+          allClosed = false;
+        }
+      }
+      return allClosed;
+    },
+  };
   try {
-    return await purge();
+    return await purge(control);
   } finally {
-    for (const resume of resumes) {
+    for (const hold of holds) {
       try {
-        resume();
+        hold.resume();
       } catch {
         // never break sign-out
       }

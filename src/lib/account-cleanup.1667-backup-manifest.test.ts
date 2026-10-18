@@ -125,6 +125,7 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   // index.js — bun checks named bindings against the real file even when a
   // mock is registered (seen: ac-alone4/5.log).
   purgePlaintextStorage: async () => nativePurge(),
+  finishBackupManifestPurge: async (allowUnlink: boolean) => nativeFinish(allowUnlink),
   hardenPlaintextStorage: async () => ({}),
   auditPlaintextStorage: async () => [],
   decryptLocalFileNative: async () => { throw new Error('not exercised in this file'); },
@@ -154,31 +155,77 @@ mock.module('./local-identifier-map', () => ({
 // ---- fake expo-sqlite: counts live handles ---------------------------------
 let opened = 0;
 let closed = 0;
+let nextId = 0;
+const events: string[] = [];
+const usedAfterClose: number[] = [];
+let closeFails = false;
+let readGate: Promise<void> | null = null;
 class FakeDb {
-  async execAsync(): Promise<void> {}
+  id = ++nextId;
+  isClosed = false;
+  private use(): void {
+    if (this.isClosed) usedAfterClose.push(this.id);
+    if (nativeRunning) callsDuringNative.push(this.id);
+  }
+  async execAsync(): Promise<void> { this.use(); }
   async getFirstAsync<T>(sql: string): Promise<T | null> {
+    this.use();
     if (/PRAGMA\s+user_version/i.test(sql)) return { user_version: 99 } as T;
     if (/COUNT/i.test(sql)) return { n: 0, c: 0, count: 0 } as T;
     return null;
   }
-  async getAllAsync(): Promise<unknown[]> { return []; }
-  async runAsync(): Promise<{ changes: number }> { return { changes: 0 }; }
-  async closeAsync(): Promise<void> { closed += 1; }
+  async getAllAsync(): Promise<unknown[]> {
+    this.use();
+    if (readGate) {
+      events.push(`read-start:${this.id}`);
+      await readGate;
+      events.push(`read-end:${this.id}`);
+    }
+    return [];
+  }
+  async runAsync(): Promise<{ changes: number }> { this.use(); return { changes: 0 }; }
+  async closeAsync(): Promise<void> {
+    events.push(`close:${this.id}`);
+    if (closeFails) throw new Error('close failed');
+    this.isClosed = true;
+    closed += 1;
+  }
 }
+let openGate: Promise<void> | null = null;
+let nativeRunning = false;
+const callsDuringNative: number[] = [];
 mock.module('expo-sqlite', () => ({
-  openDatabaseAsync: async () => { opened += 1; return new FakeDb(); },
+  openDatabaseAsync: async () => {
+    if (openGate) await openGate;
+    opened += 1;
+    return new FakeDb();
+  },
 }));
 
 const live = () => opened - closed;
 let duringPurge: (() => Promise<void>) | null = null;
 let liveAtNativePurge = -1;
 let liveAtNativePurgeEnd = -1;
+let nativeResult: Record<string, number> = { removed: 0, failed: 0 };
 async function nativePurge() {
   purgeCalls.push('native');
+  events.push('native-purge');
   liveAtNativePurge = live();
+  nativeRunning = true;
   if (duringPurge) await duringPurge();
+  else await new Promise((r) => setTimeout(r, 10));
+  nativeRunning = false;
   liveAtNativePurgeEnd = live();
-  return { removed: 0, failed: 0 };
+  return nativeResult;
+}
+let finishResult = { ok: 1, unlinked: 1 };
+const finishCalls: boolean[] = [];
+let liveAtFinish = -1;
+async function nativeFinish(allowUnlink: boolean) {
+  events.push(`native-finish:${allowUnlink}`);
+  finishCalls.push(allowUnlink);
+  liveAtFinish = live();
+  return finishResult;
 }
 
 const BackupDatabase = await import('../services/BackupDatabase');
@@ -215,6 +262,100 @@ describe('sign-out and the backup manifest JS handle (task 1667)', () => {
     await read;
     expect(readDone).toBe(true);
     expect(closed).toBe(0);
+  });
+});
+
+describe('round 2 (Codex P1): an in-flight read is drained before the native reset', () => {
+  test('a read already running when sign-out starts finishes BEFORE the native purge begins', async () => {
+    await BackupDatabase.initDatabase();
+    events.length = 0;
+    let openRead!: () => void;
+    readGate = new Promise<void>((r) => { openRead = r; });
+    const read = BackupDatabase.getDeadLetterItems();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(events.some((e) => e.startsWith('read-start'))).toBe(true);
+    const purge = purgeAllPlaintextCaches();
+    await new Promise((r) => setTimeout(r, 20));
+    // The bug: the native checkpoint ran while this read held its snapshot.
+    expect(events).not.toContain('native-purge');
+    openRead();
+    await read;
+    await purge;
+    readGate = null;
+    const readEnd = events.findIndex((e) => e.startsWith('read-end'));
+    const native = events.indexOf('native-purge');
+    expect(readEnd).toBeGreaterThan(-1);
+    expect(native).toBeGreaterThan(readEnd);
+  });
+});
+
+describe('round 2 (Codex P1): after a failed native reset the JS handle is closed, never left on a deleted inode', () => {
+  test('reset failed: close the JS handle FIRST, then finish (allowUnlink), then reopen a fresh handle', async () => {
+    await BackupDatabase.initDatabase();
+    const openedBefore = opened;
+    events.length = 0;
+    finishCalls.length = 0;
+    usedAfterClose.length = 0;
+    nativeResult = { removed: 3, failed: 0, backupManifestResetFailed: 1 };
+    finishResult = { ok: 1, unlinked: 1 };
+    const result = await purgeAllPlaintextCaches();
+    nativeResult = { removed: 0, failed: 0 };
+    const close = events.findIndex((e) => e.startsWith('close:'));
+    const finish = events.indexOf('native-finish:true');
+    expect(close).toBeGreaterThan(-1);
+    expect(finish).toBeGreaterThan(close);
+    expect(finishCalls).toEqual([true]);
+    expect(liveAtFinish).toBe(0);
+    expect(result.failed).toBe(0);
+    // The next call gets a NEW handle; nothing touches the closed one.
+    await BackupDatabase.getUploadedCount();
+    await BackupDatabase.getDeadLetterItems();
+    expect(opened).toBe(openedBefore + 1);
+    expect(usedAfterClose).toEqual([]);
+  });
+
+  test('a JS close that fails forbids the unlink (finish gets allowUnlink=false) and a failed finish is counted', async () => {
+    await BackupDatabase.initDatabase();
+    events.length = 0;
+    finishCalls.length = 0;
+    closeFails = true;
+    nativeResult = { removed: 0, failed: 0, backupManifestResetFailed: 1 };
+    finishResult = { ok: 0, unlinked: 0 };
+    const result = await purgeAllPlaintextCaches();
+    closeFails = false;
+    nativeResult = { removed: 0, failed: 0 };
+    finishResult = { ok: 1, unlinked: 1 };
+    expect(finishCalls).toEqual([false]);
+    expect(result.failed).toBeGreaterThanOrEqual(1);
+  });
+
+  test('a call issued while the (re)opened handle is still opening never runs during the native purge', async () => {
+    // Put the module in the "no handle" state: a failed reset closes it.
+    nativeResult = { removed: 0, failed: 0, backupManifestResetFailed: 1 };
+    finishResult = { ok: 1, unlinked: 1 };
+    await purgeAllPlaintextCaches();
+    nativeResult = { removed: 0, failed: 0 };
+    callsDuringNative.length = 0;
+    let releaseOpen!: () => void;
+    openGate = new Promise<void>((r) => { releaseOpen = r; });
+    const call = BackupDatabase.getUploadedCount();
+    await new Promise((r) => setTimeout(r, 5));
+    const purge = purgeAllPlaintextCaches();
+    await new Promise((r) => setTimeout(r, 5));
+    openGate = null;
+    releaseOpen();
+    await Promise.all([call, purge]);
+    expect(callsDuringNative).toEqual([]);
+  });
+
+  test('reset succeeded: no close and no finish call', async () => {
+    await BackupDatabase.initDatabase();
+    events.length = 0;
+    finishCalls.length = 0;
+    const closedBefore = closed;
+    await purgeAllPlaintextCaches();
+    expect(finishCalls).toEqual([]);
+    expect(closed).toBe(closedBefore);
   });
 });
 

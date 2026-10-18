@@ -352,6 +352,170 @@ do {
   sqlite3_close_v2(db)
 }
 
+// MARK: - Helpers for round 2
+
+func fileBytesContain(_ path: String, _ needle: String) -> Bool {
+  guard let data = fm.contents(atPath: path) else { return false }
+  return data.range(of: Data(needle.utf8)) != nil
+}
+
+func walBytes(_ path: String) -> Int64 {
+  ((try? fm.attributesOfItem(atPath: path + "-wal"))?[.size] as? NSNumber)?.int64Value ?? 0
+}
+
+func inode(_ path: String) -> UInt64 {
+  var st = stat()
+  return stat(path, &st) == 0 ? UInt64(st.st_ino) : 0
+}
+
+let day: Int64 = 24 * 60 * 60 * 1000
+let now: Int64 = 1_800_000_000_000
+
+// MARK: - 4. Round 2 (Codex P1): unmarked uploads survive the sign-out reset
+
+do {
+  let path = root.appendingPathComponent("pending.db").path
+  let db = open(path)
+  exec(db, schema)
+  BackupManifestStore.migrate(db)
+  insert(db, "a-unmarked", status: "uploaded", remote: "f-a1", owner: "acct-A")
+  insert(db, "a-marked", status: "uploaded", remote: "f-a2", owner: "acct-A")
+  exec(db, "UPDATE backup_assets SET server_marked_at = 5 WHERE local_asset_id = 'a-marked'")
+  insert(db, "a-pending", status: "pending_upload")
+  insert(db, "legacy", status: "uploaded", remote: "f-legacy")                 // pre-column, unmarked
+  insert(db, "b-left", status: "uploaded", remote: "f-b1", owner: "acct-B")    // left by an older failed reset
+  exec(db, "UPDATE backup_assets SET remote_path = 'SECRET-PATH-MARKER' WHERE local_asset_id = 'a-unmarked'")
+  exec(db, "INSERT INTO backup_pending_marks VALUES ('acct-A', 'expired', 'f-old', \(now - 31 * day))")
+
+  expect(BackupManifestStore.adoptUnowned(db, accountId: "acct-A") == 1, "sign-out adopts the one pre-column row for the outgoing account")
+  expect(BackupManifestStore.resetInPlace(db, nowMs: now), "resetInPlace commits and truncates")
+  expect(scalar(db, "SELECT COUNT(*) FROM backup_assets") == 0, "manifest empty after the reset")
+  expect(BackupManifestStore.pendingMarkCount(db, accountId: "acct-A") == 2,
+         "acct-A keeps exactly its 2 unmarked uploads (got \(BackupManifestStore.pendingMarkCount(db, accountId: "acct-A")))")
+  expect(scalar(db, "SELECT COUNT(*) FROM backup_pending_marks WHERE local_asset_id = 'a-marked'") == 0,
+         "a marked upload is not kept (the server map already has it)")
+  expect(scalar(db, "SELECT COUNT(*) FROM backup_pending_marks WHERE local_asset_id = 'expired'") == 0,
+         "a kept row older than 30 days is dropped")
+  expect(BackupManifestStore.pendingMarkCount(db, accountId: "acct-B") == 1, "acct-B's unmarked row is kept under acct-B, not acct-A")
+  expect(text(db, "SELECT group_concat(name) FROM pragma_table_info('backup_pending_marks')")
+         == "account_id,local_asset_id,remote_file_id,created_at_ms",
+         "the kept table holds identifiers only: account, local id, file id, time")
+  expect(walBytes(path) == 0, "WAL truncated to 0 bytes after the reset")
+  expect(!fileBytesContain(path, "SECRET-PATH-MARKER") && !fileBytesContain(path + "-wal", "SECRET-PATH-MARKER"),
+         "a dropped column value is in neither the database nor the WAL bytes (secure_delete + truncate)")
+
+  // acct-A signs in again: the scan inserts every photo, the server map has
+  // only the marked one.
+  for id in ["a-unmarked", "a-marked", "a-pending", "legacy", "b-left"] { insert(db, id, status: "pending_upload") }
+  BackupManifestStore.claim(db, accountId: "acct-A", nowMs: now)
+  let rebuilt = BackupManifestStore.applyServerMap(db, accountId: "acct-A", localToFileId: ["a-marked": "f-a2"],
+                                                   uploadedAtIso: "2026-10-18T03:00:00Z", nowMs: now)
+  expect(rebuilt == 1, "server map promotes the marked upload")
+  let applied = BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now)
+  expect(applied == 2, "the 2 kept uploads of acct-A are promoted (got \(applied))")
+  expect(text(db, "SELECT status || ':' || remote_file_id || ':' || uploaded_account_id FROM backup_assets WHERE local_asset_id='a-unmarked'")
+         == "uploaded:f-a1:acct-A", "a-unmarked is uploaded again with its own file id, owner acct-A")
+  expect(text(db, "SELECT status || ':' || remote_file_id FROM backup_assets WHERE local_asset_id='legacy'") == "uploaded:f-legacy",
+         "the pre-column upload is kept too")
+  expect(scalar(db, "SELECT server_marked_at IS NULL FROM backup_assets WHERE local_asset_id='a-unmarked'") == 1,
+         "a promoted kept row is still unmarked: the catch-up sends it to the server")
+  expect(Set(BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10).map { $0.fileId }) == ["f-a1", "f-legacy"],
+         "the mark catch-up now has both kept uploads")
+  expect(text(db, "SELECT status FROM backup_assets WHERE local_asset_id='b-left'") == "pending_upload",
+         "acct-B's kept association is NOT applied for acct-A")
+  expect(text(db, "SELECT status FROM backup_assets WHERE local_asset_id='a-pending'") == "pending_upload",
+         "a photo never uploaded still uploads")
+  expect(BackupManifestStore.pendingMarkCount(db, accountId: "acct-A") == 0, "applied kept rows are consumed")
+  expect(BackupManifestStore.pendingMarkCount(db, accountId: "acct-B") == 1, "acct-B's kept row is untouched by acct-A's sign-in")
+
+  // A kept row whose photo has no manifest row yet waits for the next call.
+  exec(db, "INSERT INTO backup_pending_marks VALUES ('acct-A', 'not-scanned-yet', 'f-ns', \(now))")
+  expect(BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now) == 0, "nothing to promote before the scan")
+  expect(BackupManifestStore.pendingMarkCount(db, accountId: "acct-A") == 1, "the unmatched kept row stays")
+  insert(db, "not-scanned-yet", status: "pending_upload")
+  expect(BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now) == 1, "promoted once the scan inserted it")
+  expect(BackupManifestStore.pendingMarkCount(db, accountId: "acct-A") == 0, "and consumed")
+  sqlite3_close_v2(db)
+}
+
+// MARK: - 5. Round 2 (Codex P1): a busy WAL checkpoint is a failed reset
+
+do {
+  let path = root.appendingPathComponent("busy.db").path
+  let a = open(path)
+  exec(a, schema)
+  BackupManifestStore.migrate(a)
+  insert(a, "p1", status: "uploaded", remote: "f1", owner: "acct-A")
+  exec(a, "UPDATE backup_assets SET remote_path = 'BUSY-WAL-MARKER', server_marked_at = 1")
+  // A reader (same SQLite library, so its lock is visible) holding a
+  // snapshot from before the reset: what an in-flight read looks like.
+  let reader = open(path)
+  exec(reader, "BEGIN")
+  expect(scalar(reader, "SELECT COUNT(*) FROM backup_assets") == 1, "reader holds a snapshot with the row")
+  let busy = BackupManifestStore.resetInPlace(a, nowMs: now, checkpointAttempts: 2, busyTimeoutMs: 50, retryDelayUs: 1_000)
+  expect(!busy, "a reset whose checkpoint cannot truncate the WAL reports FAILURE")
+  let r = BackupManifestStore.truncateWal(a, attempts: 1, retryDelayUs: 0)
+  expect(!r.ok && r.walBytes > 0, "the checkpoint result shows the WAL still holds frames (rc \(r.rc), wal \(r.walBytes) bytes)")
+  exec(reader, "COMMIT")
+  sqlite3_close_v2(reader)
+  expect(BackupManifestStore.resetInPlace(a, nowMs: now, checkpointAttempts: 2, busyTimeoutMs: 50, retryDelayUs: 1_000),
+         "with the reader gone the retried reset succeeds")
+  expect(walBytes(path) == 0, "and the WAL is 0 bytes")
+  expect(!fileBytesContain(path, "BUSY-WAL-MARKER") && !fileBytesContain(path + "-wal", "BUSY-WAL-MARKER"),
+         "the outgoing row's bytes are gone from database and WAL")
+  sqlite3_close_v2(a)
+}
+
+// MARK: - 6. Round 2 (Codex P1): recovery after a failed reset
+
+do {
+  // (a) Nothing else open: the retried reset succeeds in place, no unlink.
+  let path = root.appendingPathComponent("recover-a.db").path
+  let a = open(path)
+  exec(a, schema)
+  BackupManifestStore.migrate(a)
+  insert(a, "p1", status: "uploaded", remote: "f1", owner: "acct-A")
+  sqlite3_close_v2(a)
+  let before = inode(path)
+  let r = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now, allowUnlink: true)
+  expect(r.ok && !r.unlinked, "recovery resets in place when it can (ok \(r.ok), unlinked \(r.unlinked))")
+  expect(inode(path) == before, "same file (inode) after an in-place recovery")
+  let check = open(path)
+  expect(scalar(check, "SELECT COUNT(*) FROM backup_assets") == 0, "recovered manifest is empty")
+  expect(BackupManifestStore.pendingMarkCount(check, accountId: "acct-A") == 1, "and kept acct-A's unmarked upload")
+  sqlite3_close_v2(check)
+}
+
+do {
+  // (b) The reset keeps failing (a writer holds the lock): without
+  // allowUnlink nothing is removed; with it the file is replaced and the
+  // kept associations are carried into the new file.
+  let path = root.appendingPathComponent("recover-b.db").path
+  let a = open(path)
+  exec(a, schema)
+  BackupManifestStore.migrate(a)
+  insert(a, "p1", status: "uploaded", remote: "f1", owner: "acct-A")
+  exec(a, "INSERT INTO backup_pending_marks VALUES ('acct-B', 'pb', 'f-b', \(now))")
+  sqlite3_close_v2(a)
+  let locker = open(path)
+  exec(locker, "BEGIN IMMEDIATE")
+  let before = inode(path)
+  let refused = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now, allowUnlink: false)
+  expect(!refused.ok && !refused.unlinked, "allowUnlink false (a JS handle may be open): no unlink")
+  expect(inode(path) == before, "file untouched when unlinking is not allowed")
+  let replaced = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now, allowUnlink: true)
+  expect(replaced.ok && replaced.unlinked, "allowUnlink true: the file is replaced")
+  expect(inode(path) != before && inode(path) != 0, "a new file (inode) at the path")
+  let fresh = open(path)
+  expect(BackupManifestStore.pendingMarkCount(fresh, accountId: "acct-A") == 1, "acct-A's unmarked upload carried into the new file")
+  expect(BackupManifestStore.pendingMarkCount(fresh, accountId: "acct-B") == 1, "acct-B's kept row carried under acct-B")
+  expect(scalar(fresh, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'backup_assets'") == 0,
+         "the new file holds no manifest rows at all (the engine recreates its tables on open)")
+  sqlite3_close_v2(fresh)
+  exec(locker, "ROLLBACK")
+  sqlite3_close_v2(locker)
+}
+
 // MARK: - Report
 
 if failures.isEmpty {

@@ -789,6 +789,19 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   BEFORE the first upload (`ensureManifestReadyForUploads`, gated in `processBatch`); if that GET
   fails, no upload starts. Photos uploaded before the map existed and lost from the manifest are not
   in the map: they upload once more (content-hash dedup is task 1667 plan item 6).
+- **Kept across sign-out (round 2):** `backup_pending_marks` in the same file holds, per account,
+  (user id, PhotoKit local id, server file id, time) for uploads the server's map did not have yet.
+  The reset moves them there in its own transaction; the next sign-in of THAT account promotes
+  them after the server rebuild (`applyPendingMarks`, scoped by account) and the mark catch-up
+  sends them. 30-day expiry. No name, content, key or hash. JS sign-out first calls
+  `flushBackupServerMarksForSignOut` (before `logout()` revokes the token, ~8 s, no row cap).
+- **A reset counts only if the WAL was truncated** (`sqlite3_wal_checkpoint_v2` TRUNCATE rc, retried).
+  JS drains calls already running before the reset (`inFlight` in `BackupDatabase.ts`). On a
+  failed reset the file is still KEPT (never unlinked under the JS handle): native closes its
+  handle and sets `io.beebeeb.backupManifestResetPending`, JS closes its handle, then
+  `finishBackupManifestPurge` resets (or replaces, carrying the kept marks) with no connection
+  open; JS reopens lazily, the engine's handle stays closed until the next launch (its one open
+  is the `init()` enqueue). The flag makes the next open retry the reset.
 - Tests: `scripts/swift-tests/backup-manifest-store-test.swift` (real SQLite, two connections,
   lsof), `src/lib/account-cleanup.1667-backup-manifest.test.ts`,
   `src/lib/native-backup-manifest-wiring.test.ts`.

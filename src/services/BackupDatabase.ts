@@ -19,7 +19,7 @@
 
 import * as SQLite from 'expo-sqlite';
 import { isCurrentAccountEpoch, type AccountEpoch } from '../lib/account-epoch';
-import { registerStoragePurgeParticipant } from '../lib/storage-purge-participants';
+import { registerStoragePurgeParticipant, type StoragePurgeHold } from '../lib/storage-purge-participants';
 
 export type BackupAssetType = 'photo' | 'video' | 'contact' | 'calendar';
 export type BackupAssetStatus =
@@ -71,14 +71,89 @@ let localMissingMigrationLastRunAt = 0;
 let localMissingMigrationInFlight: Promise<void> | null = null;
 const LOCAL_MISSING_MIGRATION_MIN_INTERVAL_MS = 60_000;
 
-// Task 1667: set while the sign-out storage purge runs. getDb() waits for it,
-// so no JS read or write lands while the native side empties the manifest.
+// Task 1667: set while the sign-out storage purge runs. No call reaches the
+// handle while it is set (see `trackedDb`).
 let purgeBarrier: Promise<void> | null = null;
 
-async function getDb(): Promise<SQLite.SQLiteDatabase> {
+// Task 1667 round 2 (Codex P1 "Treat a busy WAL checkpoint as a failed
+// reset"): calls currently running on the handle. A read already started when
+// the purge begins would otherwise keep an old WAL snapshot open while the
+// native side empties the manifest; the hold waits for this to reach 0.
+let inFlight = 0;
+let idleWaiters: Array<() => void> = [];
+
+function callStarted(): void {
+  inFlight += 1;
+}
+
+function callFinished(): void {
+  inFlight -= 1;
+  if (inFlight === 0) {
+    const waiters = idleWaiters;
+    idleWaiters = [];
+    for (const w of waiters) w();
+  }
+}
+
+function whenIdle(): Promise<void> {
+  return inFlight === 0 ? Promise.resolve() : new Promise((resolve) => { idleWaiters.push(resolve); });
+}
+
+/** The real handle: opened lazily, never while a purge holds the module. */
+async function openHandle(): Promise<SQLite.SQLiteDatabase> {
   while (purgeBarrier) await purgeBarrier;
   if (!dbPromise) dbPromise = openAndMigrate();
   return dbPromise;
+}
+
+/**
+ * Runs one call on the CURRENT handle, counted in `inFlight`.
+ *
+ * Why the hold cannot miss a call: the barrier is checked and the handle
+ * promise read with no await in between. A call that passed the check before
+ * `suspendForStoragePurge` set the barrier is already waiting on that same
+ * promise (or on one already resolved: every public function resolves
+ * `getDb()` first), so its continuation runs before the hold's and it is
+ * counted before the hold reads `inFlight`. A call that comes later waits on
+ * the barrier. `closeHandleForStoragePurge` only runs under the barrier, so
+ * no call is ever handed a closed handle.
+ */
+async function onHandle<T>(call: (db: SQLite.SQLiteDatabase) => Promise<T>): Promise<T> {
+  while (purgeBarrier) await purgeBarrier;
+  if (!dbPromise) dbPromise = openAndMigrate();
+  const handle = dbPromise;
+  const db = await handle;
+  callStarted();
+  try {
+    return await call(db);
+  } finally {
+    callFinished();
+  }
+}
+
+/**
+ * What every function in this module uses instead of the raw handle: the four
+ * methods it calls, each routed through `onHandle`. Not a Proxy on purpose:
+ * `await getDb()` would treat a Proxy's `then` as a thenable.
+ */
+const trackedDb = {
+  execAsync: (source: string) => onHandle((db) => db.execAsync(source)),
+  runAsync: (source: string, ...params: SQLite.SQLiteBindParams[]) =>
+    onHandle((db) => (db.runAsync as (s: string, ...p: unknown[]) => Promise<SQLite.SQLiteRunResult>)(source, ...params)),
+  getFirstAsync: <T>(source: string, ...params: SQLite.SQLiteBindParams[]) =>
+    onHandle((db) => (db.getFirstAsync as (s: string, ...p: unknown[]) => Promise<T | null>)(source, ...params)),
+  getAllAsync: <T>(source: string, ...params: SQLite.SQLiteBindParams[]) =>
+    onHandle((db) => (db.getAllAsync as (s: string, ...p: unknown[]) => Promise<T[]>)(source, ...params)),
+};
+
+// Typed as the real handle so the call sites stay unchanged; only the four
+// methods above exist on it (native-backup-manifest-wiring.test.ts checks
+// this module calls nothing else on `db`).
+const trackedHandle = trackedDb as unknown as SQLite.SQLiteDatabase;
+
+async function getDb(): Promise<SQLite.SQLiteDatabase> {
+  await openHandle();
+  return trackedHandle;
 }
 
 /**
@@ -87,16 +162,22 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
  * through its own handle (`NativeBackupEngine.prepareForStoragePurge`), so
  * this module's handle stays valid and sees the emptied file afterwards.
  *
- * The handle is deliberately NOT closed. expo-sqlite compiles its own copy of
+ * The handle is NOT closed by the hold. expo-sqlite compiles its own copy of
  * SQLite (node_modules/expo-sqlite/ios/sqlite3.c); the engine links the
  * system one. Two SQLite copies in one process cannot see each other's
  * connections, so a close on this side concluded it was the last connection
  * and deleted `-wal`/`-shm` under the engine's open handle (simulator rung,
  * task 1667: lsof showed the engine's WAL/SHM fds on deleted inodes right
- * after sign-out). Waiting for an open in flight is all this needs to do;
- * every new call waits on the barrier until `resume`.
+ * after sign-out).
+ *
+ * Round 2: the hold also waits for every call already running (an open read
+ * would keep an old WAL snapshot alive under the native checkpoint), and
+ * `closeHandle` closes the handle in the one case the native side asks for it
+ * — its reset failed and its own handle is already closed — so it can replace
+ * the file without this module keeping a deleted inode open. The next call
+ * after `resume` opens a fresh handle.
  */
-export async function suspendForStoragePurge(): Promise<() => void> {
+export async function suspendForStoragePurge(): Promise<StoragePurgeHold> {
   let release!: () => void;
   const barrier = new Promise<void>((resolve) => { release = resolve; });
   const previousBarrier = purgeBarrier;
@@ -106,10 +187,29 @@ export async function suspendForStoragePurge(): Promise<() => void> {
     // Let a migration already running finish before the reset; never close.
     await open.catch(() => undefined);
   }
-  return () => {
-    if (purgeBarrier === barrier) purgeBarrier = previousBarrier;
-    release();
+  await whenIdle();
+  return {
+    resume: () => {
+      if (purgeBarrier === barrier) purgeBarrier = previousBarrier;
+      release();
+    },
+    closeHandle: closeHandleForStoragePurge,
   };
+}
+
+async function closeHandleForStoragePurge(): Promise<boolean> {
+  await whenIdle();
+  const open = dbPromise;
+  dbPromise = null;
+  if (!open) return true;
+  const db = await open.catch(() => null);
+  if (!db) return true;
+  try {
+    await db.closeAsync();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 registerStoragePurgeParticipant(suspendForStoragePurge);

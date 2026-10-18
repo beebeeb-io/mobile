@@ -59,17 +59,21 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
   test('prepareForStoragePurge runs before purgeAll, and purgeAll keeps what it returned', () => {
     const [prep, purgeAll] = order(
       purge,
-      'let keptBackupDatabase = NativeBackupEngine.shared.prepareForStoragePurge()',
-      'PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: keptBackupDatabase)',
+      'let manifest = NativeBackupEngine.shared.prepareForStoragePurge()',
+      'PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)',
     );
     expect(prep).toBeGreaterThan(-1);
     expect(purgeAll).toBeGreaterThan(prep);
   });
 
-  const prep = body(engine, 'func prepareForStoragePurge() -> Set<String> {');
+  test('round 2: the purge result tells JS when the in-place reset failed', () => {
+    expect(purge).toMatch(/"backupManifestResetFailed": manifest\.resetFailed \? 1 : 0/);
+  });
+
+  const prep = body(engine, 'func prepareForStoragePurge() -> (kept: Set<String>, resetFailed: Bool) {');
 
   test('the engine is stopped and unbound BEFORE the manifest is emptied', () => {
-    const [stop, unbind, reset] = order(prep, 'stop()', 'clearAccountAndPurgeStaged()', 'BackupManifestStore.resetInPlace(db)');
+    const [stop, unbind, reset] = order(prep, 'stop()', 'clearAccountAndPurgeStaged()', 'BackupManifestStore.resetInPlace(db');
     expect(stop).toBeGreaterThan(-1);
     expect(unbind).toBeGreaterThan(stop);
     expect(reset).toBeGreaterThan(unbind);
@@ -79,12 +83,84 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     expect(prep).toMatch(/parentFolderId = nil/);
   });
 
-  test('the reset runs on dbQueue and a failed reset closes the handle instead of keeping it', () => {
-    expect(prep).toMatch(/dbQueue\.sync \{[\s\S]*BackupManifestStore\.resetInPlace\(db\)[\s\S]*sqlite3_close_v2\(db\)\s*self\.db = nil\s*return \[\]/);
+  test('round 2: the outgoing account (captured before unbind) adopts pre-column rows before the reset', () => {
+    const [capture, unbind, adopt, reset] = order(
+      prep,
+      'let outgoingAccountId = currentAccountId ?? lastUnboundAccountId',
+      'clearAccountAndPurgeStaged()',
+      'BackupManifestStore.adoptUnowned(db, accountId: outgoingAccountId)',
+      'BackupManifestStore.resetInPlace(db',
+    );
+    expect(capture).toBeGreaterThan(-1);
+    expect(unbind).toBeGreaterThan(capture);
+    expect(adopt).toBeGreaterThan(unbind);
+    expect(reset).toBeGreaterThan(adopt);
+  });
+
+  test('a failed reset closes the engine handle and flags it, but NEVER drops the file from `kept` (the JS handle is still open on it)', () => {
+    expect(prep).toMatch(/dbQueue\.sync \{[\s\S]*BackupManifestStore\.resetInPlace\(db[\s\S]*sqlite3_close_v2\(db\)\s*self\.db = nil\s*return false/);
+    expect(prep).toMatch(/UserDefaults\.standard\.set\(true, forKey: Self\.manifestResetPendingKey\)/);
+    expect(prep).not.toMatch(/return \[\]/);
+    expect(prep).toMatch(/return \(kept, !resetOK\)/);
   });
 
   test('the kept paths are the database and its WAL sidecars', () => {
-    expect(prep).toMatch(/return \[dbPath, dbPath \+ "-wal", dbPath \+ "-shm"\]/);
+    expect(prep).toMatch(/let kept: Set<String> = \[dbPath, dbPath \+ "-wal", dbPath \+ "-shm"\]/);
+  });
+
+  test('round 2: finish closes the engine handle BEFORE recovering, and never reopens it (single open in init)', () => {
+    const fin = body(engine, 'func finishStoragePurgeAfterFailedReset(allowUnlink: Bool) -> (ok: Bool, unlinked: Bool) {');
+    const [close, recover] = order(
+      fin,
+      'sqlite3_close_v2(db)',
+      'BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: self.nowMs(), allowUnlink: allowUnlink)',
+    );
+    expect(close).toBeGreaterThan(-1);
+    expect(recover).toBeGreaterThan(close);
+    expect(fin).not.toMatch(/openDatabase\(/);
+    const fn = body(moduleSwift, 'AsyncFunction("finishBackupManifestPurge") { (allowUnlink: Bool) -> [String: Int] in');
+    expect(fn).toMatch(/finishStoragePurgeAfterFailedReset\(allowUnlink: allowUnlink\)/);
+  });
+
+  test('round 2: a reset still pending is retried when the database is next opened', () => {
+    const open = body(engine, 'private func openDatabase() {');
+    const [tables, retry] = order(open, 'ensureTables()', 'BackupManifestStore.resetInPlace(db)');
+    expect(tables).toBeGreaterThan(-1);
+    expect(retry).toBeGreaterThan(tables);
+    expect(open).toMatch(/UserDefaults\.standard\.bool\(forKey: Self\.manifestResetPendingKey\)/);
+  });
+});
+
+describe('round 2: kept pending marks + sign-out flush', () => {
+  test('ensureManifestReadyForUploads applies kept marks AFTER the server rebuild, and on the ready fast paths', () => {
+    const ready = body(engine, 'func ensureManifestReadyForUploads(accountId: String, authToken: String, baseURL: String) async -> Bool {');
+    const apply = ready.indexOf('BackupManifestStore.applyServerMap(');
+    expect(apply).toBeGreaterThan(-1);
+    expect(ready.lastIndexOf('applyKeptPendingMarks(accountId: accountId)')).toBeGreaterThan(apply);
+    expect((ready.match(/applyKeptPendingMarks\(accountId: accountId\)/g) ?? []).length).toBe(3);
+  });
+
+  test('the sign-out flush has no row cap and is bounded by time', () => {
+    const flush = body(engine, 'func flushServerMarksForSignOut(deadline: TimeInterval = 8, attemptsPerRow: Int = 2) async -> (candidates: Int, marked: Int) {');
+    expect(flush).toMatch(/pendingServerMarks\(db, accountId: accountId, limit: Int\(Int32\.max\)\)/);
+    expect(flush).toMatch(/Date\(\) > stopAt/);
+  });
+
+  test('App signOut flushes marks BEFORE logout() revokes the session', () => {
+    const app = code(readFileSync(join(import.meta.dir, '../App.tsx'), 'utf8'));
+    const signOut = app.slice(app.indexOf('const signOut = useCallback(async () => {'));
+    const [flush, logout] = order(signOut, 'await BeebeebCrypto.flushBackupServerMarksForSignOut()', 'await logout();');
+    expect(flush).toBeGreaterThan(-1);
+    expect(logout).toBeGreaterThan(flush);
+  });
+
+  test('BackupDatabase calls only the four tracked methods on its handle', () => {
+    const src = code(readFileSync(join(import.meta.dir, '../services/BackupDatabase.ts'), 'utf8'));
+    const tracked = src.slice(src.indexOf('async function onHandle'));
+    const calls = new Set([...tracked.matchAll(/\bdb\.([a-zA-Z]+)\(/g)].map((m) => m[1]));
+    for (const c of calls) expect(['execAsync', 'runAsync', 'getFirstAsync', 'getAllAsync', 'closeAsync']).toContain(c);
+    // closeAsync only in the purge close path.
+    expect((tracked.match(/\bdb\.closeAsync\(/g) ?? []).length).toBe(1);
   });
 });
 

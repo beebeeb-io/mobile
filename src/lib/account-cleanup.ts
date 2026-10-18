@@ -29,7 +29,7 @@
  * never be blocked by a purge failure. A failed entry is safe to retry: the
  * native purge is idempotent and treats an already-absent path as clean.
  */
-import { purgePlaintextStorage, type PlaintextStoragePurgeResult } from '../../modules/beebeeb-crypto';
+import { finishBackupManifestPurge, purgePlaintextStorage, type PlaintextStoragePurgeResult } from '../../modules/beebeeb-crypto';
 import { purgeCachesPlaintext } from './caches-plaintext-registry';
 import { clearLocalIdentifierMap } from './local-identifier-map';
 // Task 1683f — sign-out sweeps the upload resume states (SecureStore keys that
@@ -104,8 +104,21 @@ export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeRe
       // Task 1667: JS work on files the native purge touches (the backup
       // manifest's expo-sqlite connection) is held until the native side has
       // emptied the manifest in place; the handle itself stays open.
-      const native = await withStoragePurgeParticipantsSuspended(() => purgePlaintextStorage())
-        .catch(() => ({ removed: 0, failed: 0 }) as PlaintextStoragePurgeResult);
+      // Round 2 (Codex P1 "Reopen the JS database after a reset failure"):
+      // when the native reset failed, the file was kept because this handle
+      // is open on it. Close the handle (still under the hold), then let the
+      // native side reset or replace the file with no connection open; the
+      // next JS call reopens. Never unlink beneath an open handle.
+      const native = await withStoragePurgeParticipantsSuspended(async ({ closeHandles }) => {
+        const purged = await purgePlaintextStorage();
+        if (!purged.backupManifestResetFailed) return purged;
+        const closed = await closeHandles();
+        const finished = await finishBackupManifestPurge(closed).catch(() => ({ ok: 0, unlinked: 0 }));
+        return {
+          removed: purged.removed + (finished.unlinked ? 1 : 0),
+          failed: purged.failed + (finished.ok ? 0 : 1),
+        };
+      }).catch(() => ({ removed: 0, failed: 0 }) as PlaintextStoragePurgeResult);
       return {
         removed: native.removed + swept.removed.length,
         failed: native.failed + swept.failed.length,
