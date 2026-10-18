@@ -1489,6 +1489,14 @@ export interface NativeBackupProgress {
    * `null`/undefined when nothing is refusing to upload for this reason.
    */
   accountRefusalReason?: string | null
+  /**
+   * Task 1667 round 6 — set when the native engine refused to start because
+   * it could not open (or empty) the camera-roll backup manifest; it retries
+   * on its own (2, 4, 8, 16, then every 30 s) and clears this on the first
+   * open that works, on stop and on sign-out. The honest message to show;
+   * `null`/undefined otherwise.
+   */
+  manifestUnavailableReason?: string | null
 }
 
 export type NativeBackupDiagnostics = Record<string, unknown>
@@ -1593,11 +1601,18 @@ export async function setBackupDeviceId(deviceId: string): Promise<boolean> {
  * the backup manifest failed (`purgePlaintextStorage()` reported
  * `backupManifestResetFailed`). Call only after the JS expo-sqlite handle on
  * the manifest is closed; `allowUnlink` = that close succeeded. Resolves
- * `{ ok: 0, unlinked: 0 }` on a native build without it.
+ * `{ ok: 0, unlinked: 0 }` on a native build without it. Round 6: `reopened`
+ * 1 = the native engine's handle is open again on the resulting file.
  */
-export async function finishBackupManifestPurge(allowUnlink: boolean): Promise<{ ok: number; unlinked: number }> {
+export async function finishBackupManifestPurge(
+  allowUnlink: boolean,
+): Promise<{ ok: number; unlinked: number; reopened?: number }> {
   if (typeof BeebeebCryptoModule.finishBackupManifestPurge !== 'function') return { ok: 0, unlinked: 0 }
-  return (await BeebeebCryptoModule.finishBackupManifestPurge(allowUnlink)) as { ok: number; unlinked: number }
+  return (await BeebeebCryptoModule.finishBackupManifestPurge(allowUnlink)) as {
+    ok: number
+    unlinked: number
+    reopened?: number
+  }
 }
 
 /**

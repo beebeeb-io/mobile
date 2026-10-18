@@ -529,7 +529,24 @@ final class NativeBackupEngine: NSObject {
   private let accountIdLock = NSLock()
   private var backgroundSession: URLSession!
   private var metadataSession: URLSession!
-  private var db: OpaquePointer?
+  /// Task 1667 round 6: the engine's one native connection to the manifest
+  /// and every open / reset / recover / reopen of it
+  /// (`BackupManifestHandle.swift`). dbQueue-only, like `db` below
+  /// (`swift-db-queue-audit.ts` checks both names).
+  private let manifestHandle = BackupManifestHandle(
+    path: NativeBackupEngine.backupDatabaseURL().standardizedFileURL.path,
+    pendingReset: .userDefaults(NativeBackupEngine.manifestResetPendingKey),
+    prepareSchema: NativeBackupEngine.ensureTables
+  )
+  /// The open manifest handle, or nil while it is closed. Read-only here:
+  /// only `manifestHandle` opens or closes it.
+  private var db: OpaquePointer? { manifestHandle.db }
+  /// Task 1667 round 6: why `start()` could not open the manifest, and the
+  /// retry it scheduled (both guarded by `engineStateLock`). Surfaced as
+  /// `manifestUnavailableReason` in the progress dict and as the status
+  /// reason; cleared by the next successful open, `stop()` and sign-out.
+  private var _manifestAvailability = ManifestAvailability()
+  private var _manifestOpenRetry: DispatchWorkItem?
 
   /// Task 1600 [P2]: dedicated lock for every plain scalar/reference `var`
   /// below that is written from more than one of the engine's concurrent
@@ -824,10 +841,11 @@ final class NativeBackupEngine: NSObject {
     accountIdLock.lock(); defer { accountIdLock.unlock() }; return _lastUnboundAccountId
   }
   /// Task 1667 round 2: set when a sign-out could not empty the manifest in
-  /// place; cleared once it was emptied (or replaced). While set, the next
-  /// open of the database empties it first (`openDatabase`), so the
-  /// outgoing account's rows never outlive a failed purge by more than one
-  /// launch even if the JS follow-up never ran.
+  /// place; cleared once it was emptied (or replaced). While set, every
+  /// open of the database empties it first, and an open that cannot empty
+  /// it leaves no handle open (`BackupManifestHandle.openIfClosed`, round
+  /// 6), so the outgoing account's rows are never read again even if the JS
+  /// follow-up never ran.
   static let manifestResetPendingKey = "io.beebeeb.backupManifestResetPending"
   private var manifestReadyForAccount: String? {
     get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _manifestReadyForAccount }
@@ -1438,6 +1456,11 @@ final class NativeBackupEngine: NSObject {
   }
 
   private func backupState(pending: Int) -> (state: String, reason: String) {
+    // Task 1667 round 6: an engine that could not open its manifest is not
+    // "ready" or "complete"; say what is.
+    if let manifestReason = manifestUnavailableStopReason {
+      return ("needsAttention", manifestReason)
+    }
     if isPaused {
       return ("pausedByUser", "Backup paused")
     }
@@ -2086,6 +2109,14 @@ final class NativeBackupEngine: NSObject {
       return
     }
 
+    // Task 1667 round 6 (Codex P2 "Reopen the native manifest after
+    // successful recovery"): never run without the manifest. `init()`'s
+    // open is not proof a handle is open now: a failed sign-out reset closes
+    // it, and a launch open can fail. Reopen here, or refuse visibly
+    // (`manifestUnavailableReason`) and retry; before, every scan, manifest
+    // check and upload silently no-oped on `db == nil` until a relaunch.
+    guard ensureManifestOpenForStart(accountId: accountId) else { return }
+
     if isRunning {
       // Task 1531 [P2-C] (round 5 delta review): `handleBackgroundTask`
       // (the `BGProcessingTask` handler) can flip `isRunning = true`
@@ -2304,6 +2335,10 @@ final class NativeBackupEngine: NSObject {
       "bridgeCacheRetained": BeebeebCryptoBridge.hasCachedMasterKey(),
       "wasRunning": isRunning
     ])
+    // Task 1667 round 6: a stopped engine has no "could not open" reason
+    // and no pending start() retry (a retry after `disablePhotoBackup`
+    // would start backup again).
+    clearManifestAvailability()
 
     guard isRunning else { return }
     isRunning = false
@@ -2518,6 +2553,9 @@ final class NativeBackupEngine: NSObject {
       // round-trip (a confirmed 409/413), but like it, it never ends the
       // JS session — this is the right account, just billing-blocked.
       "accountRefusalReason": accountRefusalStopReason ?? NSNull(),
+      // Task 1667 round 6: `start()` could not open the backup manifest and
+      // is retrying (`ensureManifestOpenForStart`). Null otherwise.
+      "manifestUnavailableReason": manifestUnavailableStopReason ?? NSNull(),
     ]
   }
 
@@ -2608,6 +2646,19 @@ final class NativeBackupEngine: NSObject {
       // again before this task's exit is allowed to flip `isRunning` off
       // (below) — see `accountGeneration`'s doc comment.
       let taskGeneration = self.accountGenerationSnapshot()
+      // Task 1667 round 6: this entry point sets `isRunning` without
+      // `start()`, so it opens the manifest itself and refuses without one
+      // (the reason is published; the OS reschedules this task) instead of
+      // scanning and uploading into a closed handle.
+      let manifestFailure = self.dbQueue.sync { self.openManifestIfClosed(trigger: "background_task") }
+      if case .refuse(let reason, _) = self.recordManifestOpen(manifestFailure) {
+        RuntimeTrace.event("backup.native.background_task.refused_manifest_unavailable", [
+          "failure": manifestFailure?.rawValue ?? NSNull()
+        ])
+        self.updateBackupStatusSurfaces(reason: reason)
+        self.completeBackgroundTaskOnce(task, success: false)
+        return
+      }
       self.dbQueue.sync { self.purgeMismatchedStagedAssets(currentAccountId: accountId) }
 
       // Ensure master key is available for background processing
@@ -3315,6 +3366,8 @@ final class NativeBackupEngine: NSObject {
     }
 
     guard isRunning else {
+      // Task 1667 round 6: say why when it was the manifest, not the key.
+      if manifestUnavailableStopReason != nil { throw BackupError.databaseUnavailable }
       throw BackupError.noMasterKey
     }
 
@@ -4771,36 +4824,44 @@ final class NativeBackupEngine: NSObject {
       .appendingPathComponent("beebeeb-backup.db", isDirectory: false)
   }
 
+  /// The launch open, enqueued once from `init()`. Every later open goes
+  /// through `openManifestIfClosed` (task 1667 round 6): `start()` and the
+  /// background task call it, and so does the recovery after a failed
+  /// sign-out reset. A pending sign-out reset is applied first, and a file
+  /// that cannot be opened, read or emptied leaves no handle open
+  /// (`BackupManifestHandle.openIfClosed`).
   private func openDatabase() {
-    let dbURL = Self.backupDatabaseURL()
-    try? FileManager.default.createDirectory(at: dbURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-    let path = dbURL.path
-
-    let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-    guard sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK else {
-      NSLog("[NativeBackupEngine] Failed to open database at \(path)")
-      db = nil
-      return
-    }
-
-    // Enable WAL mode for concurrent access with JS layer
-    sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
-
-    // Ensure tables exist (safe to call even if JS already created them)
-    ensureTables()
-
-    // Task 1667 round 2: a sign-out whose in-place reset failed left the
-    // outgoing account's rows here; empty them before anything reads them.
-    if UserDefaults.standard.bool(forKey: Self.manifestResetPendingKey), let db {
-      let reset = BackupManifestStore.resetInPlace(db)
-      if reset { UserDefaults.standard.removeObject(forKey: Self.manifestResetPendingKey) }
-      RuntimeTrace.event("backup.native.manifest_reset.retried_at_open", ["ok": reset])
+    let failure = manifestHandle.openIfClosed()
+    RuntimeTrace.event("backup.native.manifest.open", [
+      "trigger": "init",
+      "ok": failure == nil,
+      "failure": failure?.rawValue ?? NSNull(),
+      "appliedPendingReset": failure == nil && manifestHandle.lastOpenAppliedPendingReset,
+    ])
+    if let failure {
+      NSLog("[NativeBackupEngine] Backup manifest could not be opened at launch (\(failure.rawValue)); start() retries")
     }
   }
 
-  private func ensureTables() {
-    guard let db = db else { return }
+  /// Task 1667 round 6: opens the manifest when its handle is closed. MUST
+  /// run on `dbQueue`. nil = a handle is open on return.
+  private func openManifestIfClosed(trigger: String) -> BackupManifestHandle.OpenFailure? {
+    let wasOpen = db != nil
+    let failure = manifestHandle.openIfClosed()
+    if !wasOpen {
+      RuntimeTrace.event("backup.native.manifest.open", [
+        "trigger": trigger,
+        "ok": failure == nil,
+        "failure": failure?.rawValue ?? NSNull(),
+        "appliedPendingReset": failure == nil && manifestHandle.lastOpenAppliedPendingReset,
+      ])
+    }
+    return failure
+  }
 
+  /// The manifest schema. Static and handed the handle (round 6) so
+  /// `BackupManifestHandle` runs it on every open, not just the first.
+  static func ensureTables(_ db: OpaquePointer) {
     let sql = """
     CREATE TABLE IF NOT EXISTS backup_assets (
       local_asset_id TEXT PRIMARY KEY,
@@ -4868,11 +4929,10 @@ final class NativeBackupEngine: NSObject {
     // Task 1667: uploaded_account_id + server_marked_at.
     BackupManifestStore.migrate(db)
 
-    migratePhotoKitMissingAssetRows()
+    migratePhotoKitMissingAssetRows(db, nowMs: BackupManifestStore.currentMs())
   }
 
-  private func migratePhotoKitMissingAssetRows() {
-    guard let db = db else { return }
+  private static func migratePhotoKitMissingAssetRows(_ db: OpaquePointer, nowMs: Int64) {
     let sql = """
     UPDATE backup_assets
     SET status = 'local_missing',
@@ -4888,7 +4948,7 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_int64(stmt, 1, nowMs())
+    sqlite3_bind_int64(stmt, 1, nowMs)
     sqlite3_step(stmt)
     let changed = sqlite3_changes(db)
     if changed > 0 {
@@ -4896,50 +4956,18 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
-  /// Insert new assets from the photo library that are not already tracked.
+  /// Insert new assets from the photo library that are not already tracked
+  /// (the statement lives in `BackupManifestStore.insertScannedAssets`).
   private func insertNewAssets(_ assets: [PHAsset]) {
     guard let db = db else { return }
-    let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-
-    let sql = """
-    INSERT INTO backup_assets
-      (local_asset_id, content_hash, file_size, created_at, asset_type, status, queued_at)
-    VALUES (?, '', 0, ?, ?, 'pending_upload', ?)
-    ON CONFLICT(local_asset_id) DO UPDATE SET
-      created_at = excluded.created_at,
-      asset_type = excluded.asset_type,
-      selected_for_backup = 1,
-      status = CASE
-        WHEN backup_assets.status = 'local_missing' THEN 'pending_upload'
-        ELSE backup_assets.status
-      END,
-      retry_count = CASE
-        WHEN backup_assets.status = 'local_missing' THEN 0
-        ELSE COALESCE(backup_assets.retry_count, 0)
-      END,
-      error_message = CASE
-        WHEN backup_assets.status = 'local_missing' THEN NULL
-        ELSE backup_assets.error_message
-      END
-    """
-    var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-
-    sqlite3_exec(db, "BEGIN", nil, nil, nil)
-    for asset in assets {
-      let assetType: String = asset.mediaType == .video ? "video" : "photo"
-      let createdAt = isoString(from: asset.creationDate ?? Date())
-
-      sqlite3_bind_text(stmt, 1, (asset.localIdentifier as NSString).utf8String, -1, transient)
-      sqlite3_bind_text(stmt, 2, (createdAt as NSString).utf8String, -1, transient)
-      sqlite3_bind_text(stmt, 3, (assetType as NSString).utf8String, -1, transient)
-      sqlite3_bind_int64(stmt, 4, nowMs)
-      sqlite3_step(stmt)
-      sqlite3_reset(stmt)
+    let scanned = assets.map { asset in
+      BackupManifestStore.ScannedAsset(
+        localAssetId: asset.localIdentifier,
+        createdAt: isoString(from: asset.creationDate ?? Date()),
+        assetType: asset.mediaType == .video ? "video" : "photo"
+      )
     }
-    sqlite3_exec(db, "COMMIT", nil, nil, nil)
+    BackupManifestStore.insertScannedAssets(db, scanned, nowMs: nowMs())
   }
 
   private func updateAssetSelectionScope(allowedAssetIds: Set<String>, hasAlbumSelection: Bool) {
@@ -6044,10 +6072,11 @@ final class NativeBackupEngine: NSObject {
   /// expo-sqlite connection is still open on them, and nothing may be
   /// unlinked beneath it (round 2, Codex P1 "Reopen the JS database after a
   /// reset failure"). When the reset fails (`resetFailed`), the engine
-  /// closes its own handle, records `manifestResetPendingKey`, and the JS
-  /// side closes its handle and calls `finishStoragePurgeAfterFailedReset`,
-  /// which resets (or, failing that, replaces) the file with no connection
-  /// open and reopens the engine on it.
+  /// closes its own handle, records `manifestResetPendingKey`, and refuses
+  /// to reopen until the JS side has closed its handle and called
+  /// `finishStoragePurgeAfterFailedReset`, which resets (or, failing that,
+  /// replaces) the file with no connection open and then reopens the
+  /// engine's handle on it (round 6).
   func prepareForStoragePurge() -> (kept: Set<String>, resetFailed: Bool) {
     let outgoingAccountId = currentAccountId ?? lastUnboundAccountId
     stop()
@@ -6057,24 +6086,11 @@ final class NativeBackupEngine: NSObject {
     parentFolderId = nil
     manifestReadyForAccount = nil
     manifestRebuildFailures = 0
+    clearManifestAvailability()
     let dbPath = Self.backupDatabaseURL().standardizedFileURL.path
     let kept: Set<String> = [dbPath, dbPath + "-wal", dbPath + "-shm"]
     let resetOK: Bool = dbQueue.sync {
-      guard let db = self.db else { return false }
-      if let outgoingAccountId {
-        BackupManifestStore.adoptUnowned(db, accountId: outgoingAccountId)
-      }
-      if BackupManifestStore.resetInPlace(db, nowMs: self.nowMs()) {
-        return true
-      }
-      sqlite3_close_v2(db)
-      self.db = nil
-      return false
-    }
-    if resetOK {
-      UserDefaults.standard.removeObject(forKey: Self.manifestResetPendingKey)
-    } else {
-      UserDefaults.standard.set(true, forKey: Self.manifestResetPendingKey)
+      manifestHandle.resetForSignOut(outgoingAccountId: outgoingAccountId)
     }
     RuntimeTrace.event("backup.native.storage_purge.prepared", ["resetInPlace": resetOK])
     return (kept, !resetOK)
@@ -6085,32 +6101,103 @@ final class NativeBackupEngine: NSObject {
   /// no connection open, the reset is retried on a connection of its own; if
   /// it still fails and `allowUnlink`, the file is replaced, carrying the
   /// kept pending marks over. No handle in this process points at a deleted
-  /// inode afterwards: JS reopens lazily on the resulting file, and the
-  /// engine's handle stays closed until the next launch opens it (its only
-  /// open is the one `init()` enqueues — native-backup-engine-db-queue.test.ts),
-  /// so on this rare path camera-roll backup resumes after a relaunch.
-  func finishStoragePurgeAfterFailedReset(allowUnlink: Bool) -> (ok: Bool, unlinked: Bool) {
-    let path = Self.backupDatabaseURL().standardizedFileURL.path
-    let result: (ok: Bool, unlinked: Bool) = dbQueue.sync {
-      if let db = self.db {
-        sqlite3_close_v2(db)
-        self.db = nil
-      }
-      let r = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: self.nowMs(), allowUnlink: allowUnlink)
-      if r.ok { UserDefaults.standard.removeObject(forKey: Self.manifestResetPendingKey) }
-      return r
+  /// inode afterwards: JS reopens lazily on the resulting file.
+  ///
+  /// Round 6 (Codex P2 "Reopen the native manifest after successful
+  /// recovery"): the engine's handle is reopened on that file in the SAME
+  /// `dbQueue.sync` block as the recovery, still inside the JS purge hold, so
+  /// a sign-in later in this process finds an open manifest. Before, the
+  /// handle stayed closed until the next launch and `start()` ran without a
+  /// database. When the recovery or the reopen fails, `start()` reopens (or
+  /// reports `manifestUnavailableReason` and retries).
+  func finishStoragePurgeAfterFailedReset(allowUnlink: Bool) -> BackupManifestHandle.FinishResult {
+    let result: BackupManifestHandle.FinishResult = dbQueue.sync {
+      manifestHandle.finishAfterFailedReset(allowUnlink: allowUnlink)
     }
     RuntimeTrace.event("backup.native.storage_purge.recovered", [
       "ok": result.ok, "unlinked": result.unlinked, "allowUnlink": allowUnlink,
+      "reopened": result.reopened, "reopenFailure": result.reopenFailure?.rawValue ?? NSNull(),
     ])
     return result
+  }
+
+  // MARK: - Manifest availability (task 1667 round 6)
+
+  /// The reason `start()` refused because the manifest could not be opened.
+  private var manifestUnavailableStopReason: String? {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _manifestAvailability.stopReason
+  }
+
+  /// Records an open attempt. A success clears the reason; a scheduled
+  /// `start()` retry is left alone (it is still owed: only `start()` itself
+  /// proceeding, `stop()` or sign-out cancel it).
+  private func recordManifestOpen(_ failure: BackupManifestHandle.OpenFailure?) -> ManifestAvailability.Decision {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _manifestAvailability.record(failure)
+  }
+
+  private func cancelManifestOpenRetry() {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    _manifestOpenRetry?.cancel()
+    _manifestOpenRetry = nil
+  }
+
+  /// Sign-out and `stop()`: no reason, no retry.
+  private func clearManifestAvailability() {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    _manifestAvailability.clear()
+    _manifestOpenRetry?.cancel()
+    _manifestOpenRetry = nil
+  }
+
+  /// `start()` again after `delay`, for the same account. `stop()`, sign-out
+  /// and a `start()` that proceeds cancel it; an account change makes it a
+  /// no-op. It runs even if a background task set `isRunning` meanwhile:
+  /// `start()` then finishes the foreground setup that path skips.
+  private func scheduleManifestOpenRetry(accountId: String, after delay: TimeInterval) {
+    let retry = DispatchWorkItem { [weak self] in
+      guard let self, self.currentAccountId == accountId else { return }
+      RuntimeTrace.event("backup.native.manifest.open_retry")
+      self.start()
+    }
+    engineStateLock.lock()
+    _manifestOpenRetry?.cancel()
+    _manifestOpenRetry = retry
+    engineStateLock.unlock()
+    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay, execute: retry)
+  }
+
+  /// `start()`'s manifest check (round 6). Opens the manifest if its handle
+  /// is closed. When that fails, the engine does not run without it: a
+  /// running engine is stopped, the reason is published (progress dict +
+  /// status surfaces) and a retry is scheduled. MUST NOT run on `dbQueue`.
+  private func ensureManifestOpenForStart(accountId: String) -> Bool {
+    let failure = dbQueue.sync { openManifestIfClosed(trigger: "start") }
+    if failure != nil, isRunning {
+      stop()
+    }
+    switch recordManifestOpen(failure) {
+    case .proceed:
+      cancelManifestOpenRetry()
+      return true
+    case .refuse(let reason, let retryAfter):
+      RuntimeTrace.event("backup.native.start.refused_manifest_unavailable", [
+        "failure": failure?.rawValue ?? NSNull(),
+        "retryAfterS": retryAfter,
+      ])
+      NSLog("[NativeBackupEngine] Backup manifest unavailable (\(failure?.rawValue ?? "?")) — not starting; retry in \(Int(retryAfter)) s")
+      scheduleManifestOpenRetry(accountId: accountId, after: retryAfter)
+      updateBackupStatusSurfaces(reason: reason)
+      return false
+    }
   }
 
   /// Refresh progress counters from the database.
   private func refreshProgress() {
     dbQueue.sync {
       guard let db = db else { return }
-      migratePhotoKitMissingAssetRows()
+      Self.migratePhotoKitMissingAssetRows(db, nowMs: nowMs())
       let selectedCondition = "COALESCE(selected_for_backup, 1) = 1"
       totalAssets = countWhere(db: db, condition: selectedCondition)
       completedAssets = countWhere(db: db, condition: "\(selectedCondition) AND status = 'uploaded'")

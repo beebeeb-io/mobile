@@ -2432,11 +2432,13 @@ public class BeebeebCryptoModule: Module {
     // failure"): the second half of a sign-out whose in-place manifest reset
     // failed. JS calls it after closing its own expo-sqlite handle;
     // `allowUnlink` is whether that close succeeded. `ok` 1 = the manifest
-    // is empty (reset, or replaced when `unlinked` is 1). The engine's handle
-    // stays closed until the next launch (its only open is in `init()`).
+    // is empty (reset, or replaced when `unlinked` is 1). Round 6:
+    // `reopened` 1 = the engine's handle is open again on that file (opened
+    // in the same serialized step as the recovery); 0 = `start()` reopens it
+    // or reports `manifestUnavailableReason` and retries.
     AsyncFunction("finishBackupManifestPurge") { (allowUnlink: Bool) -> [String: Int] in
       let r = NativeBackupEngine.shared.finishStoragePurgeAfterFailedReset(allowUnlink: allowUnlink)
-      return ["ok": r.ok ? 1 : 0, "unlinked": r.unlinked ? 1 : 0]
+      return ["ok": r.ok ? 1 : 0, "unlinked": r.unlinked ? 1 : 0, "reopened": r.reopened ? 1 : 0]
     }
 
     // Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the

@@ -488,6 +488,60 @@ enum BackupManifestStore {
     uploadedCount(db, accountId: accountId).map { $0 == 0 }
   }
 
+  // MARK: - Camera-roll scan
+
+  /// One camera-roll asset a scan found (`NativeBackupEngine.insertNewAssets`).
+  struct ScannedAsset: Equatable {
+    let localAssetId: String
+    let createdAt: String
+    /// "photo" or "video".
+    let assetType: String
+  }
+
+  /// Queues every scanned asset the manifest does not track yet, and puts a
+  /// row whose photo had gone missing back in the queue. Moved here
+  /// unchanged from `NativeBackupEngine.insertNewAssets` (round 6) so the
+  /// reopen test drives the shipped statement. Returns false when the
+  /// statement could not be prepared or the batch did not commit.
+  @discardableResult
+  static func insertScannedAssets(_ db: OpaquePointer, _ assets: [ScannedAsset], nowMs: Int64) -> Bool {
+    let sql = """
+    INSERT INTO backup_assets
+      (local_asset_id, content_hash, file_size, created_at, asset_type, status, queued_at)
+    VALUES (?, '', 0, ?, ?, 'pending_upload', ?)
+    ON CONFLICT(local_asset_id) DO UPDATE SET
+      created_at = excluded.created_at,
+      asset_type = excluded.asset_type,
+      selected_for_backup = 1,
+      status = CASE
+        WHEN backup_assets.status = 'local_missing' THEN 'pending_upload'
+        ELSE backup_assets.status
+      END,
+      retry_count = CASE
+        WHEN backup_assets.status = 'local_missing' THEN 0
+        ELSE COALESCE(backup_assets.retry_count, 0)
+      END,
+      error_message = CASE
+        WHEN backup_assets.status = 'local_missing' THEN NULL
+        ELSE backup_assets.error_message
+      END
+    """
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+    defer { sqlite3_finalize(stmt) }
+
+    sqlite3_exec(db, "BEGIN", nil, nil, nil)
+    for asset in assets {
+      bindText(stmt, 1, asset.localAssetId)
+      bindText(stmt, 2, asset.createdAt)
+      bindText(stmt, 3, asset.assetType)
+      sqlite3_bind_int64(stmt, 4, nowMs)
+      sqlite3_step(stmt)
+      sqlite3_reset(stmt)
+    }
+    return sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
+  }
+
   // MARK: - Upload completion
 
   /// Completed upload: the row now points at `remoteFileId`, owned by

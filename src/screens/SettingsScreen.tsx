@@ -652,6 +652,7 @@ export default function SettingsScreen() {
     accountMismatchReason,
     ownerUnconfirmedReason,
     accountRefusalReason,
+    manifestUnavailableReason,
   } = useBackup();
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
@@ -1736,6 +1737,9 @@ export default function SettingsScreen() {
     // (never-paid trial cancelled, lapsed, no plan, or the 25 GB trial
     // cap); say so before any progress line, same as the three cases above.
     if (accountRefusalReason) return accountRefusalReason;
+    // Task 1667 round 6: native could not open its backup list and is
+    // retrying; say so instead of a progress line that is not moving.
+    if (manifestUnavailableReason) return manifestUnavailableReason;
     if (backupPaused) {
       return `Paused · waiting for Wi-Fi${cameraTotalCount > 0 ? ` · ${cameraBackedUpCount.toLocaleString()} of ${cameraTotalCount.toLocaleString()} ${cameraItemLabel}` : ''}${cameraIssueSuffix}`;
     }
@@ -1761,7 +1765,7 @@ export default function SettingsScreen() {
 
     return 'Waiting for first scan';
   })();
-  const cameraRollSummaryColor = backupBlockedReason || accountMismatchReason || ownerUnconfirmedReason || accountRefusalReason || (cameraIssueCount > 0 && !cameraBackupActive)
+  const cameraRollSummaryColor = backupBlockedReason || accountMismatchReason || ownerUnconfirmedReason || accountRefusalReason || manifestUnavailableReason || (cameraIssueCount > 0 && !cameraBackupActive)
     ? c.red
     : c.ink3;
   const cameraRollStatusDotColor = backupPaused

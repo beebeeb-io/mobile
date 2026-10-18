@@ -361,14 +361,25 @@ export function auditDbQueue(source: string): DbQueueAudit {
   const declMatch = /private var db\s*:/.exec(code);
   if (!declMatch) throw new Error('`private var db` declaration not found — audit needs updating');
   const declDbPos = declMatch.index + 'private var '.length;
+  // Task 1667 round 6: `db` is a read-only view of `manifestHandle.db`, and
+  // `manifestHandle` (BackupManifestHandle) opens, resets and closes it. Its
+  // members are dbQueue-only too, so every `manifestHandle` reference counts
+  // as a `db` reference — except its own declaration and the `db` getter.
+  const handleDecl = /private let manifestHandle\s*=/.exec(code);
+  const handleDeclPos = handleDecl ? handleDecl.index + 'private let '.length : -1;
+  const dbGetter = /private var db\s*:\s*OpaquePointer\?\s*\{\s*manifestHandle\.db\s*\}/.exec(code);
+  const dbGetterRange: [number, number] = dbGetter ? [dbGetter.index, dbGetter.index + dbGetter[0].length] : [-1, -1];
 
-  // ---- references to the `db` property
-  const shadowing = funcs.filter((f) => /\(\s*db\s*:\s*OpaquePointer/.test(code.slice(f.sigStart, f.bodyOpen)));
+  // ---- references to the `db` property (and to `manifestHandle`)
+  const shadowing = funcs.filter((f) => /\(\s*(?:_\s+)?db\s*:\s*OpaquePointer/.test(code.slice(f.sigStart, f.bodyOpen)));
   const refs: number[] = [];
-  const refRe = /(?<![\w.])(?:self\.)?db\b(?!\w)/g;
+  const refRe = /(?<![\w.])(?:self\.)?(?:db|manifestHandle)\b(?!\w)/g;
   for (let m = refRe.exec(code); m; m = refRe.exec(code)) {
     const pos = m.index + (m[0].startsWith('self.') ? 5 : 0);
     if (pos === declDbPos) continue;
+    if (pos === handleDeclPos) continue;
+    if (dbGetterRange[0] <= pos && pos < dbGetterRange[1]) continue;
+    if (code.startsWith('manifestHandle', pos) && /^manifestHandle\s*:/.test(code.slice(pos, pos + 40))) continue; // a label
     if (/^db\s*:\s*OpaquePointer/.test(code.slice(pos, pos + 30))) continue; // parameter declaration
     if (shadowing.some((f) => f.bodyOpen < pos && pos < f.bodyClose)) continue; // shadowed param
     refs.push(pos);

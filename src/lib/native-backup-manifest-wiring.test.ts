@@ -27,6 +27,7 @@ const IOS = join(import.meta.dir, '../../modules/beebeeb-crypto/ios');
 const engine = readFileSync(join(IOS, 'NativeBackupEngine.swift'), 'utf8');
 const moduleSwift = readFileSync(join(IOS, 'BeebeebCryptoModule.swift'), 'utf8');
 const gateSwift = readFileSync(join(IOS, 'ManifestRebuildGate.swift'), 'utf8');
+const handleSwift = readFileSync(join(IOS, 'BackupManifestHandle.swift'), 'utf8');
 const backupContext = readFileSync(join(import.meta.dir, 'backup-context.tsx'), 'utf8');
 
 /** Strip `//` comments so prose that names a call never counts as the call. */
@@ -74,7 +75,7 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
   const prep = body(engine, 'func prepareForStoragePurge() -> (kept: Set<String>, resetFailed: Bool) {');
 
   test('the engine is stopped and unbound BEFORE the manifest is emptied', () => {
-    const [stop, unbind, reset] = order(prep, 'stop()', 'clearAccountAndPurgeStaged()', 'BackupManifestStore.resetInPlace(db');
+    const [stop, unbind, reset] = order(prep, 'stop()', 'clearAccountAndPurgeStaged()', 'manifestHandle.resetForSignOut(outgoingAccountId: outgoingAccountId)');
     expect(stop).toBeGreaterThan(-1);
     expect(unbind).toBeGreaterThan(stop);
     expect(reset).toBeGreaterThan(unbind);
@@ -84,23 +85,32 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     expect(prep).toMatch(/parentFolderId = nil/);
   });
 
+  // lazy: a missing signature is a failing test, not an error that hides the whole section
+  const resetForSignOut = () => body(handleSwift, 'func resetForSignOut(outgoingAccountId: String?) -> Bool {');
+
   test('round 2: the outgoing account (captured before unbind) adopts pre-column rows before the reset', () => {
-    const [capture, unbind, adopt, reset] = order(
+    const [capture, unbind, reset] = order(
       prep,
       'let outgoingAccountId = currentAccountId ?? lastUnboundAccountId',
       'clearAccountAndPurgeStaged()',
-      'BackupManifestStore.adoptUnowned(db, accountId: outgoingAccountId)',
-      'BackupManifestStore.resetInPlace(db',
+      'manifestHandle.resetForSignOut(outgoingAccountId: outgoingAccountId)',
     );
     expect(capture).toBeGreaterThan(-1);
     expect(unbind).toBeGreaterThan(capture);
-    expect(adopt).toBeGreaterThan(unbind);
-    expect(reset).toBeGreaterThan(adopt);
+    expect(reset).toBeGreaterThan(unbind);
+    // round 6: the adopt + reset live in BackupManifestHandle.resetForSignOut, in that order.
+    const [adopt, inPlace] = order(
+      resetForSignOut(),
+      'BackupManifestStore.adoptUnowned(db, accountId: outgoingAccountId)',
+      'BackupManifestStore.resetInPlace(db',
+    );
+    expect(adopt).toBeGreaterThan(-1);
+    expect(inPlace).toBeGreaterThan(adopt);
   });
 
   test('a failed reset closes the engine handle and flags it, but NEVER drops the file from `kept` (the JS handle is still open on it)', () => {
-    expect(prep).toMatch(/dbQueue\.sync \{[\s\S]*BackupManifestStore\.resetInPlace\(db[\s\S]*sqlite3_close_v2\(db\)\s*self\.db = nil\s*return false/);
-    expect(prep).toMatch(/UserDefaults\.standard\.set\(true, forKey: Self\.manifestResetPendingKey\)/);
+    expect(prep).toMatch(/dbQueue\.sync \{\s*manifestHandle\.resetForSignOut\(outgoingAccountId: outgoingAccountId\)\s*\}/);
+    expect(resetForSignOut()).toMatch(/BackupManifestStore\.resetInPlace\(db[\s\S]*sqlite3_close_v2\(db\)\s*self\.db = nil\s*\}\s*pendingReset\.set\(true\)\s*awaitingPurgeFinish = true\s*return false/);
     expect(prep).not.toMatch(/return \[\]/);
     expect(prep).toMatch(/return \(kept, !resetOK\)/);
   });
@@ -109,26 +119,49 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     expect(prep).toMatch(/let kept: Set<String> = \[dbPath, dbPath \+ "-wal", dbPath \+ "-shm"\]/);
   });
 
-  test('round 2: finish closes the engine handle BEFORE recovering, and never reopens it (single open in init)', () => {
-    const fin = body(engine, 'func finishStoragePurgeAfterFailedReset(allowUnlink: Bool) -> (ok: Bool, unlinked: Bool) {');
-    const [close, recover] = order(
-      fin,
+  test('round 6: finish closes the handle BEFORE recovering, and REOPENS it after a successful recovery, in one dbQueue step', () => {
+    const fin = body(engine, 'func finishStoragePurgeAfterFailedReset(allowUnlink: Bool) -> BackupManifestHandle.FinishResult {');
+    expect(fin).toMatch(/dbQueue\.sync \{\s*manifestHandle\.finishAfterFailedReset\(allowUnlink: allowUnlink\)\s*\}/);
+    const handleFin = body(handleSwift, 'func finishAfterFailedReset(allowUnlink: Bool) -> FinishResult {');
+    const [close, recover, okGuard, clear, reopen] = order(
+      handleFin,
       'sqlite3_close_v2(db)',
-      'BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: self.nowMs(), allowUnlink: allowUnlink)',
+      'BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now(), allowUnlink: allowUnlink)',
+      'guard recovered.ok else {',
+      'pendingReset.set(false)',
+      'let failure = openIfClosed()',
     );
     expect(close).toBeGreaterThan(-1);
     expect(recover).toBeGreaterThan(close);
-    expect(fin).not.toMatch(/openDatabase\(/);
+    expect(okGuard).toBeGreaterThan(recover);
+    expect(clear).toBeGreaterThan(okGuard);
+    expect(reopen).toBeGreaterThan(clear);
+    expect(handleFin).toMatch(/reopened: failure == nil/);
     const fn = body(moduleSwift, 'AsyncFunction("finishBackupManifestPurge") { (allowUnlink: Bool) -> [String: Int] in');
     expect(fn).toMatch(/finishStoragePurgeAfterFailedReset\(allowUnlink: allowUnlink\)/);
+    expect(fn).toMatch(/"reopened": r\.reopened \? 1 : 0/);
   });
 
-  test('round 2: a reset still pending is retried when the database is next opened', () => {
-    const open = body(engine, 'private func openDatabase() {');
-    const [tables, retry] = order(open, 'ensureTables()', 'BackupManifestStore.resetInPlace(db)');
-    expect(tables).toBeGreaterThan(-1);
-    expect(retry).toBeGreaterThan(tables);
-    expect(open).toMatch(/UserDefaults\.standard\.bool\(forKey: Self\.manifestResetPendingKey\)/);
+  test('a reset still pending is applied on EVERY open, after the schema, and an open that cannot apply it keeps no handle', () => {
+    const open = body(handleSwift, 'func openIfClosed() -> OpenFailure? {');
+    const [schema, check, pendingGet, retry, close, fail, assign] = order(
+      open,
+      'prepareSchema(opened)',
+      'BackupManifestStore.tableExistsChecked(opened, "backup_assets") == true',
+      'if pendingReset.get() {',
+      'BackupManifestStore.resetInPlace(opened, nowMs: now())',
+      'sqlite3_close_v2(opened)\n        return .pendingResetFailed',
+      'return .pendingResetFailed',
+      'db = opened',
+    );
+    expect(schema).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(schema);
+    expect(pendingGet).toBeGreaterThan(check);
+    expect(retry).toBeGreaterThan(pendingGet);
+    expect(close).toBeGreaterThan(retry);
+    expect(fail).toBeGreaterThan(close);
+    expect(assign).toBeGreaterThan(fail);
+    expect(open).toMatch(/if awaitingPurgeFinish \{ return \.purgeInFlight \}/);
   });
 });
 
@@ -378,5 +411,104 @@ describe('5. round 5: route 404s and the kept-marks expiry', () => {
     const fn = body(engine, 'func expireKeptPendingMarks(trigger: String) -> Int? {');
     expect(fn).toMatch(/BackupManifestStore\.expirePendingMarks\(db, nowMs: self\.nowMs\(\)\)/);
     expect(fn).not.toMatch(/accountId|applyPendingMarks|pendingMarkCount/);
+  });
+});
+
+describe('6. round 6: the native manifest handle is reopened, and nothing runs without it', () => {
+  const start = () => body(engine, '  func start() {');
+  const ensureForStart = () => body(engine, 'private func ensureManifestOpenForStart(accountId: String) -> Bool {');
+
+  test('start() checks the manifest after the account guard and BEFORE both the running branch and isRunning = true', () => {
+    const [accountGuard, ensure, runningBranch, setRunning] = order(
+      start(),
+      'guard let accountId = currentAccountId, !accountId.isEmpty else {',
+      'guard ensureManifestOpenForStart(accountId: accountId) else { return }',
+      'if isRunning {',
+      'isRunning = true',
+    );
+    expect(accountGuard).toBeGreaterThan(-1);
+    expect(ensure).toBeGreaterThan(accountGuard);
+    expect(runningBranch).toBeGreaterThan(ensure);
+    expect(setRunning).toBeGreaterThan(runningBranch);
+  });
+
+  test('a failed open stops a running engine, publishes the reason and schedules a retry; it never proceeds', () => {
+    const [open, stop, record, retry, surface, refuse] = order(
+      ensureForStart(),
+      'dbQueue.sync { openManifestIfClosed(trigger: "start") }',
+      'stop()',
+      'switch recordManifestOpen(failure) {',
+      'scheduleManifestOpenRetry(accountId: accountId, after: retryAfter)',
+      'updateBackupStatusSurfaces(reason: reason)',
+      'return false',
+    );
+    expect(open).toBeGreaterThan(-1);
+    expect(stop).toBeGreaterThan(open);
+    expect(record).toBeGreaterThan(stop);
+    expect(retry).toBeGreaterThan(record);
+    expect(surface).toBeGreaterThan(retry);
+    expect(refuse).toBeGreaterThan(surface);
+    expect(ensureForStart()).toMatch(/case \.proceed:\s*cancelManifestOpenRetry\(\)\s*return true/);
+  });
+
+  test('the retry re-runs start() for the same account only; start() proceeding cancels it, a background open does not', () => {
+    const retry = body(engine, 'private func scheduleManifestOpenRetry(accountId: String, after delay: TimeInterval) {');
+    expect(retry).toMatch(/guard let self, self\.currentAccountId == accountId else \{ return \}/);
+    expect(retry).toMatch(/self\.start\(\)/);
+    expect(retry).toMatch(/_manifestOpenRetry\?\.cancel\(\)/);
+    expect(ensureForStart()).toMatch(/case \.proceed:\s*cancelManifestOpenRetry\(\)\s*return true/);
+    // the background task records its open but must not cancel the start() still owed to JS
+    const record = body(engine, 'private func recordManifestOpen(_ failure: BackupManifestHandle.OpenFailure?) -> ManifestAvailability.Decision {');
+    expect(record).not.toMatch(/cancel/);
+  });
+
+  test('the background task opens the manifest itself, and refuses without one BEFORE it touches staged assets or isRunning', () => {
+    const bg = body(engine, 'private func handleBackgroundTask(_ task: BGProcessingTask) {');
+    const [open, refuse, purge, setRunning] = order(
+      bg,
+      'self.dbQueue.sync { self.openManifestIfClosed(trigger: "background_task") }',
+      'self.completeBackgroundTaskOnce(task, success: false)\n        return\n      }\n      self.dbQueue.sync { self.purgeMismatchedStagedAssets',
+      'self.dbQueue.sync { self.purgeMismatchedStagedAssets(currentAccountId: accountId) }',
+      'self.isRunning = true',
+    );
+    expect(open).toBeGreaterThan(-1);
+    expect(refuse).toBeGreaterThan(open);
+    expect(purge).toBeGreaterThan(refuse);
+    expect(setRunning).toBeGreaterThan(purge);
+    expect(bg).toMatch(/if case \.refuse\(let reason, _\) = self\.recordManifestOpen\(manifestFailure\)/);
+  });
+
+  test('stop() and sign-out clear the reason and cancel a pending retry (no restart after disablePhotoBackup)', () => {
+    const stop = body(engine, '  func stop() {');
+    const [clear, guardRunning] = order(stop, 'clearManifestAvailability()', 'guard isRunning else { return }');
+    expect(clear).toBeGreaterThan(-1);
+    expect(guardRunning).toBeGreaterThan(clear);
+    const prep = body(engine, 'func prepareForStoragePurge() -> (kept: Set<String>, resetFailed: Bool) {');
+    expect(prep).toMatch(/clearManifestAvailability\(\)/);
+  });
+
+  test('the reason is visible: progress dict, status state, manual trigger error, JS context and Settings', () => {
+    expect(engine).toMatch(/"manifestUnavailableReason": manifestUnavailableStopReason \?\? NSNull\(\)/);
+    const state = body(engine, 'private func backupState(pending: Int) -> (state: String, reason: String) {');
+    expect(state.indexOf('manifestUnavailableStopReason')).toBeGreaterThan(-1);
+    expect(state.indexOf('manifestUnavailableStopReason')).toBeLessThan(state.indexOf('if isPaused'));
+    const manual = body(engine, 'func triggerManualBackup(limit: Int = 50) async throws -> [String: Any] {');
+    expect(manual).toMatch(/if manifestUnavailableStopReason != nil \{ throw BackupError\.databaseUnavailable \}/);
+    expect(backupContext).toMatch(/setManifestUnavailableReason\(p\.manifestUnavailableReason \?\? null\)/);
+    const settings = readFileSync(join(import.meta.dir, '../screens/SettingsScreen.tsx'), 'utf8');
+    expect(settings).toMatch(/if \(manifestUnavailableReason\) return manifestUnavailableReason;/);
+  });
+
+  test('only BackupManifestHandle opens, closes or assigns the native handle (the engine has no other path to a nil db)', () => {
+    const c = code(engine);
+    expect(c).toMatch(/private var db: OpaquePointer\? \{ manifestHandle\.db \}/);
+    expect(c.match(/sqlite3_open_v2\(/g) ?? []).toHaveLength(0);
+    expect(c.match(/sqlite3_close(?:_v2)?\(/g) ?? []).toHaveLength(0);
+    // (`db` is get-only, so the compiler refuses an assignment too; `let db = db` shadows are not assignments)
+    expect(c.match(/(?<!(?:let|var)\s)(?<![\w.])(?:self\.)?db\s*=[^=]/g) ?? []).toHaveLength(0);
+    const h = code(handleSwift);
+    // the two places the handle can become nil: a failed sign-out reset (reopened by finish) and finish's own close
+    expect(h.match(/self\.db = nil/g) ?? []).toHaveLength(2);
+    expect(h.match(/(?<![\w.])db = opened/g) ?? []).toHaveLength(1);
   });
 });

@@ -808,10 +808,19 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   failed reset the file is still KEPT (never unlinked under the JS handle): native closes its
   handle and sets `io.beebeeb.backupManifestResetPending`, JS closes its handle, then
   `finishBackupManifestPurge` resets (or replaces, carrying the kept marks) with no connection
-  open; JS reopens lazily, the engine's handle stays closed until the next launch (its one open
-  is the `init()` enqueue). The flag makes the next open retry the reset.
+  open; JS reopens lazily. The flag makes every later open apply the reset first.
+- **The engine's handle lives in `BackupManifestHandle.swift` (round 6).** It is the only code that
+  opens, resets, closes or reopens the native connection; the engine's `db` is a read-only view of it
+  and `swift-db-queue-audit.ts` holds `manifestHandle` to the same dbQueue rule as `db`.
+  `finishBackupManifestPurge` reopens the handle in the same `dbQueue.sync` step as a successful
+  recovery (still inside the JS purge hold), and no open happens between the two halves of a failed
+  sign-out (`purge_in_flight`). An open that cannot open, read, or apply a pending reset keeps NO
+  handle. `start()` and the BG task never run without a handle: `start()` reopens, or stops, publishes
+  `manifestUnavailableReason` (progress dict, status `needsAttention`, Settings) and retries 2, 4, 8,
+  16, then every 30 s; `stop()` and sign-out cancel the retry. Never add a path that leaves `db` nil
+  silently.
 - Tests: `scripts/swift-tests/backup-manifest-store-test.swift` (real SQLite, two connections,
-  lsof), `scripts/swift-tests/{manifest-rebuild-gate,sign-out-mark-flush,photo-backup-route-responses}-test.swift`,
+  lsof), `scripts/swift-tests/{manifest-rebuild-gate,sign-out-mark-flush,photo-backup-route-responses,manifest-reopen}-test.swift`,
   `src/lib/account-cleanup.1667-backup-manifest.test.ts`,
   `src/lib/native-backup-manifest-wiring.test.ts`.
 

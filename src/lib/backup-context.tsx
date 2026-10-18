@@ -289,6 +289,14 @@ export interface BackupContextValue {
    * upload for this reason.
    */
   accountRefusalReason: string | null;
+  /**
+   * Task 1667 round 6: set when the NATIVE engine refused to start because it
+   * could not open (or empty) the camera-roll backup manifest. Native retries
+   * on its own and clears it on the first open that works. Sourced from
+   * native's poll (`manifestUnavailableReason` on `NativeBackupProgress`);
+   * null otherwise.
+   */
+  manifestUnavailableReason: string | null;
   // Legacy alias for components that used the old API
   isBackupEnabled: boolean;
   toggleBackup: () => Promise<void>;
@@ -324,6 +332,7 @@ export const BackupContext = createContext<BackupContextValue>({
   accountMismatchReason: null,
   ownerUnconfirmedReason: null,
   accountRefusalReason: null,
+  manifestUnavailableReason: null,
   isBackupEnabled: false,
   toggleBackup: async () => {},
 });
@@ -601,7 +610,8 @@ export function nativeProgressEquals(a: NativeBackupProgress, b: NativeBackupPro
     opt(a.accountMismatchReason) === opt(b.accountMismatchReason) &&
     opt(a.accountMismatchGeneration) === opt(b.accountMismatchGeneration) &&
     opt(a.ownerUnconfirmedReason) === opt(b.ownerUnconfirmedReason) &&
-    opt(a.accountRefusalReason) === opt(b.accountRefusalReason)
+    opt(a.accountRefusalReason) === opt(b.accountRefusalReason) &&
+    opt(a.manifestUnavailableReason) === opt(b.manifestUnavailableReason)
   );
 }
 
@@ -648,6 +658,9 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // confirmed but non-session-ending refusal — same single-producer
   // mirroring as the two above (the native poll is the only writer).
   const [accountRefusalReason, setAccountRefusalReason] = useState<string | null>(null);
+  // Task 1667 round 6: native could not open its manifest and is retrying;
+  // same single-producer mirroring as the reasons above.
+  const [manifestUnavailableReason, setManifestUnavailableReason] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Task 1686 (iOS idle heat) — the current RN AppState as a plain ref, read
   // by both polls at tick time (shouldPauseBackupPolls) and written by the
@@ -734,6 +747,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     setAccountMismatchReason(nextAccountMismatchReason);
     setOwnerUnconfirmedReason(p.ownerUnconfirmedReason ?? null);
     setAccountRefusalReason(p.accountRefusalReason ?? null);
+    setManifestUnavailableReason(p.manifestUnavailableReason ?? null);
   }, []);
 
   const refreshNativeProgress = useCallback(async () => {
@@ -1238,6 +1252,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     accountMismatchReason,
     ownerUnconfirmedReason,
     accountRefusalReason,
+    manifestUnavailableReason,
     // Legacy alias
     isBackupEnabled: isPhotoBackupEnabled,
     toggleBackup: togglePhotoBackup,
