@@ -11,6 +11,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { clearCachedFileIndex } from './file-index-cache';
+import { advanceAccountEpoch } from './account-epoch';
 import { clearCachedBilling } from './billing-cache';
 import { collectPaged, findInPages } from './paginate';
 import { rateLimitedFetch } from './rate-limited-fetch';
@@ -169,6 +170,10 @@ export async function getToken(): Promise<string | null> {
 
 export async function setToken(token: string): Promise<void> {
   sessionGeneration += 1;
+  // Task 1959 round 2: a sign-in is an account boundary for in-flight work
+  // (file-index loader, backup reconcile, sync write-through). Synchronous,
+  // before the first await.
+  advanceAccountEpoch();
   cachedToken = token;
   await tokenStore.set(TOKEN_KEY, token);
   await BeebeebCrypto.mirrorSessionToAppGroup(token, BASE_URL).catch(() => false);
@@ -186,6 +191,10 @@ export async function setToken(token: string): Promise<void> {
 
 export async function clearToken(): Promise<void> {
   sessionGeneration += 1;
+  // Task 1959 round 2: drop the previous account's in-memory index window and
+  // detach its in-flight work NOW, not when clearCachedFileIndex() runs below
+  // after several awaits.
+  advanceAccountEpoch();
   cachedToken = null;
   cachedDeviceConfirmationSecret = null;
   // Task 1531 [P1] (round 5 delta security review): clear the native

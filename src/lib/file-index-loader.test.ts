@@ -10,6 +10,7 @@ mock.module('./file-index-cache', () => ({
   loadCachedFileIndex: async () => null,
   saveCachedFileIndex: async () => {},
   fileIndexCacheGeneration: () => 0,
+  cachedFileIndexEpoch: () => undefined,
 }));
 
 const { createFileIndexLoader, mergeWithServerRows } = await import('./file-index-loader');
@@ -152,7 +153,8 @@ describe('createFileIndexLoader', () => {
     generation += 1;
     hold = false;
     for (const r of pending) r();
-    await p;
+    // Round 2 (Codex P1): it is not handed to the caller either.
+    await expect(p).rejects.toMatchObject({ name: 'StaleAccountError' });
     expect(cache).toBeNull();
     await loader.load();
     expect(calls.length).toBe(2);
@@ -203,5 +205,195 @@ describe('mergeWithServerRows', () => {
     const out = mergeWithServerRows([row('x', { blurhash: undefined, share_count: 0 })], server);
     expect(out[0].blurhash).toBe('B');
     expect(out[0].share_count).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 1959 round 2 (Codex P1 on PR #181, "Key in-flight requests by account
+// generation"). Account A signs out while GET /files/index is pending and
+// account B calls the loader before it settles. Before the fix B joined A's
+// promise and got A's rows; the generation check only skipped the cache write.
+// ---------------------------------------------------------------------------
+describe('account generation (task 1959 round 2)', () => {
+  // The server answers for the account whose token the request carried, i.e.
+  // the account current when the request STARTED.
+  const vaults = {
+    A: { hash: 'sA', files: [row('a1'), row('a2')] },
+    B: { hash: 'sB', files: [row('b1')] },
+  };
+  let account = 'A';
+  let accountGen = 0;
+  let accountId = 'user-A';
+  let holdCache = false;
+  let cachePending = [];
+
+  function makeAccountLoader() {
+    return createFileIndexLoader({
+      fetchIndex: async (hash) => {
+        const vault = vaults[account];
+        calls.push(hash);
+        if (hold) await new Promise((resolve) => pending.push(resolve));
+        if (hash === vault.hash) return { hash: vault.hash, changed: false, count: vault.files.length };
+        return { hash: vault.hash, changed: true, count: vault.files.length, files: vault.files };
+      },
+      loadCache: async () => {
+        const snapshot = cache ? { ...cache, files: [...cache.files] } : null;
+        if (holdCache) await new Promise((resolve) => cachePending.push(resolve));
+        return snapshot;
+      },
+      saveCache: async (hash, files, storedAt) => { cache = { hash, files, storedAt }; },
+      cacheGeneration: () => generation,
+      accountEpoch: () => ({ generation: accountGen, accountId }),
+      now: () => clock,
+      revalidateMs: WINDOW,
+    });
+  }
+
+  /** clearToken() (sign-out) then a sign-in as B: the account epoch moves at
+   *  the start of clearToken, the cache generation when the cache is cleared. */
+  function switchToB() {
+    accountGen += 1;
+    generation += 1;
+    cache = null;
+    account = 'B';
+    accountId = 'user-B';
+    accountGen += 1; // setToken(B)
+  }
+
+  const tick = () => new Promise((r) => setTimeout(r, 1));
+  function release() {
+    hold = false;
+    for (const r of pending.splice(0)) r();
+  }
+
+  beforeEach(() => {
+    account = 'A';
+    accountGen = 0;
+    accountId = 'user-A';
+    holdCache = false;
+    cachePending = [];
+    loader = makeAccountLoader();
+  });
+
+  test('A signs out mid-request, B calls: B gets its own request and only its own rows', async () => {
+    hold = true;
+    const forA = loader.load();
+    forA.catch(() => {});
+    await tick();
+    switchToB();
+    const forB = loader.load();
+    await tick();
+    release();
+    const outB = await forB;
+    expect(outB.files.map((f) => f.id)).toEqual(['b1']);
+    expect(outB.hash).toBe('sB');
+    expect(calls.length).toBe(2);
+  });
+
+  test('a forced B call (the backup reconcile) does not join A\'s request either', async () => {
+    hold = true;
+    const forA = loader.load({ force: true });
+    forA.catch(() => {});
+    await tick();
+    switchToB();
+    const forB = loader.load({ force: true });
+    await tick();
+    release();
+    expect((await forB).files.map((f) => f.id)).toEqual(['b1']);
+  });
+
+  test('the stale A request rejects for every A waiter and is never cached', async () => {
+    hold = true;
+    const first = loader.load();
+    const second = loader.load({ force: true });
+    first.catch(() => {});
+    second.catch(() => {});
+    await tick();
+    switchToB();
+    release();
+    await expect(first).rejects.toMatchObject({ name: 'StaleAccountError' });
+    await expect(second).rejects.toMatchObject({ name: 'StaleAccountError' });
+    expect(cache).toBeNull();
+  });
+
+  test('an A caller whose cache read straddles the switch is rejected, not answered under B', async () => {
+    cache = { hash: 'sA', files: [row('a1'), row('a2')], storedAt: clock };
+    holdCache = true;
+    const forA = loader.load();
+    await tick();
+    switchToB();
+    holdCache = false;
+    for (const r of cachePending.splice(0)) r();
+    await expect(forA).rejects.toMatchObject({ name: 'StaleAccountError' });
+    // Nothing was asked of the server on A's behalf under B's session.
+    expect(calls.length).toBe(0);
+  });
+
+  test('the same with a fresh A window: the straddling caller is not served A\'s rows from the window', async () => {
+    await loader.load();
+    expect(calls.length).toBe(1);
+    holdCache = true;
+    const forA = loader.load();
+    await tick();
+    switchToB();
+    holdCache = false;
+    for (const r of cachePending.splice(0)) r();
+    await expect(forA).rejects.toMatchObject({ name: 'StaleAccountError' });
+    expect(calls.length).toBe(1);
+  });
+
+  test('a cache read under A that finishes after the switch never seeds B\'s request', async () => {
+    // B's caller passes a cache it read before the switch (PhotosScreen reads
+    // the cache, then calls the loader). The server would answer "unchanged"
+    // only for B's own hash, but the loader must not even send A's.
+    const stale = { hash: 'sA', files: [row('a1'), row('a2')], storedAt: clock };
+    const tagEpoch = { generation: accountGen, accountId };
+    switchToB();
+    const out = await loader.load({ cached: stale, cachedEpoch: tagEpoch });
+    expect(out.files.map((f) => f.id)).toEqual(['b1']);
+    expect(calls).toEqual([undefined]);
+  });
+
+  test('the window is per account: B never gets A\'s checked rows from memory', async () => {
+    await loader.load();
+    expect(calls.length).toBe(1);
+    switchToB();
+    // B's sync write-through rewrites the cache under the same hash string
+    // A's rows had (a contrived collision): still a network check for B.
+    cache = { hash: 'sA', files: [row('b1')], storedAt: clock + 1 };
+    const out = await loader.load();
+    expect(out.source).toBe('network');
+    expect(out.files.map((f) => f.id)).toEqual(['b1']);
+    expect(loader.inspect().windowAccountId).toBe('user-B');
+  });
+
+  test('an account-id change with no generation change still counts as another account', async () => {
+    hold = true;
+    const forA = loader.load();
+    forA.catch(() => {});
+    await tick();
+    account = 'B';
+    accountId = 'user-B';
+    const forB = loader.load();
+    await tick();
+    release();
+    expect((await forB).files.map((f) => f.id)).toEqual(['b1']);
+    await expect(forA).rejects.toMatchObject({ name: 'StaleAccountError' });
+  });
+
+  test('a lock (account id goes null) is the same account: no spurious rejection', async () => {
+    hold = true;
+    const p = loader.load();
+    await tick();
+    accountId = null;
+    release();
+    expect((await p).files.map((f) => f.id)).toEqual(['a1', 'a2']);
+  });
+
+  test('reset() (sign-out hook) drops the window and detaches the in-flight request', async () => {
+    await loader.load();
+    expect(loader.inspect().hasWindow).toBe(true);
+    loader.reset();
+    expect(loader.inspect()).toMatchObject({ hasWindow: false, inFlight: false });
   });
 });

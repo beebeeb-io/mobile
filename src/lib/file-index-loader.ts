@@ -38,6 +38,21 @@
  *      the backup reconcile, which needs the current server list)
  *      skips the window but still joins an in-flight request.
  *
+ * Account boundary (round 2, Codex P1 on PR #181): every request, and the
+ * window, belongs to the account epoch (`account-epoch.ts`) it started under.
+ *   - A caller only joins an in-flight request of its own epoch; a caller of
+ *     another epoch starts its own request.
+ *   - A request whose epoch is no longer current when it settles REJECTS with
+ *     `StaleAccountError` for all of its waiters (who are, by the rule above,
+ *     all of the old epoch). It never hands rows to anyone and never writes
+ *     the cache. Callers treat that rejection as "discard silently".
+ *   - The same check runs after every await inside the loader (cache read,
+ *     server response, cache write), and a cache object the caller read under
+ *     another epoch is not used.
+ *   - The window (`last`, which also holds the last server rows by id for the
+ *     field restore) is dropped on every epoch advance — at the start of
+ *     sign-out, not at the next call.
+ *
  * `file-index-loader.guard.test.ts` keeps `getFileIndex` from being called
  * anywhere else.
  */
@@ -45,11 +60,19 @@
 import { getFileIndex } from './api';
 import type { FileEntry, FileIndexResponse } from './api';
 import {
+  cachedFileIndexEpoch,
   fileIndexCacheGeneration,
   loadCachedFileIndex,
   saveCachedFileIndex,
   type CachedFileIndex,
 } from './file-index-cache';
+import {
+  accountEpoch,
+  onAccountEpochAdvance,
+  sameAccountEpoch,
+  StaleAccountError,
+  type AccountEpoch,
+} from './account-epoch';
 
 /** At most one /files/index request starts per window, unless forced. */
 export const FILE_INDEX_REVALIDATE_MS = 5 * 60_000;
@@ -57,8 +80,13 @@ export const FILE_INDEX_REVALIDATE_MS = 5 * 60_000;
 export interface FileIndexLoadOptions {
   /** Ask the server even inside the revalidation window (explicit refresh). */
   force?: boolean;
-  /** A cache the caller already read, to avoid parsing it twice. */
+  /** A cache the caller already read, to avoid parsing it twice. Used only
+   *  when it was read under the current account epoch. */
   cached?: CachedFileIndex | null;
+  /** The epoch `cached` was read under. Defaults to the tag
+   *  `loadCachedFileIndex()` puts on the object; an untagged object is
+   *  treated as read under the current epoch. */
+  cachedEpoch?: AccountEpoch;
 }
 
 export interface FileIndexLoadResult {
@@ -75,19 +103,34 @@ export interface FileIndexLoadResult {
 interface LoaderDeps {
   fetchIndex: (hash?: string) => Promise<FileIndexResponse>;
   loadCache: () => Promise<CachedFileIndex | null>;
-  saveCache: (hash: string, files: FileEntry[], storedAt: number) => Promise<void>;
+  saveCache: (hash: string, files: FileEntry[], storedAt: number, epoch: AccountEpoch) => Promise<void>;
   cacheGeneration: () => number;
+  /** The signed-in account's epoch (account-epoch.ts). */
+  accountEpoch?: () => AccountEpoch;
+  /** The epoch a cache object was read under, when known. */
+  cacheReadEpoch?: (cached: CachedFileIndex) => AccountEpoch | undefined;
   now: () => number;
   revalidateMs: number;
+}
+
+/** The account epoch plus the cache generation: both must hold. */
+interface Epoch {
+  account: AccountEpoch;
+  cache: number;
 }
 
 interface LastCheck {
   at: number;
   hash: string;
   storedAt: number;
-  generation: number;
+  epoch: Epoch;
   /** Server rows by id, to restore fields the sync write-through drops. */
   byId: Map<string, FileEntry>;
+}
+
+interface InFlight {
+  epoch: Epoch;
+  promise: Promise<FileIndexLoadResult>;
 }
 
 /**
@@ -114,9 +157,49 @@ export function mergeWithServerRows(cacheFiles: FileEntry[], byId: Map<string, F
   });
 }
 
+const NO_ACCOUNT: AccountEpoch = { generation: 0, accountId: null };
+
 export function createFileIndexLoader(deps: LoaderDeps) {
-  let inFlight: Promise<FileIndexLoadResult> | null = null;
+  let inFlight: InFlight | null = null;
   let last: LastCheck | null = null;
+
+  function epochNow(): Epoch {
+    return { account: deps.accountEpoch ? deps.accountEpoch() : NO_ACCOUNT, cache: deps.cacheGeneration() };
+  }
+
+  function sameEpoch(a: Epoch, b: Epoch): boolean {
+    return a.cache === b.cache && sameAccountEpoch(a.account, b.account);
+  }
+
+  /** Throws when `epoch` is no longer current: the work belongs to an
+   *  account that has signed out (or been switched away from). */
+  function assertCurrent(epoch: Epoch): void {
+    if (!sameEpoch(epoch, epochNow())) throw new StaleAccountError('file index');
+  }
+
+  /** Forget another epoch's window (its server rows). */
+  function dropOtherEpochWindow(epoch: Epoch): void {
+    if (last && !sameEpoch(last.epoch, epoch)) last = null;
+  }
+
+  /** The in-flight request a caller of `epoch` may share: only one that
+   *  started under the same epoch. Another epoch's request is left to settle
+   *  (and reject for its own waiters); this caller starts its own. */
+  function joinable(epoch: Epoch): Promise<FileIndexLoadResult> | null {
+    return inFlight && sameEpoch(inFlight.epoch, epoch) ? inFlight.promise : null;
+  }
+
+  /** The caller's preloaded cache, only when it was read under `epoch`. */
+  function usablePreloaded(
+    epoch: Epoch,
+    cached: CachedFileIndex | null | undefined,
+    cachedEpoch: AccountEpoch | undefined,
+  ): CachedFileIndex | null | undefined {
+    if (!cached) return cached;
+    const readUnder = cachedEpoch ?? deps.cacheReadEpoch?.(cached);
+    if (readUnder && !sameAccountEpoch(readUnder, epoch.account)) return undefined;
+    return cached;
+  }
 
   /** The rows to hand out for `cached`, given the last server check. */
   function rowsFor(cached: CachedFileIndex, check: LastCheck): FileEntry[] {
@@ -127,48 +210,46 @@ export function createFileIndexLoader(deps: LoaderDeps) {
     return mergeWithServerRows(cached.files, check.byId);
   }
 
-  function freshFromCache(cached: CachedFileIndex | null): FileEntry[] | null {
+  function freshFromCache(epoch: Epoch, cached: CachedFileIndex | null): FileEntry[] | null {
     if (!last || !cached) return null;
+    if (!sameEpoch(last.epoch, epoch)) return null;
     if (deps.now() - last.at >= deps.revalidateMs) return null;
-    if (deps.cacheGeneration() !== last.generation) return null;
     if (cached.hash !== last.hash) return null;
     return rowsFor(cached, last);
   }
 
-  async function revalidate(preloaded: CachedFileIndex | null | undefined): Promise<FileIndexLoadResult> {
-    const generation = deps.cacheGeneration();
+  async function revalidate(epoch: Epoch, preloaded: CachedFileIndex | null | undefined): Promise<FileIndexLoadResult> {
     const cached = preloaded !== undefined ? preloaded : await deps.loadCache();
+    assertCurrent(epoch);
     const index = await deps.fetchIndex(cached?.hash);
-    // Signed out / switched account while the request ran: hand the answer to
-    // the caller that asked, but neither cache it nor remember it.
-    if (deps.cacheGeneration() !== generation) {
-      return {
-        files: index.files ?? (index.changed ? null : cached?.files ?? null),
-        hash: index.hash ?? null,
-        source: 'network',
-      };
-    }
+    // Signed out / switched account while the request ran: the answer is the
+    // old account's. Reject for every waiter (all of them are of this epoch);
+    // never cache it, never remember it.
+    assertCurrent(epoch);
     if (!index.changed && cached) {
-      const sameServerState = last !== null && last.hash === cached.hash && last.generation === generation;
+      const sameServerState = last !== null && last.hash === cached.hash && sameEpoch(last.epoch, epoch);
       last = sameServerState && last
         ? { ...last, at: deps.now() }
         : {
             at: deps.now(),
             hash: cached.hash,
             storedAt: cached.storedAt,
-            generation,
+            epoch,
             byId: new Map(cached.files.map((f) => [f.id, f])),
           };
       return { files: rowsFor(cached, last), hash: cached.hash, source: 'network' };
     }
     if (index.files) {
       const storedAt = deps.now();
-      await deps.saveCache(index.hash, index.files, storedAt);
+      // The cache write re-checks the epoch at its turn in the write queue
+      // (file-index-cache.ts), so a sign-out during it leaves nothing behind.
+      await deps.saveCache(index.hash, index.files, storedAt, epoch.account);
+      assertCurrent(epoch);
       last = {
         at: storedAt,
         hash: index.hash,
         storedAt,
-        generation,
+        epoch,
         byId: new Map(index.files.map((f) => [f.id, f])),
       };
       return { files: index.files, hash: index.hash, source: 'network' };
@@ -177,45 +258,74 @@ export function createFileIndexLoader(deps: LoaderDeps) {
   }
 
   async function load(options: FileIndexLoadOptions = {}): Promise<FileIndexLoadResult> {
-    if (inFlight) return inFlight;
+    const epoch = epochNow();
+    dropOtherEpochWindow(epoch);
+    const joined = joinable(epoch);
+    if (joined) return joined;
+    const preloaded = usablePreloaded(epoch, options.cached, options.cachedEpoch);
     if (!options.force) {
-      const cached = options.cached !== undefined ? options.cached : await deps.loadCache();
-      // Another caller may have started a request while the cache was read.
-      if (inFlight) return inFlight;
-      const files = freshFromCache(cached);
+      const cached = preloaded !== undefined ? preloaded : await deps.loadCache();
+      // The account may have changed while the cache was read: this caller's
+      // account is gone, so it gets nothing (and nothing is asked of the
+      // server on its behalf under the next account's session).
+      assertCurrent(epoch);
+      // Another caller of this epoch may have started a request meanwhile.
+      const joinedLater = joinable(epoch);
+      if (joinedLater) return joinedLater;
+      const files = freshFromCache(epoch, cached);
       if (files && cached) return { files, hash: cached.hash, source: 'cache' };
-      return start(cached);
+      return start(epoch, cached);
     }
-    return start(options.cached);
+    return start(epoch, preloaded);
   }
 
-  function start(preloaded: CachedFileIndex | null | undefined): Promise<FileIndexLoadResult> {
-    if (inFlight) return inFlight;
-    const request = revalidate(preloaded).finally(() => {
-      if (inFlight === request) inFlight = null;
+  function start(epoch: Epoch, preloaded: CachedFileIndex | null | undefined): Promise<FileIndexLoadResult> {
+    const joined = joinable(epoch);
+    if (joined) return joined;
+    const promise = revalidate(epoch, preloaded).finally(() => {
+      if (inFlight?.promise === promise) inFlight = null;
     });
-    inFlight = request;
-    return request;
+    inFlight = { epoch, promise };
+    return promise;
   }
 
+  /** Forget the window and detach any in-flight request (sign-out / sign-in:
+   *  wired to every account-epoch advance for the app's loader). */
   function reset(): void {
     inFlight = null;
     last = null;
   }
 
-  return { load, reset };
+  /** Test hook: what the loader holds in memory right now. */
+  function inspect(): { hasWindow: boolean; inFlight: boolean; windowAccountId: string | null } {
+    return {
+      hasWindow: last !== null,
+      inFlight: inFlight !== null,
+      windowAccountId: last?.epoch.account.accountId ?? null,
+    };
+  }
+
+  return { load, reset, inspect };
 }
 
 const defaultLoader = createFileIndexLoader({
   fetchIndex: (hash) => getFileIndex(hash),
   loadCache: loadCachedFileIndex,
-  saveCache: (hash, files, storedAt) => saveCachedFileIndex(hash, files, storedAt),
+  saveCache: (hash, files, storedAt, epoch) => saveCachedFileIndex(hash, files, storedAt, undefined, { epoch }),
   cacheGeneration: fileIndexCacheGeneration,
+  accountEpoch,
+  cacheReadEpoch: cachedFileIndexEpoch,
   now: () => Date.now(),
   revalidateMs: FILE_INDEX_REVALIDATE_MS,
 });
 
-/** Load the vault index for a screen. See the module comment for the rules. */
+// Sign-out / sign-in: drop the previous account's window (its server rows,
+// including file-request key material, live in `last.byId`) at the boundary,
+// not at the next call.
+onAccountEpochAdvance(() => defaultLoader.reset());
+
+/** Load the vault index for a screen. See the module comment for the rules.
+ *  Rejects with `StaleAccountError` when the account changed while it ran. */
 export function loadFileIndex(options?: FileIndexLoadOptions): Promise<FileIndexLoadResult> {
   return defaultLoader.load(options);
 }
@@ -223,4 +333,9 @@ export function loadFileIndex(options?: FileIndexLoadOptions): Promise<FileIndex
 /** Test hook: forget the in-memory window and any in-flight request. */
 export function resetFileIndexLoaderForTests(): void {
   defaultLoader.reset();
+}
+
+/** Test hook: what the app's loader holds in memory. */
+export function fileIndexLoaderStateForTests(): ReturnType<ReturnType<typeof createFileIndexLoader>['inspect']> {
+  return defaultLoader.inspect();
 }

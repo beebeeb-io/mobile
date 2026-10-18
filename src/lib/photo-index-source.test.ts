@@ -25,10 +25,11 @@ let serverFiles: unknown[] = [];
 let pending: Array<() => void> = [];
 function releaseAll() { const p = pending; pending = []; for (const r of p) r(); }
 let holdIndex = false;
+let allImagesCalls = 0;
 
 mock.module('./api', () => ({
   ApiError: MockApiError,
-  getAllImages: async () => [],
+  getAllImages: async () => { allImagesCalls += 1; return [photo('b-media')]; },
   getFileIndex: async (hash?: string) => {
     indexCalls.push(hash);
     if (holdIndex) await new Promise<void>((resolve) => { pending.push(resolve); });
@@ -46,10 +47,13 @@ mock.module('./file-index-cache', () => ({
   },
   clearCachedFileIndex: async () => { cache = null; cacheGeneration += 1; },
   fileIndexCacheGeneration: () => cacheGeneration,
+  cachedFileIndexEpoch: () => undefined,
 }));
 
 const { getPhotoCandidates } = await import('./photo-index-source');
 const loaderModule = await import('./file-index-loader').catch(() => null);
+// Task 1959 round 2. Absent before the fix.
+const epoch = await import('./account-epoch').catch(() => null);
 
 function photo(id: string, extra: Record<string, unknown> = {}) {
   return {
@@ -75,6 +79,7 @@ beforeEach(() => {
   cacheGeneration = 0;
   holdIndex = false;
   pending = [];
+  allImagesCalls = 0;
   loaderModule?.resetFileIndexLoaderForTests?.();
 });
 
@@ -118,5 +123,24 @@ describe('Photos focus refresh — /files/index burst (task 1959)', () => {
     await getPhotoCandidates(undefined, new Set());
     await getPhotoCandidates(undefined, new Set(), { force: true });
     expect(indexCalls).toEqual([undefined, 'h1']);
+  });
+});
+
+describe('Photos index across an account switch (task 1959 round 2)', () => {
+  test('a Photos load whose account signed out mid-request gets neither the old rows nor a media-list fallback under the new session', async () => {
+    holdIndex = true;
+    const forA = getPhotoCandidates(undefined, new Set());
+    forA.catch(() => {});
+    await new Promise((r) => setTimeout(r, 2));
+    // clearToken(): the account epoch moves first; the cache clear follows.
+    epoch?.advanceAccountEpoch();
+    cache = null;
+    cacheGeneration += 1;
+    holdIndex = false;
+    releaseAll();
+    await expect(forA).rejects.toMatchObject({ name: 'StaleAccountError' });
+    // Not answered with GET /files/media either (that would run on the next
+    // account's session and hand its photos to the old account's screen).
+    expect(allImagesCalls).toBe(0);
   });
 });

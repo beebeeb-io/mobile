@@ -8,11 +8,16 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
 const asyncStore = new Map<string, string>();
+let holdWrites = false;
+const writePending: Array<() => void> = [];
 
 mock.module('@react-native-async-storage/async-storage', () => ({
   default: {
     getItem: async (key: string) => asyncStore.get(key) ?? null,
-    setItem: async (key: string, value: string) => { asyncStore.set(key, value); },
+    setItem: async (key: string, value: string) => {
+      if (holdWrites) await new Promise<void>((resolve) => writePending.push(resolve));
+      asyncStore.set(key, value);
+    },
     removeItem: async (key: string) => { asyncStore.delete(key); },
   },
 }));
@@ -30,6 +35,8 @@ mock.module('./plaintext-storage', () => ({
 
 const { loadCachedFileIndex, saveCachedFileIndex, clearCachedFileIndex } =
   await import('./file-index-cache');
+// Task 1959 round 2. Absent before the fix.
+const epoch = await import('./account-epoch').catch(() => null);
 
 function fileEntry(overrides: Record<string, unknown> = {}) {
   return {
@@ -46,6 +53,8 @@ function fileEntry(overrides: Record<string, unknown> = {}) {
 
 beforeEach(async () => {
   asyncStore.clear();
+  holdWrites = false;
+  writePending.length = 0;
 });
 
 describe('CachedFileIndex.seq round-trip (task 1302 follow-up)', () => {
@@ -82,5 +91,34 @@ describe('CachedFileIndex.seq round-trip (task 1302 follow-up)', () => {
 
     const loaded = await loadCachedFileIndex();
     expect(loaded).toBeNull();
+  });
+});
+
+// Task 1959 round 2 (Codex P1 on PR #181): a cache write that belongs to an
+// account that has since signed out must never land after the sign-out's clear
+// (the next account would read the previous account's rows from disk).
+describe('cache writes across a sign-out (task 1959 round 2)', () => {
+  test('a write bound to an account epoch that ended before it ran is dropped', async () => {
+    const bound = epoch ? epoch.accountEpoch() : { generation: 0, accountId: null };
+    await clearCachedFileIndex(); // sign-out
+    await saveCachedFileIndex('hash-A', [fileEntry({ id: 'a1' })], 1000, undefined, { epoch: bound });
+    expect(await loadCachedFileIndex()).toBeNull();
+  });
+
+  test('a clear issued while a write is in flight leaves no cache behind', async () => {
+    holdWrites = true;
+    const write = saveCachedFileIndex('hash-A', [fileEntry({ id: 'a1' })], 1000);
+    await new Promise((r) => setTimeout(r, 1));
+    const clear = clearCachedFileIndex();
+    holdWrites = false;
+    for (const r of writePending.splice(0)) r();
+    await Promise.all([write, clear]);
+    expect(await loadCachedFileIndex()).toBeNull();
+  });
+
+  test('a write bound to the current epoch still lands', async () => {
+    const bound = epoch ? epoch.accountEpoch() : { generation: 0, accountId: null };
+    await saveCachedFileIndex('hash-B', [fileEntry({ id: 'b1' })], 1000, undefined, { epoch: bound });
+    expect((await loadCachedFileIndex())?.hash).toBe('hash-B');
   });
 });

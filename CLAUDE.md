@@ -869,6 +869,19 @@ path, plus a request on every Photos tab focus, is how one 163 MB upload produce
 in 10 minutes. Worst case now: 2 requests per 5 minutes (one reconcile, one plain revalidation),
 plus explicit refreshes.
 
+**Account boundary (1959 round 2).** `src/lib/account-epoch.ts` names the account a piece of async
+work belongs to: a generation that `setToken()` / `clearToken()` (and `clearCachedFileIndex()`)
+advance synchronously, plus the unlocked key's account id (a null id while locked is not a
+different account). The loader only lets a caller join a request of its own epoch, and a request
+whose epoch is stale when it settles rejects with `StaleAccountError` for all its waiters: it
+never hands rows to another account and never writes the cache. The backup reconcile captures the
+epoch at start and calls `live()` after every await before it reads or prunes local state; its
+in-flight join and throttle are per epoch. Cache writes and clears run through one queue in
+`file-index-cache.ts`, and a write carrying an `epoch` is dropped when that account is gone (the
+sync client passes the epoch it was created under, so its `stop()` flush after sign-out writes
+nothing). Treat `StaleAccountError` as "discard silently": no error UI, no fallback request.
+Anything new that holds account data across an await follows the same pattern.
+
 ## Bottom sheets — one primitive (task 1586)
 
 Every partial-height sheet renders through `src/components/sheet/BottomSheet.tsx` (+

@@ -93,6 +93,7 @@ mock.module('../lib/file-index-cache', () => ({
   saveCachedFileIndex: async () => {},
   clearCachedFileIndex: async () => {},
   fileIndexCacheGeneration: () => 0,
+  cachedFileIndexEpoch: () => undefined,
 }));
 mock.module('../../modules/beebeeb-crypto', () => ({
   getContactsBackupStatus: async () => ({ hasKnownBackupState: false }),

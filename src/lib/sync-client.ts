@@ -29,6 +29,7 @@ import {
 import type { SyncOp, SyncNode, FileEntry } from './api';
 import { isSyncOp } from './sync-op-guard';
 import { loadCachedFileIndex, saveCachedFileIndex } from './file-index-cache';
+import { accountEpoch, isCurrentAccountEpoch } from './account-epoch';
 import { syncDecryptedEntriesToFileProvider } from './file-provider-mount';
 import { getDeviceId } from './device-identity';
 
@@ -289,6 +290,12 @@ export class SyncClient {
   // changed so we can signal exactly those File Provider enumerators.
   private cachePersistTimer: ReturnType<typeof setTimeout> | null = null;
   private dirtyParents = new Set<string | null>();
+  // Task 1959 round 2: the account this client's tree belongs to. SyncProvider
+  // creates the client after sign-in (setToken moved the epoch) and stops it
+  // when `user` goes null, which is AFTER logout() -> clearToken() cleared the
+  // index cache. The write-through must not put this account's tree back on
+  // disk (or into the File Provider) once that account is gone.
+  private readonly accountEpoch = accountEpoch();
 
   getStatus(): ConnectionStatus {
     return this.status;
@@ -813,6 +820,9 @@ export class SyncClient {
     const parents = this.dirtyParents;
     this.dirtyParents = new Set<string | null>();
     if (parents.size === 0) return;
+    // Task 1959 round 2: signed out (or switched) since this client started:
+    // the next account's cache and File Provider are not ours to write.
+    if (!isCurrentAccountEpoch(this.accountEpoch)) return;
 
     // Trashed-ancestor closure: the set of node ids that are themselves trashed
     // OR live under a folder that is trashed. The server has no recursive trash
@@ -844,10 +854,14 @@ export class SyncClient {
       const existing = await loadCachedFileIndex().catch(() => null);
       const hash = existing?.hash ?? 'live-writethrough';
       const files = liveNodes.map(syncNodeToFileEntry);
-      await saveCachedFileIndex(hash, files, Date.now(), this.lastSeq);
+      // The write re-checks the epoch at its turn in the cache's write queue
+      // (the `loadCachedFileIndex` await above is a window for a sign-out).
+      await saveCachedFileIndex(hash, files, Date.now(), this.lastSeq, { epoch: this.accountEpoch });
     } catch {
       // disk write best-effort; the next full fetch reconciles
     }
+    // Round 2: the awaits above are a window for a sign-out.
+    if (!isCurrentAccountEpoch(this.accountEpoch)) return;
 
     // iOS File Provider write-through. Push each affected folder's COMPLETE
     // non-trashed child set with prune enabled so vanished rows are deleted and

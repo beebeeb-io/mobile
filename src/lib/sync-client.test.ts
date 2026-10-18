@@ -94,6 +94,8 @@ mock.module('./device-identity', () => ({
 }));
 
 const { SyncClient, fileEntryToSyncNode } = await import('./sync-client');
+// Task 1959 round 2. Absent before the fix (real module: dependency-free).
+const epoch = await import('./account-epoch').catch(() => null);
 
 function fileEntry(overrides: Record<string, unknown> = {}) {
   return {
@@ -360,5 +362,40 @@ describe('fileEntryToSyncNode (task 1302)', () => {
     expect(node.version_number).toBe(4);
     expect(node.storage_pool_id).toBe('pool-2');
     expect(node.mime_type).toBe('image/png');
+  });
+});
+
+// Task 1959 round 2 (Codex P1 on PR #181, audit of the cache-rows class):
+// SyncProvider stops the client when `user` goes null, which is AFTER
+// logout() -> clearToken() has cleared the index cache. stop() flushes a
+// pending write-through, which wrote the signed-out account's tree back to
+// disk, where the next account's Photos tab rendered it as its cached index.
+describe('SyncClient write-through across a sign-out (task 1959 round 2)', () => {
+  test('a stop() after sign-out does not write the signed-out account\'s tree to the index cache', async () => {
+    getSnapshotImpl = async () => ({ seq_id: 3, nodes: [syncNode({ id: 'a1', name_encrypted: 'enc-a1' })] });
+    const client = new SyncClient();
+    await client.start();
+    savedIndexCalls.length = 0;
+
+    // An op within the ~800 ms debounce before sign-out.
+    client.applyLocalOp('file_rename', { id: 'a1', name_encrypted: 'enc-a1-renamed' });
+    // logout() -> clearToken(): the account epoch moves and the cache is cleared.
+    epoch?.advanceAccountEpoch();
+    // SyncProvider's effect sees user === null.
+    client.stop();
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(savedIndexCalls).toEqual([]);
+  });
+
+  test('without a sign-out the stop() flush still writes (unchanged behaviour)', async () => {
+    getSnapshotImpl = async () => ({ seq_id: 3, nodes: [syncNode({ id: 'a1', name_encrypted: 'enc-a1' })] });
+    const client = new SyncClient();
+    await client.start();
+    savedIndexCalls.length = 0;
+    client.applyLocalOp('file_rename', { id: 'a1', name_encrypted: 'enc-a1-renamed' });
+    client.stop();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(savedIndexCalls.length).toBe(1);
   });
 });

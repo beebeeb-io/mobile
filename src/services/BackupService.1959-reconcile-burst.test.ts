@@ -52,6 +52,10 @@ function fileRow(id: string, parent: string): Entry {
 let serverHash = 'h0';
 let serverRows: Entry[] = [];
 const indexCalls: Array<string | undefined> = [];
+let indexHold = false;
+const indexPending: Array<() => void> = [];
+let uploadedHold = false;
+const uploadedPending: Array<() => void> = [];
 
 mock.module('@react-native-async-storage/async-storage', () => ({
   default: {
@@ -87,9 +91,14 @@ mock.module('../lib/api', () => ({
   renameFile: async () => {},
   trashFiles: async () => {},
   getFileIndex: async (hash?: string) => {
+    // The answer is for the session the request carried: the server state
+    // when the request STARTED (task 1959 round 2 holds it across a switch).
+    const hashNow = serverHash;
+    const rowsNow = [...serverRows];
     indexCalls.push(hash);
-    if (hash === serverHash) return { hash: serverHash, changed: false, count: serverRows.length };
-    return { hash: serverHash, changed: true, count: serverRows.length, files: [...serverRows] };
+    if (indexHold) await new Promise<void>((resolve) => indexPending.push(resolve));
+    if (hash === hashNow) return { hash: hashNow, changed: false, count: rowsNow.length };
+    return { hash: hashNow, changed: true, count: rowsNow.length, files: rowsNow };
   },
 }));
 
@@ -101,8 +110,9 @@ mock.module('../lib/file-index-cache', () => ({
   saveCachedFileIndex: async (hash: string, files: Entry[], storedAt = Date.now(), seq?: number) => {
     indexCache = { hash, files, storedAt, ...(seq !== undefined ? { seq } : {}) };
   },
-  clearCachedFileIndex: async () => { indexCache = null; cacheGeneration += 1; },
+  clearCachedFileIndex: async () => { indexCache = null; cacheGeneration += 1; epoch?.advanceAccountEpoch(); },
   fileIndexCacheGeneration: () => cacheGeneration,
+  cachedFileIndexEpoch: () => undefined,
 }));
 
 mock.module('../../modules/beebeeb-crypto', () => ({
@@ -118,7 +128,10 @@ mock.module('../lib/encrypted-upload', () => ({
 let uploadedRemote = new Set<string>();
 const requeued: string[][] = [];
 mock.module('./BackupDatabase', () => ({
-  getAllUploadedRemoteIds: async () => new Set(uploadedRemote),
+  getAllUploadedRemoteIds: async () => {
+    if (uploadedHold) await new Promise<void>((resolve) => uploadedPending.push(resolve));
+    return new Set(uploadedRemote);
+  },
   resetUploadedState: async (ids?: string[]) => { requeued.push(ids ?? ['<all>']); return ids?.length ?? 0; },
 }));
 mock.module('../lib/offline-manager', () => ({
@@ -132,6 +145,10 @@ mock.module('../lib/thumbnail-cache', () => ({
 mock.module('../lib/name-cache', () => ({ loadNameCache: async () => ({}), pruneNameCache: async () => {} }));
 mock.module('../lib/device-identity', () => ({ getDeviceId: async () => 'device-1' }));
 mock.module('../lib/runtime-trace', () => ({ recordRuntimeTrace: () => null }));
+
+// Task 1959 round 2: the account epoch (api.ts setToken/clearToken move it).
+// Absent before the fix; the switch below then only moves the cache generation.
+const epoch = await import('../lib/account-epoch').catch(() => null);
 
 const BackupService = await import('./BackupService');
 const { ensureBackupFolders, reconcileDerivedStateAgainstServer, setBackupEncryption } = BackupService;
@@ -151,6 +168,10 @@ beforeEach(() => {
   indexCache = null;
   cacheGeneration = 0;
   uploadedRemote = new Set();
+  indexHold = false;
+  indexPending.length = 0;
+  uploadedHold = false;
+  uploadedPending.length = 0;
   BackupService.resetReconcileThrottleForTests?.();
   loader?.resetFileIndexLoaderForTests?.();
 
@@ -263,5 +284,84 @@ describe('task 1959 — backup reconcile burst', () => {
       ensureBackupFolders('contacts'),
     ]);
     expect(indexCalls.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 1959 round 2 (Codex P1 on PR #181): the reconcile prunes LOCAL state
+// (backup manifest, offline copies, name cache, thumbnails) against the ids it
+// got from /files/index. Under account B it must only ever compare against
+// B's ids, and a reconcile that started under A must stop touching local state
+// once A is gone.
+// ---------------------------------------------------------------------------
+describe('task 1959 round 2 — reconcile across an account switch', () => {
+  const tick = () => new Promise((r) => setTimeout(r, 1));
+
+  /** Sign A out (clearToken: epoch, then cache clear) and sign B in. B's
+   *  vault and B's local backup manifest replace A's. */
+  async function switchToB() {
+    epoch?.advanceAccountEpoch();
+    indexCache = null;
+    cacheGeneration += 1;
+    serverHash = 'hB';
+    serverRows = [fileRow('b1', 'cam-b')];
+    uploadedRemote = new Set(['b1']);
+    epoch?.advanceAccountEpoch(); // setToken(B)
+  }
+
+  beforeEach(() => {
+    serverHash = 'hA';
+    serverRows = [fileRow('a1', 'cam'), fileRow('a2', 'cam')];
+    uploadedRemote = new Set(['a1', 'a2']);
+  });
+
+  test('B reconciles against B\'s ids only, never A\'s in-flight answer', async () => {
+    indexHold = true;
+    const forA = reconcileDerivedStateAgainstServer();
+    await tick();
+    await switchToB();
+    const forB = reconcileDerivedStateAgainstServer();
+    await tick();
+    indexHold = false;
+    for (const r of indexPending.splice(0)) r();
+    await Promise.all([forA, forB]);
+    // B asked the server itself...
+    expect(indexCalls.length).toBe(2);
+    // ...and b1 (in B's vault) was not taken for an orphan of A's id list.
+    expect(requeued).toEqual([]);
+    expect(secure.get('beebeeb_reconcile_index_hash')).toBe('hB');
+  });
+
+  test('a reconcile that started under A stops before touching local state once A is gone', async () => {
+    uploadedHold = true;
+    const forA = reconcileDerivedStateAgainstServer();
+    await tick();
+    expect(indexCalls.length).toBe(1); // A's rows are in hand
+    await switchToB();
+    uploadedHold = false;
+    for (const r of uploadedPending.splice(0)) r();
+    await forA;
+    // B's manifest ({b1}) was not compared against A's ids ({a1, a2}).
+    expect(requeued).toEqual([]);
+    // A's hash was not recorded as reconciled.
+    expect(secure.get('beebeeb_reconcile_index_hash')).toBeUndefined();
+  });
+
+  test('sign-out drops the app loader\'s in-memory window at once (A\'s server rows are not kept)', async () => {
+    await loader.loadFileIndex();
+    expect(loader.fileIndexLoaderStateForTests().hasWindow).toBe(true);
+    // clearToken()'s first synchronous step; no loader call follows.
+    epoch?.advanceAccountEpoch();
+    expect(loader.fileIndexLoaderStateForTests()).toMatchObject({ hasWindow: false, inFlight: false });
+  });
+
+  test('A\'s reconcile does not throttle B\'s', async () => {
+    await reconcileDerivedStateAgainstServer();
+    expect(indexCalls.length).toBe(1);
+    clock += 1_000;
+    await switchToB();
+    await reconcileDerivedStateAgainstServer();
+    expect(indexCalls.length).toBe(2);
+    expect(secure.get('beebeeb_reconcile_index_hash')).toBe('hB');
   });
 });

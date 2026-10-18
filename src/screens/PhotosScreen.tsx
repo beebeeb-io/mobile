@@ -35,6 +35,7 @@ import { useTheme } from '../lib/theme-context';
 import { GlassCircle, GlassSurface, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial, useTabBarBottomInset } from '../components/glass';
 import { friendlyError, trashFiles } from '../lib/api';
 import { getPhotoCandidates } from '../lib/photo-index-source';
+import { isStaleAccountError } from '../lib/account-epoch';
 import type { FileEntry } from '../lib/api';
 import { guessMimeType } from '../lib/media';
 // Task 1687c — the row-level Photos-tab media classification lives in
@@ -1105,6 +1106,12 @@ export default function PhotosScreen() {
         .catch(() => {});
     } catch (err) {
       endPerf({ error: true });
+      // Task 1959 round 2: the account changed while the index loaded. The
+      // result belonged to the signed-out account; show nothing, no error.
+      if (isStaleAccountError(err)) {
+        recordRuntimeTrace('photos.fetch.stale_account', { renderedCachedIndex });
+        return;
+      }
       recordRuntimeTrace('photos.fetch.failed', {
         renderedCachedIndex,
         error: err instanceof Error ? err.message : String(err),
