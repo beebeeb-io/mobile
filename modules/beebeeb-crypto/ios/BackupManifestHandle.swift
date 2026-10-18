@@ -90,6 +90,16 @@ final class BackupManifestHandle {
   private(set) var openCount = 0
   /// Whether the last successful open applied a pending sign-out reset.
   private(set) var lastOpenAppliedPendingReset = false
+  /// Round 7 sweep: a connection this handle closed may still be open (its
+  /// `sqlite3_close` did not return OK, see `BackupManifestStore
+  /// .closeConnection`). Sticky for the life of the process: from then on
+  /// the recovery never replaces the file, whatever JS reports, because an
+  /// fd of this process may still point at it.
+  private(set) var closeUnconfirmed = false
+  /// Round 7 sweep: the account a failed sign-out reset was for, handed to
+  /// the recovery so its pre-column rows are adopted (and their
+  /// associations kept) there too.
+  private var recoveryAccountId: String?
 
   private let pendingReset: ResetPendingFlag
   private let prepareSchema: (OpaquePointer) -> Void
@@ -122,7 +132,7 @@ final class BackupManifestHandle {
     )
     var handle: OpaquePointer?
     guard sqlite3_open_v2(path, &handle, Self.openFlags, nil) == SQLITE_OK, let opened = handle else {
-      if let handle { sqlite3_close_v2(handle) }
+      if let handle { close(handle) }
       return .openFailed
     }
     // WAL for concurrent access with the JS layer. Its result is not the
@@ -131,13 +141,13 @@ final class BackupManifestHandle {
     sqlite3_exec(opened, "PRAGMA journal_mode = WAL", nil, nil, nil)
     prepareSchema(opened)
     guard BackupManifestStore.tableExistsChecked(opened, "backup_assets") == true else {
-      sqlite3_close_v2(opened)
+      close(opened)
       return .unreadable
     }
     var appliedPendingReset = false
     if pendingReset.get() {
       guard BackupManifestStore.resetInPlace(opened, nowMs: now()) else {
-        sqlite3_close_v2(opened)
+        close(opened)
         return .pendingResetFailed
       }
       pendingReset.set(false)
@@ -154,21 +164,38 @@ final class BackupManifestHandle {
   /// failure the handle is closed, the pending flag set, and opens are
   /// refused until `finishAfterFailedReset`; the file itself is kept (the
   /// JS handle is still open on it). Returns whether the reset succeeded.
+  ///
+  /// Round 7 sweep: the adoption is checked. When it cannot run, the reset
+  /// does not run either (it would delete those rows without keeping their
+  /// associations): the sign-out takes the failed-reset path, and the
+  /// recovery adopts them for the same account first.
   func resetForSignOut(outgoingAccountId: String?) -> Bool {
+    recoveryAccountId = outgoingAccountId
     if let db {
+      let adopted: Bool
       if let outgoingAccountId {
-        BackupManifestStore.adoptUnowned(db, accountId: outgoingAccountId)
+        adopted = BackupManifestStore.adoptUnowned(db, accountId: outgoingAccountId) != nil
+      } else {
+        adopted = true
       }
-      if BackupManifestStore.resetInPlace(db, nowMs: now()) {
+      if adopted, BackupManifestStore.resetInPlace(db, nowMs: now()) {
         pendingReset.set(false)
+        recoveryAccountId = nil
         return true
       }
-      sqlite3_close_v2(db)
+      close(db)
       self.db = nil
     }
     pendingReset.set(true)
     awaitingPurgeFinish = true
     return false
+  }
+
+  /// Every close of a manifest connection goes through here (round 7).
+  private func close(_ connection: OpaquePointer) {
+    if !BackupManifestStore.closeConnection(connection) {
+      closeUnconfirmed = true
+    }
   }
 
   /// Second half of a sign-out whose reset failed; called once the JS
@@ -178,13 +205,20 @@ final class BackupManifestHandle {
   /// success the handle is reopened on the resulting file before this
   /// returns. On failure the reset stays pending and the next
   /// `openIfClosed` applies it (or refuses).
+  ///
+  /// Round 7 sweep: the file is never replaced while a connection this
+  /// handle closed may still be open (`closeUnconfirmed`), even when JS
+  /// confirmed its own close.
   func finishAfterFailedReset(allowUnlink: Bool) -> FinishResult {
     if let db {
-      sqlite3_close_v2(db)
+      close(db)
       self.db = nil
     }
-    let recovered = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now(), allowUnlink: allowUnlink)
+    let recovered = BackupManifestStore.recoverAfterFailedReset(
+      path: path, nowMs: now(), allowUnlink: allowUnlink && !closeUnconfirmed, adoptAccountId: recoveryAccountId
+    )
     awaitingPurgeFinish = false
+    if recovered.ok { recoveryAccountId = nil }
     guard recovered.ok else {
       return FinishResult(ok: false, unlinked: recovered.unlinked, reopened: false, reopenFailure: nil)
     }

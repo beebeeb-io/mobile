@@ -852,6 +852,14 @@ final class NativeBackupEngine: NSObject {
     set { engineStateLock.lock(); _manifestReadyForAccount = newValue; engineStateLock.unlock() }
   }
 
+  /// Task 1667 round 7 sweep: the last camera-roll insert into the manifest
+  /// failed (`BackupManifestStore.insertScannedAssets` returned false). While
+  /// set, the rebuild gate does not apply the server map: the map is applied
+  /// once per account, to the rows the manifest holds at that moment, and a
+  /// photo whose row was missing then would be uploaded again when a later
+  /// scan inserts it. Read and written only on `dbQueue`.
+  private var lastScanInsertFailed = false
+
   /// Task 1667 round 4: consecutive deferred rebuilds caused by a database
   /// step (see `ManifestRebuildGate.backoff`); 0 after a ready check.
   private var _manifestRebuildFailures = 0
@@ -3989,9 +3997,16 @@ final class NativeBackupEngine: NSObject {
         baseURL: baseURL
       ) {
       case .alreadyCompleted:
-        dbQueue.sync {
-          markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId, accountId: batchAccountId)
+        let recorded: Bool = dbQueue.sync {
+          guard markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId, accountId: batchAccountId) else {
+            return false
+          }
           deleteStagedChunks(assetId: asset.localAssetId)
+          return true
+        }
+        guard recorded else {
+          RuntimeTrace.event("backup.native.upload.record_failed", ["path": "resume"])
+          throw BackupError.databaseUnavailable
         }
         removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
         updateBackupStatusSurfaces(reason: "Recovered completed backup")
@@ -4174,9 +4189,18 @@ final class NativeBackupEngine: NSObject {
       }
     }
 
-    dbQueue.sync {
-      markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId, accountId: batchAccountId)
+    let recorded: Bool = dbQueue.sync {
+      guard markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId, accountId: batchAccountId) else {
+        return false
+      }
       deleteStagedChunks(assetId: asset.localAssetId)
+      return true
+    }
+    // Round 7 sweep: nothing staged is deleted for an upload the manifest
+    // did not record (see `markUploadComplete`).
+    guard recorded else {
+      RuntimeTrace.event("backup.native.upload.record_failed", ["path": "complete"])
+      throw BackupError.databaseUnavailable
     }
     removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
     // Task 1667: see the resume branch above.
@@ -4958,6 +4982,9 @@ final class NativeBackupEngine: NSObject {
 
   /// Insert new assets from the photo library that are not already tracked
   /// (the statement lives in `BackupManifestStore.insertScannedAssets`).
+  ///
+  /// Round 7 sweep: the result is recorded (`lastScanInsertFailed`) and
+  /// traced; it used to be dropped, and a failed insert read as a complete one.
   private func insertNewAssets(_ assets: [PHAsset]) {
     guard let db = db else { return }
     let scanned = assets.map { asset in
@@ -4967,7 +4994,11 @@ final class NativeBackupEngine: NSObject {
         assetType: asset.mediaType == .video ? "video" : "photo"
       )
     }
-    BackupManifestStore.insertScannedAssets(db, scanned, nowMs: nowMs())
+    let inserted = BackupManifestStore.insertScannedAssets(db, scanned, nowMs: nowMs())
+    lastScanInsertFailed = !inserted
+    if !inserted {
+      RuntimeTrace.event("backup.native.scan.insert_failed", ["assets": scanned.count])
+    }
   }
 
   private func updateAssetSelectionScope(allowedAssetIds: Set<String>, hasAlbumSelection: Bool) {
@@ -5303,12 +5334,18 @@ final class NativeBackupEngine: NSObject {
   }
 
   /// Mark an asset as successfully uploaded.
-  private func markUploadComplete(assetId: String, remoteFileId: String, accountId: String) {
-    guard let db = db else { return }
+  ///
+  /// Task 1667 round 7 sweep: false when the manifest did not record it (no
+  /// handle, a failed write). The caller then keeps the staged chunks, the
+  /// remote file id and the session id, so the next attempt resumes, finds
+  /// the upload already complete and records it; it used to delete them
+  /// after a failed write, and the photo was uploaded again.
+  private func markUploadComplete(assetId: String, remoteFileId: String, accountId: String) -> Bool {
+    guard let db = db else { return false }
     // Task 1667: the row records WHICH account owns the remote file
     // (`uploaded_account_id`) and that the server's per-device map does not
     // know it yet (`server_marked_at = NULL`, see `markOnServer`).
-    BackupManifestStore.markUploaded(
+    return BackupManifestStore.markUploaded(
       db,
       assetId: assetId,
       remoteFileId: remoteFileId,
@@ -5794,7 +5831,11 @@ final class NativeBackupEngine: NSObject {
         return self.dbQueue.sync { () -> Bool? in
           guard let db = self.db else { return nil }
           guard BackupManifestStore.claim(db, accountId: accountId, nowMs: self.nowMs()) != nil else { return nil }
-          return BackupManifestStore.needsServerRebuild(db, accountId: accountId)
+          guard let needs = BackupManifestStore.needsServerRebuild(db, accountId: accountId) else { return nil }
+          // Round 7 sweep: never rebuild onto a manifest the last scan could
+          // not fill (the rows it missed would upload again later).
+          if needs && self.lastScanInsertFailed { return nil }
+          return needs
         }
       },
       hasDeviceId: { [weak self] in
@@ -6001,9 +6042,15 @@ final class NativeBackupEngine: NSObject {
   /// pressing the server; stops at the first failure.
   func flushServerMarks(accountId: String, authToken: String, baseURL: String, limit: Int = 300) async {
     guard backupDeviceId?.isEmpty == false else { return }
-    let rows: [(assetId: String, fileId: String)] = dbQueue.sync {
-      guard let db = self.db else { return [] }
+    let loaded: [(assetId: String, fileId: String)]? = dbQueue.sync {
+      guard let db = self.db else { return nil }
       return BackupManifestStore.pendingServerMarks(db, accountId: accountId, limit: limit)
+    }
+    // Round 7 sweep: a read failure is not "all marked"; traced, and the
+    // next scan's catch-up reads again.
+    guard let rows = loaded else {
+      RuntimeTrace.event("backup.native.server_mark.load_failed", ["trigger": "catch_up"])
+      return
     }
     guard !rows.isEmpty else { return }
     let deadline = Date().addingTimeInterval(20)
@@ -6040,10 +6087,23 @@ final class NativeBackupEngine: NSObject {
       loadRows: { [weak self] () -> [(assetId: String, fileId: String)] in
         guard let self else { return [] }
         // Rows from before `uploaded_account_id` belong to this account too.
+        // Round 7 sweep: a failed adoption or read is traced, not read as
+        // "nothing to mark". The flush can send nothing it cannot read; the
+        // reset then keeps every unmarked row (and refuses to run when the
+        // adoption fails), so no association is lost either way.
         return self.dbQueue.sync {
-          guard let db = self.db else { return [] }
-          BackupManifestStore.adoptUnowned(db, accountId: accountId)
-          return BackupManifestStore.pendingServerMarks(db, accountId: accountId, limit: Int(Int32.max))
+          guard let db = self.db else {
+            RuntimeTrace.event("backup.native.server_mark.load_failed", ["trigger": "sign_out", "step": "no_handle"])
+            return []
+          }
+          if BackupManifestStore.adoptUnowned(db, accountId: accountId) == nil {
+            RuntimeTrace.event("backup.native.server_mark.load_failed", ["trigger": "sign_out", "step": "adopt"])
+          }
+          guard let rows = BackupManifestStore.pendingServerMarks(db, accountId: accountId, limit: Int(Int32.max)) else {
+            RuntimeTrace.event("backup.native.server_mark.load_failed", ["trigger": "sign_out", "step": "read"])
+            return []
+          }
+          return rows
         }
       },
       shouldStop: { [weak self] in self?.currentAccountId != accountId },

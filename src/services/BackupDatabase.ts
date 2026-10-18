@@ -92,6 +92,40 @@ let releasePurgeBarrier: (() => void) | null = null;
 let inFlight = 0;
 let idleWaiters: Array<() => void> = [];
 
+// Task 1667 round 7 (Codex P1 "Retain the database handle when closing
+// fails", mobile#182 at dc531405): every connection this module opened whose
+// close has not been CONFIRMED. A handle whose `closeAsync()` rejected may
+// still be open (expo-sqlite marks it closed before `sqlite3_close` reports
+// back, and a busy close leaves the SQLite connection open), so it stays
+// here, `closeHandleForStoragePurge` retries it on every call, and that
+// returns false while any of them remains: the native recovery must never
+// unlink the file under a handle we lost track of. Before, the failed handle
+// was dropped with `dbPromise`; the next purge closed only the NEW handle,
+// reported "all closed", and the file was unlinked under the old one.
+const unclosedHandles = new Set<SQLite.SQLiteDatabase>();
+const CLOSE_ATTEMPTS = 3;
+const CLOSE_RETRY_DELAY_MS = 50;
+
+/** Closes `db`, retrying; true only when a `closeAsync()` resolved. */
+async function closeWithRetry(db: SQLite.SQLiteDatabase): Promise<boolean> {
+  for (let attempt = 1; attempt <= CLOSE_ATTEMPTS; attempt += 1) {
+    try {
+      await db.closeAsync();
+      return true;
+    } catch {
+      // A rejection is never "closed": expo-sqlite rejects a retry of a
+      // handle it already marked closed even when SQLite kept it open.
+      if (attempt < CLOSE_ATTEMPTS) await new Promise((r) => setTimeout(r, CLOSE_RETRY_DELAY_MS));
+    }
+  }
+  return false;
+}
+
+/** Test seam: connections whose close has not been confirmed. */
+export function unclosedHandleCount(): number {
+  return unclosedHandles.size;
+}
+
 function callStarted(): void {
   inFlight += 1;
 }
@@ -218,19 +252,29 @@ export async function suspendForStoragePurge(): Promise<StoragePurgeHold> {
   return { resume, closeHandle: closeHandleForStoragePurge };
 }
 
+/**
+ * Round 7: true only when EVERY connection this module ever opened is
+ * confirmed closed — the current one and any whose earlier close failed.
+ * A connection whose close fails stays tracked (and is retried at the next
+ * call); the module itself reopens a fresh handle after `resume`, so backup
+ * work goes on, but no purge can be told "closed" again in this process
+ * until the old connection's close succeeds.
+ */
 async function closeHandleForStoragePurge(): Promise<boolean> {
   await whenIdle();
   const open = dbPromise;
   dbPromise = null;
-  if (!open) return true;
-  const db = await open.catch(() => null);
-  if (!db) return true;
-  try {
-    await db.closeAsync();
-    return true;
-  } catch {
-    return false;
+  if (open) {
+    // A rejected open closed (or tracked) its own connection in openAndMigrate.
+    const db = await open.catch(() => null);
+    if (db) unclosedHandles.add(db);
   }
+  let allClosed = true;
+  for (const db of [...unclosedHandles]) {
+    if (await closeWithRetry(db)) unclosedHandles.delete(db);
+    else allClosed = false;
+  }
+  return allClosed;
 }
 
 /** Test seam: true while any purge hold is installed (calls would wait). */
@@ -271,6 +315,20 @@ async function migrateLocalMissingRowsIfNeeded(db: SQLite.SQLiteDatabase): Promi
 
 async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
   const db = await SQLite.openDatabaseAsync(DB_NAME);
+  try {
+    return await migrate(db);
+  } catch (err) {
+    // Round 7 sweep: a migration that throws used to drop a connection that
+    // IS open (the open itself succeeded): `dbPromise` rejected, and the
+    // purge's close read "no handle" and reported it closed. Close it here;
+    // if that fails too, it stays tracked like any other unclosed handle.
+    unclosedHandles.add(db);
+    if (await closeWithRetry(db)) unclosedHandles.delete(db);
+    throw err;
+  }
+}
+
+async function migrate(db: SQLite.SQLiteDatabase): Promise<SQLite.SQLiteDatabase> {
   // Foreign keys + WAL for better concurrency under the upload runner.
   await db.execAsync(`
     PRAGMA journal_mode = WAL;

@@ -409,7 +409,7 @@ do {
   let flushed = runBounded {
     await SignOutMarkFlush.run(
       deadline: 8, attemptsPerRow: 2, retryDelay: 0.01,
-      loadRows: { BackupManifestStore.pendingServerMarks(db, accountId: acctA, limit: Int(Int32.max)) },
+      loadRows: { (BackupManifestStore.pendingServerMarks(db, accountId: acctA, limit: Int(Int32.max)) ?? []) },
       mark: { row, timeout in await markOnServer(db, assetId: row.assetId, fileId: row.fileId, timeout: timeout) }
     )
   }
@@ -444,7 +444,7 @@ do {
          "re-sign-in: the server map promotes m-ok, the kept mark promotes m-proxy (got \(String(describing: ready)))")
   expect(text(db, "SELECT status || ':' || remote_file_id || ':' || uploaded_account_id FROM backup_assets WHERE local_asset_id = 'm-proxy'")
          == "uploaded:f-proxy:acct-A", "m-proxy is uploaded again with its own file, not queued for a second upload")
-  expect(BackupManifestStore.pendingServerMarks(db, accountId: acctA, limit: 10).map { $0.assetId } == ["m-proxy"],
+  expect((BackupManifestStore.pendingServerMarks(db, accountId: acctA, limit: 10) ?? []).map { $0.assetId } == ["m-proxy"],
          "m-proxy is still unmarked: the catch-up sends it to the server")
   expect(!kept(db, "m-proxy"), "the kept row is consumed")
   sqlite3_close_v2(db)
@@ -460,7 +460,7 @@ for (label, reply) in foreign404s {
   let flushed = runBounded {
     await SignOutMarkFlush.run(
       deadline: 8, attemptsPerRow: 2, retryDelay: 0.01,
-      loadRows: { BackupManifestStore.pendingServerMarks(db, accountId: acctA, limit: 10) },
+      loadRows: { (BackupManifestStore.pendingServerMarks(db, accountId: acctA, limit: 10) ?? []) },
       mark: { row, timeout in await markOnServer(db, assetId: row.assetId, fileId: row.fileId, timeout: timeout) }
     )
   }

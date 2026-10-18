@@ -307,17 +307,17 @@ do {
   expect(text(db, "SELECT status FROM backup_assets WHERE local_asset_id='p1'") == "uploaded", "markUploaded -> uploaded")
   expect(text(db, "SELECT uploaded_account_id FROM backup_assets WHERE local_asset_id='p1'") == "acct-A", "markUploaded records the owner")
   expect(text(db, "SELECT staged_file_id FROM backup_assets WHERE local_asset_id='p1'") == nil, "markUploaded clears staged state")
-  let pending = BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10)
+  let pending = (BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10) ?? [])
   expect(pending.count == 1 && pending.first?.fileId == "f1", "the upload is pending a server mark")
-  expect(BackupManifestStore.pendingServerMarks(db, accountId: "acct-B", limit: 10).isEmpty, "never another account's rows")
+  expect((BackupManifestStore.pendingServerMarks(db, accountId: "acct-B", limit: 10) ?? []).isEmpty, "never another account's rows")
   BackupManifestStore.recordServerMarked(db, assetId: "p1", fileId: "f-other", nowMs: 5)
-  expect(BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10).count == 1,
+  expect((BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10) ?? []).count == 1,
          "a mark for a different file id does not count")
   BackupManifestStore.recordServerMarked(db, assetId: "p1", fileId: "f1", nowMs: 5)
-  expect(BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10).isEmpty, "marked rows leave the queue")
+  expect((BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10) ?? []).isEmpty, "marked rows leave the queue")
   // Re-upload (new file id) re-opens the mark.
   BackupManifestStore.markUploaded(db, assetId: "p1", remoteFileId: "f1b", accountId: "acct-A", uploadedAtIso: "2026-10-18T02:00:00Z")
-  expect(BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10).first?.fileId == "f1b",
+  expect((BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10) ?? []).first?.fileId == "f1b",
          "a re-upload needs a new mark")
   sqlite3_close_v2(db)
 }
@@ -421,7 +421,7 @@ do {
          "the pre-column upload is kept too")
   expect(scalar(db, "SELECT server_marked_at IS NULL FROM backup_assets WHERE local_asset_id='a-unmarked'") == 1,
          "a promoted kept row is still unmarked: the catch-up sends it to the server")
-  expect(Set(BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10).map { $0.fileId }) == ["f-a1", "f-legacy"],
+  expect(Set((BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10) ?? []).map { $0.fileId }) == ["f-a1", "f-legacy"],
          "the mark catch-up now has both kept uploads")
   expect(text(db, "SELECT status FROM backup_assets WHERE local_asset_id='b-left'") == "pending_upload",
          "acct-B's kept association is NOT applied for acct-A")

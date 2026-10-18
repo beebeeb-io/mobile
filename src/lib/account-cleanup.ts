@@ -109,6 +109,9 @@ export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeRe
       // is open on it. Close the handle (still under the hold), then let the
       // native side reset or replace the file with no connection open; the
       // next JS call reopens. Never unlink beneath an open handle.
+      // Round 7 sweep: a native purge that throws is a FAILED purge. The catch
+      // used to turn it into { failed: 0 }, so a sign-out whose native
+      // registry sweep (and manifest reset) never ran reported a clean purge.
       const native = await withStoragePurgeParticipantsSuspended(async ({ closeHandles }) => {
         const purged = await purgePlaintextStorage();
         if (!purged.backupManifestResetFailed) return purged;
@@ -118,7 +121,7 @@ export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeRe
           removed: purged.removed + (finished.unlinked ? 1 : 0),
           failed: purged.failed + (finished.ok ? 0 : 1),
         };
-      }).catch(() => ({ removed: 0, failed: 0 }) as PlaintextStoragePurgeResult);
+      }).catch(() => ({ removed: 0, failed: 1 }) as PlaintextStoragePurgeResult);
       return {
         removed: native.removed + swept.removed.length,
         failed: native.failed + swept.failed.length,

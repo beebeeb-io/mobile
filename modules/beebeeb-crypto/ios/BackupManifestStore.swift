@@ -100,8 +100,14 @@ enum BackupManifestStore {
     retryDelayUs: UInt32 = 100_000
   ) -> Bool {
     sqlite3_busy_timeout(db, busyTimeoutMs)
-    sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
+    // Round 7 sweep: an unconfirmed `secure_delete` would leave the outgoing
+    // account's rows in the freed pages while reporting the reset done.
+    guard sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK else { return false }
     guard tableExists(db, "backup_assets") else { return false }
+    // Round 7 sweep: whether `backup_verification` exists must be READ, not
+    // assumed. `tableExists` turns a read error into "no such table", and the
+    // reset then skipped that DELETE and reported success with its rows kept.
+    guard let hasVerification = tableExistsChecked(db, "backup_verification") else { return false }
     sqlite3_exec(db, pendingMarksTableSQL, nil, nil, nil)
     guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
     let keepSQL = """
@@ -123,7 +129,7 @@ enum BackupManifestStore {
     if ok { ok = sqlite3_exec(db, "DELETE FROM backup_assets", nil, nil, nil) == SQLITE_OK }
     if ok { ok = sqlite3_exec(db, "DELETE FROM backup_upload_chunks", nil, nil, nil) == SQLITE_OK }
     // Created by the JS layer (BackupDatabase.ts); absent until it opened once.
-    if ok, tableExists(db, "backup_verification") {
+    if ok, hasVerification {
       ok = sqlite3_exec(db, "DELETE FROM backup_verification", nil, nil, nil) == SQLITE_OK
     }
     if ok {
@@ -184,32 +190,92 @@ enum BackupManifestStore {
   /// `allowUnlink` (the JS handle is confirmed closed), the file is replaced:
   /// the kept pending marks are read first and written into the new file,
   /// so not even this path loses an upload's association.
+  ///
+  /// Round 7 (Codex P2 "Abort replacement when the pending-mark snapshot
+  /// fails", mobile#182 at dc531405): the file is replaced ONLY after every
+  /// association in it was read. A snapshot that could not be prepared or
+  /// stepped, a file that could not be opened, or an `adoptAccountId` whose
+  /// pre-column rows could not be adopted, leaves the file exactly as it is
+  /// and returns `(false, false)`: the reset stays pending and the next open
+  /// retries it. Before, a failed snapshot read as "nothing kept" and the
+  /// replacement dropped every unmarked upload's association, so those
+  /// photos uploaded again at the next sign-in.
+  ///
+  /// `adoptAccountId` (round 7 sweep): the account signing out. Its rows from
+  /// before `uploaded_account_id` existed are adopted first, as
+  /// `NativeBackupEngine.prepareForStoragePurge` does before its own reset,
+  /// so the reset here keeps their associations instead of dropping them.
   static func recoverAfterFailedReset(
     path: String,
     nowMs: Int64 = currentMs(),
-    allowUnlink: Bool
+    allowUnlink: Bool,
+    adoptAccountId: String? = nil
   ) -> (ok: Bool, unlinked: Bool) {
-    if let db = openConnection(path) {
-      if tableExists(db, "backup_assets") { migrate(db) }
-      let reset = resetInPlace(db, nowMs: nowMs)
-      let carried = reset ? [] : pendingMarksSnapshot(db, nowMs: nowMs)
-      sqlite3_close_v2(db)
-      if reset { return (true, false) }
-      guard allowUnlink else { return (false, false) }
-      return replaceFile(path: path, carrying: carried)
+    // Nothing can be read from a file that cannot be opened: never replace it.
+    guard let db = openConnection(path) else { return (false, false) }
+    guard let hasAssets = tableExistsChecked(db, "backup_assets") else {
+      _ = closeConnection(db)
+      return (false, false)
     }
-    guard allowUnlink else { return (false, false) }
-    return replaceFile(path: path, carrying: [])
+    if hasAssets {
+      migrate(db)
+      if let adoptAccountId, adoptUnowned(db, accountId: adoptAccountId) == nil {
+        _ = closeConnection(db)
+        return (false, false)
+      }
+    }
+    let reset = resetInPlace(db, nowMs: nowMs)
+    let carried: [PendingMark]? = reset ? [] : pendingMarksSnapshot(db, nowMs: nowMs)
+    let closed = closeConnection(db)
+    if reset { return (true, false) }
+    // Round 7: the replacement needs (1) permission (JS closed its handle),
+    // (2) every association read, (3) this connection really closed.
+    guard allowUnlink, closed, let carried else { return (false, false) }
+    return replaceFile(path: path, carrying: carried)
   }
 
+  /// Round 7 sweep: the new file is BUILT first, next to the old one, with
+  /// the carried associations committed in it; only then are the old
+  /// sidecars removed and the new file renamed over the old (one atomic
+  /// step). Before, the old file was unlinked first and the carried marks
+  /// written afterwards: a write that failed then lost them with nothing
+  /// left to retry from.
   private static func replaceFile(path: String, carrying: [PendingMark]) -> (ok: Bool, unlinked: Bool) {
-    for suffix in ["", "-wal", "-shm", "-journal"] {
-      if unlink(path + suffix) != 0 && errno != ENOENT { return (false, false) }
+    let staging = path + ".replacing"
+    func removeStaging() {
+      for suffix in ["", "-journal", "-wal", "-shm"] { unlink(staging + suffix) }
     }
-    guard let fresh = openConnection(path) else { return (false, true) }
-    defer { sqlite3_close_v2(fresh) }
-    sqlite3_exec(fresh, pendingMarksTableSQL, nil, nil, nil)
-    return (insertPendingMarks(fresh, carrying), true)
+    removeStaging()
+    var fresh: OpaquePointer?
+    let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+    guard sqlite3_open_v2(staging, &fresh, flags, nil) == SQLITE_OK, let fresh else {
+      if let fresh { sqlite3_close_v2(fresh) }
+      removeStaging()
+      return (false, false)
+    }
+    // Rollback journal (no -wal/-shm) so the closed staging file is complete
+    // on its own; the engine switches the replaced file to WAL on open.
+    let built = sqlite3_exec(fresh, "PRAGMA journal_mode = DELETE", nil, nil, nil) == SQLITE_OK
+      && sqlite3_exec(fresh, pendingMarksTableSQL, nil, nil, nil) == SQLITE_OK
+      && insertPendingMarks(fresh, carrying)
+    let closed = closeConnection(fresh)
+    guard built, closed else {
+      removeStaging()
+      return (false, false)
+    }
+    // The old sidecars go BEFORE the rename: an old -wal next to the new
+    // file would be replayed into it.
+    for suffix in ["-wal", "-shm", "-journal"] {
+      if unlink(path + suffix) != 0 && errno != ENOENT {
+        removeStaging()
+        return (false, false)
+      }
+    }
+    guard rename(staging, path) == 0 else {
+      removeStaging()
+      return (false, false)
+    }
+    return (true, true)
   }
 
   private static func openConnection(_ path: String) -> OpaquePointer? {
@@ -223,6 +289,22 @@ enum BackupManifestStore {
     return db
   }
 
+  /// Round 7 sweep: closes `db` and reports whether the connection is
+  /// really closed. `sqlite3_close_v2` always "succeeds": with a statement,
+  /// BLOB or backup still open it only marks the connection a zombie, and
+  /// its file descriptor stays open until that is released. A file then
+  /// unlinked "with every connection closed" is unlinked under that fd.
+  /// `sqlite3_close` refuses (SQLITE_BUSY) in exactly those cases: then the
+  /// connection is handed to `sqlite3_close_v2` to close once released, and
+  /// this returns false. Nothing here finalizes a statement it does not own
+  /// (a BLOB's internal statement would be freed under its handle).
+  @discardableResult
+  static func closeConnection(_ db: OpaquePointer) -> Bool {
+    if sqlite3_close(db) == SQLITE_OK { return true }
+    sqlite3_close_v2(db)
+    return false
+  }
+
   // MARK: - Pending marks (kept across sign-out)
 
   struct PendingMark: Equatable {
@@ -234,40 +316,54 @@ enum BackupManifestStore {
 
   /// Every association a reset would keep: what is already in
   /// `backup_pending_marks` plus the unmarked uploads still in the manifest.
-  static func pendingMarksSnapshot(_ db: OpaquePointer, nowMs: Int64) -> [PendingMark] {
+  ///
+  /// Round 7 (Codex P2 "Abort replacement when the pending-mark snapshot
+  /// fails"): nil unless EVERY association was read. A table whose
+  /// existence cannot be read, a query that cannot be prepared, a step that
+  /// ends in anything but SQLITE_DONE, or a row with a NULL column is a
+  /// failure, never a shorter list: the caller replaces the file only on a
+  /// complete snapshot.
+  static func pendingMarksSnapshot(_ db: OpaquePointer, nowMs: Int64) -> [PendingMark]? {
     var out: [PendingMark] = []
-    if tableExists(db, "backup_pending_marks") {
-      out += select(db, """
+    guard let hasKept = tableExistsChecked(db, "backup_pending_marks") else { return nil }
+    if hasKept {
+      guard let kept = select(db, """
       SELECT account_id, local_asset_id, remote_file_id, created_at_ms
         FROM backup_pending_marks WHERE created_at_ms >= ?
-      """, bindMs: nowMs - pendingMarksRetentionMs)
+      """, bindMs: nowMs - pendingMarksRetentionMs) else { return nil }
+      out += kept
     }
-    if tableExists(db, "backup_assets") {
-      out += select(db, """
+    guard let hasAssets = tableExistsChecked(db, "backup_assets") else { return nil }
+    if hasAssets {
+      guard let unmarked = select(db, """
       SELECT uploaded_account_id, local_asset_id, remote_file_id, ?
         FROM backup_assets
        WHERE status = 'uploaded' AND uploaded_account_id IS NOT NULL AND uploaded_account_id != ''
          AND remote_file_id IS NOT NULL AND server_marked_at IS NULL
-      """, bindMs: nowMs)
+      """, bindMs: nowMs) else { return nil }
+      out += unmarked
     }
     return out
   }
 
-  private static func select(_ db: OpaquePointer, _ sql: String, bindMs: Int64) -> [PendingMark] {
+  /// nil on any failure (prepare, a step that is not ROW/DONE, a NULL column).
+  private static func select(_ db: OpaquePointer, _ sql: String, bindMs: Int64) -> [PendingMark]? {
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int64(stmt, 1, bindMs)
     var rows: [PendingMark] = []
-    while sqlite3_step(stmt) == SQLITE_ROW {
+    while true {
+      let rc = sqlite3_step(stmt)
+      if rc == SQLITE_DONE { return rows }
+      guard rc == SQLITE_ROW else { return nil }
       guard let a = sqlite3_column_text(stmt, 0), let l = sqlite3_column_text(stmt, 1),
-            let f = sqlite3_column_text(stmt, 2) else { continue }
+            let f = sqlite3_column_text(stmt, 2) else { return nil }
       rows.append(PendingMark(
         accountId: String(cString: a), assetId: String(cString: l),
         fileId: String(cString: f), createdAtMs: sqlite3_column_int64(stmt, 3)
       ))
     }
-    return rows
   }
 
   @discardableResult
@@ -398,17 +494,23 @@ enum BackupManifestStore {
   /// Adopt-only half of `claim`, for the sign-out reset: rows written before
   /// `uploaded_account_id` existed belong to the account signing out, so
   /// their association is kept under it. Never re-queues anything.
+  ///
+  /// Round 7 sweep: nil when the UPDATE did not run (writer lock, broken
+  /// table). It used to clamp the error to 0, "nothing to adopt"; the reset
+  /// after it then deleted those rows without keeping their associations
+  /// (the keep step only reads owned rows), so the photos uploaded again.
   @discardableResult
-  static func adoptUnowned(_ db: OpaquePointer, accountId: String) -> Int {
+  static func adoptUnowned(_ db: OpaquePointer, accountId: String) -> Int? {
     guard !accountId.isEmpty else { return 0 }
-    return max(0, run(db, """
+    let adopted = run(db, """
     UPDATE backup_assets
        SET uploaded_account_id = ?
      WHERE uploaded_account_id IS NULL
        AND staged_file_id IS NULL
        AND remote_file_id IS NOT NULL
        AND status IN (\(remoteBoundStatuses))
-    """) { stmt in bindText(stmt, 1, accountId) })
+    """) { stmt in bindText(stmt, 1, accountId) }
+    return adopted >= 0 ? adopted : nil
   }
 
   // MARK: - Account ownership
@@ -530,29 +632,47 @@ enum BackupManifestStore {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
     defer { sqlite3_finalize(stmt) }
 
-    sqlite3_exec(db, "BEGIN", nil, nil, nil)
+    // Round 7 sweep: every step is checked. Before, a failed BEGIN or a
+    // failed row (writer lock, I/O) was ignored and COMMIT reported the
+    // batch inserted; the rebuild gate could then apply the server map to a
+    // manifest missing those rows, and they uploaded again once a later
+    // scan inserted them.
+    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
     for asset in assets {
       bindText(stmt, 1, asset.localAssetId)
       bindText(stmt, 2, asset.createdAt)
       bindText(stmt, 3, asset.assetType)
       sqlite3_bind_int64(stmt, 4, nowMs)
-      sqlite3_step(stmt)
+      let rc = sqlite3_step(stmt)
       sqlite3_reset(stmt)
+      guard rc == SQLITE_DONE else {
+        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        return false
+      }
     }
-    return sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
+    guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+      sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+      return false
+    }
+    return true
   }
 
   // MARK: - Upload completion
 
   /// Completed upload: the row now points at `remoteFileId`, owned by
   /// `accountId`, not yet recorded in the server's map.
+  ///
+  /// Round 7 sweep: true only when exactly that row was updated. The result
+  /// used to be discarded; the engine then deleted the staged chunks of an
+  /// upload the manifest never recorded, and the row was uploaded again.
+  @discardableResult
   static func markUploaded(
     _ db: OpaquePointer,
     assetId: String,
     remoteFileId: String,
     accountId: String,
     uploadedAtIso: String
-  ) {
+  ) -> Bool {
     let sql = """
     UPDATE backup_assets
     SET status = 'uploaded',
@@ -573,18 +693,23 @@ enum BackupManifestStore {
         staged_at = NULL
     WHERE local_asset_id = ?
     """
-    _ = run(db, sql) { stmt in
+    let changed = run(db, sql) { stmt in
       bindText(stmt, 1, remoteFileId)
       bindText(stmt, 2, uploadedAtIso)
       bindText(stmt, 3, accountId)
       bindText(stmt, 4, assetId)
     }
+    return changed == 1
   }
 
   // MARK: - Server map (photo_backup_state)
 
   /// Uploaded rows of `accountId` the server's map does not have yet.
-  static func pendingServerMarks(_ db: OpaquePointer, accountId: String, limit: Int) -> [(assetId: String, fileId: String)] {
+  ///
+  /// Round 7 sweep: nil when the rows could not be read (prepare, a step
+  /// that is not ROW/DONE, a NULL column). It returned the rows read so far
+  /// (often none), which the callers could not tell from "all marked".
+  static func pendingServerMarks(_ db: OpaquePointer, accountId: String, limit: Int) -> [(assetId: String, fileId: String)]? {
     let sql = """
     SELECT local_asset_id, remote_file_id
       FROM backup_assets
@@ -596,16 +721,18 @@ enum BackupManifestStore {
      LIMIT ?
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
     bindText(stmt, 1, accountId)
     sqlite3_bind_int(stmt, 2, Int32(max(0, limit)))
     var rows: [(assetId: String, fileId: String)] = []
-    while sqlite3_step(stmt) == SQLITE_ROW {
-      guard let a = sqlite3_column_text(stmt, 0), let f = sqlite3_column_text(stmt, 1) else { continue }
+    while true {
+      let rc = sqlite3_step(stmt)
+      if rc == SQLITE_DONE { return rows }
+      guard rc == SQLITE_ROW,
+            let a = sqlite3_column_text(stmt, 0), let f = sqlite3_column_text(stmt, 1) else { return nil }
       rows.append((String(cString: a), String(cString: f)))
     }
-    return rows
   }
 
   /// Records a successful mark. Matches on the file id too, so a row
@@ -625,13 +752,21 @@ enum BackupManifestStore {
   /// Parses `GET /api/v1/files/photo-backup/identifiers`
   /// (`{"identifiers": {"<file_id>": "<local_identifier>"}}`) into
   /// local identifier -> file id. nil when the body is not that shape.
+  ///
+  /// Round 7 (Codex P2 "Reject malformed identifier-map entries", mobile#182
+  /// at dc531405): ONE malformed entry (a value that is not a string, an
+  /// empty value, an empty file id) makes the whole map nil, and the fetch
+  /// fails closed. It used to skip the entry and return the rest: the rebuild
+  /// gate took that as the server's complete answer, declared the account
+  /// ready and uploaded the omitted photos again (all of them when every
+  /// entry was malformed, exactly like a legitimate empty map).
   static func parseIdentifierMap(_ data: Data) -> [String: String]? {
     guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let identifiers = object["identifiers"] as? [String: Any] else { return nil }
     var byLocal: [String: String] = [:]
     // Deterministic when two files claim one photo: the smallest file id wins.
     for fileId in identifiers.keys.sorted() {
-      guard let local = identifiers[fileId] as? String, !local.isEmpty else { continue }
+      guard !fileId.isEmpty, let local = identifiers[fileId] as? String, !local.isEmpty else { return nil }
       if byLocal[local] == nil { byLocal[local] = fileId }
     }
     return byLocal

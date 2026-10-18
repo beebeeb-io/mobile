@@ -110,7 +110,8 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
 
   test('a failed reset closes the engine handle and flags it, but NEVER drops the file from `kept` (the JS handle is still open on it)', () => {
     expect(prep).toMatch(/dbQueue\.sync \{\s*manifestHandle\.resetForSignOut\(outgoingAccountId: outgoingAccountId\)\s*\}/);
-    expect(resetForSignOut()).toMatch(/BackupManifestStore\.resetInPlace\(db[\s\S]*sqlite3_close_v2\(db\)\s*self\.db = nil\s*\}\s*pendingReset\.set\(true\)\s*awaitingPurgeFinish = true\s*return false/);
+    // Round 7: the close goes through `close(_:)` (checked sqlite3_close).
+    expect(resetForSignOut()).toMatch(/BackupManifestStore\.resetInPlace\(db[\s\S]*close\(db\)\s*self\.db = nil\s*\}\s*pendingReset\.set\(true\)\s*awaitingPurgeFinish = true\s*return false/);
     expect(prep).not.toMatch(/return \[\]/);
     expect(prep).toMatch(/return \(kept, !resetOK\)/);
   });
@@ -125,8 +126,8 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     const handleFin = body(handleSwift, 'func finishAfterFailedReset(allowUnlink: Bool) -> FinishResult {');
     const [close, recover, okGuard, clear, reopen] = order(
       handleFin,
-      'sqlite3_close_v2(db)',
-      'BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now(), allowUnlink: allowUnlink)',
+      'close(db)',
+      'BackupManifestStore.recoverAfterFailedReset(',
       'guard recovered.ok else {',
       'pendingReset.set(false)',
       'let failure = openIfClosed()',
@@ -150,7 +151,7 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
       'BackupManifestStore.tableExistsChecked(opened, "backup_assets") == true',
       'if pendingReset.get() {',
       'BackupManifestStore.resetInPlace(opened, nowMs: now())',
-      'sqlite3_close_v2(opened)\n        return .pendingResetFailed',
+      'close(opened)\n        return .pendingResetFailed',
       'return .pendingResetFailed',
       'db = opened',
     );
@@ -250,8 +251,10 @@ describe('round 2: kept pending marks + sign-out flush', () => {
     const tracked = src.slice(src.indexOf('async function onHandle'));
     const calls = new Set([...tracked.matchAll(/\bdb\.([a-zA-Z]+)\(/g)].map((m) => m[1]));
     for (const c of calls) expect(['execAsync', 'runAsync', 'getFirstAsync', 'getAllAsync', 'closeAsync']).toContain(c);
-    // closeAsync only in the purge close path.
-    expect((tracked.match(/\bdb\.closeAsync\(/g) ?? []).length).toBe(1);
+    // closeAsync only in the purge close path (round 7: `closeWithRetry`,
+    // used by the purge close and the failed-open cleanup).
+    expect((src.match(/\bdb\.closeAsync\(/g) ?? []).length).toBe(1);
+    expect(code(src.slice(src.indexOf('async function closeWithRetry'), src.indexOf('export function unclosedHandleCount')))).toMatch(/db\.closeAsync\(\)/);
   });
 });
 
@@ -267,8 +270,8 @@ describe('2. rows carry the account that owns them', () => {
     const calls = (code(engine).match(/markUploadComplete\(assetId:[^)]*\)/g) ?? []).filter((c) => !c.includes(': String'));
     expect(calls.length).toBe(2);
     for (const c of calls) expect(c).toMatch(/accountId: batchAccountId/);
-    const fn = body(engine, 'private func markUploadComplete(assetId: String, remoteFileId: String, accountId: String) {');
-    expect(fn).toMatch(/BackupManifestStore\.markUploaded\([\s\S]*accountId: accountId/);
+    const fn = body(engine, 'private func markUploadComplete(assetId: String, remoteFileId: String, accountId: String) -> Bool {');
+    expect(fn).toMatch(/return BackupManifestStore\.markUploaded\([\s\S]*accountId: accountId/);
   });
 });
 
@@ -318,7 +321,7 @@ describe('3. an empty manifest is rebuilt before any upload; uploads are marked 
 
     // The steps report failure as nil, never as 0 / "nothing there".
     expect(ready).toMatch(/guard BackupManifestStore\.claim\(db, accountId: accountId, nowMs: self\.nowMs\(\)\) != nil else \{ return nil \}/);
-    expect(ready).toMatch(/return BackupManifestStore\.needsServerRebuild\(db, accountId: accountId\)/);
+    expect(ready).toMatch(/guard let needs = BackupManifestStore\.needsServerRebuild\(db, accountId: accountId\) else \{ return nil \}/);
     expect(ready).toMatch(/applyMap: \{ \[weak self\] map in[\s\S]*?guard let db = self\.db else \{ return nil \}[\s\S]*?return BackupManifestStore\.applyServerMap\(/);
     const stepsSrc = ready.slice(0, ready.indexOf('let outcome = await ManifestRebuildGate.run('));
     expect(stepsSrc.length).toBeGreaterThan(0);
@@ -510,5 +513,81 @@ describe('6. round 6: the native manifest handle is reopened, and nothing runs w
     // the two places the handle can become nil: a failed sign-out reset (reopened by finish) and finish's own close
     expect(h.match(/self\.db = nil/g) ?? []).toHaveLength(2);
     expect(h.match(/(?<![\w.])db = opened/g) ?? []).toHaveLength(1);
+  });
+});
+
+describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondition', () => {
+  const storeSwift = readFileSync(join(IOS, 'BackupManifestStore.swift'), 'utf8');
+
+  test('an upload the manifest did not record keeps its staged chunks and directory (both completion sites)', () => {
+    const src = code(engine);
+    const starts = [...src.matchAll(/let recorded: Bool = dbQueue\.sync \{/g)].map((m) => m.index);
+    expect(starts.length).toBe(2);
+    for (const at of starts) {
+      const site = src.slice(at, src.indexOf('removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)', at));
+      const idx = order(
+        site,
+        'guard markUploadComplete(',
+        'return false',
+        'deleteStagedChunks(assetId: asset.localAssetId)',
+        'guard recorded else {',
+        'throw BackupError.databaseUnavailable',
+      );
+      expect(idx[0]).toBeGreaterThan(-1);
+      for (let i = 1; i < idx.length; i += 1) expect(idx[i]).toBeGreaterThan(idx[i - 1]);
+    }
+    // No completion path deletes staged data on an unchecked record.
+    expect(src).not.toMatch(/\n\s*markUploadComplete\(assetId:[^\n]*\n\s*deleteStagedChunks/);
+  });
+
+  test('a failed scan insert is recorded, and the rebuild does not run on a manifest it could not fill', () => {
+    const ins = body(engine, 'private func insertNewAssets(_ assets: [PHAsset]) {');
+    expect(ins).toMatch(/let inserted = BackupManifestStore\.insertScannedAssets\(db, scanned, nowMs: nowMs\(\)\)\s*lastScanInsertFailed = !inserted/);
+    const ready = body(engine, 'func ensureManifestReadyForUploads(accountId: String, authToken: String, baseURL: String) async -> Bool {');
+    expect(ready).toMatch(/if needs && self\.lastScanInsertFailed \{ return nil \}\s*return needs/);
+  });
+
+  test('the reset reads backup_verification\'s existence (an error fails the reset) and checks secure_delete', () => {
+    const reset = body(storeSwift, 'static func resetInPlace(');
+    expect(reset).toMatch(/guard sqlite3_exec\(db, "PRAGMA secure_delete = ON", nil, nil, nil\) == SQLITE_OK else \{ return false \}/);
+    expect(reset).toMatch(/guard let hasVerification = tableExistsChecked\(db, "backup_verification"\) else \{ return false \}/);
+    expect(reset).not.toMatch(/tableExists\(db, "backup_verification"\)/);
+  });
+
+  test('the recovery never replaces a file it could not open, fully read or close', () => {
+    const rec = body(storeSwift, 'static func recoverAfterFailedReset(');
+    expect(rec).toMatch(/guard let db = openConnection\(path\) else \{ return \(false, false\) \}/);
+    const [snap, closed, guardAll, replace] = order(
+      rec,
+      'pendingMarksSnapshot(db, nowMs: nowMs)',
+      'let closed = closeConnection(db)',
+      'guard allowUnlink, closed, let carried else { return (false, false) }',
+      'return replaceFile(path: path, carrying: carried)',
+    );
+    expect(snap).toBeGreaterThan(-1);
+    expect(closed).toBeGreaterThan(snap);
+    expect(guardAll).toBeGreaterThan(closed);
+    expect(replace).toBeGreaterThan(guardAll);
+    expect((rec.match(/replaceFile\(/g) ?? []).length).toBe(1);
+  });
+
+  test('the handle closes only through the checked close, and an unconfirmed close forbids the unlink', () => {
+    const src = code(handleSwift);
+    const cls = src.slice(src.indexOf('final class BackupManifestHandle'), src.indexOf('struct ManifestAvailability'));
+    expect(cls).not.toMatch(/sqlite3_close_v2\(/);
+    expect(body(handleSwift, 'private func close(_ connection: OpaquePointer) {')).toMatch(/if !BackupManifestStore\.closeConnection\(connection\) \{\s*closeUnconfirmed = true\s*\}/);
+    const fin = body(handleSwift, 'func finishAfterFailedReset(allowUnlink: Bool) -> FinishResult {');
+    expect(fin).toMatch(/allowUnlink: allowUnlink && !closeUnconfirmed, adoptAccountId: recoveryAccountId/);
+    const reset = body(handleSwift, 'func resetForSignOut(outgoingAccountId: String?) -> Bool {');
+    expect(reset).toMatch(/adopted = BackupManifestStore\.adoptUnowned\(db, accountId: outgoingAccountId\) != nil/);
+    expect(reset).toMatch(/if adopted, BackupManifestStore\.resetInPlace\(db, nowMs: now\(\)\) \{/);
+  });
+
+  test('a mark list that could not be read is traced, never read as "all marked"', () => {
+    const flush = body(engine, 'func flushServerMarks(accountId: String, authToken: String, baseURL: String, limit: Int = 300) async {');
+    expect(flush).toMatch(/guard let rows = loaded else \{\s*RuntimeTrace\.event\("backup\.native\.server_mark\.load_failed"/);
+    const signOut = body(engine, 'func flushServerMarksForSignOut(');
+    expect(signOut).toMatch(/if BackupManifestStore\.adoptUnowned\(db, accountId: accountId\) == nil \{\s*RuntimeTrace\.event/);
+    expect(signOut).toMatch(/guard let rows = BackupManifestStore\.pendingServerMarks\(db, accountId: accountId, limit: Int\(Int32\.max\)\) else \{\s*RuntimeTrace\.event/);
   });
 });

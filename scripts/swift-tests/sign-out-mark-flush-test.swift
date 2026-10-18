@@ -296,7 +296,7 @@ do {
   let r = runBounded(watchdog: 10) {
     await SignOutMarkFlush.run(
       deadline: 2.0,
-      loadRows: { dbQueue.sync { BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: Int(Int32.max)) } },
+      loadRows: { dbQueue.sync { (BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: Int(Int32.max)) ?? []) } },
       mark: { row, timeout in
         await httpMark(session, timeouts: timeouts, onMarked: { _ in
           dbQueue.sync { BackupManifestStore.recordServerMarked(db, assetId: row.assetId, fileId: row.fileId, nowMs: 42) }

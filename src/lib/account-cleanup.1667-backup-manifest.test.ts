@@ -486,6 +486,19 @@ describe('round 4 (Codex P1 "Serialize overlapping database purge holds")', () =
   });
 });
 
+describe('round 7 sweep: a native purge that throws is counted as failed', () => {
+  test('purgePlaintextStorage rejecting is a failure in the result, not a clean purge', async () => {
+    await BackupDatabase.initDatabase();
+    duringPurge = async () => { throw new Error('native purge crashed'); };
+    const result = await purgeAllPlaintextCaches();
+    duringPurge = null;
+    // The bug: `.catch(() => ({ removed: 0, failed: 0 }))` reported this
+    // sign-out's purge as complete.
+    expect(result.failed).toBeGreaterThanOrEqual(1);
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(false);
+  });
+});
+
 describe('sign-out clears the backup folder cache (1962 Bug 4)', () => {
   test('beebeeb_backup_folders does not survive purgeAllPlaintextCaches', async () => {
     secure.set('beebeeb_backup_folders', JSON.stringify({ rootId: 'root-of-A', deviceId: 'dev-A' }));
