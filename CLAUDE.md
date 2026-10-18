@@ -867,7 +867,23 @@ SettingsScreen's `refreshBackupStats` effect (it depends on `backupProgress.comp
 reconcile through `getDeviceManifest()` -> `ensureBackupFolders()` once per backed-up item. That
 path, plus a request on every Photos tab focus, is how one 163 MB upload produced 18 index walks
 in 10 minutes. Worst case now: 2 requests per 5 minutes (one reconcile, one plain revalidation),
-plus explicit refreshes.
+plus explicit refreshes, plus one per file that ANOTHER device uploads (below).
+
+**New rows inside the window (1959 round 4).** A file uploaded after the window opened reaches the
+cache only through the sync write-through, whose rows have no `is_media` (the `file_create` op
+carries none, the mime is inside `name_encrypted`, a fresh upload has no thumbnail), so the Photos
+tab dropped it. Own uploads are classified locally by `src/lib/upload-classification.ts`: the JS
+uploaders record the `is_media` they sent (in `finalizeUpload`, before the complete call), and the
+backup engines' uploads are read from `backup_assets.asset_type` (`getBackupMediaFlags`). A new
+file row neither source knows (another device, the share extension, a file request) makes a
+`revalidateUnclassified` caller (Photos, photo-library settings) revalidate once, joined to any
+request in flight; a row the server confirms it does not list is acknowledged so it cannot make
+every focus ask. Measured in `photo-index-source.test.ts`: 50 own uploads with a Photos focus after
+each = 1 request, every photo visible on the next focus; another device's uploads = one request per
+arrival, not per focus. New rows still lack `blurhash`, `storage_location`, `thumbnail_bytes` and
+file-request keys until a server check: the grid shows no blurhash placeholder for them, the info
+sheet fetches the location itself (`file-storage-location.ts`), and a file-request upload is never
+an own upload, so on Photos it always takes the revalidation path.
 
 **Account boundary (1959 round 2).** `src/lib/account-epoch.ts` names the account a piece of async
 work belongs to: a generation that `setToken()` / `clearToken()` (and `clearCachedFileIndex()`)

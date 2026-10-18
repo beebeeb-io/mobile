@@ -417,3 +417,139 @@ describe('cache write scope (task 1959 round 3)', () => {
     expect(scopes).toEqual([{ epoch: { generation: 4, accountId: 'user-A' }, generation: 7 }]);
   });
 });
+
+// Task 1959 round 4 (Codex P1 on PR #181): rows the sync write-through added
+// inside the window have no `is_media`. Own uploads are classified locally;
+// any other new file row makes a `revalidateUnclassified` caller ask once.
+describe('new rows inside the window (task 1959 round 4)', () => {
+  const media = (id) => row(id, { is_media: true });
+  let own;
+  let lookups;
+  function makeClassifyingLoader() {
+    return createFileIndexLoader({
+      fetchIndex: async (hash) => {
+        calls.push(hash);
+        if (hold) await new Promise((resolve) => pending.push(resolve));
+        if (hash === server.hash) return { hash: server.hash, changed: false, count: server.files.length };
+        return { hash: server.hash, changed: true, count: server.files.length, files: server.files };
+      },
+      loadCache: async () => (cache ? { ...cache, files: [...cache.files] } : null),
+      saveCache: async (hash, files, storedAt) => { cache = { hash, files, storedAt }; },
+      cacheGeneration: () => generation,
+      classifyLocally: async (ids) => {
+        lookups.push([...ids]);
+        return new Map(ids.filter((id) => own.has(id)).map((id) => [id, own.get(id)]));
+      },
+      now: () => clock,
+      revalidateMs: WINDOW,
+    });
+  }
+  // The sync write-through: same hash, new storedAt, the row without server fields.
+  function writeThrough(...rows) {
+    cache = { ...cache, files: [...cache.files, ...rows], storedAt: cache.storedAt + 1 };
+  }
+
+  beforeEach(() => {
+    server = { hash: 's1', files: [media('a'), media('b')] };
+    own = new Map();
+    lookups = [];
+    loader = makeClassifyingLoader();
+  });
+
+  test('an own upload gets is_media from the local record; no request', async () => {
+    await loader.load({ revalidateUnclassified: true });
+    own.set('mine', true);
+    server = { hash: 's2', files: [...server.files, media('mine')] };
+    writeThrough(row('mine'));
+    const out = await loader.load({ revalidateUnclassified: true });
+    expect(out.source).toBe('cache');
+    expect(out.files.find((f) => f.id === 'mine').is_media).toBe(true);
+    expect(calls.length).toBe(1);
+  });
+
+  test('a foreign new file row: a revalidateUnclassified caller asks once, with the hash; a plain caller does not', async () => {
+    await loader.load({ revalidateUnclassified: true });
+    server = { hash: 's2', files: [...server.files, media('theirs')] };
+    writeThrough(row('theirs'));
+    const plain = await loader.load();
+    expect(plain.source).toBe('cache');
+    expect(calls.length).toBe(1);
+    const photos = await loader.load({ revalidateUnclassified: true });
+    expect(photos.source).toBe('network');
+    expect(photos.files.find((f) => f.id === 'theirs').is_media).toBe(true);
+    expect(calls).toEqual([undefined, 's1']);
+  });
+
+  test('overlapping Photos focuses after a foreign arrival share ONE revalidation', async () => {
+    await loader.load({ revalidateUnclassified: true });
+    server = { hash: 's2', files: [...server.files, media('theirs')] };
+    writeThrough(row('theirs'));
+    hold = true;
+    const loads = Array.from({ length: 5 }, () => loader.load({ revalidateUnclassified: true }));
+    await new Promise((r) => setTimeout(r, 2));
+    hold = false;
+    for (const r of pending) r();
+    const outs = await Promise.all(loads);
+    for (const o of outs) expect(o.files.map((f) => f.id)).toContain('theirs');
+    expect(calls.length).toBe(2);
+  });
+
+  test('a row the server does not list (hash unchanged) costs ONE extra request, then none', async () => {
+    await loader.load({ revalidateUnclassified: true });
+    // The sync tree has a node /files/index never returns; the server state
+    // has not moved, so the cache keeps the checked hash 's1'.
+    writeThrough(row('phantom'));
+    await loader.load({ revalidateUnclassified: true });
+    expect(calls).toEqual([undefined, 's1']);
+    for (let i = 0; i < 10; i += 1) await loader.load({ revalidateUnclassified: true });
+    expect(calls.length).toBe(2);
+  });
+
+  test('a new folder row is not a reason to ask (folders need no is_media)', async () => {
+    await loader.load({ revalidateUnclassified: true });
+    writeThrough(row('folder', { is_folder: true }));
+    await loader.load({ revalidateUnclassified: true });
+    expect(calls.length).toBe(1);
+    expect(lookups).toEqual([]);
+  });
+
+  test('the local classification never overrides a server value', async () => {
+    await loader.load({ revalidateUnclassified: true });
+    own.set('a', false);
+    writeThrough(row('own-new'));
+    own.set('own-new', true);
+    const out = await loader.load({ revalidateUnclassified: true });
+    expect(out.files.find((f) => f.id === 'a').is_media).toBe(true);
+    // Only the row without a server classification was looked up.
+    expect(lookups).toEqual([['own-new']]);
+  });
+
+  test('a sign-out during the local lookup: the old account\'s caller is rejected', async () => {
+    let acct = { generation: 0, accountId: 'A' };
+    let releaseLookup;
+    const l = createFileIndexLoader({
+      fetchIndex: async (hash) => {
+        calls.push(hash);
+        return hash === server.hash ? { hash: server.hash, changed: false, count: 0 } : { hash: server.hash, changed: true, count: 0, files: server.files };
+      },
+      loadCache: async () => (cache ? { ...cache, files: [...cache.files] } : null),
+      saveCache: async (hash, files, storedAt) => { cache = { hash, files, storedAt }; },
+      cacheGeneration: () => generation,
+      accountEpoch: () => acct,
+      // The lookup KNOWS the row (an own upload), so no revalidation follows
+      // that could reject on its own: only the check after the lookup can.
+      classifyLocally: async (ids) => { await new Promise((r) => { releaseLookup = r; }); return new Map(ids.map((id) => [id, true])); },
+      now: () => clock,
+      revalidateMs: WINDOW,
+    });
+    await l.load({ revalidateUnclassified: true });
+    writeThrough(row('mine'));
+    const p = l.load({ revalidateUnclassified: true });
+    p.catch(() => {});
+    await new Promise((r) => setTimeout(r, 1));
+    acct = { generation: 1, accountId: 'B' };
+    releaseLookup();
+    await expect(p).rejects.toMatchObject({ name: 'StaleAccountError' });
+    expect(calls.length).toBe(1);
+  });
+});

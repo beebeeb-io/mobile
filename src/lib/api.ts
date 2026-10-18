@@ -12,6 +12,7 @@ import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { clearCachedFileIndex } from './file-index-cache';
 import { advanceAccountEpoch } from './account-epoch';
+import { rememberUploadClassification } from './upload-classification';
 import { clearCachedBilling } from './billing-cache';
 import { collectPaged, findInPages } from './paginate';
 import { rateLimitedFetch } from './rate-limited-fetch';
@@ -1807,7 +1808,7 @@ export async function uploadEncryptedChunked(params: {
       protocol,
     })
 
-    return finalizeUpload({ protocol, serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey })
+    return finalizeUpload({ protocol, serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey, isMedia })
   }
 
   // Task 1589: a heartbeat while a v2 upload is active covers the GAP between
@@ -1892,8 +1893,15 @@ async function finalizeUpload(params: {
   resolveNameEncrypted: (fileId: string) => Promise<string>
   initialNameEncrypted: string
   resumeKey?: string
+  /** The `is_media` this upload sent on init (absent → false, as sent). */
+  isMedia?: boolean
 }): Promise<FileEntry> {
   const { protocol, serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey } = params
+  // Task 1959 round 4: remember the classification this device sent, BEFORE
+  // the complete call — the server's `file_create` sync op follows it, and
+  // the row that op writes into the index cache has no `is_media`
+  // (upload-classification.ts).
+  rememberUploadClassification(serverFileId, params.isMedia ?? false)
   const completePath = protocol === 'v2' && uploadSessionId
     ? `/api/v1/uploads/${uploadSessionId}/complete`
     : `/api/v1/files/${serverFileId}/upload/complete`
@@ -2138,7 +2146,7 @@ export async function uploadEncryptedFileNative(params: {
       protocol: 'v2',
     })
     return finalizeUpload({
-      protocol: 'v2', serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey,
+      protocol: 'v2', serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey, isMedia,
     })
   }
 

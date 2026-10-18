@@ -81,7 +81,9 @@ export default function PhotoLibrarySettingsScreen() {
     setLoading(true);
     try {
       // Task 1959: through the coalescing loader, not a fresh /files/index walk per mount.
-      const files = (await loadFileIndex()).files ?? [];
+      // Round 4: per-folder media counts need `is_media` on rows uploaded
+      // inside the window too (file-index-loader.ts `revalidateUnclassified`).
+      const files = (await loadFileIndex({ revalidateUnclassified: true })).files ?? [];
 
       const media = files.filter(isMediaCandidate);
       const counts = mediaCountByFolder(files, media);

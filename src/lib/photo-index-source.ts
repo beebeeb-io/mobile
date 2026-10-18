@@ -31,6 +31,11 @@ export async function getPhotoCandidates(
   try {
     const { files } = await loadFileIndex({
       force: options.force,
+      // Round 4: a photo uploaded inside the window must show on the next
+      // focus. Rows the sync write-through added carry no `is_media`; ones
+      // this device uploaded are classified locally, any other forces a
+      // revalidation (file-index-loader.ts).
+      revalidateUnclassified: true,
       ...(cachedIndex !== undefined ? { cached: cachedIndex } : {}),
     });
     if (files) {

@@ -53,6 +53,22 @@
  *     field restore) is dropped on every epoch advance — at the start of
  *     sign-out, not at the next call.
  *
+ * Rows new since the last server check (round 4, Codex P1 on PR #181): the
+ * sync write-through adds a file uploaded after the window opened, but its row
+ * has none of the server-only fields — above all no `is_media`, so the Photos
+ * tab filtered a fresh upload out until the window expired.
+ *   - Rows this device uploaded are classified locally
+ *     (upload-classification.ts: the `is_media` the JS uploader sent, or the
+ *     backup engine's `backup_assets.asset_type`). No request.
+ *   - Any other new file row (another device, the share extension, a file
+ *     request) is unclassified. A caller that needs the classification passes
+ *     `revalidateUnclassified` (the Photos tab, the photo-library settings),
+ *     and that load revalidates with the hash — joined to any request in
+ *     flight — instead of returning the cache. One request per arrival, not
+ *     per focus: the answer puts the row in the server snapshot.
+ *   - A row the server confirms it does not list (hash unchanged) is
+ *     remembered as acknowledged, so it cannot make every focus ask again.
+ *
  * `file-index-loader.guard.test.ts` keeps `getFileIndex` from being called
  * anywhere else.
  */
@@ -74,6 +90,7 @@ import {
   StaleAccountError,
   type AccountEpoch,
 } from './account-epoch';
+import { classifyOwnUploads } from './upload-classification';
 
 /** At most one /files/index request starts per window, unless forced. */
 export const FILE_INDEX_REVALIDATE_MS = 5 * 60_000;
@@ -88,6 +105,11 @@ export interface FileIndexLoadOptions {
    *  `loadCachedFileIndex()` puts on the object; an untagged object is
    *  treated as read under the current epoch. */
   cachedEpoch?: AccountEpoch;
+  /** Round 4: the caller needs `is_media` on every file row (the Photos
+   *  tab, the photo-library settings). Inside the window, a new file row that
+   *  neither the server snapshot nor this device's own upload record can
+   *  classify triggers a revalidation instead of a cache answer. */
+  revalidateUnclassified?: boolean;
 }
 
 export interface FileIndexLoadResult {
@@ -112,6 +134,9 @@ interface LoaderDeps {
   accountEpoch?: () => AccountEpoch;
   /** The epoch a cache object was read under, when known. */
   cacheReadEpoch?: (cached: CachedFileIndex) => AccountEpoch | undefined;
+  /** Round 4: `is_media` for the ids this device uploaded itself
+   *  (upload-classification.ts). Absent ids are unknown. */
+  classifyLocally?: (fileIds: string[]) => Promise<Map<string, boolean>>;
   now: () => number;
   revalidateMs: number;
 }
@@ -129,6 +154,10 @@ interface LastCheck {
   epoch: Epoch;
   /** Server rows by id, to restore fields the sync write-through drops. */
   byId: Map<string, FileEntry>;
+  /** Cache rows absent from `byId` that a later server check (hash
+   *  unchanged) confirmed it does not list: not "new", never revalidated
+   *  for again. */
+  acknowledged: Set<string>;
 }
 
 interface InFlight {
@@ -161,6 +190,12 @@ export function mergeWithServerRows(cacheFiles: FileEntry[], byId: Map<string, F
 }
 
 const NO_ACCOUNT: AccountEpoch = { generation: 0, accountId: null };
+
+/** A file row with no `is_media` at all: written by the sync write-through,
+ *  not by the server (whose /files/index rows always carry the boolean). */
+function isUnclassifiedFile(row: FileEntry): boolean {
+  return !row.is_folder && typeof row.is_media !== 'boolean';
+}
 
 export function createFileIndexLoader(deps: LoaderDeps) {
   let inFlight: InFlight | null = null;
@@ -213,6 +248,27 @@ export function createFileIndexLoader(deps: LoaderDeps) {
     return mergeWithServerRows(cached.files, check.byId);
   }
 
+  /** Fill `is_media` on unclassified file rows from this device's own
+   *  upload record. Returns the rows and the ids still unknown. */
+  async function classifyRows(epoch: Epoch, rows: FileEntry[]): Promise<{ rows: FileEntry[]; unknown: string[] }> {
+    const ids = rows.filter(isUnclassifiedFile).map((row) => row.id);
+    if (ids.length === 0) return { rows, unknown: [] };
+    const known = deps.classifyLocally ? await deps.classifyLocally(ids) : new Map<string, boolean>();
+    assertCurrent(epoch);
+    if (known.size === 0) return { rows, unknown: ids };
+    const out = rows.map((row) => {
+      const isMedia = isUnclassifiedFile(row) ? known.get(row.id) : undefined;
+      return isMedia === undefined ? row : { ...row, is_media: isMedia };
+    });
+    return { rows: out, unknown: ids.filter((id) => !known.has(id)) };
+  }
+
+  /** Unknown ids that are new since `check`: neither in its server snapshot
+   *  nor acknowledged as unlisted by a later check. */
+  function newSince(check: LastCheck, unknown: string[]): boolean {
+    return unknown.some((id) => !check.byId.has(id) && !check.acknowledged.has(id));
+  }
+
   function freshFromCache(epoch: Epoch, cached: CachedFileIndex | null): FileEntry[] | null {
     if (!last || !cached) return null;
     if (!sameEpoch(last.epoch, epoch)) return null;
@@ -231,16 +287,27 @@ export function createFileIndexLoader(deps: LoaderDeps) {
     assertCurrent(epoch);
     if (!index.changed && cached) {
       const sameServerState = last !== null && last.hash === cached.hash && sameEpoch(last.epoch, epoch);
-      last = sameServerState && last
-        ? { ...last, at: deps.now() }
-        : {
-            at: deps.now(),
-            hash: cached.hash,
-            storedAt: cached.storedAt,
-            epoch,
-            byId: new Map(cached.files.map((f) => [f.id, f])),
-          };
-      return { files: rowsFor(cached, last), hash: cached.hash, source: 'network' };
+      let check: LastCheck;
+      if (sameServerState && last) {
+        // The server has not changed since `last.byId`: a cache row absent
+        // from it is one the server does not list. Acknowledge it so it
+        // never triggers another revalidation.
+        const acknowledged = new Set(last.acknowledged);
+        for (const f of cached.files) if (!last.byId.has(f.id)) acknowledged.add(f.id);
+        check = { ...last, at: deps.now(), acknowledged };
+      } else {
+        check = {
+          at: deps.now(),
+          hash: cached.hash,
+          storedAt: cached.storedAt,
+          epoch,
+          byId: new Map(cached.files.map((f) => [f.id, f])),
+          acknowledged: new Set(),
+        };
+      }
+      last = check;
+      const { rows } = await classifyRows(epoch, rowsFor(cached, check));
+      return { files: rows, hash: cached.hash, source: 'network' };
     }
     if (index.files) {
       const storedAt = deps.now();
@@ -254,6 +321,7 @@ export function createFileIndexLoader(deps: LoaderDeps) {
         storedAt,
         epoch,
         byId: new Map(index.files.map((f) => [f.id, f])),
+        acknowledged: new Set(),
       };
       return { files: index.files, hash: index.hash, source: 'network' };
     }
@@ -276,7 +344,14 @@ export function createFileIndexLoader(deps: LoaderDeps) {
       const joinedLater = joinable(epoch);
       if (joinedLater) return joinedLater;
       const files = freshFromCache(epoch, cached);
-      if (files && cached) return { files, hash: cached.hash, source: 'cache' };
+      const check = last;
+      if (files && cached && check) {
+        const { rows, unknown } = await classifyRows(epoch, files);
+        // Round 4: a new file row nobody here can classify. The caller needs
+        // the server's answer for it; ask once (joining any request in flight).
+        if (options.revalidateUnclassified && newSince(check, unknown)) return start(epoch, cached);
+        return { files: rows, hash: cached.hash, source: 'cache' };
+      }
       return start(epoch, cached);
     }
     return start(epoch, preloaded);
@@ -318,6 +393,7 @@ const defaultLoader = createFileIndexLoader({
   cacheGeneration: fileIndexCacheGeneration,
   accountEpoch,
   cacheReadEpoch: cachedFileIndexEpoch,
+  classifyLocally: (fileIds) => classifyOwnUploads(fileIds),
   now: () => Date.now(),
   revalidateMs: FILE_INDEX_REVALIDATE_MS,
 });
