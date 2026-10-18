@@ -116,7 +116,7 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     // Round 9: and the purge mode, and whether it discards every kept mark.
     expect(prep).toMatch(/dbQueue\.sync \{\s*let ok = manifestHandle\.resetForSignOut\(\s*outgoingAccountId: outgoingAccountId, mode: mode, deletedAccountIds: deletedAccountIds\s*\)\s*return \(ok, manifestHandle\.writeFence\.generation, manifestHandle\.activeDiscard\.all\)\s*\}/);
     // Round 7: the close goes through `close(_:)` (checked sqlite3_close).
-    expect(resetForSignOut()).toMatch(/BackupManifestStore\.resetInPlace\(db[\s\S]*close\(db\)\s*self\.db = nil\s*\}\s*pendingReset\.set\(true\)\s*if !discard\.isEmpty \{ discardPending\.set\(true\) \}\s*awaitingPurgeFinish = true\s*return false/);
+    expect(resetForSignOut()).toMatch(/BackupManifestStore\.resetInPlace\(db[\s\S]*close\(db\)\s*self\.db = nil\s*\}\s*pendingReset\.set\(true\)\s*if !discard\.isEmpty \{ recordDiscardPending\(\) \}\s*awaitingPurgeFinish = true\s*return false/);
     expect(prep).not.toMatch(/return \[\]/);
     expect(prep).toMatch(/return \(kept, !resetOK\)/);
   });
@@ -469,7 +469,7 @@ describe('5. round 5: route 404s and the kept-marks expiry', () => {
     expect(fetch).not.toMatch(/404/);
     expect(fetch).not.toMatch(/return \[:\]/);
     // Round 10: through PhotoBackupServerClient, whose answer is the shipped classifier's.
-    expect(fetch).toMatch(/let map = try await client\.identifierMap\(\)/);
+    expect(fetch).toMatch(/return try await client\.identifierMap\(\)/);
     const client = readFileSync(join(IOS, 'PhotoBackupServerClient.swift'), 'utf8');
     const map = body(client, 'func identifierMap() async throws -> [String: String] {');
     expect(map).not.toMatch(/404/);
@@ -507,7 +507,8 @@ describe('5. round 5: route 404s and the kept-marks expiry', () => {
 });
 
 describe('6. round 6: the native manifest handle is reopened, and nothing runs without it', () => {
-  const start = () => body(engine, '  func start() {');
+  // Round 11: start()'s body is startLocked(), run inside lifecycle.userStart.
+  const start = () => body(engine, '  private func startLocked() {');
   const ensureForStart = () => body(engine, 'private func ensureManifestOpenForStart(accountId: String) -> Bool {');
 
   test('start() checks the manifest after the account guard and BEFORE both the running branch and isRunning = true', () => {
@@ -528,7 +529,7 @@ describe('6. round 6: the native manifest handle is reopened, and nothing runs w
     const [open, stop, record, retry, surface, refuse] = order(
       ensureForStart(),
       'dbQueue.sync { openManifestIfClosed(trigger: "start") }',
-      'stop()',
+      'lifecycle.internalStop { stopLocked() }',
       'switch recordManifestOpen(failure) {',
       'scheduleManifestOpenRetry(accountId: accountId, after: retryAfter)',
       'updateBackupStatusSurfaces(reason: reason)',
@@ -545,8 +546,12 @@ describe('6. round 6: the native manifest handle is reopened, and nothing runs w
 
   test('the retry re-runs start() for the same account only; start() proceeding cancels it, a background open does not', () => {
     const retry = body(engine, 'private func scheduleManifestOpenRetry(accountId: String, after delay: TimeInterval) {');
-    expect(retry).toMatch(/guard let self, self\.currentAccountId == accountId else \{ return \}/);
-    expect(retry).toMatch(/self\.start\(\)/);
+    // Round 11 (review finding 3): the retry runs start()'s body inside
+    // lifecycle.runRetry (one transition with the intent + token check).
+    expect(retry).toMatch(/let token = lifecycle\.scheduleRetry\(\)/);
+    expect(retry).toMatch(/self\.lifecycle\.runRetry\(token\) \{\s*guard self\.currentAccountId == accountId else \{ return \}/);
+    expect(retry).toMatch(/self\.startLocked\(\)/);
+    expect(retry).not.toMatch(/self\.start\(\)/);
     expect(retry).toMatch(/_manifestOpenRetry\?\.cancel\(\)/);
     expect(ensureForStart()).toMatch(/case \.proceed:\s*cancelManifestOpenRetry\(\)\s*return true/);
     // the background task records its open but must not cancel the start() still owed to JS
@@ -571,7 +576,7 @@ describe('6. round 6: the native manifest handle is reopened, and nothing runs w
   });
 
   test('stop() and sign-out clear the reason and cancel a pending retry (no restart after disablePhotoBackup)', () => {
-    const stop = body(engine, '  func stop() {');
+    const stop = body(engine, '  private func stopLocked() {');
     const [clear, guardRunning] = order(stop, 'clearManifestAvailability()', 'guard isRunning else { return }');
     expect(clear).toBeGreaterThan(-1);
     expect(guardRunning).toBeGreaterThan(clear);
@@ -641,8 +646,8 @@ describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondit
     expect(ins).toMatch(/return \.written\(inserted: inserted\)/);
     // Round 10 (review finding 4): sticky; only a full scan's success clears it (ScanInsertHealth).
     const rec = body(engine, 'private func recordScanInsert(\n    _ written: FencedManifestWrites.ScanWrite, assets: Int, source: ScanInsertHealth.Source\n  ) {');
-    expect(rec).toMatch(/case \.written\(let inserted\):\s*scanInsertHealth\.record\(inserted: inserted, source: source\)/);
-    expect(body(engine, READY_SIG)).toMatch(/scanInsertFailed: self\.scanInsertHealth\.failed/);
+    expect(rec).toMatch(/case \.written\(let inserted\):\s*manifestHandle\.scanInsertHealth\.record\(inserted: inserted, source: source\)/);
+    expect(body(engine, READY_SIG)).toMatch(/scanInsertFailed: self\.manifestHandle\.scanInsertHealth\.failed/);
     expect(code(engine)).not.toMatch(/lastScanInsertFailed/);
     const scan = body(engine, 'func scanPhotoLibraryForPendingUploads(reason: String, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async -> Bool {');
     expect(scan).toMatch(/self\.recordScanInsert\(written, assets: scanned\.count, source: \.fullScan\)/);
@@ -725,41 +730,157 @@ describe('round 10 (review of mobile#182 at 060bfeb0): the server check is the d
     expect((code(engine).match(/\.uploadSingleAsset\(/g) ?? []).length).toBe(1);
   });
 
-  test('every fresh row is checked; only the live hits are left out; a deferral backs off', () => {
+  test('every fresh row not covered by a bulk pass is checked; only the server\'s hits are left out; a deferral backs off', () => {
     const fn = body(engine, 'private func rowsCheckedAgainstServer(');
-    expect(fn).toMatch(/let fresh = pending\.filter \{ \$0\.stagedFileId == nil \}\.map\(\\\.localAssetId\)/);
+    expect(fn).toMatch(/let freshAll = pending\.filter \{ \$0\.stagedFileId == nil \}\.map\(\\\.localAssetId\)/);
+    expect(fn).toMatch(/let fresh = uncoveredByBulkServerCheck\(freshAll, accountId: accountId, generation: ticket\.generation\)/);
     expect(fn).toMatch(/PendingUploadServerCheck\.run\(candidates: fresh, steps: steps\)/);
     expect(fn).toMatch(/return pending\.filter \{ !skip\.contains\(\$0\.localAssetId\) \}/);
     expect(fn).toMatch(/case let \.deferred\(reason\):[\s\S]*if let wait \{ backoffUntil = Date\(\)\.addingTimeInterval\(wait\) \}[\s\S]*return nil/);
-    expect(fn).toMatch(/FencedManifestWrites\.promoteCheckedHits\(/);
-    expect(fn).toMatch(/try await self\.liveFileIds\(client: client, accountId: accountId\)/);
-  });
-
-  test('the rebuild fast path promotes only photos whose server file is out of the Trash', () => {
-    const ready = body(engine, READY_SIG);
-    const [fetch, live] = order(ready, 'let map = try await self.fetchServerIdentifierMap(', 'return try await PendingUploadServerCheck.liveOnly(map)');
-    expect(fetch).toBeGreaterThan(-1);
-    expect(live).toBeGreaterThan(fetch);
-    // Nothing returns the unfiltered map in between.
-    expect(ready.slice(fetch, live)).not.toMatch(/\breturn\b/);
-  });
-
-  test('the server caches are cleared at every sign-out, and a mark keeps the map cache in step', () => {
-    const prep = body(engine, 'func prepareForStoragePurge(');
-    expect(prep).toMatch(/_liveFileIndexCache\.clear\(\)/);
-    expect(prep).toMatch(/_identifierMapCache\.clear\(\)/);
-    expect(body(engine, 'func markOnServer(')).toMatch(/_identifierMapCache\.record\(local: assetId, fileId: fileId, accountId: accountId, deviceId: deviceId\)/);
+    const steps = body(engine, 'private func serverCheckSteps(');
+    expect(steps).toMatch(/FencedManifestWrites\.promoteCheckedHits\(/);
+    expect(steps).toMatch(/let hits = try await client\.check\(ids\)/);
   });
 
   test('stop() drops the fetch result the PhotoKit change observer diffs against (review finding 3)', () => {
-    const stop = body(engine, 'func stop() {');
-    const [drop, guardRunning] = order(stop, 'currentFetchResult = nil', 'guard isRunning else { return }');
-    expect(drop).toBeGreaterThan(-1);
-    // Unconditional: before the isRunning early return.
-    expect(guardRunning).toBeGreaterThan(drop);
+    // Round 11: the stop's transition does it (lifecycle.userStop / internalStop).
+    expect(engine).toMatch(/  func stop\(\) \{\n    lifecycle\.userStop \{ stopLocked\(\) \}\n  \}/);
   });
 
   test('a batch of server-promoted rows is progress for the drain loop', () => {
     expect(engine).toMatch(/let progressed = uploaded \+ self\.takeLastBatchServerPromoted\(\)\n\s*if progressed == 0, !self\.dbQueue\.sync/);
+  });
+});
+
+describe('round 11 (review of mobile#182 at de23774e)', () => {
+  const IOS_DIR = IOS;
+  // A missing file reads as '' so each test fails on its own assertion (the
+  // red run at de23774 has no BackupEngineLifecycle.swift).
+  const { existsSync } = require('node:fs');
+  const lifecycleSwift = existsSync(join(IOS_DIR, 'BackupEngineLifecycle.swift'))
+    ? readFileSync(join(IOS_DIR, 'BackupEngineLifecycle.swift'), 'utf8')
+    : '';
+  const checkSwift = readFileSync(join(IOS_DIR, 'PendingUploadServerCheck.swift'), 'utf8');
+  const clientSwift = readFileSync(join(IOS_DIR, 'PhotoBackupServerClient.swift'), 'utf8');
+  const responsesSwift = readFileSync(join(IOS_DIR, 'PhotoBackupServerResponses.swift'), 'utf8');
+  const batch = body(engine, 'func processBatch(limit: Int = 12, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async throws -> Int {');
+
+  test('finding 2: no native code asks for GET /api/v1/files/index (task 1959); no liveness read is left', () => {
+    const { readdirSync } = require('node:fs');
+    const offenders: string[] = [];
+    for (const f of readdirSync(IOS_DIR).filter((n: string) => n.endsWith('.swift'))) {
+      const src = code(readFileSync(join(IOS_DIR, f), 'utf8'));
+      if (/\/api\/v1\/files\/index/.test(src) || /"\/files\/index/.test(src)) offenders.push(f);
+    }
+    expect(offenders).toEqual([]);
+    expect(code(engine)).not.toMatch(/liveFileIds|LiveFileIndexCache|IdentifierMapCache|liveOnly/);
+    expect(code(clientSwift)).not.toMatch(/func fileIndex/);
+  });
+
+  test('finding 2: /check promotes only `backed_up` entries with their file id; a server without it fails closed', () => {
+    const parse = body(responsesSwift, 'static func checkBackedUp(statusCode: Int, data: Data, requested: [String]) throws -> [String: String] {');
+    expect(parse).toMatch(/guard let backedUpValue = object\["backed_up"\] else \{ throw ServerLacksBackedUp\(\) \}/);
+    expect(parse).toMatch(/guard Set\(backedUp\.keys\) == hits else \{ throw bad \}/);
+    expect(body(clientSwift, 'func check(_ ids: [String]) async throws -> [String: String] {'))
+      .toMatch(/PhotoBackupServerResponses\.checkBackedUp\(statusCode: status, data: data, requested: ids\)/);
+    // The per-batch run promotes exactly the hits /check returned.
+    const run = body(checkSwift, 'static func run(candidates: [String], steps: Steps) async -> Outcome {');
+    expect(run).toMatch(/hits\.merge\(try await steps\.check\(chunk\)\)/);
+    expect(run).toMatch(/guard let promoted = steps\.promote\(hits\) else \{ return \.deferred\(\.applyFailed\) \}/);
+    expect(checkSwift).toMatch(/error is PhotoBackupServerResponses\.ServerLacksBackedUp \? \.serverLacksBackedUp : \.checkFailed/);
+    expect(body(checkSwift, 'static func backoff(for reason: DeferReason, consecutiveFailures: Int) -> TimeInterval? {'))
+      .toMatch(/case \.checkFailed, \.serverLacksBackedUp:\s*return ManifestRebuildGate\.fetchFailureBackoff/);
+    // Logged once per process.
+    const note = body(engine, 'private func noteServerBackedUpSupport(_ supported: Bool) {');
+    expect(note).toMatch(/if !supported, PendingUploadServerCheck\.serverLacksBackedUpNotice\.shouldFire\(\) \{/);
+    expect(checkSwift).toMatch(/static let serverLacksBackedUpMessage = "server lacks backed_up \(task 2036\)"/);
+  });
+
+  test('finding 2: the rebuild uses the identifiers map only, and defers once the server was seen without backed_up', () => {
+    const ready = body(engine, READY_SIG);
+    const [lacks, fetch] = order(ready, 'guard !self.serverLacksBackedUp else {', 'return try await self.fetchServerIdentifierMap(');
+    expect(lacks).toBeGreaterThan(-1);
+    expect(fetch).toBeGreaterThan(lacks);
+  });
+
+  test('finding 9: the bulk pass runs before the drain selects a batch, and is requested by drain starts, the BG task and inserts', () => {
+    const [ready, bulk, select, check] = order(
+      batch,
+      'guard await ensureManifestReadyForUploads(',
+      'await bulkServerCheckIfRequested(accountId: batchAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket)',
+      'let selected = dbQueue.sync { getPendingUploads(limit: limit) }',
+      'guard let pending = await rowsCheckedAgainstServer(',
+    );
+    expect(ready).toBeGreaterThan(-1);
+    expect(bulk).toBeGreaterThan(ready);
+    expect(select).toBeGreaterThan(bulk);
+    expect(check).toBeGreaterThan(select);
+    const fn = body(engine, 'private func bulkServerCheckIfRequested(');
+    expect(fn).toMatch(/BackupManifestStore\.freshPendingIds\(db\)/);
+    expect(fn).toMatch(/PendingUploadServerCheck\.bulk\(candidates: candidates, steps: steps\)/);
+    expect(fn).toMatch(/recordBulkServerCheck\(outcome, accountId: accountId, generation: ticket\.generation\)/);
+    expect(body(engine, 'private func recordBulkServerCheck(')).toMatch(/_serverCheckCoverage\.record\(outcome\.needsBackup, accountId: accountId, generation: generation, now: Date\(\)\)/);
+    expect(body(engine, 'private func startDrainLoop(reason: String) {')).toMatch(/requestBulkServerCheck\(\)/);
+    expect(body(engine, 'private func handleBackgroundTask(_ task: BGProcessingTask) {')).toMatch(/self\.requestBulkServerCheck\(\)/);
+    expect(body(engine, 'private func recordScanInsert(\n    _ written: FencedManifestWrites.ScanWrite, assets: Int, source: ScanInsertHealth.Source\n  ) {'))
+      .toMatch(/requestBulkServerCheck\(\)/);
+    expect(checkSwift).toMatch(/static let maxIdentifiersPerCheck = 500/);
+  });
+
+  test('finding 9: the coverage is cleared at every stop and sign-out', () => {
+    expect(body(engine, '  private func stopLocked() {')).toMatch(/_serverCheckCoverage\.clear\(\)/);
+    expect(body(engine, 'func prepareForStoragePurge(')).toMatch(/_serverCheckCoverage\.clear\(\)/);
+  });
+
+  test('finding 3: start/stop/retry/observer/monitor go through ONE lifecycle lock', () => {
+    expect(engine).toMatch(/  func start\(\) \{\n    lifecycle\.userStart \{ startLocked\(\) \}\n  \}/);
+    expect(engine).toMatch(/  func stop\(\) \{\n    lifecycle\.userStop \{ stopLocked\(\) \}\n  \}/);
+    // startLocked() appears 3 times: its definition, start() and the retry.
+    expect((code(engine).match(/startLocked\(\)/g) ?? []).length).toBe(3);
+    expect(body(engine, 'private func registerPhotoObserver() {')).toMatch(/lifecycle\.registerObserverOnce \{ PHPhotoLibrary\.shared\(\)\.register\(self\) \}/);
+    expect(body(engine, 'private func startNetworkMonitor() {')).toMatch(/lifecycle\.startMonitorIfNeeded \{/);
+    expect(body(engine, 'private func stopNetworkMonitor() {')).toMatch(/lifecycle\.stopMonitor \{/);
+    expect((code(engine).match(/PHPhotoLibrary\.shared\(\)\.register\(self\)/g) ?? []).length).toBe(1);
+    expect(code(engine)).not.toMatch(/networkMonitor = /);
+    // The background task's running flips are transitions too.
+    const bg = body(engine, 'private func handleBackgroundTask(_ task: BGProcessingTask) {');
+    expect(bg).toMatch(/let batchStart: Bool = self\.lifecycle\.locked \{/);
+    expect(bg).toMatch(/let idled: Bool = self\.lifecycle\.locked \{/);
+    // The lifecycle's retry checks the intent and the token in the lock.
+    expect(body(lifecycleSwift, 'func runRetry(_ token: UInt64, _ body: () -> Void) -> Bool {'))
+      .toMatch(/locked \{\s*guard read\(\{ _wantsRunning && token == _retryToken \}\) else \{ return false \}\s*body\(\)/);
+  });
+
+  test('finding 5: the fetch result is stored only through acceptFetchResult, and cleared after the sign-out reset', () => {
+    const fetch = body(engine, 'private func fetchAssetsForBackup(');
+    expect(fetch).toMatch(/storeFetchResult\(result, ticket: ticket, stopGeneration: stopGeneration\)/);
+    expect(fetch).toMatch(/storeFetchResult\(nil, ticket: ticket, stopGeneration: stopGeneration\)/);
+    const store = body(engine, 'private func storeFetchResult(');
+    expect(store).toMatch(/lifecycle\.acceptFetchResult\(\s*result, stopGeneration: stopGeneration, cancelled: Task\.isCancelled,/);
+    expect(store).toMatch(/self\.manifestHandle\.writeFence\.isCurrent\(ticket\)/);
+    const scan = body(engine, 'func scanPhotoLibraryForPendingUploads(reason: String, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async -> Bool {');
+    const [gen, doFetch] = order(scan, 'let fetchGeneration = lifecycle.stopGeneration', 'fetchAssetsForBackup(');
+    expect(gen).toBeGreaterThan(-1);
+    expect(doFetch).toBeGreaterThan(gen);
+    expect(body(engine, 'func photoLibraryDidChange(_ changeInstance: PHChange) {'))
+      .toMatch(/guard lifecycle\.replaceFetchResult\(expected: old, with: details\.fetchResultAfterChanges\) else \{ return \}/);
+    const prep = body(engine, 'func prepareForStoragePurge(');
+    const [reset, clear] = order(prep, 'manifestHandle.resetForSignOut(', 'lifecycle.clearFetchResult()');
+    expect(reset).toBeGreaterThan(-1);
+    expect(clear).toBeGreaterThan(reset);
+    expect(code(engine)).not.toMatch(/currentFetchResult = /);
+  });
+
+  test('finding 7: the scan-insert health lives on the handle and the sign-out reset clears it', () => {
+    const reset = body(handleSwift, 'func resetForSignOut(\n    outgoingAccountId: String?,\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> Bool {');
+    const [fence, health] = order(reset, 'writeFence.advanceForSignOut()', 'scanInsertHealth = ScanInsertHealth()');
+    expect(fence).toBeGreaterThan(-1);
+    expect(health).toBeGreaterThan(fence);
+    expect(code(engine)).not.toMatch(/private var scanInsertHealth/);
+  });
+
+  test('finding 1: an inherited deletion flag forces "discard every mark"', () => {
+    expect(body(handleSwift, 'var activeDiscard: BackupManifestStore.MarkDiscard {'))
+      .toMatch(/let inheritedDeletion = discardPending\.get\(\) && !discardPendingSetByThisProcess\s*let all = discardAllPending \|\| inheritedDeletion/);
   });
 });

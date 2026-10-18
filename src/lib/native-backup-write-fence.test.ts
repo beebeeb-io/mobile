@@ -135,9 +135,11 @@ describe('NativeBackupEngine.swift: every manifest write is fenced', () => {
   test('observer-spawned scans are tracked and cancelled by stop() (best effort; the fence is the guarantee)', () => {
     const code = stripSwift(engine);
     expect(body(code, 'private func registerPhotoObserver(')).not.toMatch(/Task \{/);
-    expect((body(code, 'private func registerPhotoObserver(').match(/spawnScan\(/g) ?? []).length).toBe(2);
+    // Round 11: registration goes through lifecycle.registerObserverOnce; one scan either way.
+    expect((body(code, 'private func registerPhotoObserver(').match(/spawnScan\(/g) ?? []).length).toBe(1);
     expect(body(engine, 'func photoLibraryDidChange(')).toMatch(/spawnScan\(reason: "Selected albums rescanned"/);
-    const stop = body(code, 'func stop() {');
+    // Round 11: stop()'s body is stopLocked(), run inside lifecycle.userStop.
+    const stop = body(code, 'private func stopLocked() {');
     expect(before(stop, 'cancelScanTasks()', 'guard isRunning else { return }')).toBe(true);
     const scan = body(code, 'func scanPhotoLibraryForPendingUploads(');
     expect(before(scan, 'fetchAssetsForBackup(', 'guard !Task.isCancelled else { return false }')).toBe(true);
@@ -157,7 +159,8 @@ describe('NativeBackupEngine.swift: every manifest write is fenced', () => {
     for (const sig of ['private func markChunkUploaded(', 'private func markChunkFailed(']) {
       const fn = body(engine, sig);
       expect(fn).toMatch(/WHERE \\\(Self\.chunkSessionPredicate\)/);
-      expect(fn).toMatch(/sqlite3_bind_text\(stmt, 4, \(uploadSessionId as NSString\)/);
+      // Round 11 (review finding 6): SQLITE_TRANSIENT through bindText.
+      expect(fn).toMatch(/BackupManifestStore\.bindText\(stmt, 4, uploadSessionId\)/);
     }
   });
 });
@@ -295,7 +298,7 @@ describe('each guard goes RED on a named mutation (guard red-proof)', () => {
 
   test('M6 — an exemption whose section is gone is reported stale', () => {
     const bad = mutate(engine, /\n    \/\/ Recover any rows stuck in 'uploading' state\n    dbQueue\.async \{ \[weak self\] in\n      self\?\.recoverStuckUploads\(\)\n    \}/, '');
-    expect(auditWriteFence(bad).violations).toContain('stale exemption: stop has no unfenced write section');
+    expect(auditWriteFence(bad).violations).toContain('stale exemption: stopLocked has no unfenced write section');
   });
 
   test('M7 — resetForSignOut no longer advances the fence first', () => {

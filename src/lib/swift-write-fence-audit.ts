@@ -45,13 +45,15 @@ export const RESET_CALLS = ['resetForSignOut', 'finishAfterFailedReset', 'openIf
  * use it to put data back into the emptied manifest.
  */
 export const EXEMPT: Record<string, string> = {
-  start:
+  // Round 11: start()/stop() run their bodies (startLocked/stopLocked) inside
+  // one BackupEngineLifecycle transition.
+  startLocked:
     'purgeMismatchedStagedAssets: removes staged state encrypted for another account (UPDATE to pending + file delete); it can only take data out, never add a row or an association',
   bindAccount:
-    'purgeMismatchedStagedAssets (as in start) plus the fence bind itself, the explicit sign-in that opens the new generation',
+    'purgeMismatchedStagedAssets (as in startLocked) plus the fence bind itself, the explicit sign-in that opens the new generation',
   handleBackgroundTask:
-    'purgeMismatchedStagedAssets (as in start); the task\'s scan and batch take their own ticket (`writeTicket`) and are fenced',
-  stop:
+    'purgeMismatchedStagedAssets (as in startLocked); the task\'s scan and batch take their own ticket (`writeTicket`) and are fenced',
+  stopLocked:
     'recoverStuckUploads: UPDATE of rows already in the manifest (uploading/staging older than 5 min back to pending); cannot add a row or an association. At sign-out it is enqueued before the reset\'s block (FIFO), so the reset removes whatever it touched',
   resetRetryExhaustedUploadsForManualRun:
     'UPDATE of retry counters on rows already in the manifest; no await between triggerManualBackup\'s start() and it; cannot add a row or an association',

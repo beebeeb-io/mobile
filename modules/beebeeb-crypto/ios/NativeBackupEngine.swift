@@ -752,17 +752,20 @@ final class NativeBackupEngine: NSObject {
   )
   private var batchProcessingActive = false // already serialized via batchProcessingQueue.sync — not touched by task 1600
 
-  private var _currentFetchResult: PHFetchResult<PHAsset>?
+  /// Task 1667 round 11 (review findings 3 and 5): start / stop / the
+  /// manifest-open retry, the photo observer, the network monitor and the
+  /// PhotoKit fetch result, behind one transition lock
+  /// (`BackupEngineLifecycle`).
+  private let lifecycle = BackupEngineLifecycle()
+
+  /// The fetch result the PhotoKit change observer diffs against. Written
+  /// only through `lifecycle` (`acceptFetchResult` / `replaceFetchResult`,
+  /// cleared by every stop and after the sign-out reset).
   private var currentFetchResult: PHFetchResult<PHAsset>? {
-    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _currentFetchResult }
-    set { engineStateLock.lock(); _currentFetchResult = newValue; engineStateLock.unlock() }
+    lifecycle.fetchResult as? PHFetchResult<PHAsset>
   }
 
-  private var _photoObserverRegistered = false
-  private var photoObserverRegistered: Bool {
-    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _photoObserverRegistered }
-    set { engineStateLock.lock(); _photoObserverRegistered = newValue; engineStateLock.unlock() }
-  }
+  private var photoObserverRegistered: Bool { lifecycle.observerRegistered }
 
   private var _isBackgroundTaskActive = false
   private var isBackgroundTaskActive: Bool {
@@ -808,11 +811,7 @@ final class NativeBackupEngine: NSObject {
   private let chunkResponseBodyBuffers = LockedDictionary<Int, Data>()
   private static let chunkResponseBodyCapBytes = 4096
   #if os(iOS)
-  private var _networkMonitor: NWPathMonitor?
-  private var networkMonitor: NWPathMonitor? {
-    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _networkMonitor }
-    set { engineStateLock.lock(); _networkMonitor = newValue; engineStateLock.unlock() }
-  }
+  private var networkMonitor: NWPathMonitor? { lifecycle.monitor as? NWPathMonitor }
 
   private var _isNetworkAvailable = true
   private var isNetworkAvailable: Bool {
@@ -881,25 +880,39 @@ final class NativeBackupEngine: NSObject {
     set { engineStateLock.lock(); _manifestReadyForAccount = newValue; engineStateLock.unlock() }
   }
 
-  /// Task 1667 round 7 sweep: the last camera-roll insert into the manifest
-  /// failed (`BackupManifestStore.insertScannedAssets` returned false). While
-  /// set, the rebuild gate does not apply the server map: the map is applied
-  /// once per account, to the rows the manifest holds at that moment, and a
-  /// photo whose row was missing then would be uploaded again when a later
-  /// scan inserts it. Read and written only on `dbQueue`.
-  ///
-  /// Round 10 (review finding 4): sticky. Any failed insert sets it, and
-  /// only a successful FULL scan insert clears it (`ScanInsertHealth`); a
-  /// one-photo insert from `photoLibraryDidChange` used to clear the full
-  /// scan's failure.
-  private var scanInsertHealth = ScanInsertHealth()
+  // Task 1667 round 7 sweep: the last camera-roll insert into the manifest
+  // failed (`BackupManifestStore.insertScannedAssets` returned false). While
+  // set, the rebuild gate does not apply the server map: the map is applied
+  // once per account, to the rows the manifest holds at that moment, and a
+  // photo whose row was missing then would be uploaded again when a later
+  // scan inserts it. Read and written only on `dbQueue`.
+  //
+  // Round 10 (review finding 4): sticky. Any failed insert sets it, and
+  // only a successful FULL scan insert clears it (`ScanInsertHealth`); a
+  // one-photo insert from `photoLibraryDidChange` used to clear the full
+  // scan's failure.
+  //
+  // Round 11 (review finding 7): it lives on the manifest handle
+  // (`manifestHandle.scanInsertHealth`, dbQueue-only), and the sign-out
+  // reset (`prepareForStoragePurge` -> `resetForSignOut`) clears it with the
+  // rows it describes, like every other account-scoped cache. Before, the
+  // engine kept it across sign-out and account A's failed insert deferred
+  // account B's first rebuild.
 
-  /// Task 1667 round 10: the account's non-trashed file ids (hash-revalidated
-  /// on every use) and the server's per-device identifier map, for the
-  /// batch's server check (`PendingUploadServerCheck`) and the rebuild's
-  /// trash filter. Guarded by `engineStateLock`; cleared at every sign-out.
-  private var _liveFileIndexCache = LiveFileIndexCache()
-  private var _identifierMapCache = IdentifierMapCache()
+  /// Task 1667 round 11 (review finding 9): the fresh pending rows a bulk
+  /// `/photo-backup/check` answered "needs backup" for; the per-batch guard
+  /// skips them. Guarded by `engineStateLock`; cleared at every stop and
+  /// sign-out, keyed by account and write-fence generation, 15-minute window.
+  private var _serverCheckCoverage = ServerCheckCoverage()
+  /// Round 11: a bulk pass is owed (set at every drain start, background task
+  /// and scan insert; consumed by the next batch). Guarded by `engineStateLock`.
+  private var _bulkServerCheckRequested = true
+  /// Round 11 (review finding 2): the server answered `/check` without
+  /// `backed_up` (no task 2036) in this process. While set, the rebuild fast
+  /// path does not apply the identifiers map either (on such a server that
+  /// map includes files in the Trash). Cleared by the next `/check` that
+  /// carries the field. Guarded by `engineStateLock`.
+  private var _serverLacksBackedUp = false
   /// Round 10: rows the last batch's server check promoted (they count as
   /// progress for the drain loop, which otherwise waits 5 s after a batch
   /// that uploaded nothing). Guarded by `engineStateLock`.
@@ -1133,7 +1146,7 @@ final class NativeBackupEngine: NSObject {
     }
     set {
       UserDefaults.standard.set(newValue, forKey: backupIncludeVideosKey)
-      currentFetchResult = nil
+      lifecycle.clearFetchResult()
     }
   }
 
@@ -2161,7 +2174,20 @@ final class NativeBackupEngine: NSObject {
   /// untouched (not failed, not cleared) so a subsequent `enablePhotoBackup`
   /// call — which sets `currentAccountId` immediately before calling this —
   /// picks the same pending rows back up.
+  ///
+  /// Task 1667 round 11 (review finding 3): the user's start. It records that
+  /// the user wants backup running and runs the whole start as ONE
+  /// transition of `lifecycle`: a `stop()` / `disablePhotoBackup` / sign-out
+  /// on another queue either finished before it or waits until it is done,
+  /// and the manifest-open retry runs the same body only while that intent
+  /// is still set (`scheduleManifestOpenRetry`).
   func start() {
+    lifecycle.userStart { startLocked() }
+  }
+
+  /// `start()`'s body. MUST run inside a `lifecycle` transition (`start()`,
+  /// or the retry's `runRetry`).
+  private func startLocked() {
     guard let accountId = currentAccountId, !accountId.isEmpty else {
       RuntimeTrace.event("backup.native.start.refused_no_account", [
         "isRunning": isRunning
@@ -2192,11 +2218,8 @@ final class NativeBackupEngine: NSObject {
       // are idempotent/guarded so calling them on an already-running
       // engine that DID go through the full path below is a cheap no-op.
       registerPhotoObserver()
-      #if os(iOS)
-      if networkMonitor == nil {
-        startNetworkMonitor()
-      }
-      #endif
+      // Round 11: a no-op while a monitor runs (never a second one).
+      startNetworkMonitor()
       // Task 1605: this IS the "next start after the account state
       // refreshes" resume point `accountRefusalStopReason`'s doc comment
       // promises. Clear unconditionally, same trade-off
@@ -2377,7 +2400,20 @@ final class NativeBackupEngine: NSObject {
   /// still unlocked so backup stop/start does not trigger an extra keychain
   /// biometric prompt. In-flight NSURLSession background uploads continue
   /// independently.
+  ///
+  /// Task 1667 round 11 (review finding 3): the user's stop (and sign-out,
+  /// teardown, a confirmed account mismatch). It clears the "wants backup
+  /// running" intent, voids every scheduled manifest-open retry and every
+  /// running scan's fetch result, and runs the stop as one `lifecycle`
+  /// transition. A retry that is already executing waits for this and then
+  /// does nothing.
   func stop() {
+    lifecycle.userStop { stopLocked() }
+  }
+
+  /// `stop()`'s body. MUST run inside a `lifecycle` transition (`stop()`, or
+  /// `internalStop` when `start()` cannot open the manifest).
+  private func stopLocked() {
     // Task 1531 [P1-3]: release the engine-owned master-key handle and
     // cancel any in-flight BGProcessingTask work FIRST, unconditionally —
     // BEFORE the `isRunning` early-return below. The old code put both
@@ -2404,11 +2440,18 @@ final class NativeBackupEngine: NSObject {
     // already running finishes, and its insert is then dropped by the write
     // fence the sign-out reset advances).
     cancelScanTasks()
+    // Round 11 (review finding 9): the bulk coverage is per run; the next
+    // start asks again.
+    engineStateLock.lock()
+    _serverCheckCoverage.clear()
+    engineStateLock.unlock()
     // Round 10 (review finding 3): drop the PhotoKit fetch result the change
     // observer diffs against. Kept, a PHChange after the next sign-in was
     // diffed against the pre-sign-out result and inserted a few rows before
     // the new full scan. The next full scan sets a fresh one.
-    currentFetchResult = nil
+    // Round 11 (review finding 5): done by the transition this runs in
+    // (`userStop` / `internalStop` clear it and advance the generation a scan
+    // must still match to store its result, `acceptFetchResult`).
 
     guard isRunning else { return }
     isRunning = false
@@ -2418,10 +2461,7 @@ final class NativeBackupEngine: NSObject {
     drainTask = nil
     pendingDrainWakeReason = nil
 
-    if photoObserverRegistered {
-      PHPhotoLibrary.shared().unregisterChangeObserver(self)
-      photoObserverRegistered = false
-    }
+    lifecycle.unregisterObserver { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
     stopNetworkMonitor()
 
     uploadTaskMap.removeAll()
@@ -2510,7 +2550,7 @@ final class NativeBackupEngine: NSObject {
       defer { sqlite3_finalize(stmt) }
       let sql = "SELECT status FROM backup_assets WHERE local_asset_id = ? LIMIT 1"
       guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-      sqlite3_bind_text(stmt, 1, (localId as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 1, localId)
       guard sqlite3_step(stmt) == SQLITE_ROW,
             sqlite3_column_type(stmt, 0) != SQLITE_NULL else { return nil }
       let raw = String(cString: sqlite3_column_text(stmt, 0))
@@ -2737,6 +2777,8 @@ final class NativeBackupEngine: NSObject {
         self.completeBackgroundTaskOnce(task, success: false)
         return
       }
+      // Round 11 (review finding 9): the task's batch starts with a bulk check.
+      self.requestBulkServerCheck()
 
       // Ensure master key is available for background processing
       if self.masterKeyHandle == nil {
@@ -2798,10 +2840,17 @@ final class NativeBackupEngine: NSObject {
         "delayMs": mode.delayNanoseconds / 1_000_000
       ])
 
-      let batchStart = self.isRunning
-      if !self.isRunning {
-        self.isRunning = true
-        self.isPaused = false
+      // Round 11 (review finding 3): the check-and-set is one `lifecycle`
+      // transition, like start() and stop().
+      let batchStart: Bool = self.lifecycle.locked {
+        let wasRunning = self.isRunning
+        if !wasRunning {
+          self.isRunning = true
+          self.isPaused = false
+        }
+        return wasRunning
+      }
+      if !batchStart {
         self.updateBackupStatusSurfaces(reason: "Background backup running")
       }
 
@@ -2826,8 +2875,12 @@ final class NativeBackupEngine: NSObject {
       // `taskGeneration` was captured, a newer `start()`/account-switch
       // began while this task's `processBatch` was awaiting — that newer
       // run owns `isRunning` now, and this stale task must not stop it.
-      if !batchStart && self.accountGenerationSnapshot() == taskGeneration {
+      let idled: Bool = self.lifecycle.locked {
+        guard !batchStart && self.accountGenerationSnapshot() == taskGeneration else { return false }
         self.isRunning = false
+        return true
+      }
+      if idled {
         self.updateBackupStatusSurfaces()
         self.scheduleOpenAppReminderIfNeeded()
       }
@@ -2925,15 +2978,10 @@ final class NativeBackupEngine: NSObject {
 
   // MARK: - Photo Library Observer
 
+  /// Round 11 (review finding 3): registers the change observer at most
+  /// once (`lifecycle.registerObserverOnce`), then scans.
   private func registerPhotoObserver() {
-    if photoObserverRegistered {
-      spawnScan(reason: "Camera roll scanned", wakeReason: "photo-scan")
-      return
-    }
-
-    photoObserverRegistered = true
-    PHPhotoLibrary.shared().register(self)
-
+    lifecycle.registerObserverOnce { PHPhotoLibrary.shared().register(self) }
     spawnScan(reason: "Camera roll scanned", wakeReason: "photo-scan")
   }
 
@@ -2965,7 +3013,12 @@ final class NativeBackupEngine: NSObject {
                                       PHAssetMediaType.image.rawValue)
     }
     let selectedAlbums = selectedPhotoAlbumIds
-    let assets = fetchAssetsForBackup(options: options, selectedAlbumIds: selectedAlbums)
+    // Round 11 (review finding 5): captured BEFORE the fetch; a stop or
+    // sign-out after this line voids the fetch result (`acceptFetchResult`).
+    let fetchGeneration = lifecycle.stopGeneration
+    let assets = fetchAssetsForBackup(
+      options: options, selectedAlbumIds: selectedAlbums, ticket: ticket, stopGeneration: fetchGeneration
+    )
     // Best effort: `stop()` / sign-out cancel observer-spawned scans. The
     // ticket check below is what holds when the cancel comes too late.
     guard !Task.isCancelled else { return false }
@@ -3013,10 +3066,17 @@ final class NativeBackupEngine: NSObject {
     return hasPending
   }
 
-  private func fetchAssetsForBackup(options: PHFetchOptions, selectedAlbumIds: [String]) -> [PHAsset] {
+  /// Round 11 (review finding 5): the fetch result is stored only through
+  /// `storeFetchResult`, which refuses it after a stop / sign-out or a
+  /// cancel, or when the scan's fence ticket no longer admits writes. Before,
+  /// a fetch still running across `stop()` wrote the pre-sign-out result back
+  /// after `stop()` had cleared it.
+  private func fetchAssetsForBackup(
+    options: PHFetchOptions, selectedAlbumIds: [String], ticket: ManifestWriteFence.Ticket, stopGeneration: UInt64
+  ) -> [PHAsset] {
     guard !selectedAlbumIds.isEmpty else {
       let result = PHAsset.fetchAssets(with: options)
-      currentFetchResult = result
+      storeFetchResult(result, ticket: ticket, stopGeneration: stopGeneration)
       var assets: [PHAsset] = []
       result.enumerateObjects { asset, _, _ in assets.append(asset) }
       return assets
@@ -3026,7 +3086,7 @@ final class NativeBackupEngine: NSObject {
     // there is no single `currentFetchResult` safe for PHChange incremental
     // inserts. Force the change observer to perform a selected-album rescan
     // instead of trusting unvalidated insertedObjects from an all-library fetch.
-    currentFetchResult = nil
+    storeFetchResult(nil, ticket: ticket, stopGeneration: stopGeneration)
     let collections = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: selectedAlbumIds, options: nil)
     var assetsById: [String: PHAsset] = [:]
     collections.enumerateObjects { collection, _, _ in
@@ -3040,31 +3100,51 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
+  /// Round 11 (review finding 5): checks `Task.isCancelled`, the stop
+  /// generation and the fence ticket, then stores, in ONE `lifecycle`
+  /// transition (the lock every stop takes; the fence check is a
+  /// `dbQueue.sync` inside it, the same lock order as `start()`).
+  private func storeFetchResult(
+    _ result: PHFetchResult<PHAsset>?, ticket: ManifestWriteFence.Ticket, stopGeneration: UInt64
+  ) {
+    let stored = lifecycle.acceptFetchResult(
+      result, stopGeneration: stopGeneration, cancelled: Task.isCancelled,
+      stillAdmitted: { self.dbQueue.sync { self.manifestHandle.writeFence.isCurrent(ticket) } }
+    )
+    if !stored {
+      RuntimeTrace.event("backup.native.scan.fetch_result_dropped")
+    }
+  }
+
   // MARK: - Network Monitor
 
+  /// Round 11 (review finding 3): starts a monitor only when none runs
+  /// (`lifecycle.startMonitorIfNeeded`); a running one is never replaced and
+  /// left running unreferenced.
   private func startNetworkMonitor() {
     #if os(iOS)
-    let monitor = NWPathMonitor()
-    monitor.pathUpdateHandler = { [weak self] path in
-      let wasAvailable = self?.isNetworkAvailable ?? false
-      self?.isNetworkAvailable = path.status == .satisfied
+    lifecycle.startMonitorIfNeeded {
+      let monitor = NWPathMonitor()
+      monitor.pathUpdateHandler = { [weak self] path in
+        let wasAvailable = self?.isNetworkAvailable ?? false
+        self?.isNetworkAvailable = path.status == .satisfied
 
-      // Resume drain loop when network comes back
-      if !wasAvailable && path.status == .satisfied {
-        NSLog("[NativeBackupEngine] Network restored — resuming")
-        self?.isPaused = false
-        self?.wakeDrainLoop(reason: "network")
+        // Resume drain loop when network comes back
+        if !wasAvailable && path.status == .satisfied {
+          NSLog("[NativeBackupEngine] Network restored — resuming")
+          self?.isPaused = false
+          self?.wakeDrainLoop(reason: "network")
+        }
       }
+      monitor.start(queue: queue)
+      return monitor
     }
-    monitor.start(queue: queue)
-    networkMonitor = monitor
     #endif
   }
 
   private func stopNetworkMonitor() {
     #if os(iOS)
-    networkMonitor?.cancel()
-    networkMonitor = nil
+    lifecycle.stopMonitor { ($0 as? NWPathMonitor)?.cancel() }
     #endif
   }
 
@@ -3210,6 +3290,8 @@ final class NativeBackupEngine: NSObject {
   }
 
   private func startDrainLoop(reason: String) {
+    // Round 11 (review finding 9): every drain start owes a bulk check.
+    requestBulkServerCheck()
     drainTask?.cancel()
     drainLoopGeneration += 1
     let generation = drainLoopGeneration
@@ -3333,6 +3415,10 @@ final class NativeBackupEngine: NSObject {
       guard admitsWrite(ticket, "batch.recover_stuck") else { return }
       recoverStuckUploads()
     }
+
+    // Round 11 (review finding 9): the bulk dedupe, before the selection, at
+    // most once per drain start / background task / scan insert.
+    await bulkServerCheckIfRequested(accountId: batchAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket)
 
     // Get pending assets from database
     let selected = dbQueue.sync { getPendingUploads(limit: limit) }
@@ -5184,9 +5270,12 @@ final class NativeBackupEngine: NSObject {
     case .fenced, .noHandle:
       return
     case .written(let inserted):
-      scanInsertHealth.record(inserted: inserted, source: source)
+      manifestHandle.scanInsertHealth.record(inserted: inserted, source: source)
       if !inserted {
         RuntimeTrace.event("backup.native.scan.insert_failed", ["assets": assets])
+      } else if assets > 0 {
+        // Round 11 (review finding 9): new rows owe a bulk check.
+        requestBulkServerCheck()
       }
     }
   }
@@ -5289,7 +5378,7 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (localAssetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, localAssetId)
     guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
     return backupAssetRow(from: stmt)
   }
@@ -5319,7 +5408,7 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int64(stmt, 1, nowMs)
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5338,14 +5427,14 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (remoteFileId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, remoteFileId)
     if let uploadSessionId {
-      sqlite3_bind_text(stmt, 2, (uploadSessionId as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 2, uploadSessionId)
     } else {
       sqlite3_bind_null(stmt, 2)
     }
     sqlite3_bind_int64(stmt, 3, nowMs())
-    sqlite3_bind_text(stmt, 4, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 4, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5356,7 +5445,7 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int64(stmt, 1, nowMs())
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5373,12 +5462,12 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     if let error {
-      sqlite3_bind_text(stmt, 1, (error as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 1, error)
     } else {
       sqlite3_bind_null(stmt, 1)
     }
     sqlite3_bind_int64(stmt, 2, nowMs())
-    sqlite3_bind_text(stmt, 3, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 3, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5413,25 +5502,25 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (fileId as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (nameEncrypted as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, fileId)
+    BackupManifestStore.bindText(stmt, 2, nameEncrypted)
     if let mimeType {
-      sqlite3_bind_text(stmt, 3, (mimeType as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 3, mimeType)
     } else {
       sqlite3_bind_null(stmt, 3)
     }
     sqlite3_bind_int(stmt, 4, isMediaValue ? 1 : 0)
     sqlite3_bind_int64(stmt, 5, originalSize)
     sqlite3_bind_int(stmt, 6, Int32(chunkCount))
-    sqlite3_bind_text(stmt, 7, (stagedDir as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 7, stagedDir)
     sqlite3_bind_int64(stmt, 8, nowMs())
     sqlite3_bind_int64(stmt, 9, originalSize)
     if let stagedAccountId {
-      sqlite3_bind_text(stmt, 10, (stagedAccountId as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 10, stagedAccountId)
     } else {
       sqlite3_bind_null(stmt, 10)
     }
-    sqlite3_bind_text(stmt, 11, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 11, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5441,8 +5530,8 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (stagedDir as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, stagedDir)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5468,9 +5557,9 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (error as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, error)
     sqlite3_bind_int64(stmt, 2, nowMs())
-    sqlite3_bind_text(stmt, 3, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 3, assetId)
     sqlite3_step(stmt)
     deleteStagedChunks(assetId: assetId)
   }
@@ -5512,9 +5601,9 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (error as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, error)
     sqlite3_bind_int64(stmt, 2, nowMs)
-    sqlite3_bind_text(stmt, 3, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 3, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5533,7 +5622,7 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int64(stmt, 1, nowMs())
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5541,7 +5630,7 @@ final class NativeBackupEngine: NSObject {
     guard let db = db else { return }
     var deleteStmt: OpaquePointer?
     if sqlite3_prepare_v2(db, "DELETE FROM backup_upload_chunks WHERE local_asset_id = ?", -1, &deleteStmt, nil) == SQLITE_OK {
-      sqlite3_bind_text(deleteStmt, 1, (assetId as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(deleteStmt, 1, assetId)
       sqlite3_step(deleteStmt)
     }
     sqlite3_finalize(deleteStmt)
@@ -5556,10 +5645,10 @@ final class NativeBackupEngine: NSObject {
     defer { sqlite3_finalize(stmt) }
     sqlite3_exec(db, "BEGIN", nil, nil, nil)
     for (index, path) in chunkPaths.enumerated() {
-      sqlite3_bind_text(stmt, 1, (assetId as NSString).utf8String, -1, nil)
-      sqlite3_bind_text(stmt, 2, (fileId as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 1, assetId)
+      BackupManifestStore.bindText(stmt, 2, fileId)
       sqlite3_bind_int(stmt, 3, Int32(index))
-      sqlite3_bind_text(stmt, 4, (path as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 4, path)
       sqlite3_step(stmt)
       sqlite3_reset(stmt)
     }
@@ -5578,7 +5667,7 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, assetId)
     var chunks: [StagedChunkRow] = []
     while sqlite3_step(stmt) == SQLITE_ROW {
       chunks.append(StagedChunkRow(
@@ -5599,8 +5688,8 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (path as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, path)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
     sqlite3_step(stmt)
   }
@@ -5616,7 +5705,7 @@ final class NativeBackupEngine: NSObject {
     """
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, assetId)
     return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
   }
 
@@ -5631,7 +5720,7 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int(stmt, 1, Int32(taskId))
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
     sqlite3_step(stmt)
   }
@@ -5663,9 +5752,9 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int64(stmt, 1, nowMs())
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
-    sqlite3_bind_text(stmt, 4, (uploadSessionId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 4, uploadSessionId)
     sqlite3_step(stmt)
   }
 
@@ -5679,10 +5768,10 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (error as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, error)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
-    sqlite3_bind_text(stmt, 4, (uploadSessionId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 4, uploadSessionId)
     sqlite3_step(stmt)
   }
 
@@ -5701,7 +5790,7 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5810,7 +5899,7 @@ final class NativeBackupEngine: NSObject {
     """
     var selectStmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK else { return 0 }
-    sqlite3_bind_text(selectStmt, 1, (accountId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(selectStmt, 1, accountId)
 
     var mismatched: [(assetId: String, stagedDir: String?, fileId: String, otherAccount: String?)] = []
     while sqlite3_step(selectStmt) == SQLITE_ROW {
@@ -6067,7 +6156,7 @@ final class NativeBackupEngine: NSObject {
         return self.dbQueue.sync { () -> Bool? in
           FencedManifestWrites.needsRebuild(
             self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId,
-            scanInsertFailed: self.scanInsertHealth.failed, nowMs: self.nowMs()
+            scanInsertFailed: self.manifestHandle.scanInsertHealth.failed, nowMs: self.nowMs()
           )
         }
       },
@@ -6080,20 +6169,17 @@ final class NativeBackupEngine: NSObject {
           throw BackupError.notConfigured
         }
         do {
-          let map = try await self.fetchServerIdentifierMap(
+          // Round 11 (review finding 2, server task 2036): the identifiers
+          // map only. The server leaves trashed files out of it; native code
+          // no longer reads `GET /files/index` (task 1959). On a server that
+          // answered `/check` without `backed_up` (no task 2036) the map may
+          // still include trashed files: the fetch fails (the gate defers).
+          guard !self.serverLacksBackedUp else {
+            throw PhotoBackupServerResponses.ServerLacksBackedUp()
+          }
+          return try await self.fetchServerIdentifierMap(
             authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId
           )
-          // Round 10 (review finding 2): the map does not filter trashed
-          // files. Only photos whose server file is still out of the Trash
-          // are promoted; the rest upload. A failed liveness read fails the
-          // fetch (the gate defers), never "everything is live".
-          return try await PendingUploadServerCheck.liveOnly(map) { [weak self] in
-            guard let self else { throw BackupError.notConfigured }
-            let client = self.photoBackupServerClient(
-              authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId
-            )
-            return try await self.liveFileIds(client: client, accountId: accountId)
-          }
         } catch {
           RuntimeTrace.event("backup.native.manifest_rebuild.fetch_error", [
             "error": String(describing: error).prefix(160).description,
@@ -6194,17 +6280,12 @@ final class NativeBackupEngine: NSObject {
   /// `{"identifiers": {}}` is an empty map (`PhotoBackupServerResponses`).
   ///
   /// Round 10: sent through `PhotoBackupServerClient` (the same requests the
-  /// server-check test answers), and kept in `_identifierMapCache` for the
-  /// batch's server check.
+  /// server-check test answers).
   private func fetchServerIdentifierMap(
     authToken: String, baseURL: String, accountId: String, deviceId: String
   ) async throws -> [String: String] {
     let client = photoBackupServerClient(authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId)
-    let map = try await client.identifierMap()
-    engineStateLock.lock()
-    _identifierMapCache.store(map, accountId: accountId, deviceId: deviceId)
-    engineStateLock.unlock()
-    return map
+    return try await client.identifierMap()
   }
 
   /// Task 1667 round 10: the photo-backup server reads, with the engine's
@@ -6230,53 +6311,29 @@ final class NativeBackupEngine: NSObject {
     )
   }
 
-  /// Task 1667 round 10: the ids of the account's files that are NOT in the
-  /// Trash (`GET /files/index`, revalidated by hash on every call; an
-  /// unchanged vault answers without the list). Throws on any failure: a hit
-  /// whose file cannot be checked is never promoted.
-  private func liveFileIds(client: PhotoBackupServerClient, accountId: String) async throws -> Set<String> {
-    engineStateLock.lock()
-    let knownHash = _liveFileIndexCache.knownHash(for: accountId)
-    engineStateLock.unlock()
-    let index = try await client.fileIndex(knownHash: knownHash)
+  private var serverLacksBackedUp: Bool {
     engineStateLock.lock(); defer { engineStateLock.unlock() }
-    return try _liveFileIndexCache.accept(index, accountId: accountId)
+    return _serverLacksBackedUp
   }
 
-  /// Task 1667 round 10 (review finding 1, adopted by the lead): the dedupe
-  /// guarantee. Before any row of this batch starts a NEW upload (no staged
-  /// file yet), the server is asked whether this device already backed it
-  /// up (`PendingUploadServerCheck`: `/photo-backup/check`, then the hits'
-  /// file ids and whether those files are still out of the Trash). Live hits
-  /// become `uploaded` and are left out of the batch; a hit whose file is
-  /// trashed or gone uploads. Returns the rows to upload, or nil when the
-  /// batch must not upload anything now (any step failed: fail closed, with
-  /// a backoff). Rows already staged are resumptions of an upload that
-  /// passed this check before it was staged.
-  private func rowsCheckedAgainstServer(
-    _ pending: [BackupAssetRow], accountId: String, authToken: String, baseURL: String,
-    ticket: ManifestWriteFence.Ticket
-  ) async -> [BackupAssetRow]? {
-    let fresh = pending.filter { $0.stagedFileId == nil }.map(\.localAssetId)
-    guard !fresh.isEmpty else { return pending }
+  /// Round 11: the `/check` steps both passes share. Every answer also tells
+  /// whether the server carries `backed_up` (task 2036).
+  private func serverCheckSteps(
+    accountId: String, authToken: String, baseURL: String, ticket: ManifestWriteFence.Ticket
+  ) -> PendingUploadServerCheck.Steps {
     let deviceId = backupDeviceId ?? ""
     let client = photoBackupServerClient(authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId)
-    let steps = PendingUploadServerCheck.Steps(
+    return PendingUploadServerCheck.Steps(
       hasDeviceId: { !deviceId.isEmpty },
-      check: { ids in try await client.check(ids) },
-      identifierMap: { [weak self] hits in
-        guard let self else { throw BackupError.notConfigured }
-        self.engineStateLock.lock()
-        let cached = self._identifierMapCache.covering(hits, accountId: accountId, deviceId: deviceId)
-        self.engineStateLock.unlock()
-        if let cached { return cached }
-        return try await self.fetchServerIdentifierMap(
-          authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId
-        )
-      },
-      liveFileIds: { [weak self] in
-        guard let self else { throw BackupError.notConfigured }
-        return try await self.liveFileIds(client: client, accountId: accountId)
+      check: { [weak self] ids in
+        do {
+          let hits = try await client.check(ids)
+          self?.noteServerBackedUpSupport(true)
+          return hits
+        } catch let error as PhotoBackupServerResponses.ServerLacksBackedUp {
+          self?.noteServerBackedUpSupport(false)
+          throw error
+        }
       },
       isStillCurrent: { [weak self] in self?.currentAccountId == accountId },
       promote: { [weak self] hits in
@@ -6289,25 +6346,136 @@ final class NativeBackupEngine: NSObject {
         }
       }
     )
+  }
+
+  /// Round 11 (review finding 2): a server without `backed_up` is logged
+  /// ONCE per process ("server lacks backed_up (task 2036)"); every deferred
+  /// batch is still traced.
+  private func noteServerBackedUpSupport(_ supported: Bool) {
+    engineStateLock.lock()
+    _serverLacksBackedUp = !supported
+    engineStateLock.unlock()
+    if !supported, PendingUploadServerCheck.serverLacksBackedUpNotice.shouldFire() {
+      NSLog("[NativeBackupEngine] \(PendingUploadServerCheck.serverLacksBackedUpMessage): camera-roll uploads stay paused")
+      RuntimeTrace.event("backup.native.server_check.server_lacks_backed_up", [
+        "message": PendingUploadServerCheck.serverLacksBackedUpMessage,
+      ])
+    }
+  }
+
+  /// Round 11: the bulk-check state, read and written through these sync
+  /// helpers (`engineStateLock` is not taken in an async context).
+  /// The coverage to filter against when a bulk pass is owed (consumed);
+  /// nil when none is.
+  private func takeBulkServerCheckRequest() -> ServerCheckCoverage? {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    guard _bulkServerCheckRequested else { return nil }
+    _bulkServerCheckRequested = false
+    return _serverCheckCoverage
+  }
+
+  private func recordBulkServerCheck(_ outcome: PendingUploadServerCheck.BulkOutcome, accountId: String, generation: UInt64) {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    _serverCheckCoverage.record(outcome.needsBackup, accountId: accountId, generation: generation, now: Date())
+    _lastBatchServerPromoted += outcome.promoted.count
+  }
+
+  private func uncoveredByBulkServerCheck(_ ids: [String], accountId: String, generation: UInt64) -> [String] {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _serverCheckCoverage.uncovered(ids, accountId: accountId, generation: generation, now: Date())
+  }
+
+  private func noteServerCheckSucceeded(promoted: Int) {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    _serverCheckFailures = 0
+    _lastBatchServerPromoted += promoted
+  }
+
+  /// Consecutive deferred checks, this one included.
+  private func noteServerCheckDeferred() -> Int {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    _serverCheckFailures += 1
+    return _serverCheckFailures
+  }
+
+  /// Round 11 (review finding 9): request a bulk pass before the next batch
+  /// (a drain start, a background task, rows inserted by a scan).
+  private func requestBulkServerCheck() {
+    engineStateLock.lock()
+    _bulkServerCheckRequested = true
+    engineStateLock.unlock()
+  }
+
+  /// Round 11 (review finding 9): the bulk dedupe. When requested, ask
+  /// `/photo-backup/check` about EVERY fresh pending row not covered yet, in
+  /// chunks of 500, before the drain selects a batch: the server's hits are
+  /// promoted in bulk, and the rows it answered "needs backup" are covered,
+  /// so the per-batch guard skips them. Before, each 12-row batch carried its
+  /// own /check, and 5,000 rows the server already had took about 420 batch
+  /// cycles to promote. A failed pass changes nothing it did not finish; the
+  /// per-batch guard still checks every uncovered row (fail closed there).
+  private func bulkServerCheckIfRequested(
+    accountId: String, authToken: String, baseURL: String, ticket: ManifestWriteFence.Ticket
+  ) async {
+    guard let coverage = takeBulkServerCheckRequest() else { return }
+    let all: [String]? = dbQueue.sync {
+      guard let db = self.db else { return nil }
+      return BackupManifestStore.freshPendingIds(db)
+    }
+    guard let all else {
+      RuntimeTrace.event("backup.native.server_check.bulk_load_failed")
+      return
+    }
+    let candidates = coverage.uncovered(all, accountId: accountId, generation: ticket.generation, now: Date())
+    guard !candidates.isEmpty else { return }
+    let steps = serverCheckSteps(
+      accountId: accountId, authToken: authToken, baseURL: baseURL, ticket: ticket
+    )
+    let outcome = await PendingUploadServerCheck.bulk(candidates: candidates, steps: steps) { [weak self] in
+      guard let self else { return false }
+      return self.isRunning && !Task.isCancelled && self.currentAccountId == accountId
+    }
+    recordBulkServerCheck(outcome, accountId: accountId, generation: ticket.generation)
+    RuntimeTrace.event("backup.native.server_check.bulk", [
+      "candidates": candidates.count, "requests": outcome.requests, "promoted": outcome.promoted.count,
+      "needsBackup": outcome.needsBackup.count, "stopped": outcome.stopped?.rawValue ?? NSNull(),
+    ])
+  }
+
+  /// Task 1667 round 10 (review finding 1, adopted by the lead): the dedupe
+  /// guarantee. Before any row of this batch starts a NEW upload (no staged
+  /// file yet), the server is asked whether this device already backed it
+  /// up. Round 11 (findings 2 and 9, server task 2036): `/photo-backup/check`
+  /// answers with `backed_up` (file ids, Trash excluded server-side); only
+  /// those rows are promoted, with that file id, and left out of the batch.
+  /// Rows a bulk pass already covered ("needs backup") are not asked again.
+  /// Returns the rows to upload, or nil when the batch must not upload
+  /// anything now (any step failed, or the server lacks `backed_up`: fail
+  /// closed, with a backoff). Rows already staged are resumptions of an
+  /// upload that passed this check before it was staged.
+  private func rowsCheckedAgainstServer(
+    _ pending: [BackupAssetRow], accountId: String, authToken: String, baseURL: String,
+    ticket: ManifestWriteFence.Ticket
+  ) async -> [BackupAssetRow]? {
+    let freshAll = pending.filter { $0.stagedFileId == nil }.map(\.localAssetId)
+    guard !freshAll.isEmpty else { return pending }
+    let fresh = uncoveredByBulkServerCheck(freshAll, accountId: accountId, generation: ticket.generation)
+    guard !fresh.isEmpty else { return pending }
+    let steps = serverCheckSteps(
+      accountId: accountId, authToken: authToken, baseURL: baseURL, ticket: ticket
+    )
     let outcome = await PendingUploadServerCheck.run(candidates: fresh, steps: steps)
     switch outcome {
-    case let .proceed(skip, promoted, notLive):
-      engineStateLock.lock()
-      _serverCheckFailures = 0
-      _lastBatchServerPromoted = promoted.count
-      engineStateLock.unlock()
-      if !skip.isEmpty || !notLive.isEmpty {
+    case let .proceed(skip, promoted, _):
+      noteServerCheckSucceeded(promoted: promoted.count)
+      if !skip.isEmpty {
         RuntimeTrace.event("backup.native.server_check.applied", [
-          "checked": fresh.count, "promoted": promoted.count, "skipped": skip.count, "notLive": notLive.count,
+          "checked": fresh.count, "promoted": promoted.count, "skipped": skip.count,
         ])
       }
       return pending.filter { !skip.contains($0.localAssetId) }
     case let .deferred(reason):
-      engineStateLock.lock()
-      _serverCheckFailures += 1
-      let failures = _serverCheckFailures
-      _lastBatchServerPromoted = 0
-      engineStateLock.unlock()
+      let failures = noteServerCheckDeferred()
       let wait = PendingUploadServerCheck.backoff(for: reason, consecutiveFailures: failures)
       if let wait { backoffUntil = Date().addingTimeInterval(wait) }
       RuntimeTrace.event("backup.native.server_check.deferred", [
@@ -6387,13 +6555,6 @@ final class NativeBackupEngine: NSObject {
           self.db, fence: self.manifestHandle.writeFence, ticket: ticket,
           assetId: assetId, fileId: fileId, nowMs: self.nowMs()
         )
-      }
-      // Round 10: the server's map now has this association; keep the
-      // batch check's cached copy in step with it.
-      if outcome == .marked {
-        engineStateLock.lock()
-        _identifierMapCache.record(local: assetId, fileId: fileId, accountId: accountId, deviceId: deviceId)
-        engineStateLock.unlock()
       }
       return true
     } catch {
@@ -6531,10 +6692,12 @@ final class NativeBackupEngine: NSObject {
     manifestReadyForAccount = nil
     manifestRebuildFailures = 0
     clearManifestAvailability()
-    // Round 10: the batch check's server caches belong to the outgoing account.
+    // Round 10: the batch check's server state belongs to the outgoing account.
+    // Round 11: the bulk coverage (the file-index and identifier-map caches
+    // are gone with the liveness read).
     engineStateLock.lock()
-    _liveFileIndexCache.clear()
-    _identifierMapCache.clear()
+    _serverCheckCoverage.clear()
+    _bulkServerCheckRequested = true
     _serverCheckFailures = 0
     _lastBatchServerPromoted = 0
     engineStateLock.unlock()
@@ -6555,6 +6718,10 @@ final class NativeBackupEngine: NSObject {
       )
       return (ok, manifestHandle.writeFence.generation, manifestHandle.activeDiscard.all)
     }
+    // Round 11 (review finding 5): a scan that started after `stop()` above
+    // but before the reset sealed the fence may have stored its fetch result
+    // in between; drop it now (a later store is refused by the sealed fence).
+    lifecycle.clearFetchResult()
     if mode == .accountDeleted {
       forgetUnboundAccount()
     }
@@ -6626,6 +6793,7 @@ final class NativeBackupEngine: NSObject {
   }
 
   private func cancelManifestOpenRetry() {
+    lifecycle.cancelRetries()
     engineStateLock.lock(); defer { engineStateLock.unlock() }
     _manifestOpenRetry?.cancel()
     _manifestOpenRetry = nil
@@ -6633,6 +6801,7 @@ final class NativeBackupEngine: NSObject {
 
   /// Sign-out and `stop()`: no reason, no retry.
   private func clearManifestAvailability() {
+    lifecycle.cancelRetries()
     engineStateLock.lock(); defer { engineStateLock.unlock() }
     _manifestAvailability.clear()
     _manifestOpenRetry?.cancel()
@@ -6643,11 +6812,25 @@ final class NativeBackupEngine: NSObject {
   /// and a `start()` that proceeds cancel it; an account change makes it a
   /// no-op. It runs even if a background task set `isRunning` meanwhile:
   /// `start()` then finishes the foreground setup that path skips.
+  ///
+  /// Round 11 (review finding 3): the retry runs `start()`'s body inside
+  /// `lifecycle.runRetry`, ONE transition with the check: only while the
+  /// user still wants backup running (`stop()` / `disablePhotoBackup` /
+  /// sign-out clear that) and this is still the latest retry. Before, it
+  /// called `start()` from this global queue with no lock, and
+  /// `DispatchWorkItem.cancel()` cannot stop a retry already executing, so a
+  /// retry racing the user's stop set `isRunning = true` after backup was
+  /// turned off.
   private func scheduleManifestOpenRetry(accountId: String, after delay: TimeInterval) {
+    let token = lifecycle.scheduleRetry()
     let retry = DispatchWorkItem { [weak self] in
-      guard let self, self.currentAccountId == accountId else { return }
-      RuntimeTrace.event("backup.native.manifest.open_retry")
-      self.start()
+      guard let self else { return }
+      let ran = self.lifecycle.runRetry(token) {
+        guard self.currentAccountId == accountId else { return }
+        RuntimeTrace.event("backup.native.manifest.open_retry")
+        self.startLocked()
+      }
+      if !ran { RuntimeTrace.event("backup.native.manifest.open_retry_void") }
     }
     engineStateLock.lock()
     _manifestOpenRetry?.cancel()
@@ -6663,7 +6846,8 @@ final class NativeBackupEngine: NSObject {
   private func ensureManifestOpenForStart(accountId: String) -> Bool {
     let failure = dbQueue.sync { openManifestIfClosed(trigger: "start") }
     if failure != nil, isRunning {
-      stop()
+      // Round 11: keeps the user's intent, so the retry below may start again.
+      lifecycle.internalStop { stopLocked() }
     }
     switch recordManifestOpen(failure) {
     case .proceed:
@@ -7084,7 +7268,10 @@ extension NativeBackupEngine: PHPhotoLibraryChangeObserver {
     guard let old = currentFetchResult else { return }
     guard let details = changeInstance.changeDetails(for: old) else { return }
 
-    currentFetchResult = details.fetchResultAfterChanges
+    // Round 11 (review finding 5): replaced only while `old` is still the
+    // stored result; a stop or sign-out since cleared it, and this change is
+    // then not inserted (the next full scan takes it).
+    guard lifecycle.replaceFetchResult(expected: old, with: details.fetchResultAfterChanges) else { return }
     let inserted = scannedAssets(details.insertedObjects)
     if !inserted.isEmpty {
       dbQueue.async { [weak self] in

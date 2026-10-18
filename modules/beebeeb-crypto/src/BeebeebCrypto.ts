@@ -161,18 +161,23 @@ export interface PlaintextStoragePurgeOptions {
   deletedAccountIds?: string[]
 }
 
+/**
+ * Task 1667 round 11 (review finding 4): a native purge that REJECTS
+ * propagates. This wrapper used to turn any rejection into
+ * `{removed: 0, failed: 0}`, so `account-cleanup.ts`'s failed path (a throwing
+ * native purge counts as `failed: 1`, round 7) never ran in production and a
+ * sign-out whose registry sweep and manifest reset never ran reported a clean
+ * purge. Only a native module WITHOUT the function (Android, see the platform
+ * contract above) answers `{removed: 0, failed: 0}`.
+ */
 export async function purgePlaintextStorage(
   options: PlaintextStoragePurgeOptions = {},
 ): Promise<PlaintextStoragePurgeResult> {
   if (typeof BeebeebCryptoModule.purgePlaintextStorage !== 'function') return { removed: 0, failed: 0 }
-  try {
-    return (await BeebeebCryptoModule.purgePlaintextStorage(
-      options.mode ?? 'sign-out',
-      options.deletedAccountIds ?? [],
-    )) as PlaintextStoragePurgeResult
-  } catch {
-    return { removed: 0, failed: 0 }
-  }
+  return (await BeebeebCryptoModule.purgePlaintextStorage(
+    options.mode ?? 'sign-out',
+    options.deletedAccountIds ?? [],
+  )) as PlaintextStoragePurgeResult
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

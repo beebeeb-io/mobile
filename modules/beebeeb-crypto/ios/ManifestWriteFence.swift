@@ -92,6 +92,14 @@ final class ManifestWriteFence {
     return Ticket(generation: generation, accountId: accountId)
   }
 
+  /// Round 11 (review finding 5): `admits` without counting or reporting a
+  /// drop, for state that is not a manifest write (the scan's PhotoKit fetch
+  /// result). Same queue rule.
+  func isCurrent(_ ticket: Ticket?) -> Bool {
+    guard let ticket, ticket.generation == generation, case .bound(let current) = state else { return false }
+    return current == ticket.accountId
+  }
+
   /// True when a write under `ticket` may run now. MUST be called in the
   /// same critical section as the write it guards. A refused write is
   /// counted and reported to `onDrop`.
@@ -191,8 +199,10 @@ enum FencedManifestWrites {
   }
 
   /// Round 10: the batch's server check (`PendingUploadServerCheck`). The
-  /// live hits `/photo-backup/check` reported, fetched over the network after
-  /// the batch started, become `uploaded`. nil = fenced or failed.
+  /// hits `/photo-backup/check` reported in `backed_up` (round 11: out of the
+  /// Trash server-side, with their file ids), fetched over the network after
+  /// the batch or the bulk pass started, become `uploaded`. nil = fenced or
+  /// failed.
   static func promoteCheckedHits(
     _ db: OpaquePointer?,
     fence: ManifestWriteFence,

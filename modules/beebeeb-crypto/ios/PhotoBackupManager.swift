@@ -231,8 +231,8 @@ final class PhotoBackupManager: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     for asset in assets {
-      sqlite3_bind_text(stmt, 1, (asset.localIdentifier as NSString).utf8String, -1, nil)
-      sqlite3_bind_text(stmt, 2, (now as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 1, asset.localIdentifier)
+      BackupManifestStore.bindText(stmt, 2, now)
       sqlite3_step(stmt)
       sqlite3_reset(stmt)
     }
@@ -260,17 +260,17 @@ final class PhotoBackupManager: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (status as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, status)
     bindOptional(stmt, 2, fileId)
     bindOptional(stmt, 3, error)
     bindOptional(stmt, 4, completedAt)
-    sqlite3_bind_text(stmt, 5, (localIdentifier as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 5, localIdentifier)
     sqlite3_step(stmt)
   }
 
   private func bindOptional(_ stmt: OpaquePointer?, _ idx: Int32, _ value: String?) {
     if let v = value {
-      sqlite3_bind_text(stmt, idx, (v as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, idx, v)
     } else {
       sqlite3_bind_null(stmt, idx)
     }
@@ -291,8 +291,8 @@ final class PhotoBackupManager: NSObject {
       var stmt: OpaquePointer?
       guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
       defer { sqlite3_finalize(stmt) }
-      sqlite3_bind_text(stmt, 1, (key as NSString).utf8String, -1, nil)
-      sqlite3_bind_text(stmt, 2, (value as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 1, key)
+      BackupManifestStore.bindText(stmt, 2, value)
       sqlite3_step(stmt)
     }
   }
@@ -302,7 +302,7 @@ final class PhotoBackupManager: NSObject {
     let sql = "SELECT value FROM backup_state WHERE key = ?"
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (key as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, key)
     guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
     return String(cString: sqlite3_column_text(stmt, 0))
   }

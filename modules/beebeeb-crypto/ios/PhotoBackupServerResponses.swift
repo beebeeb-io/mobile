@@ -40,14 +40,31 @@ enum PhotoBackupServerResponses {
     return map
   }
 
-  /// Task 1667 round 10: `POST /api/v1/files/photo-backup/check` (server
-  /// `photo_backup.rs` `check`): `{"already_backed_up": [...], "needs_backup":
-  /// [...]}` for this device. Returns the identifiers already backed up.
-  /// Throws for any status outside 2xx (404 included) and for a body that is
-  /// not exactly that shape: a non-string or empty entry, an identifier the
-  /// request did not ask about, one in both lists, or a requested identifier
-  /// in neither. A body the client cannot read is never "nothing backed up".
-  static func checkHits(statusCode: Int, data: Data, requested: [String]) throws -> Set<String> {
+  /// Task 1667 round 11: the server answered `/photo-backup/check` without
+  /// the `backed_up` field (a server without task 2036). The client cannot
+  /// tell a trashed backup from a live one there, so it promotes nothing and
+  /// uploads nothing for that batch (fail closed, fetch backoff).
+  struct ServerLacksBackedUp: Error, Equatable {}
+
+  /// Task 1667 round 11 (review finding 2, server task 2036):
+  /// `POST /api/v1/files/photo-backup/check` for this device. The server
+  /// excludes files in the Trash and answers
+  /// `{"already_backed_up": [...], "needs_backup": [...],
+  ///   "backed_up": [{"local_identifier": ..., "file_id": ...}]}`
+  /// (`already_backed_up` stays for older clients). Returns `backed_up` as
+  /// local identifier -> file id: the ONLY entries the client may promote,
+  /// with that file id.
+  ///
+  /// Throws `ServerLacksBackedUp` when the body is otherwise valid but has no
+  /// `backed_up` field. Throws `UnexpectedResponse` for any status outside
+  /// 2xx (404 included) and for a body that is not exactly that shape: a
+  /// non-string or empty entry, an identifier the request did not ask about,
+  /// one in both lists, a requested identifier in neither, a `backed_up`
+  /// entry without a non-empty string `local_identifier` and `file_id`, an
+  /// identifier twice in `backed_up`, or `backed_up` naming a different set
+  /// of identifiers than `already_backed_up` (the body contradicts itself).
+  /// A body the client cannot read is never "nothing backed up".
+  static func checkBackedUp(statusCode: Int, data: Data, requested: [String]) throws -> [String: String] {
     guard (200..<300).contains(statusCode) else {
       throw UnexpectedResponse(statusCode: statusCode, reason: "photo-backup/check status")
     }
@@ -67,38 +84,18 @@ enum PhotoBackupServerResponses {
     let hits = try strings(hitsRaw)
     let needs = try strings(needsRaw)
     guard hits.isDisjoint(with: needs), hits.union(needs) == asked else { throw bad }
-    return hits
-  }
-
-  /// Task 1667 round 10: `GET /api/v1/files/index[?hash=]` (server
-  /// `files.rs` `file_index`): every file of the account that is NOT in the
-  /// Trash (`WHERE f.user_id = $1 AND f.is_trashed = FALSE`).
-  struct FileIndex: Equatable {
-    let hash: String
-    let changed: Bool
-    /// The live file ids; nil when the server answered "unchanged".
-    let ids: Set<String>?
-  }
-
-  /// Throws for any status outside 2xx and for a body of the wrong shape: no
-  /// hash, no `changed`, `changed: true` without a `files` array, or a file
-  /// entry without a string id.
-  static func fileIndex(statusCode: Int, data: Data) throws -> FileIndex {
-    guard (200..<300).contains(statusCode) else {
-      throw UnexpectedResponse(statusCode: statusCode, reason: "files/index status")
+    guard let backedUpValue = object["backed_up"] else { throw ServerLacksBackedUp() }
+    guard let backedUpRaw = backedUpValue as? [Any] else { throw bad }
+    var backedUp: [String: String] = [:]
+    for entry in backedUpRaw {
+      guard let pair = entry as? [String: Any],
+            let local = pair["local_identifier"] as? String, !local.isEmpty, asked.contains(local),
+            let fileId = pair["file_id"] as? String, !fileId.isEmpty,
+            backedUp[local] == nil else { throw bad }
+      backedUp[local] = fileId
     }
-    let bad = UnexpectedResponse(statusCode: statusCode, reason: "unexpected files/index body")
-    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let hash = object["hash"] as? String, !hash.isEmpty,
-          let changed = object["changed"] as? Bool else { throw bad }
-    guard changed else { return FileIndex(hash: hash, changed: false, ids: nil) }
-    guard let files = object["files"] as? [Any] else { throw bad }
-    var ids = Set<String>()
-    for entry in files {
-      guard let file = entry as? [String: Any], let id = file["id"] as? String, !id.isEmpty else { throw bad }
-      ids.insert(id.lowercased())
-    }
-    return FileIndex(hash: hash, changed: true, ids: ids)
+    guard Set(backedUp.keys) == hits else { throw bad }
+    return backedUp
   }
 
   enum MarkOutcome: Equatable {

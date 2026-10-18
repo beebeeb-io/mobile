@@ -789,19 +789,27 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   holding nothing the account uploaded is rebuilt from `GET /api/v1/files/photo-backup/identifiers`
   BEFORE the first upload (`ensureManifestReadyForUploads`, gated in `processBatch`); if that GET
   fails, no upload starts. The rebuild is only a FAST PATH (round 10): it runs once per account, on
-  the rows present at that moment. Photos uploaded before the map existed and lost from the manifest
+  the rows present at that moment, from the identifiers map ONLY (round 11: the server leaves
+  trashed files out of it, task 2036). Photos uploaded before the map existed and lost from the manifest
   are not in the map: they upload once more (content-hash dedup is task 1667 plan item 6).
-- **The dedupe guarantee is the per-batch server check (round 10, `PendingUploadServerCheck.swift`).**
-  Before any row starts a NEW upload (no staged file), `processBatch` asks
-  `POST /api/v1/files/photo-backup/check` (<= 500 ids per call, per device). For the hits it takes the
-  file ids from the identifiers map (cached per account; refetched when a hit is unknown) and keeps
-  only files that are NOT in the Trash, from `GET /api/v1/files/index` (non-trashed files only,
-  revalidated by `?hash=` every time). Live hits become `uploaded` with their server file id
-  (fenced write) and are left out of the batch; a hit whose file is trashed or gone uploads. Any failed
+- **The dedupe guarantee is the server check (round 10, reworked round 11; `PendingUploadServerCheck.swift`).**
+  Contract (server task 2036, `photo_backup.rs`): `POST /api/v1/files/photo-backup/check` (<= 500 ids
+  per call, per device) EXCLUDES files in the Trash and returns `backed_up:
+  [{local_identifier, file_id}]` (`already_backed_up` stays for old clients and must name the same
+  ids); `GET .../identifiers`, `list_ids` and `stats` exclude trashed files too. A row becomes
+  `uploaded` ONLY when it is in `backed_up`, with that file id (fenced write); every other row
+  uploads. Two passes: a BULK pass over ALL fresh pending rows (no staged file), chunks of 500,
+  before the drain selects a batch (once per drain start / background task, and again after a scan
+  inserted rows; covered "needs backup" rows are kept per account + fence generation for 15 min,
+  `ServerCheckCoverage`), and the per-batch guard for fresh rows no bulk pass covered. Any failed
   step defers the WHOLE batch with a backoff (30 s for a server read, 2..30 s for a write): nothing
-  uploads on a failure. The rebuild applies the same Trash filter. Neither `/check` nor
-  `/identifiers` filters trashed files server-side (`photo_backup_state` cascades only on permanent
-  delete); never trust a hit without the liveness read until the server filters it.
+  uploads on a failure.
+- **A server without `backed_up` (no task 2036) fails closed (round 11).** Nothing is promoted and
+  nothing of the batch uploads (`serverLacksBackedUp`, 30 s backoff), and once that was seen in the
+  process the rebuild fast path applies no identifiers map either. Logged ONCE per process:
+  `server lacks backed_up (task 2036)`. Task 2036 must be deployed to prod before a build with this
+  reaches TestFlight. Native code has NO liveness read and never calls `GET /api/v1/files/index`
+  (the rule below; `native-backup-manifest-wiring.test.ts` fails on any native caller).
 - **Route 404s (round 5, `PhotoBackupServerResponses.swift`):** the identifiers handler never
   answers 404, so an identifiers 404 is a failed fetch (the gate defers and retries), never an empty
   map. A mark 404 is "file gone, done" ONLY with the API's own `ApiError::NotFound` body
@@ -857,11 +865,31 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   + storage-purge generation) taken where the caller's work starts. A new writer without a ticket
   check fails `src/lib/native-backup-write-fence.test.ts` (`swift-write-fence-audit.ts`); an
   exemption needs a reason in its `EXEMPT` table.
+- **Start, stop and the manifest-open retry are ONE transition (round 11, `BackupEngineLifecycle.swift`).**
+  `start()` = `lifecycle.userStart { startLocked() }`, `stop()` = `lifecycle.userStop { stopLocked() }`;
+  the retry runs `startLocked()` inside `lifecycle.runRetry(token)`, only while the user still wants
+  backup running (`stop()` / `disablePhotoBackup` / sign-out clear it) and no newer retry exists. The
+  photo observer registers through `registerObserverOnce`, the network monitor starts only when none
+  runs (`startMonitorIfNeeded`). The PhotoKit fetch result is stored only through
+  `acceptFetchResult` (stop generation + `Task.isCancelled` + the scan's fence ticket, in the lock
+  every stop takes) and cleared again after the sign-out reset. Never call `startLocked()` /
+  `stopLocked()` outside a transition, and never assign the fetch result directly.
+- **Account-scoped state goes with the sign-out reset.** The scan-insert health lives on
+  `BackupManifestHandle` and `resetForSignOut` clears it (round 11): account A's failed insert must
+  not defer account B's first rebuild. A deletion left pending by an EARLIER process forces "discard
+  every kept mark" even after this process records its own deletions (`activeDiscard`, round 11).
+- **SQLite text/blob binds copy their bytes** (round 11): `BackupManifestStore.bindText`
+  (SQLITE_TRANSIENT), never `(s as NSString).utf8String` with a nil destructor (SQLITE_STATIC keeps a
+  pointer into a temporary). `src/lib/native-sqlite-bind-transient.guard.test.ts` fails on any nil
+  destructor in `modules/beebeeb-crypto/ios`.
 - Tests: `scripts/swift-tests/backup-manifest-store-test.swift` (real SQLite, two connections,
-  lsof), `scripts/swift-tests/{manifest-rebuild-gate,sign-out-mark-flush,photo-backup-route-responses,manifest-reopen,manifest-write-fence,manifest-js-peer,pending-upload-server-check}-test.swift`,
+  lsof), `scripts/swift-tests/{manifest-rebuild-gate,sign-out-mark-flush,photo-backup-route-responses,manifest-reopen,manifest-write-fence,manifest-js-peer,pending-upload-server-check,manifest-account-deletion,backup-engine-lifecycle}-test.swift`,
   `src/lib/account-cleanup.1667-backup-manifest.test.ts`,
   `src/lib/native-backup-manifest-wiring.test.ts`, `src/lib/native-backup-write-fence.test.ts`,
-  `src/services/BackupDatabase.1667-write-fence.test.ts`, `src/services/BackupDatabase.1667-js-open-gate.test.ts`.
+  `src/services/BackupDatabase.1667-write-fence.test.ts`, `src/services/BackupDatabase.1667-js-open-gate.test.ts`,
+  `src/lib/account-cleanup.1667-real-purge-wrapper.test.ts` (round 11: the REAL `purgePlaintextStorage`
+  wrapper propagates a native rejection, so a failed native purge counts as failed),
+  `src/lib/native-sqlite-bind-transient.guard.test.ts`.
 
 
 ## Files (File Provider extension) — testing it (task 1722)
@@ -958,7 +986,9 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
 ## GET /files/index — only through `file-index-loader.ts` (task 1959)
 
 `src/lib/file-index-loader.ts` is the only caller of `getFileIndex()`; the source guard
-`src/lib/file-index-loader.guard.test.ts` fails on any other caller. The server walks the whole
+`src/lib/file-index-loader.guard.test.ts` fails on any other caller. Native code (Swift) never
+calls `GET /api/v1/files/index` at all (task 1667 round 11 removed the camera-roll engine's
+liveness read; `native-backup-manifest-wiring.test.ts` fails on a native caller). The server walks the whole
 vault on every call (~2.4 s for a 40k-file vault, hash or not), so the loader coalesces: callers
 that arrive while a request runs share it; for 5 minutes (`FILE_INDEX_REVALIDATE_MS`) after a
 server check, plain callers get the on-disk cache (the sync client writes create / trash / move /

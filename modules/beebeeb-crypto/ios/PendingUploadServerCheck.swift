@@ -1,36 +1,37 @@
 import Foundation
 
-/// Task 1667 round 10 (review of mobile#182 at 060bfeb0, finding 1 + 3).
+/// Task 1667 round 10 (review of mobile#182 at 060bfeb0, finding 1 + 3),
+/// reworked in round 11 (review of de23774e, findings 2 and 9; server task
+/// 2036).
 ///
-/// Before ANY pending camera-roll row starts a new upload, the batch asks the
-/// server whether this device already backed that photo up, and skips it if
-/// so. This is the dedupe guarantee. The manifest rebuild
+/// Before ANY pending camera-roll row starts a new upload, the server is
+/// asked whether this device already backed that photo up, and the row is
+/// skipped if so. This is the dedupe guarantee. The manifest rebuild
 /// (`ManifestRebuildGate`) is only a fast path: it is applied once per
 /// account and only to the rows present at that moment, so rows inserted
 /// later (videos switched on, a wider album selection, Limited -> Full
 /// photo access, an observer insert that races the full scan) were uploaded
 /// again although the server's per-device map already had them.
 ///
-/// Steps, in this order (each failure DEFERS the whole batch; nothing is
-/// uploaded on a failure):
-///   1. `POST /api/v1/files/photo-backup/check` with the batch's fresh rows
-///      (up to 500 identifiers per call): the identifiers already backed up
-///      on this device (`X-Beebeeb-Device-Id`).
-///   2. For the hits only: their server file ids, from
-///      `GET /photo-backup/identifiers` (cached per account; `/check` does not
-///      return file ids). A hit the map no longer has lost its association
-///      between the two calls (file deleted): it is uploaded.
-///   3. For those file ids: is the file still LIVE (not in the Trash)?
-///      Neither `/check` nor `/identifiers` filters trashed files (server
-///      `photo_backup_state` rows cascade only on a permanent delete), so a
-///      photo whose only server copy sits in the Trash would otherwise count
-///      as backed up until the 30-day purge. The live set comes from
-///      `GET /api/v1/files/index` (non-trashed files only; hash-revalidated,
-///      `LiveFileIndexCache`). A hit whose file is not live is uploaded.
-///   4. Live hits become `uploaded` with their server file id, in one fenced
-///      write. Every live hit is left out of this batch's uploads, promoted or
-///      not (a row the promote could not change is retried next batch, never
-///      uploaded while the server has it).
+/// The contract (server task 2036, `photo_backup.rs` `check`):
+/// `POST /api/v1/files/photo-backup/check` excludes files in the Trash and
+/// returns `backed_up: [{local_identifier, file_id}]`. A row is promoted to
+/// `uploaded` ONLY when it is in `backed_up`, with that file id. A server
+/// without the field fails closed: nothing is promoted and nothing of that
+/// batch uploads (`serverLacksBackedUp`, fetch backoff, logged once per
+/// process). Round 10's client-side liveness read (`GET /api/v1/files/index`
+/// plus the identifiers map per hit) is gone: native code never reads the
+/// file index (mobile CLAUDE.md, task 1959).
+///
+/// Two passes use the same steps:
+/// - `bulk`: before the drain selects upload rows, ALL fresh pending rows
+///   (no staged file) not covered yet, in chunks of 500 (the route's cap),
+///   once per drain start and again whenever rows were inserted. Hits are
+///   promoted chunk by chunk; the rows the server answered "needs backup"
+///   are recorded as covered (`ServerCheckCoverage`).
+/// - `run`: per batch, the fail-closed guard for the batch's fresh rows
+///   that no bulk pass covered (inserted since, or the bulk pass failed).
+///   Any failure defers the WHOLE batch: nothing uploads.
 ///
 /// Pure (no URLSession, no SQLite, no PhotoKit), so
 /// `scripts/swift-tests/pending-upload-server-check-test.swift` drives it with
@@ -44,10 +45,10 @@ enum PendingUploadServerCheck {
     case noDeviceId = "no_device_id"
     /// `POST /photo-backup/check` failed (network, non-2xx, bad body).
     case checkFailed = "check_failed"
-    /// `GET /photo-backup/identifiers` failed for the hits.
-    case mapFailed = "map_failed"
-    /// `GET /files/index` failed: hits cannot be told apart from trashed files.
-    case liveIndexFailed = "live_index_failed"
+    /// The server answered `/check` without `backed_up` (no task 2036): it
+    /// cannot tell a trashed backup from a live one, so nothing is promoted
+    /// and nothing uploads.
+    case serverLacksBackedUp = "server_lacks_backed_up"
     /// The account changed while the server was asked.
     case accountChanged = "account_changed"
     /// The promotion could not be written (writer lock, no handle, fenced).
@@ -55,87 +56,114 @@ enum PendingUploadServerCheck {
   }
 
   enum Outcome: Equatable {
-    /// Upload every candidate EXCEPT `skip` (the live hits). `promoted` are
-    /// the rows now `uploaded`; `notLive` the hits whose server file is
-    /// trashed or gone (they upload).
-    case proceed(skip: Set<String>, promoted: Set<String>, notLive: Set<String>)
+    /// Upload every candidate EXCEPT `skip` (the server's hits). `promoted`
+    /// are the rows now `uploaded`; `checked` the identifiers sent to /check.
+    case proceed(skip: Set<String>, promoted: Set<String>, checked: Set<String>)
     case deferred(DeferReason)
 
-    static let uploadAll = Outcome.proceed(skip: [], promoted: [], notLive: [])
+    static let uploadAll = Outcome.proceed(skip: [], promoted: [], checked: [])
   }
 
   struct Steps {
     let hasDeviceId: () -> Bool
     /// One `/check` call (<= 500 identifiers): the identifiers the server
-    /// already has for this device. Throws on any failure.
-    let check: ([String]) async throws -> Set<String>
-    /// local identifier -> server file id, covering at least the given hits
-    /// when the server still maps them. Throws on any failure.
-    let identifierMap: (Set<String>) async throws -> [String: String]
-    /// The ids of every file the account has that is not in the Trash.
-    let liveFileIds: () async throws -> Set<String>
+    /// already has for this device, out of the Trash, with their file ids.
+    /// Throws on any failure (`ServerLacksBackedUp` without task 2036).
+    let check: ([String]) async throws -> [String: String]
     let isStillCurrent: () -> Bool
     /// Promote local identifier -> file id to `uploaded`; the identifiers
     /// actually promoted, nil unless every update committed.
     let promote: ([String: String]) -> Set<String>?
   }
 
-  static func run(candidates: [String], steps: Steps) async -> Outcome {
+  static func deduplicated(_ candidates: [String]) -> [String] {
     var seen = Set<String>()
-    let ids = candidates.filter { !$0.isEmpty && seen.insert($0).inserted }
+    return candidates.filter { !$0.isEmpty && seen.insert($0).inserted }
+  }
+
+  static func chunks(_ ids: [String]) -> [[String]] {
+    stride(from: 0, to: ids.count, by: maxIdentifiersPerCheck).map {
+      Array(ids[$0..<min($0 + maxIdentifiersPerCheck, ids.count)])
+    }
+  }
+
+  private static func reason(for error: Error) -> DeferReason {
+    error is PhotoBackupServerResponses.ServerLacksBackedUp ? .serverLacksBackedUp : .checkFailed
+  }
+
+  /// The per-batch guard. Asks about every candidate (chunked at 500), then
+  /// promotes the hits in one write. Any failure: `.deferred`, nothing
+  /// promoted, nothing uploads.
+  static func run(candidates: [String], steps: Steps) async -> Outcome {
+    let ids = deduplicated(candidates)
     guard !ids.isEmpty else { return .uploadAll }
     guard steps.hasDeviceId() else { return .deferred(.noDeviceId) }
 
-    var hits = Set<String>()
-    var start = 0
-    while start < ids.count {
-      let chunk = Array(ids[start..<min(start + maxIdentifiersPerCheck, ids.count)])
-      start += maxIdentifiersPerCheck
+    var hits: [String: String] = [:]
+    for chunk in chunks(ids) {
       do {
-        hits.formUnion(try await steps.check(chunk))
+        hits.merge(try await steps.check(chunk)) { _, new in new }
       } catch {
-        return .deferred(.checkFailed)
+        return .deferred(reason(for: error))
       }
     }
-    guard !hits.isEmpty else { return .uploadAll }
-
-    let map: [String: String]
-    do {
-      map = try await steps.identifierMap(hits)
-    } catch {
-      return .deferred(.mapFailed)
-    }
-    var mapped: [String: String] = [:]
-    for hit in hits {
-      if let fileId = map[hit], !fileId.isEmpty { mapped[hit] = fileId }
-    }
-    guard !mapped.isEmpty else { return .uploadAll }
-
-    let live: Set<String>
-    do {
-      live = try await steps.liveFileIds()
-    } catch {
-      return .deferred(.liveIndexFailed)
-    }
-    let liveHits = mapped.filter { live.contains($0.value.lowercased()) }
-    let notLive = Set(mapped.keys).subtracting(liveHits.keys)
-    guard !liveHits.isEmpty else { return .proceed(skip: [], promoted: [], notLive: notLive) }
-
+    let checked = Set(ids)
+    guard !hits.isEmpty else { return .proceed(skip: [], promoted: [], checked: checked) }
     guard steps.isStillCurrent() else { return .deferred(.accountChanged) }
-    guard let promoted = steps.promote(liveHits) else { return .deferred(.applyFailed) }
-    return .proceed(skip: Set(liveHits.keys), promoted: promoted, notLive: notLive)
+    guard let promoted = steps.promote(hits) else { return .deferred(.applyFailed) }
+    return .proceed(skip: Set(hits.keys), promoted: promoted, checked: checked)
   }
 
-  /// The rebuild's trash filter (review finding 2): the entries of the
-  /// server's identifier map whose file is still out of the Trash. The map
-  /// itself does not filter trashed files. An empty map needs no liveness
-  /// read; a failed read throws (the rebuild gate defers on it).
-  static func liveOnly(
-    _ map: [String: String], liveFileIds: () async throws -> Set<String>
-  ) async throws -> [String: String] {
-    guard !map.isEmpty else { return map }
-    let live = try await liveFileIds()
-    return map.filter { live.contains($0.value.lowercased()) }
+  struct BulkOutcome: Equatable {
+    /// Rows promoted to `uploaded` (the server's hits).
+    var promoted: Set<String> = []
+    /// Rows the server answered "needs backup" for: covered, the per-batch
+    /// check may skip them.
+    var needsBackup: Set<String> = []
+    /// `/check` requests sent.
+    var requests = 0
+    /// Why the pass stopped early (the rest is left to the per-batch guard).
+    var stopped: DeferReason?
+  }
+
+  /// The bulk pass (review finding 9). Chunk by chunk: ask, promote the
+  /// chunk's hits, record its "needs backup" rows. Stops at the first failure
+  /// (or when `shouldContinue` turns false) and reports what it finished;
+  /// nothing of an unfinished chunk is promoted or covered.
+  static func bulk(
+    candidates: [String], steps: Steps, shouldContinue: () -> Bool = { true }
+  ) async -> BulkOutcome {
+    var out = BulkOutcome()
+    let ids = deduplicated(candidates)
+    guard !ids.isEmpty else { return out }
+    guard steps.hasDeviceId() else {
+      out.stopped = .noDeviceId
+      return out
+    }
+    for chunk in chunks(ids) {
+      guard shouldContinue() else { break }
+      let hits: [String: String]
+      do {
+        out.requests += 1
+        hits = try await steps.check(chunk)
+      } catch {
+        out.stopped = reason(for: error)
+        return out
+      }
+      if !hits.isEmpty {
+        guard steps.isStillCurrent() else {
+          out.stopped = .accountChanged
+          return out
+        }
+        guard let promoted = steps.promote(hits) else {
+          out.stopped = .applyFailed
+          return out
+        }
+        out.promoted.formUnion(promoted)
+      }
+      out.needsBackup.formUnion(Set(chunk).subtracting(hits.keys))
+    }
+    return out
   }
 
   /// How long uploads stay paused after `reason` (nil: the next batch asks
@@ -144,85 +172,70 @@ enum PendingUploadServerCheck {
     switch reason {
     case .noDeviceId, .accountChanged:
       return nil
-    case .checkFailed, .mapFailed, .liveIndexFailed:
+    case .checkFailed, .serverLacksBackedUp:
       return ManifestRebuildGate.fetchFailureBackoff
     case .applyFailed:
       return ManifestRebuildGate.databaseFailureBackoff(consecutiveFailures: consecutiveFailures)
     }
   }
-}
 
-/// Task 1667 round 10: the account's non-trashed file ids, revalidated with
-/// `GET /files/index?hash=` on every use. The server answers
-/// `{"changed": false}` (no file list) when the hash is still current, so an
-/// unchanged vault costs one small request; any trash, restore, upload or
-/// delete changes the hash and returns the full list. Never served stale:
-/// a `changed: false` answer is accepted only for the exact hash cached for
-/// the same account.
-struct LiveFileIndexCache {
-  private(set) var accountId: String?
-  private(set) var hash: String?
-  private(set) var ids: Set<String> = []
+  /// "server lacks backed_up (task 2036)" is logged once per process, not
+  /// once per deferred batch.
+  final class OnceNotice {
+    private let lock = NSLock()
+    private var fired = false
 
-  /// The hash to send for `accountId` (nil: ask for the full list).
-  func knownHash(for accountId: String) -> String? {
-    self.accountId == accountId ? hash : nil
+    /// True the first time only.
+    func shouldFire() -> Bool {
+      lock.lock(); defer { lock.unlock() }
+      if fired { return false }
+      fired = true
+      return true
+    }
   }
 
-  /// Applies the server's answer; returns the live ids, or throws when the
-  /// answer cannot be used (a `changed: false` for a hash this cache does not
-  /// hold for that account).
-  mutating func accept(_ index: PhotoBackupServerResponses.FileIndex, accountId: String) throws -> Set<String> {
-    if let fresh = index.ids {
-      self.accountId = accountId
-      hash = index.hash
-      ids = fresh
-      return fresh
+  static let serverLacksBackedUpNotice = OnceNotice()
+  static let serverLacksBackedUpMessage = "server lacks backed_up (task 2036)"
+}
+
+/// Task 1667 round 11 (review finding 9): the fresh pending rows a bulk
+/// `/check` answered "needs backup" for, per account and write-fence
+/// generation. The per-batch guard skips these; any other fresh row (inserted
+/// since, or left by a bulk pass that failed) is checked per batch. Expires
+/// after `maxAge` so a long drain asks again, and is cleared at every stop and
+/// sign-out (the engine) and whenever the account or the generation changes.
+struct ServerCheckCoverage: Equatable {
+  static let maxAge: TimeInterval = 15 * 60
+
+  private(set) var accountId: String?
+  private(set) var generation: UInt64 = 0
+  private(set) var checkedAt: Date?
+  private(set) var ids: Set<String> = []
+
+  /// The candidates NOT covered for this account and generation at `now`.
+  func uncovered(_ candidates: [String], accountId: String, generation: UInt64, now: Date) -> [String] {
+    guard self.accountId == accountId, self.generation == generation, let checkedAt,
+          now.timeIntervalSince(checkedAt) < Self.maxAge, now >= checkedAt else { return candidates }
+    return candidates.filter { !ids.contains($0) }
+  }
+
+  /// A bulk pass answered "needs backup" for `needsBackup`.
+  mutating func record(_ needsBackup: Set<String>, accountId: String, generation: UInt64, now: Date) {
+    let expired = checkedAt.map { now.timeIntervalSince($0) >= Self.maxAge || now < $0 } ?? true
+    if self.accountId != accountId || self.generation != generation || expired {
+      ids = []
+      checkedAt = now
     }
-    guard self.accountId == accountId, let hash, hash == index.hash else {
-      throw PhotoBackupServerResponses.UnexpectedResponse(statusCode: 200, reason: "files/index unchanged for an unknown hash")
-    }
-    return ids
+    self.accountId = accountId
+    self.generation = generation
+    // The window runs from the OLDEST answer it holds.
+    ids.formUnion(needsBackup)
   }
 
   mutating func clear() {
     accountId = nil
-    hash = nil
+    generation = 0
+    checkedAt = nil
     ids = []
-  }
-}
-
-/// Task 1667 round 10: the server's per-device identifier map (local
-/// identifier -> file id), kept per account and device so a batch whose hits
-/// are all known needs no `GET /identifiers`. Entries are added by this
-/// device's own marks (`record`); a hit it does not know triggers a fresh GET.
-/// A stale entry can only point at an older file of the same photo, and that
-/// file is checked for liveness before anything is promoted.
-struct IdentifierMapCache {
-  private(set) var key: String?
-  private(set) var map: [String: String] = [:]
-
-  private static func key(_ accountId: String, _ deviceId: String) -> String { accountId + "\u{1F}" + deviceId }
-
-  /// The cached map when it covers every hit for this account and device.
-  func covering(_ hits: Set<String>, accountId: String, deviceId: String) -> [String: String]? {
-    guard key == Self.key(accountId, deviceId), hits.allSatisfy({ map[$0] != nil }) else { return nil }
-    return map
-  }
-
-  mutating func store(_ fresh: [String: String], accountId: String, deviceId: String) {
-    key = Self.key(accountId, deviceId)
-    map = fresh
-  }
-
-  /// A completed mark of this device for this account.
-  mutating func record(local: String, fileId: String, accountId: String, deviceId: String) {
-    guard key == Self.key(accountId, deviceId) else { return }
-    map[local] = fileId
-  }
-
-  mutating func clear() {
-    key = nil
-    map = [:]
   }
 }

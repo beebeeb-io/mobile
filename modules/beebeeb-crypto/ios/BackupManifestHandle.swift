@@ -175,6 +175,15 @@ final class BackupManifestHandle {
   /// handles closed. At most one: a retry reuses it instead of opening
   /// another, and adopts it as the handle when the retry succeeds.
   private var parkedConnections: [OpaquePointer] = []
+  /// Round 10 (review finding 4) state, moved here in round 11 (review
+  /// finding 7, "account bleed"): whether a camera-roll insert into this
+  /// manifest failed since the last full scan inserted. It describes the
+  /// manifest's CURRENT contents, so the sign-out reset that empties them
+  /// clears it (`resetForSignOut`). Before, the engine kept it across
+  /// sign-out: account A's failed insert deferred account B's first rebuild
+  /// (`checkFailed`, 2..30 s escalating backoff) until B's own full scan
+  /// inserted. dbQueue-only, like every member.
+  var scanInsertHealth = ScanInsertHealth()
   /// Diagnostics and tests: connections closed / parked by this handle.
   private(set) var closedConnectionCount = 0
   var parkedConnectionCount: Int { parkedConnections.count }
@@ -215,14 +224,38 @@ final class BackupManifestHandle {
   /// process, plus "everything" when a deletion's account is unknown, or when
   /// a deletion's reset was left pending by an earlier process (whose
   /// deleted ids this process never had).
+  ///
+  /// Round 11 (review finding 1, privacy): an earlier process's pending
+  /// deletion forces "everything" even after THIS process recorded deletions
+  /// of its own. Before, `all` also required `deletedAccountIds` to be empty:
+  /// process 1 deleted A and could not reset, process 2 deleted B, and its
+  /// reset discarded only B's marks and cleared the flag, keeping A's user id,
+  /// PhotoKit ids and file ids for up to 30 days. A flag this process set
+  /// itself (its own deletion's reset failed) names only accounts in
+  /// `deletedAccountIds`, so it does not widen the discard.
   var activeDiscard: BackupManifestStore.MarkDiscard {
-    let all = discardAllPending || (discardPending.get() && deletedAccountIds.isEmpty)
+    let inheritedDeletion = discardPending.get() && !discardPendingSetByThisProcess
+    let all = discardAllPending || inheritedDeletion
     return BackupManifestStore.MarkDiscard(accountIds: deletedAccountIds, all: all)
+  }
+
+  /// Round 11: `discardPending` was false when this process set it, so every
+  /// deletion it stands for is in `deletedAccountIds`. False while the flag
+  /// was inherited from an earlier process (or is not set).
+  private var discardPendingSetByThisProcess = false
+
+  /// Round 11: records "the pending reset is a deletion's" without losing an
+  /// inherited flag's meaning (an earlier process's deletion stays "every
+  /// account").
+  private func recordDiscardPending() {
+    if !discardPending.get() { discardPendingSetByThisProcess = true }
+    discardPending.set(true)
   }
 
   /// Round 9: a reset that ran with `activeDiscard` succeeded.
   private func discardApplied() {
     discardPending.set(false)
+    discardPendingSetByThisProcess = false
     discardAllPending = false
   }
 
@@ -324,6 +357,11 @@ final class BackupManifestHandle {
     deletedAccountIds: Set<String> = []
   ) -> Bool {
     writeFence.advanceForSignOut()
+    // Round 11 (review finding 7): the outgoing account's scan-insert health
+    // goes with its rows, whatever the reset's outcome (a failed reset keeps
+    // the rows only until the recovery or the next open empties them, and
+    // no scan can insert before the next bind).
+    scanInsertHealth = ScanInsertHealth()
     if mode == .accountDeleted {
       var deleted = deletedAccountIds.filter { !$0.isEmpty }
       if let outgoingAccountId, !outgoingAccountId.isEmpty { deleted.insert(outgoingAccountId) }
@@ -353,7 +391,7 @@ final class BackupManifestHandle {
       self.db = nil
     }
     pendingReset.set(true)
-    if !discard.isEmpty { discardPending.set(true) }
+    if !discard.isEmpty { recordDiscardPending() }
     awaitingPurgeFinish = true
     return false
   }

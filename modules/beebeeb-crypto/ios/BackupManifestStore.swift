@@ -971,6 +971,32 @@ enum BackupManifestStore {
     return promoted
   }
 
+  /// Task 1667 round 11 (review finding 9): every row a NEW upload would
+  /// start from (queued, no staged file, in the backup scope, under the retry
+  /// cap), newest first like the drain's selection. The bulk server check
+  /// asks about all of them before the drain selects a batch. nil on any
+  /// read error (never a partial list).
+  static func freshPendingIds(_ db: OpaquePointer) -> [String]? {
+    let sql = """
+    SELECT local_asset_id FROM backup_assets
+     WHERE status IN ('pending_upload', 'pending_reupload')
+       AND staged_file_id IS NULL
+       AND COALESCE(selected_for_backup, 1) = 1
+       AND COALESCE(retry_count, 0) < 10
+     ORDER BY created_at DESC
+    """
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { sqlite3_finalize(stmt) }
+    var ids: [String] = []
+    while true {
+      let rc = sqlite3_step(stmt)
+      if rc == SQLITE_DONE { return ids }
+      guard rc == SQLITE_ROW, let text = sqlite3_column_text(stmt, 0) else { return nil }
+      ids.append(String(cString: text))
+    }
+  }
+
   // MARK: - Helpers
 
   private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

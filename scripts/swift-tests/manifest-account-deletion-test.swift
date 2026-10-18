@@ -28,6 +28,12 @@ import SQLite3
 //     applied by the next process.
 // (b) an ordinary sign-out still keeps the marks (regression), and another
 //     account's marks survive a deletion.
+// Round 11 (review of mobile#182 at de23774e):
+// (a6, a7) finding 1: a deletion left pending by an EARLIER process forces
+//     "discard every mark" even after this process records its own deletion
+//     (A's marks were kept when B was deleted in the next process).
+// (d) finding 7: the scan-insert health is cleared by the sign-out reset, so
+//     account A's failed insert does not defer account B's first gate.
 
 var failures: [String] = []
 var total = 0
@@ -344,6 +350,74 @@ do {
   expect(!pending.value && !discard.value, "a4.6: nothing pending afterwards")
 }
 
+// MARK: - (a6) round 11 finding 1: an inherited deletion flag survives this process's own deletion
+
+// Process 1 deletes A; its reset fails and the process ends before the
+// recovery, so `discardPending` is persisted with A's rows and marks still in
+// the file. In process 2 the launch open's pending reset fails too (JS holds
+// the writer lock). Then account B is deleted in process 2: B lands in
+// `deletedAccountIds`. Before round 11, `activeDiscard.all` required that set
+// to be empty, so the recovery discarded only B's marks, cleared the flag,
+// and A's user id, PhotoKit ids and file ids stayed for up to 30 days.
+func processOneLeavesADeletionPending(_ path: String, _ pending: Flag, _ discard: Flag) {
+  let handle = newHandle(path, pending, discard)
+  expect(handle.openIfClosed() == nil, "a6.0: process 1 opens")
+  seedDevice(handle.db!)
+  let js = connect(path)
+  exec(js, "BEGIN IMMEDIATE")
+  expect(!handle.resetForSignOut(outgoingAccountId: accountA, mode: .accountDeleted, deletedAccountIds: [accountA]),
+         "a6.1: process 1: A's deletion reset fails")
+  exec(js, "ROLLBACK")
+  sqlite3_close_v2(js)
+  // Process 1 ends here (no finishBackupManifestPurge).
+}
+
+do {
+  // (a6) process 2's recovery succeeds.
+  let path = manifestPath("a6")
+  let pending = Flag(), discard = Flag()
+  processOneLeavesADeletionPending(path, pending, discard)
+  expect(pending.value && discard.value, "a6.2: both flags persisted")
+  let next = newHandle(path, pending, discard)
+  let js = connect(path)
+  exec(js, "BEGIN IMMEDIATE")
+  expect(next.openIfClosed() == .pendingResetFailed, "a6.3: process 2's launch open cannot apply the pending reset")
+  expect(!next.resetForSignOut(outgoingAccountId: accountB, mode: .accountDeleted, deletedAccountIds: [accountB]),
+         "a6.4: B's deletion reset fails (no handle)")
+  expect(next.deletedAccountIds == [accountB], "a6.4: this process knows only B")
+  expect(next.activeDiscard.all, "a6.5: the inherited deletion still forces 'discard every mark'")
+  exec(js, "ROLLBACK")
+  sqlite3_close_v2(js)
+  let finished = next.finishAfterFailedReset(allowUnlink: true)
+  expect(finished.ok, "a6.6: the recovery succeeds")
+  expect(onDisk(path, marksA) == 0, "a6.7: 0 of deleted account A's marks remain (got \(onDisk(path, marksA)))")
+  expect(onDisk(path, marksAll) == 0, "a6.7: 0 kept marks of any account (fail closed; got \(onDisk(path, marksAll)))")
+  expect(otherTablesSQL.map { onDisk(path, $0) } == [0, 0, 0, 0], "a6.8: every other table empty")
+  expect(bytesNameA(path).isEmpty, "a6.9: none of A's identifiers in the bytes (found \(bytesNameA(path)))")
+  expect(!pending.value && !discard.value, "a6.10: nothing pending afterwards")
+}
+
+do {
+  // (a7) the same, but process 2's recovery fails as well; the next open
+  // applies the pending reset.
+  let path = manifestPath("a7")
+  let pending = Flag(), discard = Flag()
+  processOneLeavesADeletionPending(path, pending, discard)
+  let next = newHandle(path, pending, discard)
+  let js = connect(path)
+  exec(js, "BEGIN IMMEDIATE")
+  expect(next.openIfClosed() == .pendingResetFailed, "a7.1: launch open fails under the JS lock")
+  expect(!next.resetForSignOut(outgoingAccountId: accountB, mode: .accountDeleted, deletedAccountIds: [accountB]),
+         "a7.2: B's deletion reset fails")
+  let finished = next.finishAfterFailedReset(allowUnlink: false)
+  expect(!finished.ok, "a7.3: the recovery fails while JS still holds the lock")
+  exec(js, "ROLLBACK")
+  sqlite3_close_v2(js)
+  expect(next.openIfClosed() == nil && next.lastOpenAppliedPendingReset, "a7.4: the next open applies the pending reset")
+  expect(onDisk(path, marksA) == 0, "a7.5: 0 of A's marks remain (got \(onDisk(path, marksA)))")
+  expect(bytesNameA(path).isEmpty, "a7.6: none of A's identifiers in the bytes (found \(bytesNameA(path)))")
+}
+
 // MARK: - (a5) a deletion with no known account keeps no mark at all
 
 do {
@@ -393,6 +467,70 @@ do {
   expect(ManifestPurgeMode.parse("sign-out") == .signOut, "c2: 'sign-out'")
   expect(ManifestPurgeMode.parse("account-deleted") == .accountDeleted, "c3: 'account-deleted'")
   expect(ManifestPurgeMode.parse("bogus") == .accountDeleted, "c4: an unknown value fails closed as a deletion")
+}
+
+// MARK: - (d) round 11 finding 7: the scan-insert health does not bleed into the next account
+
+do {
+  let path = manifestPath("d-health")
+  let handle = newHandle(path, Flag(), Flag())
+  expect(handle.openIfClosed() == nil, "d0: launch open")
+  handle.writeFence.bind(accountId: accountA)
+  let ticketA = handle.writeFence.issue(for: accountA)
+  // A's full-scan insert fails (JS holds the writer lock), as the engine
+  // records it (`recordScanInsert`).
+  let js = connect(path)
+  exec(js, "BEGIN IMMEDIATE")
+  sqlite3_busy_timeout(handle.db!, 0)
+  let written = FencedManifestWrites.scanInsert(
+    handle.db, fence: handle.writeFence, ticket: ticketA, writer: "scan.insert",
+    assets: [BackupManifestStore.ScannedAsset(localAssetId: "ida-x", createdAt: "2026-10-18T10:00:00Z", assetType: "photo")],
+    selection: nil, nowMs: now
+  )
+  exec(js, "ROLLBACK")
+  sqlite3_close_v2(js)
+  expect(written == .written(inserted: false), "d1: A's scan insert failed (got \(written))")
+  if case .written(let inserted) = written { handle.scanInsertHealth.record(inserted: inserted, source: .fullScan) }
+  expect(handle.scanInsertHealth.failed, "d1: the failure is recorded for A")
+
+  // A signs out (prepareForStoragePurge -> resetForSignOut).
+  expect(handle.resetForSignOut(outgoingAccountId: accountA), "d2: A's sign-out reset succeeds")
+  expect(!handle.scanInsertHealth.failed, "d3: the sign-out reset clears A's scan-insert failure")
+
+  // B signs in; B's first gate runs before B's own full scan has inserted.
+  handle.writeFence.bind(accountId: accountB)
+  let ticketB = handle.writeFence.issue(for: accountB)
+  let needs = FencedManifestWrites.needsRebuild(
+    handle.db, fence: handle.writeFence, ticket: ticketB, accountId: accountB,
+    scanInsertFailed: handle.scanInsertHealth.failed, nowMs: now
+  )
+  expect(needs == true, "d4: B's first gate is not deferred by A's failure (needsRebuild \(String(describing: needs)))")
+  let sem = DispatchSemaphore(value: 0)
+  var outcome: ManifestRebuildGate.Outcome?
+  Task {
+    outcome = await ManifestRebuildGate.run(alreadyReady: false, steps: ManifestRebuildGate.Steps(
+      needsRebuild: {
+        FencedManifestWrites.needsRebuild(
+          handle.db, fence: handle.writeFence, ticket: ticketB, accountId: accountB,
+          scanInsertFailed: handle.scanInsertHealth.failed, nowMs: now
+        )
+      },
+      hasDeviceId: { true },
+      fetchMap: { [:] },
+      isStillCurrent: { true },
+      applyMap: { map in
+        FencedManifestWrites.applyServerMap(handle.db, fence: handle.writeFence, ticket: ticketB, accountId: accountB,
+                                            map: map, uploadedAtIso: "2026-10-18T10:00:00Z", nowMs: now)
+      },
+      applyKept: {
+        FencedManifestWrites.applyKept(handle.db, fence: handle.writeFence, ticket: ticketB, accountId: accountB, nowMs: now)
+      }
+    ))
+    sem.signal()
+  }
+  _ = sem.wait(timeout: .now() + 10)
+  expect(outcome == .ready(rebuilt: true, promoted: 0, keptApplied: 0),
+         "d5: B's gate is ready, not deferred(checkFailed) (got \(String(describing: outcome)))")
 }
 
 // MARK: - Report

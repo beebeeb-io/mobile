@@ -1,16 +1,20 @@
 import Foundation
 
-/// Task 1667 round 10: the three server reads the camera-roll dedupe needs,
-/// as one small client so the engine and
+/// Task 1667 round 10: the server reads the camera-roll dedupe needs, as one
+/// small client so the engine and
 /// `scripts/swift-tests/pending-upload-server-check-test.swift` send the SAME
 /// requests (the test answers them from a URLProtocol stub). Every answer goes
 /// through `PhotoBackupServerResponses`, which fails closed on anything it
 /// cannot read.
 ///
-/// - `check`: `POST /api/v1/files/photo-backup/check`, per device.
+/// - `check`: `POST /api/v1/files/photo-backup/check`, per device: the
+///   backed-up identifiers WITH their file ids (`backed_up`, server task 2036).
 /// - `identifierMap`: `GET /api/v1/files/photo-backup/identifiers`, per device.
-/// - `fileIndex`: `GET /api/v1/files/index[?hash=]`, the account's non-trashed
-///   files.
+///
+/// Round 11 (review finding 2): no `GET /api/v1/files/index`. Native code
+/// never reads the file index (mobile CLAUDE.md, task 1959: it walks the whole
+/// vault on every call); the server filters trashed files in both routes
+/// (task 2036).
 struct PhotoBackupServerClient {
   let session: URLSession
   let baseURL: String
@@ -60,9 +64,11 @@ struct PhotoBackupServerClient {
   }
 
   /// The identifiers of `ids` (at most 500, the route's cap) that the server
-  /// already has for this device.
-  func check(_ ids: [String]) async throws -> Set<String> {
-    guard !ids.isEmpty else { return [] }
+  /// already has for this device, out of the Trash, each with its file id
+  /// (`PhotoBackupServerResponses.checkBackedUp`; throws `ServerLacksBackedUp`
+  /// on a server without task 2036).
+  func check(_ ids: [String]) async throws -> [String: String] {
+    guard !ids.isEmpty else { return [:] }
     guard ids.count <= PendingUploadServerCheck.maxIdentifiersPerCheck else {
       throw PhotoBackupServerResponses.UnexpectedResponse(statusCode: 0, reason: "photo-backup/check over 500")
     }
@@ -70,24 +76,12 @@ struct PhotoBackupServerClient {
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     req.httpBody = try JSONSerialization.data(withJSONObject: ["identifiers": ids])
     let (status, data) = try await send(req)
-    return try PhotoBackupServerResponses.checkHits(statusCode: status, data: data, requested: ids)
+    return try PhotoBackupServerResponses.checkBackedUp(statusCode: status, data: data, requested: ids)
   }
 
   /// local identifier -> file id for this device (`PhotoBackupServerResponses.identifierMap`).
   func identifierMap() async throws -> [String: String] {
     let (status, data) = try await send(try request("/api/v1/files/photo-backup/identifiers", method: "GET"))
     return try PhotoBackupServerResponses.identifierMap(statusCode: status, data: data)
-  }
-
-  /// The account's non-trashed files; `knownHash` lets the server answer
-  /// "unchanged" without the list.
-  func fileIndex(knownHash: String?) async throws -> PhotoBackupServerResponses.FileIndex {
-    var path = "/api/v1/files/index"
-    if let knownHash, !knownHash.isEmpty,
-       let encoded = knownHash.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-      path += "?hash=\(encoded)"
-    }
-    let (status, data) = try await send(try request(path, method: "GET"))
-    return try PhotoBackupServerResponses.fileIndex(statusCode: status, data: data)
   }
 }
