@@ -18,6 +18,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { gatedPlaintextWrite } from './plaintext-gate';
 
 import { notePlaintextPathCreated } from './plaintext-storage';
+import { isCurrentAccountEpoch, StaleAccountError, type AccountEpoch } from './account-epoch';
 
 export interface CachedName {
   name: string;
@@ -35,7 +36,7 @@ const MAX_ENTRIES = 20000;
 const SAVE_DEBOUNCE_MS = 1500;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
-let pending: NameCache | null = null;
+let pending: { cache: NameCache; epoch: AccountEpoch } | null = null;
 
 /** Read the persisted cache. Returns an empty map on any miss/parse failure. */
 export async function loadNameCache(): Promise<NameCache> {
@@ -74,15 +75,27 @@ function capEntries(cache: NameCache): NameCache {
   return trimmed;
 }
 
-/** Write the cache to disk immediately (best-effort; failures are swallowed). */
-export async function saveNameCacheNow(cache: NameCache): Promise<void> {
+/**
+ * Write the cache to disk immediately (best-effort; failures are swallowed).
+ *
+ * Task 1959 round 3: `epoch` is REQUIRED — the account epoch
+ * (`account-epoch.ts`) the caller's names belong to, captured when its work
+ * started (before its first await). The write is dropped when that account is
+ * no longer the signed-in one. The plaintext gate alone did not cover this: a
+ * writer that started under A and reached the write after B signed in got a
+ * fresh lease from the reopened gate and wrote A's decrypted names into B's
+ * session.
+ */
+export async function saveNameCacheNow(cache: NameCache, epoch: AccountEpoch): Promise<void> {
   if (!FileSystem.documentDirectory) return;
   try {
     // Task 1593 round 3 — decrypted names are plaintext: a write racing a
     // sign-out purge is refused / discarded (caught below like any failure).
-    await gatedPlaintextWrite('name cache', CACHE_FILE, FileSystem, () =>
-      FileSystem.writeAsStringAsync(CACHE_FILE, JSON.stringify(capEntries(cache))),
-    );
+    await gatedPlaintextWrite('name cache', CACHE_FILE, FileSystem, () => {
+      // Checked synchronously right before the write, inside the lease.
+      if (!epoch || !isCurrentAccountEpoch(epoch)) throw new StaleAccountError('name cache');
+      return FileSystem.writeAsStringAsync(CACHE_FILE, JSON.stringify(capEntries(cache)));
+    });
     notePlaintextPathCreated();
   } catch {
     // A failed name-cache write is non-fatal — names still resolve via the index
@@ -92,16 +105,17 @@ export async function saveNameCacheNow(cache: NameCache): Promise<void> {
 
 /**
  * Debounced persist — coalesces a burst of folder opens into one write. Pass the
- * latest full cache snapshot each time; the most recent wins.
+ * latest full cache snapshot each time; the most recent wins. `epoch` is the
+ * account the snapshot's names belong to (see `saveNameCacheNow`).
  */
-export function scheduleSaveNameCache(cache: NameCache): void {
-  pending = cache;
+export function scheduleSaveNameCache(cache: NameCache, epoch: AccountEpoch): void {
+  pending = { cache, epoch };
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
     const snapshot = pending;
     pending = null;
-    if (snapshot) void saveNameCacheNow(snapshot);
+    if (snapshot) void saveNameCacheNow(snapshot.cache, snapshot.epoch);
   }, SAVE_DEBOUNCE_MS);
 }
 
@@ -110,9 +124,11 @@ export function scheduleSaveNameCache(cache: NameCache): void {
  * drops names for files that no longer exist server-side so stale entries don't
  * linger. Returns the count removed. Best-effort; persists immediately.
  */
-export async function pruneNameCache(fileIds: string[] | Set<string>): Promise<number> {
+export async function pruneNameCache(fileIds: string[] | Set<string>, epoch: AccountEpoch): Promise<number> {
   const ids = fileIds instanceof Set ? fileIds : new Set(fileIds);
   if (ids.size === 0) return 0;
+  // Task 1959 round 3: the read below is a window for a sign-out; the write
+  // re-checks `epoch` synchronously before it touches the file.
   const cache = await loadNameCache();
   let removed = 0;
   for (const id of ids) {
@@ -121,7 +137,7 @@ export async function pruneNameCache(fileIds: string[] | Set<string>): Promise<n
       removed += 1;
     }
   }
-  if (removed > 0) await saveNameCacheNow(cache);
+  if (removed > 0) await saveNameCacheNow(cache, epoch);
   return removed;
 }
 

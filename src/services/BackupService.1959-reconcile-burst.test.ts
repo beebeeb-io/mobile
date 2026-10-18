@@ -68,8 +68,15 @@ mock.module('@react-native-async-storage/async-storage', () => ({
 }));
 mock.module('expo-file-system/legacy', () => ({ documentDirectory: 'file:///tmp/docs/', cacheDirectory: 'file:///tmp/cache/' }));
 const secure = new Map<string, string>();
+// Task 1959 round 3: hold the read of one SecureStore key (the folder cache).
+let secureHoldKey: string | null = null;
+const securePending: Array<() => void> = [];
 mock.module('expo-secure-store', () => ({
-  getItemAsync: async (k: string) => secure.get(k) ?? null,
+  getItemAsync: async (k: string) => {
+    const value = secure.get(k) ?? null;
+    if (secureHoldKey === k) await new Promise<void>((resolve) => securePending.push(resolve));
+    return value;
+  },
   setItemAsync: async (k: string, v: string) => { secure.set(k, v); },
   deleteItemAsync: async (k: string) => { secure.delete(k); },
 }));
@@ -172,6 +179,8 @@ beforeEach(() => {
   indexPending.length = 0;
   uploadedHold = false;
   uploadedPending.length = 0;
+  secureHoldKey = null;
+  securePending.length = 0;
   BackupService.resetReconcileThrottleForTests?.();
   loader?.resetFileIndexLoaderForTests?.();
 
@@ -363,5 +372,53 @@ describe('task 1959 round 2 — reconcile across an account switch', () => {
     await reconcileDerivedStateAgainstServer();
     expect(indexCalls.length).toBe(2);
     expect(secure.get('beebeeb_reconcile_index_hash')).toBe('hB');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 1959 round 3: the backup folder cache (SecureStore) is written only
+// under the account epoch its writer started under. ensureBackupFolders and
+// the delete cascade both await the network or SecureStore before writing.
+// ---------------------------------------------------------------------------
+describe('task 1959 round 3 — folder cache writes across an account switch', () => {
+  const FOLDER_CACHE_KEY = 'beebeeb_backup_folders';
+  const tick = () => new Promise((r) => setTimeout(r, 1));
+
+  function switchAccounts() {
+    epoch?.advanceAccountEpoch(); // clearToken(A)
+    epoch?.advanceAccountEpoch(); // setToken(B)
+  }
+
+  test('the delete cascade\'s invalidation that started under A does not clear B\'s folder cache', async () => {
+    secure.set(FOLDER_CACHE_KEY, JSON.stringify({ rootId: 'backups', deviceId: 'device-a' }));
+    secureHoldKey = FOLDER_CACHE_KEY;
+    const invalidate = BackupService.invalidateBackupFolderCacheIfDeleted(new Set(['backups']));
+    await tick();
+    switchAccounts();
+    const bCache = JSON.stringify({ rootId: 'b-root', deviceId: 'b-device' });
+    secure.set(FOLDER_CACHE_KEY, bCache); // B's own backup run resolved B's tree
+    secureHoldKey = null;
+    for (const r of securePending.splice(0)) r();
+    await invalidate;
+    expect(secure.get(FOLDER_CACHE_KEY)).toBe(bCache);
+  });
+
+  test('ensureBackupFolders that started under A does not persist A\'s folder ids once A is gone', async () => {
+    indexHold = true;
+    const ensure = ensureBackupFolders('camera_roll');
+    await tick();
+    expect(indexCalls.length).toBe(1); // inside its reconcile
+    switchAccounts();
+    indexHold = false;
+    for (const r of indexPending.splice(0)) r();
+    await ensure.catch(() => {});
+    expect(secure.get(FOLDER_CACHE_KEY)).toBeUndefined();
+  });
+
+  test('without a switch both still write (positive control)', async () => {
+    await ensureBackupFolders('camera_roll');
+    expect(JSON.parse(secure.get(FOLDER_CACHE_KEY) ?? '{}').rootId).toBe('backups');
+    await BackupService.invalidateBackupFolderCacheIfDeleted(new Set(['backups']));
+    expect(secure.get(FOLDER_CACHE_KEY)).toBe('{}');
   });
 });

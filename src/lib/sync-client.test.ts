@@ -76,13 +76,23 @@ mock.module('./api', () => ({
 
 let cachedIndex: { hash: string; files: unknown[]; storedAt: number; seq?: number } | null = null;
 const savedIndexCalls: Array<{ hash: string; files: unknown[]; storedAt?: number; seq?: number }> = [];
+// Task 1959 round 3: every scope the cache handed out, and the scope each
+// write carried (kept apart from savedIndexCalls so its toEqual checks hold).
+const issuedScopes: Array<{ id: number }> = [];
+const savedScopes: unknown[] = [];
 
 mock.module('./file-index-cache', () => ({
   loadCachedFileIndex: async () => cachedIndex,
-  saveCachedFileIndex: async (hash: string, files: unknown[], storedAt?: number, seq?: number) => {
+  saveCachedFileIndex: async (hash: string, files: unknown[], storedAt?: number, seq?: number, scope?: unknown) => {
     savedIndexCalls.push({ hash, files, storedAt, seq });
+    savedScopes.push(scope);
   },
   clearCachedFileIndex: async () => {},
+  fileIndexCacheWriteScope: () => {
+    const scope = { epoch: { generation: 0, accountId: null }, generation: 0, id: issuedScopes.length + 1 };
+    issuedScopes.push(scope);
+    return scope;
+  },
 }));
 
 mock.module('./file-provider-mount', () => ({
@@ -397,5 +407,22 @@ describe('SyncClient write-through across a sign-out (task 1959 round 2)', () =>
     client.stop();
     await new Promise((r) => setTimeout(r, 5));
     expect(savedIndexCalls.length).toBe(1);
+  });
+
+  // Task 1959 round 3: the write-through writes under the scope captured when
+  // the client was created (its account), never one captured at write time.
+  test('the write-through carries the cache write scope captured at construction', async () => {
+    getSnapshotImpl = async () => ({ seq_id: 3, nodes: [syncNode({ id: 'a1', name_encrypted: 'enc-a1' })] });
+    issuedScopes.length = 0;
+    const client = new SyncClient();
+    const constructionScope = issuedScopes[0];
+    expect(constructionScope).toBeDefined();
+    await client.start();
+    savedScopes.length = 0;
+    client.applyLocalOp('file_rename', { id: 'a1', name_encrypted: 'enc-a1-renamed' });
+    client.stop();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(savedScopes.length).toBe(1);
+    expect(savedScopes[0]).toBe(constructionScope);
   });
 });

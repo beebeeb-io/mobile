@@ -28,7 +28,7 @@ import {
 } from './api';
 import type { SyncOp, SyncNode, FileEntry } from './api';
 import { isSyncOp } from './sync-op-guard';
-import { loadCachedFileIndex, saveCachedFileIndex } from './file-index-cache';
+import { fileIndexCacheWriteScope, loadCachedFileIndex, saveCachedFileIndex } from './file-index-cache';
 import { accountEpoch, isCurrentAccountEpoch } from './account-epoch';
 import { syncDecryptedEntriesToFileProvider } from './file-provider-mount';
 import { getDeviceId } from './device-identity';
@@ -296,6 +296,9 @@ export class SyncClient {
   // index cache. The write-through must not put this account's tree back on
   // disk (or into the File Provider) once that account is gone.
   private readonly accountEpoch = accountEpoch();
+  // Task 1959 round 3: the index-cache write scope (this epoch + the cache
+  // generation), captured with it. Every write-through writes under it.
+  private readonly cacheWriteScope = fileIndexCacheWriteScope();
 
   getStatus(): ConnectionStatus {
     return this.status;
@@ -856,7 +859,7 @@ export class SyncClient {
       const files = liveNodes.map(syncNodeToFileEntry);
       // The write re-checks the epoch at its turn in the cache's write queue
       // (the `loadCachedFileIndex` await above is a window for a sign-out).
-      await saveCachedFileIndex(hash, files, Date.now(), this.lastSeq, { epoch: this.accountEpoch });
+      await saveCachedFileIndex(hash, files, Date.now(), this.lastSeq, this.cacheWriteScope);
     } catch {
       // disk write best-effort; the next full fetch reconciles
     }

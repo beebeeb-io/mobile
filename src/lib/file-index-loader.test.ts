@@ -397,3 +397,23 @@ describe('account generation (task 1959 round 2)', () => {
     expect(loader.inspect()).toMatchObject({ hasWindow: false, inFlight: false });
   });
 });
+
+// Task 1959 round 3: the loader's cache write carries the WHOLE scope its
+// request started under — the account epoch and the cache generation — so
+// file-index-cache can drop it on either change at its turn in the queue.
+describe('cache write scope (task 1959 round 3)', () => {
+  test('saveCache receives the account epoch and cache generation the request started under', async () => {
+    const scopes = [];
+    const l = createFileIndexLoader({
+      fetchIndex: async () => ({ hash: 's9', changed: true, count: 1, files: [row('x')] }),
+      loadCache: async () => null,
+      saveCache: async (_hash, _files, _storedAt, scope) => { scopes.push(scope); },
+      cacheGeneration: () => 7,
+      accountEpoch: () => ({ generation: 4, accountId: 'user-A' }),
+      now: () => 0,
+      revalidateMs: WINDOW,
+    });
+    await l.load();
+    expect(scopes).toEqual([{ epoch: { generation: 4, accountId: 'user-A' }, generation: 7 }]);
+  });
+});

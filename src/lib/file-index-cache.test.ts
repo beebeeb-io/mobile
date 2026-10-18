@@ -33,8 +33,11 @@ mock.module('./plaintext-storage', () => ({
   notePlaintextPathCreated: () => {},
 }));
 
-const { loadCachedFileIndex, saveCachedFileIndex, clearCachedFileIndex } =
+const { loadCachedFileIndex, saveCachedFileIndex, clearCachedFileIndex, fileIndexCacheWriteScope } =
   await import('./file-index-cache');
+// Task 1959 round 3: every write carries a scope (required); `now()` is the
+// scope of a writer that starts right here.
+const now = () => fileIndexCacheWriteScope();
 // Task 1959 round 2. Absent before the fix.
 const epoch = await import('./account-epoch').catch(() => null);
 
@@ -59,7 +62,7 @@ beforeEach(async () => {
 
 describe('CachedFileIndex.seq round-trip (task 1302 follow-up)', () => {
   test('a write with a seq round-trips through a fresh load', async () => {
-    await saveCachedFileIndex('hash-1', [fileEntry()], 1000, 42);
+    await saveCachedFileIndex('hash-1', [fileEntry()], 1000, 42, now());
 
     const loaded = await loadCachedFileIndex();
     expect(loaded?.seq).toBe(42);
@@ -67,26 +70,26 @@ describe('CachedFileIndex.seq round-trip (task 1302 follow-up)', () => {
   });
 
   test('a write with no seq round-trips as undefined, not 0 or null', async () => {
-    await saveCachedFileIndex('hash-2', [fileEntry()]);
+    await saveCachedFileIndex('hash-2', [fileEntry()], Date.now(), undefined, now());
 
     const loaded = await loadCachedFileIndex();
     expect(loaded?.seq).toBeUndefined();
   });
 
   test('a later write without seq clears a previously-stamped one — the cache always reflects only what THIS write actually wrote', async () => {
-    await saveCachedFileIndex('hash-3', [fileEntry()], 1000, 7);
+    await saveCachedFileIndex('hash-3', [fileEntry()], 1000, 7, now());
     let loaded = await loadCachedFileIndex();
     expect(loaded?.seq).toBe(7);
 
     // e.g. FilesScreen's own REST-driven fetchFiles overwrote the cache
     // later in the same session — it has no sync cursor to stamp.
-    await saveCachedFileIndex('hash-3', [fileEntry()], 2000);
+    await saveCachedFileIndex('hash-3', [fileEntry()], 2000, undefined, now());
     loaded = await loadCachedFileIndex();
     expect(loaded?.seq).toBeUndefined();
   });
 
   test('clearCachedFileIndex removes the seq along with everything else', async () => {
-    await saveCachedFileIndex('hash-4', [fileEntry()], 1000, 9);
+    await saveCachedFileIndex('hash-4', [fileEntry()], 1000, 9, now());
     await clearCachedFileIndex();
 
     const loaded = await loadCachedFileIndex();
@@ -99,15 +102,15 @@ describe('CachedFileIndex.seq round-trip (task 1302 follow-up)', () => {
 // (the next account would read the previous account's rows from disk).
 describe('cache writes across a sign-out (task 1959 round 2)', () => {
   test('a write bound to an account epoch that ended before it ran is dropped', async () => {
-    const bound = epoch ? epoch.accountEpoch() : { generation: 0, accountId: null };
+    const bound = now();
     await clearCachedFileIndex(); // sign-out
-    await saveCachedFileIndex('hash-A', [fileEntry({ id: 'a1' })], 1000, undefined, { epoch: bound });
+    await saveCachedFileIndex('hash-A', [fileEntry({ id: 'a1' })], 1000, undefined, bound);
     expect(await loadCachedFileIndex()).toBeNull();
   });
 
   test('a clear issued while a write is in flight leaves no cache behind', async () => {
     holdWrites = true;
-    const write = saveCachedFileIndex('hash-A', [fileEntry({ id: 'a1' })], 1000);
+    const write = saveCachedFileIndex('hash-A', [fileEntry({ id: 'a1' })], 1000, undefined, now());
     await new Promise((r) => setTimeout(r, 1));
     const clear = clearCachedFileIndex();
     holdWrites = false;
@@ -117,8 +120,31 @@ describe('cache writes across a sign-out (task 1959 round 2)', () => {
   });
 
   test('a write bound to the current epoch still lands', async () => {
-    const bound = epoch ? epoch.accountEpoch() : { generation: 0, accountId: null };
-    await saveCachedFileIndex('hash-B', [fileEntry({ id: 'b1' })], 1000, undefined, { epoch: bound });
+    const bound = now();
+    await saveCachedFileIndex('hash-B', [fileEntry({ id: 'b1' })], 1000, undefined, bound);
     expect((await loadCachedFileIndex())?.hash).toBe('hash-B');
+  });
+});
+
+// Task 1959 round 3: the scope is required at runtime too (this file and
+// other ts-nocheck callers would otherwise write unscoped without a type error).
+describe('write scope is required (task 1959 round 3)', () => {
+  test('a write without a scope is refused, not written', async () => {
+    await expect(saveCachedFileIndex('hash-X', [fileEntry()], 1000, undefined)).rejects.toThrow(/write scope is required/);
+    expect(asyncStore.size).toBe(0);
+  });
+
+  test('a scope from before an epoch advance alone (clearToken\'s first step, before the cache clear) is dropped', async () => {
+    const bound = now();
+    epoch.advanceAccountEpoch();
+    await saveCachedFileIndex('hash-E', [fileEntry()], 1000, undefined, bound);
+    expect(asyncStore.size).toBe(0);
+  });
+
+  test('a scope from before a bare cache clear (generation moved, epoch alone would not be enough if it did not move) is dropped', async () => {
+    const bound = now();
+    await clearCachedFileIndex();
+    await saveCachedFileIndex('hash-G', [fileEntry()], 1000, undefined, { ...bound, epoch: epoch.accountEpoch() });
+    expect(asyncStore.size).toBe(0);
   });
 });

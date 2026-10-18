@@ -65,6 +65,7 @@ import {
   loadCachedFileIndex,
   saveCachedFileIndex,
   type CachedFileIndex,
+  type FileIndexCacheWriteScope,
 } from './file-index-cache';
 import {
   accountEpoch,
@@ -103,7 +104,9 @@ export interface FileIndexLoadResult {
 interface LoaderDeps {
   fetchIndex: (hash?: string) => Promise<FileIndexResponse>;
   loadCache: () => Promise<CachedFileIndex | null>;
-  saveCache: (hash: string, files: FileEntry[], storedAt: number, epoch: AccountEpoch) => Promise<void>;
+  /** Round 3: `scope` is required — the epoch AND cache generation this
+   *  request started under (file-index-cache.ts `FileIndexCacheWriteScope`). */
+  saveCache: (hash: string, files: FileEntry[], storedAt: number, scope: FileIndexCacheWriteScope) => Promise<void>;
   cacheGeneration: () => number;
   /** The signed-in account's epoch (account-epoch.ts). */
   accountEpoch?: () => AccountEpoch;
@@ -243,7 +246,7 @@ export function createFileIndexLoader(deps: LoaderDeps) {
       const storedAt = deps.now();
       // The cache write re-checks the epoch at its turn in the write queue
       // (file-index-cache.ts), so a sign-out during it leaves nothing behind.
-      await deps.saveCache(index.hash, index.files, storedAt, epoch.account);
+      await deps.saveCache(index.hash, index.files, storedAt, { epoch: epoch.account, generation: epoch.cache });
       assertCurrent(epoch);
       last = {
         at: storedAt,
@@ -311,7 +314,7 @@ export function createFileIndexLoader(deps: LoaderDeps) {
 const defaultLoader = createFileIndexLoader({
   fetchIndex: (hash) => getFileIndex(hash),
   loadCache: loadCachedFileIndex,
-  saveCache: (hash, files, storedAt, epoch) => saveCachedFileIndex(hash, files, storedAt, undefined, { epoch }),
+  saveCache: (hash, files, storedAt, scope) => saveCachedFileIndex(hash, files, storedAt, undefined, scope),
   cacheGeneration: fileIndexCacheGeneration,
   accountEpoch,
   cacheReadEpoch: cachedFileIndexEpoch,

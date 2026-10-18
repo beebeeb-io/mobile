@@ -64,17 +64,19 @@ export function cachedFileIndexEpoch(index: CachedFileIndex): AccountEpoch | und
 }
 
 export async function loadCachedFileIndex(): Promise<CachedFileIndex | null> {
-  const epoch = accountEpoch();
-  const generationAtStart = cacheGeneration;
-  const loaded = await loadCachedFileIndexUntagged();
+  // Round 3: the account epoch and cache generation, together, as of the
+  // moment this read STARTED. The legacy migration below writes under this
+  // scope, never under whatever is current when its AsyncStorage read answers.
+  const scope = fileIndexCacheWriteScope();
+  const loaded = await loadCachedFileIndexUntagged(scope);
   // Cleared while it was being read: whatever came back belonged to the
   // signed-out account.
-  if (!loaded || cacheGeneration !== generationAtStart) return null;
-  readEpochs.set(loaded, epoch);
+  if (!loaded || cacheGeneration !== scope.generation) return null;
+  readEpochs.set(loaded, scope.epoch);
   return loaded;
 }
 
-async function loadCachedFileIndexUntagged(): Promise<CachedFileIndex | null> {
+async function loadCachedFileIndexUntagged(scope: FileIndexCacheWriteScope): Promise<CachedFileIndex | null> {
   const disk = await loadFromDisk();
   if (disk) return disk;
 
@@ -86,7 +88,11 @@ async function loadCachedFileIndexUntagged(): Promise<CachedFileIndex | null> {
       await AsyncStorage.removeItem(FILE_INDEX_CACHE_KEY);
       return null;
     }
-    await saveCachedFileIndex(parsed.hash, parsed.files, parsed.storedAt, parsed.seq).catch(() => {});
+    // Task 1959 round 3 (Codex P1 on PR #181): migrate under the scope the
+    // read STARTED with. A sign-out that cleared the cache while getItem() was
+    // pending moved the generation and the epoch, so this write is dropped at
+    // its turn in the queue and A's rows never reach the file B reads next.
+    await saveCachedFileIndex(parsed.hash, parsed.files, parsed.storedAt, parsed.seq, scope).catch(() => {});
     await AsyncStorage.removeItem(FILE_INDEX_CACHE_KEY).catch(() => {});
     return parsed;
   } catch {
@@ -127,32 +133,48 @@ function serialized<T>(op: () => Promise<T>): Promise<T> {
   return run;
 }
 
-export interface SaveCachedFileIndexOptions {
-  /**
-   * The account epoch the rows belong to. The write is dropped when, at its
-   * turn in the queue, that account is no longer the current one. Writers
-   * that started before an await (the loader, the sync write-through) pass
-   * the epoch they started under.
-   */
-  epoch?: AccountEpoch;
+/**
+ * Task 1959 round 3: who a cache write belongs to — the account epoch AND the
+ * cache generation, captured together, synchronously, when the work that
+ * produced the rows STARTED (before its first await). Required on every write:
+ * a writer cannot forget it, and cannot capture it late. Round 2 made the
+ * epoch optional and captured the generation at the write call, which is
+ * after the window; the legacy migration wrote with neither and recreated a
+ * signed-out account's rows (Codex P1, file-index-cache.ts:72).
+ */
+export interface FileIndexCacheWriteScope {
+  readonly epoch: AccountEpoch;
+  readonly generation: number;
+}
+
+/** Capture the write scope now. Call it where the work starts. */
+export function fileIndexCacheWriteScope(): FileIndexCacheWriteScope {
+  return { epoch: accountEpoch(), generation: cacheGeneration };
+}
+
+function isCurrentWriteScope(scope: FileIndexCacheWriteScope): boolean {
+  return scope.generation === cacheGeneration && isCurrentAccountEpoch(scope.epoch);
 }
 
 export async function saveCachedFileIndex(
   hash: string,
   files: FileEntry[],
-  storedAt = Date.now(),
-  seq?: number,
-  options: SaveCachedFileIndexOptions = {},
+  storedAt: number,
+  seq: number | undefined,
+  scope: FileIndexCacheWriteScope,
 ): Promise<void> {
-  const generationAtCall = cacheGeneration;
+  // The type makes `scope` required; this keeps an untyped caller (a test
+  // under ts-nocheck, a JS call site) from writing unscoped.
+  if (!scope || typeof scope.generation !== 'number' || !scope.epoch) {
+    throw new TypeError('saveCachedFileIndex: a write scope is required (fileIndexCacheWriteScope())');
+  }
   const payload: CachedFileIndex = { hash, files, storedAt, ...(seq !== undefined ? { seq } : {}) };
   const serializedPayload = JSON.stringify(payload);
   await serialized(async () => {
     if (FileSystem.documentDirectory) await ensureDocumentDirectory();
     // Checked synchronously right before the write: a clear queued after this
     // write runs after it (and deletes it); a clear that ran before it wins.
-    if (cacheGeneration !== generationAtCall) return;
-    if (options.epoch && !isCurrentAccountEpoch(options.epoch)) return;
+    if (!isCurrentWriteScope(scope)) return;
     if (FileSystem.documentDirectory) {
       await FileSystem.writeAsStringAsync(FILE_INDEX_CACHE_PATH, serializedPayload);
       notePlaintextPathCreated();

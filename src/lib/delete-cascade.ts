@@ -21,6 +21,7 @@ import { invalidateBackupFolderCacheIfDeleted } from '../services/BackupService'
 import { offlineManager } from './offline-manager';
 import { invalidateCachedThumbnails, invalidateNativeThumbnailCache } from './thumbnail-cache';
 import { pruneNameCache } from './name-cache';
+import { accountEpoch } from './account-epoch';
 
 export interface DeleteCascadeOptions {
   /** True when `ids` already includes a folder's expanded subtree. Advisory —
@@ -50,6 +51,10 @@ export async function onFilesDeleted(
 ): Promise<void> {
   const unique = [...new Set(ids)].filter(Boolean);
   if (unique.length === 0) return;
+  // Task 1959 round 3: the delete happened in the account signed in now; the
+  // name-cache prune below runs after several awaits and must not write once
+  // that account has signed out.
+  const epoch = accountEpoch();
   const idSet = new Set(unique);
 
   // 1. Backup manifest — EXPLICIT delete: mark remote_deleted (NOT re-queued —
@@ -73,7 +78,7 @@ export async function onFilesDeleted(
   await invalidateNativeThumbnailCache(unique).catch(() => {});
 
   // 4. Name cache (0807).
-  await pruneNameCache(unique).catch(() => {});
+  await pruneNameCache(unique, epoch).catch(() => {});
 
   // 5. Backup folder cache — if a backup folder (root/device/category) was
   //    deleted, drop the cache so the tree rebuilds.

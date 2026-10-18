@@ -18,6 +18,7 @@
  */
 
 import * as SQLite from 'expo-sqlite';
+import { isCurrentAccountEpoch, type AccountEpoch } from '../lib/account-epoch';
 
 export type BackupAssetType = 'photo' | 'video' | 'contact' | 'calendar';
 export type BackupAssetStatus =
@@ -553,8 +554,16 @@ export async function getAllUploadedRemoteIds(): Promise<Set<string>> {
  *  rows reset (the "Backups root deleted" case). Conservative — re-queue, never
  *  delete — so re-upload is automatic and nothing is lost if /files/index was
  *  briefly wrong. Returns rows changed. */
-export async function resetUploadedState(remoteFileIds?: string[]): Promise<number> {
+export async function resetUploadedState(
+  remoteFileIds: string[] | undefined,
+  epoch: AccountEpoch,
+): Promise<number> {
+  // Task 1959 round 3: `epoch` is REQUIRED — the account epoch the caller (the
+  // backup reconcile) decided these re-queues under. The decision compares
+  // that account's server ids against this manifest; once the account signed
+  // out, no further UPDATE may run (checked after every await below).
   const db = await getDb();
+  if (!isCurrentAccountEpoch(epoch)) return 0;
   const SET_CLAUSE =
     `SET status = 'pending_upload', remote_file_id = NULL, uploaded_at = NULL, ` +
     `error_message = NULL, retry_count = 0, queued_at = NULL`;
@@ -570,6 +579,7 @@ export async function resetUploadedState(remoteFileIds?: string[]): Promise<numb
   for (let i = 0; i < remoteFileIds.length; i += SQL_IN_CHUNK) {
     const batch = remoteFileIds.slice(i, i + SQL_IN_CHUNK);
     if (batch.length === 0) continue;
+    if (!isCurrentAccountEpoch(epoch)) break;
     const placeholders = batch.map(() => '?').join(',');
     const result = await db.runAsync(
       `UPDATE backup_assets ${SET_CLAUSE}

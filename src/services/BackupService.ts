@@ -278,7 +278,14 @@ async function readFolderCache(): Promise<FolderCache> {
   }
 }
 
-async function writeFolderCache(cache: FolderCache): Promise<void> {
+/**
+ * Task 1959 round 3: `epoch` is REQUIRED — the account epoch the writer
+ * started under (captured before its first await). Every writer awaits the
+ * network or SecureStore before it writes; a write whose account has signed
+ * out since is dropped instead of landing in the next account's cache.
+ */
+async function writeFolderCache(cache: FolderCache, epoch: AccountEpoch): Promise<void> {
+  if (!isCurrentAccountEpoch(epoch)) return;
   await storeSet(FOLDER_CACHE_KEY, JSON.stringify(cache));
 }
 
@@ -904,8 +911,8 @@ export function resetReconcileThrottleForTests(): void {
 
 /** Reset the persisted backup folder cache so ensureBackupFolders rebuilds the
  *  tree from scratch (used when the whole Backups root is gone). */
-async function clearFolderCache(): Promise<void> {
-  await writeFolderCache({});
+async function clearFolderCache(epoch: AccountEpoch): Promise<void> {
+  await writeFolderCache({}, epoch);
 }
 
 /** 0818 — if any deleted id is a cached backup folder (root/device/category),
@@ -913,6 +920,9 @@ async function clearFolderCache(): Promise<void> {
  *  reusing a now-deleted folder. Called by the delete-cascade dispatcher. */
 export async function invalidateBackupFolderCacheIfDeleted(deletedIds: Set<string>): Promise<void> {
   if (deletedIds.size === 0) return;
+  // Round 3: the delete happened in this account; the read below is a window
+  // for a sign-out after which the cache is the next account's.
+  const epoch = accountEpoch();
   const cache = await readFolderCache();
   const backupFolderIds = [
     cache.rootId,
@@ -920,7 +930,7 @@ export async function invalidateBackupFolderCacheIfDeleted(deletedIds: Set<strin
     ...Object.values(cache.categoryIds ?? {}),
   ].filter((id): id is string => typeof id === 'string');
   if (backupFolderIds.some((id) => deletedIds.has(id))) {
-    await clearFolderCache();
+    await clearFolderCache(epoch);
     console.info('[BackupService] delete-cascade: a backup folder was deleted — cleared folder cache');
   }
 }
@@ -1039,12 +1049,12 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
         // The founder's exact case: the entire Backups tree was deleted
         // server-side. Re-queue ALL uploaded assets (so re-enabling backup
         // re-uploads them) and drop the stale folder cache so the tree rebuilds.
-        const requeued = await resetUploadedState();
+        const requeued = await resetUploadedState(undefined, epoch);
         live();
-        await clearFolderCache();
+        await clearFolderCache(epoch);
         console.info(`[BackupService] reconcile: Backups root gone — re-queued ${requeued} asset(s), cleared folder cache`);
       } else if (backupOrphans.length > 0) {
-        const requeued = await resetUploadedState(backupOrphans);
+        const requeued = await resetUploadedState(backupOrphans, epoch);
         console.info(`[BackupService] reconcile: re-queued ${requeued} orphaned backup asset(s)`);
       }
 
@@ -1077,7 +1087,7 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
       const nameCache = await loadNameCache();
       live();
       const nameOrphans = Object.keys(nameCache).filter((id) => !indexIds.has(id));
-      if (nameOrphans.length > 0) await pruneNameCache(nameOrphans);
+      if (nameOrphans.length > 0) await pruneNameCache(nameOrphans, epoch);
 
       // --- Thumbnails --------------------------------------------------------
       // Disk: drop any cached thumbnail whose file isn't in the index.
@@ -1130,6 +1140,9 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
 export async function ensureBackupFolders(
   category: BackupCategory,
 ): Promise<{ deviceFolderId: string; categoryFolderId: string }> {
+  // Task 1959 round 3: the folder ids resolved below belong to the account
+  // signed in NOW; the cache write at the end is dropped if it signed out.
+  const epoch = accountEpoch();
   let cache = await readFolderCache();
 
   // 0813/0814 — before resolving the tree, flatten any pre-existing duplicate
@@ -1181,7 +1194,7 @@ export async function ensureBackupFolders(
     rootId,
     deviceId: deviceFolderId,
     categoryIds,
-  });
+  }, epoch);
 
   return { deviceFolderId, categoryFolderId };
 }
