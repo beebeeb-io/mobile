@@ -20,8 +20,7 @@ import { getNativeBackupDiagnostics, BeebeebThumbnails, type QueueStats } from '
 import { useCrypto } from '../lib/crypto-context';
 import { useTheme } from '../lib/theme-context';
 import { formatRuntimeTraceJsonl, getRuntimeTraceSnapshot, recordRuntimeTrace } from '../lib/runtime-trace';
-import { getFileIndex } from '../lib/api';
-import { loadCachedFileIndex, saveCachedFileIndex } from '../lib/file-index-cache';
+import { loadFileIndex } from '../lib/file-index-loader';
 import { formatBytes } from '../lib/format';
 import {
   estimatePerformanceStorage,
@@ -65,13 +64,9 @@ export default function AdvancedSettingsScreen() {
       setProfile(perf.profile);
       setQueueStats(stats);
       // Fetch file count separately — non-blocking.
-      loadCachedFileIndex().then(async (cached) => {
-        const index = await getFileIndex(cached?.hash);
-        const files = !index.changed && cached
-          ? cached.files
-          : index.files ?? cached?.files ?? [];
-        if (index.changed && index.files) await saveCachedFileIndex(index.hash, index.files);
-        setFileCount(files.filter((f) => !f.is_folder && !f.is_uploading).length);
+      // Task 1959: through the coalescing loader, not a fresh /files/index walk per mount.
+      loadFileIndex().then(({ files }) => {
+        setFileCount((files ?? []).filter((f) => !f.is_folder && !f.is_uploading).length);
       }).catch(() => {});
     } finally {
       setRefreshing(false);

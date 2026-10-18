@@ -18,6 +18,7 @@
  */
 
 import * as SQLite from 'expo-sqlite';
+import { isCurrentAccountEpoch, type AccountEpoch } from '../lib/account-epoch';
 
 export type BackupAssetType = 'photo' | 'video' | 'contact' | 'calendar';
 export type BackupAssetStatus =
@@ -553,8 +554,16 @@ export async function getAllUploadedRemoteIds(): Promise<Set<string>> {
  *  rows reset (the "Backups root deleted" case). Conservative — re-queue, never
  *  delete — so re-upload is automatic and nothing is lost if /files/index was
  *  briefly wrong. Returns rows changed. */
-export async function resetUploadedState(remoteFileIds?: string[]): Promise<number> {
+export async function resetUploadedState(
+  remoteFileIds: string[] | undefined,
+  epoch: AccountEpoch,
+): Promise<number> {
+  // Task 1959 round 3: `epoch` is REQUIRED — the account epoch the caller (the
+  // backup reconcile) decided these re-queues under. The decision compares
+  // that account's server ids against this manifest; once the account signed
+  // out, no further UPDATE may run (checked after every await below).
   const db = await getDb();
+  if (!isCurrentAccountEpoch(epoch)) return 0;
   const SET_CLAUSE =
     `SET status = 'pending_upload', remote_file_id = NULL, uploaded_at = NULL, ` +
     `error_message = NULL, retry_count = 0, queued_at = NULL`;
@@ -570,6 +579,7 @@ export async function resetUploadedState(remoteFileIds?: string[]): Promise<numb
   for (let i = 0; i < remoteFileIds.length; i += SQL_IN_CHUNK) {
     const batch = remoteFileIds.slice(i, i + SQL_IN_CHUNK);
     if (batch.length === 0) continue;
+    if (!isCurrentAccountEpoch(epoch)) break;
     const placeholders = batch.map(() => '?').join(',');
     const result = await db.runAsync(
       `UPDATE backup_assets ${SET_CLAUSE}
@@ -602,6 +612,34 @@ export async function markRemoteDeletedByFileIds(remoteFileIds: string[]): Promi
     changed += result.changes;
   }
   return changed;
+}
+
+/**
+ * Task 1959 round 4 — `is_media` for backup uploads, by REMOTE file id: true
+ * for photo and video assets (the backup engines upload those with
+ * `is_media: true`, NativeBackupEngine.swift `mediaFlag`), false for contacts
+ * and calendars. Ids this table does not hold are absent from the result.
+ * Read-only. Used by upload-classification.ts to classify rows the sync
+ * write-through added to the index cache without a server check.
+ */
+export async function getBackupMediaFlags(remoteFileIds: string[]): Promise<Map<string, boolean>> {
+  const out = new Map<string, boolean>();
+  if (remoteFileIds.length === 0) return out;
+  const db = await getDb();
+  for (let i = 0; i < remoteFileIds.length; i += SQL_IN_CHUNK) {
+    const batch = remoteFileIds.slice(i, i + SQL_IN_CHUNK);
+    if (batch.length === 0) continue;
+    const placeholders = batch.map(() => '?').join(',');
+    const rows = await db.getAllAsync<{ remote_file_id: string; asset_type: string }>(
+      `SELECT remote_file_id, asset_type FROM backup_assets
+        WHERE remote_file_id IN (${placeholders})`,
+      batch,
+    );
+    for (const row of rows) {
+      out.set(row.remote_file_id, row.asset_type === 'photo' || row.asset_type === 'video');
+    }
+  }
+  return out;
 }
 
 /**

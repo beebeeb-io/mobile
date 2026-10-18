@@ -852,6 +852,52 @@ back up `Library/Caches/`. Any path this app writes outside `Caches/` must be re
   couldn't be moved), the device stays `isDeleted`, and it can no longer boot to finish the job
   (`bb-1722-r1`, 57C1B9B7, is stuck that way). Before `simctl shutdown`, check that `Purgatory/` is empty.
 
+## GET /files/index — only through `file-index-loader.ts` (task 1959)
+
+`src/lib/file-index-loader.ts` is the only caller of `getFileIndex()`; the source guard
+`src/lib/file-index-loader.guard.test.ts` fails on any other caller. The server walks the whole
+vault on every call (~2.4 s for a 40k-file vault, hash or not), so the loader coalesces: callers
+that arrive while a request runs share it; for 5 minutes (`FILE_INDEX_REVALIDATE_MS`) after a
+server check, plain callers get the on-disk cache (the sync client writes create / trash / move /
+rename ops through to it; the loader restores the server-only fields the write-through drops, e.g.
+file-request key material and `blurhash`). `force: true` skips the window: pull-to-refresh, the
+Photos bulk-action retry, the Android repair worker, and the backup reconcile, which is itself
+throttled to once per 5 minutes (`RECONCILE_MIN_INTERVAL_MS` in `BackupService.ts`). Before 1959,
+SettingsScreen's `refreshBackupStats` effect (it depends on `backupProgress.completed`) reached the
+reconcile through `getDeviceManifest()` -> `ensureBackupFolders()` once per backed-up item. That
+path, plus a request on every Photos tab focus, is how one 163 MB upload produced 18 index walks
+in 10 minutes. Worst case now: 2 requests per 5 minutes (one reconcile, one plain revalidation),
+plus explicit refreshes, plus one per file that ANOTHER device uploads (below).
+
+**New rows inside the window (1959 round 4).** A file uploaded after the window opened reaches the
+cache only through the sync write-through, whose rows have no `is_media` (the `file_create` op
+carries none, the mime is inside `name_encrypted`, a fresh upload has no thumbnail), so the Photos
+tab dropped it. Own uploads are classified locally by `src/lib/upload-classification.ts`: the JS
+uploaders record the `is_media` they sent (in `finalizeUpload`, before the complete call), and the
+backup engines' uploads are read from `backup_assets.asset_type` (`getBackupMediaFlags`). A new
+file row neither source knows (another device, the share extension, a file request) makes a
+`revalidateUnclassified` caller (Photos, photo-library settings) revalidate once, joined to any
+request in flight; a row the server confirms it does not list is acknowledged so it cannot make
+every focus ask. Measured in `photo-index-source.test.ts`: 50 own uploads with a Photos focus after
+each = 1 request, every photo visible on the next focus; another device's uploads = one request per
+arrival, not per focus. New rows still lack `blurhash`, `storage_location`, `thumbnail_bytes` and
+file-request keys until a server check: the grid shows no blurhash placeholder for them, the info
+sheet fetches the location itself (`file-storage-location.ts`), and a file-request upload is never
+an own upload, so on Photos it always takes the revalidation path.
+
+**Account boundary (1959 round 2).** `src/lib/account-epoch.ts` names the account a piece of async
+work belongs to: a generation that `setToken()` / `clearToken()` (and `clearCachedFileIndex()`)
+advance synchronously, plus the unlocked key's account id (a null id while locked is not a
+different account). The loader only lets a caller join a request of its own epoch, and a request
+whose epoch is stale when it settles rejects with `StaleAccountError` for all its waiters: it
+never hands rows to another account and never writes the cache. The backup reconcile captures the
+epoch at start and calls `live()` after every await before it reads or prunes local state; its
+in-flight join and throttle are per epoch. Cache writes and clears run through one queue in
+`file-index-cache.ts`, and a write carrying an `epoch` is dropped when that account is gone (the
+sync client passes the epoch it was created under, so its `stop()` flush after sign-out writes
+nothing). Treat `StaleAccountError` as "discard silently": no error UI, no fallback request.
+Anything new that holds account data across an await follows the same pattern.
+
 ## Bottom sheets — one primitive (task 1586)
 
 Every partial-height sheet renders through `src/components/sheet/BottomSheet.tsx` (+

@@ -40,9 +40,17 @@ import {
   moveFile,
   renameFile,
   trashFiles,
-  getFileIndex,
   type FileEntry,
 } from '../lib/api';
+import { FILE_INDEX_REVALIDATE_MS, loadFileIndex } from '../lib/file-index-loader';
+import {
+  accountEpoch,
+  isCurrentAccountEpoch,
+  isStaleAccountError,
+  sameAccountEpoch,
+  StaleAccountError,
+  type AccountEpoch,
+} from '../lib/account-epoch';
 import type { EncryptedData } from '../../modules/beebeeb-crypto';
 import {
   getContactsBackupStatus,
@@ -270,7 +278,14 @@ async function readFolderCache(): Promise<FolderCache> {
   }
 }
 
-async function writeFolderCache(cache: FolderCache): Promise<void> {
+/**
+ * Task 1959 round 3: `epoch` is REQUIRED — the account epoch the writer
+ * started under (captured before its first await). Every writer awaits the
+ * network or SecureStore before it writes; a write whose account has signed
+ * out since is dropped instead of landing in the next account's cache.
+ */
+async function writeFolderCache(cache: FolderCache, epoch: AccountEpoch): Promise<void> {
+  if (!isCurrentAccountEpoch(epoch)) return;
   await storeSet(FOLDER_CACHE_KEY, JSON.stringify(cache));
 }
 
@@ -862,12 +877,42 @@ async function flattenDuplicateBackupFolders(): Promise<void> {
 // wrong.
 
 const RECONCILE_HASH_KEY = 'beebeeb_reconcile_index_hash';
-let _reconcileInFlight: Promise<void> | null = null;
+/** Task 1959 round 2: the running reconcile and the account epoch it belongs
+ *  to. A caller of another epoch never joins it. */
+let _reconcileInFlight: { epoch: AccountEpoch; promise: Promise<void> } | null = null;
+
+/**
+ * Task 1959: the reconcile asks the server at most once per this interval.
+ *
+ * It is reached from `ensureBackupFolders()`, and that runs on every
+ * `getDeviceManifest()`. SettingsScreen's `refreshBackupStats` effect calls
+ * `getDeviceManifest()` every time `backupProgress.completed` changes, i.e.
+ * once per backed-up item, and the AppState listener in backup-context runs it
+ * on every return to the foreground. The hash gate below did not help during
+ * a backup: each completed item changes the vault, so every call came back
+ * `changed: true` with the whole index (39,783 rows for Guus), and the server
+ * walks the whole vault either way (~2.4 s). That is how one upload produced
+ * 18 GET /files/index in 10 minutes.
+ *
+ * A server-side delete (0817's case) is still picked up: on the next call
+ * after the interval, and on the next foreground after it. ensureBackupFolders
+ * is find-or-create, so a deleted Backups root is recreated regardless.
+ */
+export const RECONCILE_MIN_INTERVAL_MS = FILE_INDEX_REVALIDATE_MS;
+/** When the last successful server check ran, and for which account epoch:
+ *  account A's reconcile never throttles account B's. */
+let _lastReconcile: { epoch: AccountEpoch; at: number } | null = null;
+
+/** Test hook: forget the reconcile throttle. */
+export function resetReconcileThrottleForTests(): void {
+  _lastReconcile = null;
+  _reconcileInFlight = null;
+}
 
 /** Reset the persisted backup folder cache so ensureBackupFolders rebuilds the
  *  tree from scratch (used when the whole Backups root is gone). */
-async function clearFolderCache(): Promise<void> {
-  await writeFolderCache({});
+async function clearFolderCache(epoch: AccountEpoch): Promise<void> {
+  await writeFolderCache({}, epoch);
 }
 
 /** 0818 — if any deleted id is a cached backup folder (root/device/category),
@@ -875,6 +920,9 @@ async function clearFolderCache(): Promise<void> {
  *  reusing a now-deleted folder. Called by the delete-cascade dispatcher. */
 export async function invalidateBackupFolderCacheIfDeleted(deletedIds: Set<string>): Promise<void> {
   if (deletedIds.size === 0) return;
+  // Round 3: the delete happened in this account; the read below is a window
+  // for a sign-out after which the cache is the next account's.
+  const epoch = accountEpoch();
   const cache = await readFolderCache();
   const backupFolderIds = [
     cache.rootId,
@@ -882,7 +930,7 @@ export async function invalidateBackupFolderCacheIfDeleted(deletedIds: Set<strin
     ...Object.values(cache.categoryIds ?? {}),
   ].filter((id): id is string => typeof id === 'string');
   if (backupFolderIds.some((id) => deletedIds.has(id))) {
-    await clearFolderCache();
+    await clearFolderCache(epoch);
     console.info('[BackupService] delete-cascade: a backup folder was deleted — cleared folder cache');
   }
 }
@@ -902,12 +950,15 @@ async function selfHealCategoryBackup(
   category: 'contacts' | 'calendar',
   indexIds: Set<string>,
   rootGone: boolean,
+  live: () => void = () => {},
 ): Promise<void> {
   try {
     const status =
       category === 'contacts'
         ? await getContactsBackupStatus()
         : await getCalendarBackupStatus();
+    // Task 1959 round 2: the account may have changed during the read above.
+    live();
     // Never backed up → nothing to heal (don't reset a fresh install).
     if (!status.hasKnownBackupState) return;
     const folderId = status.parentFolderId ?? null;
@@ -921,6 +972,7 @@ async function selfHealCategoryBackup(
       `[BackupService] reconcile: ${category} backup folder gone server-side — cleared native dedup/state so the next run re-uploads`,
     );
   } catch (err) {
+    if (isStaleAccountError(err)) throw err;
     // Best-effort — a failed self-heal must never break the reconcile.
     console.warn(`[BackupService] reconcile: ${category} self-heal skipped`, err);
   }
@@ -932,23 +984,52 @@ async function selfHealCategoryBackup(
  * callers share one pass. Safe to call on backup warm-up and app foreground.
  */
 export async function reconcileDerivedStateAgainstServer(): Promise<void> {
-  if (_reconcileInFlight) return _reconcileInFlight;
+  // Task 1959 round 2 (Codex P1 on PR #181): everything below compares and
+  // prunes LOCAL state against the ids /files/index returned. It belongs to
+  // the account epoch it started under, and stops at the first await after
+  // that account is gone, before the next read or write of local state.
+  const epoch = accountEpoch();
+  if (_reconcileInFlight && sameAccountEpoch(_reconcileInFlight.epoch, epoch)) {
+    return _reconcileInFlight.promise;
+  }
+  // Task 1959: throttle — see RECONCILE_MIN_INTERVAL_MS.
+  if (
+    _lastReconcile
+    && sameAccountEpoch(_lastReconcile.epoch, epoch)
+    && Date.now() - _lastReconcile.at < RECONCILE_MIN_INTERVAL_MS
+  ) {
+    return;
+  }
 
-  _reconcileInFlight = (async () => {
+  const live = (): void => {
+    if (!isCurrentAccountEpoch(epoch)) throw new StaleAccountError('backup reconcile');
+  };
+
+  const promise: Promise<void> = (async () => {
     try {
       const lastHash = (await storeGet(RECONCILE_HASH_KEY)) ?? undefined;
+      live();
       let resp;
       try {
-        resp = await getFileIndex(lastHash);
+        // Forced: orphan detection needs the server's CURRENT list (a stale
+        // list would miss a file uploaded since and re-queue it as an orphan).
+        // Through the shared loader so it joins any /files/index request a
+        // screen already has in flight, and refreshes the index cache.
+        resp = await loadFileIndex({ force: true });
       } catch (err) {
+        if (isStaleAccountError(err)) throw err;
         // Network/auth blip — leave state as-is and retry next warm-up. NEVER
         // demote on an absent index we couldn't fetch.
         console.warn('[BackupService] reconcile: /files/index fetch failed, skipping', err);
         return;
       }
+      // The loader only resolves with rows of the epoch it was called under,
+      // which `live()` just above proved is this reconcile's.
+      live();
+      _lastReconcile = { epoch, at: Date.now() };
 
       // Hash short-circuit: nothing changed since the last reconcile → no-op.
-      if (!resp.changed || !resp.files) {
+      if (!resp.files || !resp.hash || resp.hash === lastHash) {
         return;
       }
 
@@ -956,8 +1037,10 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
 
       // --- Backup manifest (camera roll) -------------------------------------
       const cache = await readFolderCache();
+      live();
       const rootGone = cache.rootId != null && !indexIds.has(cache.rootId);
       const uploadedRemote = await getAllUploadedRemoteIds();
+      live();
       const backupOrphans = rootGone
         ? [...uploadedRemote]
         : [...uploadedRemote].filter((id) => !indexIds.has(id));
@@ -966,11 +1049,12 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
         // The founder's exact case: the entire Backups tree was deleted
         // server-side. Re-queue ALL uploaded assets (so re-enabling backup
         // re-uploads them) and drop the stale folder cache so the tree rebuilds.
-        const requeued = await resetUploadedState();
-        await clearFolderCache();
+        const requeued = await resetUploadedState(undefined, epoch);
+        live();
+        await clearFolderCache(epoch);
         console.info(`[BackupService] reconcile: Backups root gone — re-queued ${requeued} asset(s), cleared folder cache`);
       } else if (backupOrphans.length > 0) {
-        const requeued = await resetUploadedState(backupOrphans);
+        const requeued = await resetUploadedState(backupOrphans, epoch);
         console.info(`[BackupService] reconcile: re-queued ${requeued} orphaned backup asset(s)`);
       }
 
@@ -979,26 +1063,35 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
       // they're reconciled separately: a gone category folder (or a gone root)
       // clears the native scan/upload state + SHA dedup so the next run
       // re-uploads instead of silently skipping as "unchanged".
-      await selfHealCategoryBackup('contacts', indexIds, rootGone);
-      await selfHealCategoryBackup('calendar', indexIds, rootGone);
+      live();
+      await selfHealCategoryBackup('contacts', indexIds, rootGone, live);
+      live();
+      await selfHealCategoryBackup('calendar', indexIds, rootGone, live);
+      live();
 
       // --- Offline-pinned copies --------------------------------------------
       const offlineFileOrphans = offlineManager.offlineFileIds().filter((id) => !indexIds.has(id));
       for (const id of offlineFileOrphans) {
+        live();
         await offlineManager.removeFile(id);
       }
+      live();
       const offlineFolderOrphans = offlineManager.offlineFolderIds().filter((id) => !indexIds.has(id));
       for (const id of offlineFolderOrphans) {
+        live();
         await offlineManager.removeFolder(id, []);
       }
 
       // --- Name cache (0807) -------------------------------------------------
+      live();
       const nameCache = await loadNameCache();
+      live();
       const nameOrphans = Object.keys(nameCache).filter((id) => !indexIds.has(id));
-      if (nameOrphans.length > 0) await pruneNameCache(nameOrphans);
+      if (nameOrphans.length > 0) await pruneNameCache(nameOrphans, epoch);
 
       // --- Thumbnails --------------------------------------------------------
       // Disk: drop any cached thumbnail whose file isn't in the index.
+      live();
       await pruneThumbnailsForRemoteFiles(indexIds);
       // Memory (JS) + native FSM/cache: invalidate the union of orphans we found
       // (covers the founder's deleted backup files + any deleted offline/named
@@ -1007,7 +1100,9 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
         ...new Set([...backupOrphans, ...offlineFileOrphans, ...nameOrphans]),
       ];
       if (orphanUnion.length > 0) {
+        live();
         await invalidateCachedThumbnails(orphanUnion);
+        live();
         await invalidateNativeThumbnailCache(orphanUnion);
       }
 
@@ -1017,16 +1112,24 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
       // can't reach. The 0818 dispatcher — wired into React — reconciles it via
       // getIndexedIds() + unindexFile() against this same indexIds set.
 
+      live();
       await storeSet(RECONCILE_HASH_KEY, resp.hash);
       console.info(`[BackupService] reconcile complete (index hash ${resp.hash.slice(0, 8)}…, ${indexIds.size} live files)`);
     } catch (err) {
+      if (isStaleAccountError(err)) {
+        console.info('[BackupService] reconcile abandoned: the account changed while it ran');
+        return;
+      }
       console.warn('[BackupService] reconcile failed (will retry next warm-up):', err);
     } finally {
-      _reconcileInFlight = null;
+      // Only clear our own entry (`epoch` is this call's object): a reconcile
+      // of the next account may already be registered.
+      if (_reconcileInFlight?.epoch === epoch) _reconcileInFlight = null;
     }
   })();
+  _reconcileInFlight = { epoch, promise };
 
-  return _reconcileInFlight;
+  return promise;
 }
 
 /** Ensure `Backups/{deviceName}/{category}/` exists. Returns the device folder
@@ -1037,6 +1140,9 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
 export async function ensureBackupFolders(
   category: BackupCategory,
 ): Promise<{ deviceFolderId: string; categoryFolderId: string }> {
+  // Task 1959 round 3: the folder ids resolved below belong to the account
+  // signed in NOW; the cache write at the end is dropped if it signed out.
+  const epoch = accountEpoch();
   let cache = await readFolderCache();
 
   // 0813/0814 — before resolving the tree, flatten any pre-existing duplicate
@@ -1088,7 +1194,7 @@ export async function ensureBackupFolders(
     rootId,
     deviceId: deviceFolderId,
     categoryIds,
-  });
+  }, epoch);
 
   return { deviceFolderId, categoryFolderId };
 }

@@ -81,6 +81,7 @@ mock.module('./file-index-cache', () => ({
   loadCachedFileIndex: async () => null,
   saveCachedFileIndex: async () => {},
   clearCachedFileIndex: async () => {},
+  fileIndexCacheWriteScope: () => ({ epoch: { generation: 0, accountId: null }, generation: 0 }),
 }));
 
 mock.module('./file-provider-mount', () => ({

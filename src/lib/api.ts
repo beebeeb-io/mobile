@@ -11,6 +11,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { clearCachedFileIndex } from './file-index-cache';
+import { advanceAccountEpoch } from './account-epoch';
+import { rememberUploadClassification } from './upload-classification';
 import { clearCachedBilling } from './billing-cache';
 import { collectPaged, findInPages } from './paginate';
 import { rateLimitedFetch } from './rate-limited-fetch';
@@ -169,6 +171,10 @@ export async function getToken(): Promise<string | null> {
 
 export async function setToken(token: string): Promise<void> {
   sessionGeneration += 1;
+  // Task 1959 round 2: a sign-in is an account boundary for in-flight work
+  // (file-index loader, backup reconcile, sync write-through). Synchronous,
+  // before the first await.
+  advanceAccountEpoch();
   cachedToken = token;
   await tokenStore.set(TOKEN_KEY, token);
   await BeebeebCrypto.mirrorSessionToAppGroup(token, BASE_URL).catch(() => false);
@@ -186,6 +192,10 @@ export async function setToken(token: string): Promise<void> {
 
 export async function clearToken(): Promise<void> {
   sessionGeneration += 1;
+  // Task 1959 round 2: drop the previous account's in-memory index window and
+  // detach its in-flight work NOW, not when clearCachedFileIndex() runs below
+  // after several awaits.
+  advanceAccountEpoch();
   cachedToken = null;
   cachedDeviceConfirmationSecret = null;
   // Task 1531 [P1] (round 5 delta security review): clear the native
@@ -1798,7 +1808,7 @@ export async function uploadEncryptedChunked(params: {
       protocol,
     })
 
-    return finalizeUpload({ protocol, serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey })
+    return finalizeUpload({ protocol, serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey, isMedia })
   }
 
   // Task 1589: a heartbeat while a v2 upload is active covers the GAP between
@@ -1883,8 +1893,15 @@ async function finalizeUpload(params: {
   resolveNameEncrypted: (fileId: string) => Promise<string>
   initialNameEncrypted: string
   resumeKey?: string
+  /** The `is_media` this upload sent on init (absent → false, as sent). */
+  isMedia?: boolean
 }): Promise<FileEntry> {
   const { protocol, serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey } = params
+  // Task 1959 round 4: remember the classification this device sent, BEFORE
+  // the complete call — the server's `file_create` sync op follows it, and
+  // the row that op writes into the index cache has no `is_media`
+  // (upload-classification.ts).
+  rememberUploadClassification(serverFileId, params.isMedia ?? false)
   const completePath = protocol === 'v2' && uploadSessionId
     ? `/api/v1/uploads/${uploadSessionId}/complete`
     : `/api/v1/files/${serverFileId}/upload/complete`
@@ -2129,7 +2146,7 @@ export async function uploadEncryptedFileNative(params: {
       protocol: 'v2',
     })
     return finalizeUpload({
-      protocol: 'v2', serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey,
+      protocol: 'v2', serverFileId, uploadSessionId, token, authSnapshot, resolveNameEncrypted, initialNameEncrypted, resumeKey, isMedia,
     })
   }
 

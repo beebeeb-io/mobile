@@ -105,6 +105,7 @@ import { useSearchIndex } from '../lib/use-search-index';
 import { decryptNamesInBackground } from '../lib/background-name-decrypt';
 import { onFilesDeleted } from '../lib/delete-cascade';
 import { loadNameCache, scheduleSaveNameCache, type NameCache } from '../lib/name-cache';
+import { accountEpoch } from '../lib/account-epoch';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { offlineManager, type OfflineStatus } from '../lib/offline-manager';
 import { useOfflineVersion } from '../lib/use-offline';
@@ -1526,6 +1527,10 @@ export default function FilesScreen() {
   // decryptedNames so the per-folder decrypt effect can read the latest names
   // without re-running on every name update (which would loop).
   const nameCacheRef = useRef<NameCache>({});
+  // Task 1959 round 3: the account the names in nameCacheRef belong to,
+  // captured when the load below STARTED. Persisting them is dropped once
+  // that account has signed out (name-cache.ts saveNameCacheNow).
+  const nameCacheEpochRef = useRef(accountEpoch());
   const decryptedNamesRef = useRef<Record<string, string>>({});
   const decryptedMimeTypesRef = useRef<Record<string, string | null>>({});
   const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string | null>>({});
@@ -1548,9 +1553,11 @@ export default function FilesScreen() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      const epoch = accountEpoch();
       const cache = await loadNameCache();
       if (cancelled) return;
       nameCacheRef.current = cache;
+      nameCacheEpochRef.current = epoch;
       const ids = Object.keys(cache);
       if (ids.length === 0) return;
       const seedNames: Record<string, string> = {};
@@ -1953,7 +1960,7 @@ export default function FilesScreen() {
         };
         cacheChanged = true;
       }
-      if (cacheChanged) scheduleSaveNameCache(nameCacheRef.current);
+      if (cacheChanged) scheduleSaveNameCache(nameCacheRef.current, nameCacheEpochRef.current);
 
       if (Object.keys(appliedNames).length > 0) {
         setDecryptedNames((prev) => ({ ...prev, ...appliedNames }));
