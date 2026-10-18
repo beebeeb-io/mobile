@@ -38,7 +38,7 @@ import { stashAccountDeletedNotice } from './lib/account-deleted-notice';
 import { AuthContext } from './lib/auth';
 import { CryptoProvider, SIMULATOR_MASTER_KEY_FILE, useCrypto, usesSoftwareVaultFallback } from './lib/crypto-context';
 // Task 1594: the vault key is bound to its owner (key-ownership.ts).
-import { clearKeyOwner } from './lib/key-ownership';
+import { clearKeyOwner, readKeyOwner } from './lib/key-ownership';
 import { markUnlocked, wasRecentlyUnlocked } from './lib/lock-state';
 import { SyncProvider } from './lib/sync-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
@@ -54,6 +54,7 @@ import {
   accountDeletionPurgePending,
   clearAccountDeletionPurge,
   noteAccountDeleted,
+  accountIdForDeletedElsewhere,
   purgeAllPlaintextCaches,
 } from './lib/account-cleanup';
 import { singleFlight } from './lib/single-flight';
@@ -1013,6 +1014,14 @@ export default function App() {
   // Task 1667 round 9: the signed-in account, for the account-deleted handler
   // (registered once, so it cannot read `user` itself).
   const currentUserIdRef = useRef<string | null>(null);
+  // Task 1667 round 14 (review of mobile#182 at 18312919): at a cold start
+  // `currentUserIdRef` is still null when refreshAuth's getMe can answer 403
+  // account_deleted. The stored key's owner record is the stored session's
+  // account (a different signed-in account purges it at unlock, and every
+  // sign-out clears it), the same owner native trusts for the signed-in
+  // account (`confirmMasterKeyHandle`). Read before getMe, so the deletion
+  // names that account and native discards only its kept marks.
+  const coldStartOwnerRef = useRef<string | null>(null);
 
   // Phrase verification: false until the user types back their recovery words.
   // Defaults to true so existing (pre-phrase-flow) users are unaffected.
@@ -1031,7 +1040,11 @@ export default function App() {
       // Task 1593 — never let a signed-out purge still running delete the new
       // session's first cache writes.
       await signedOutPurger.settled();
+      coldStartOwnerRef.current = currentUserIdRef.current
+        ? null
+        : await readKeyOwner().catch(() => null);
       const me = await getMe();
+      coldStartOwnerRef.current = null;
       signedOutPurger.sessionStarted(); // task 1593 r3: reopen the plaintext gate
       setUser(me);
       // Task 1667 round 9: a new session — purges are ordinary sign-outs again
@@ -1051,6 +1064,8 @@ export default function App() {
         console.warn('[App] initLocalIdentifierMap failed', err),
       );
     } catch (err) {
+      // Round 14: the 403 account_deleted handler already ran (inside getMe).
+      coldStartOwnerRef.current = null;
       // Only a definitive 401 means the session is gone — and request() has
       // already cleared the invalid token in that case. Transient failures
       // (offline/network ApiError(0), 5xx, Secure-Enclave warm-up) must NOT
@@ -1371,7 +1386,10 @@ export default function App() {
       // Task 1667 round 9 (Codex P1): the account is gone, so the signed-out
       // purge below runs as 'account-deleted' for it and keeps nothing of it
       // (no pending marks), not as an ordinary sign-out.
-      noteAccountDeleted(currentUserIdRef.current);
+      // Round 14: at a cold start the account is named by the stored key's
+      // owner (read in refreshAuth before getMe). Only when neither is known
+      // does the purge discard every kept mark (fail closed).
+      noteAccountDeleted(accountIdForDeletedElsewhere(currentUserIdRef.current, coldStartOwnerRef.current));
       setUser(null); // plaintext purge: the signed-out effect (task 1593)
     });
   }, []);

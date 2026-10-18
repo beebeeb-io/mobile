@@ -624,6 +624,26 @@ do {
 }
 
 do {
+  // e7: round 14 (review of mobile#182 at 18312919, item 2). Account C signed
+  // out on this device earlier with kept marks. A (the stored session; the
+  // engine only REMEMBERS it at a cold start) is deleted elsewhere; at the
+  // cold start JS now names A (the stored key's owner,
+  // `accountIdForDeletedElsewhere`). Only A's marks go; C's survive.
+  let accountC = accountB // C = the other account of seedDevice
+  let path = manifestPath("e7")
+  let handle = newHandle(path, Flag(), Flag())
+  expect(handle.openIfClosed() == nil, "e7.0: launch open")
+  seedDevice(handle.db!)
+  expect(handle.resetForSignOut(outgoingAccountId: accountA, outgoingInferred: true,
+                                mode: .accountDeleted, deletedAccountIds: [accountA]),
+         "e7.1: A's cold-start deletion, A named by JS")
+  expect(onDisk(path, marksA) == 0, "e7.2: A's kept marks are gone (got \(onDisk(path, marksA)))")
+  expect(onDisk(path, marksB) == 2, "e7.3: C's kept marks survive A's cold-start deletion (got \(onDisk(path, marksB)))")
+  expect(handle.deletedAccountIds == [accountA], "e7.4: only A is recorded as deleted (got \(handle.deletedAccountIds))")
+  _ = accountC
+}
+
+do {
   // e6: the memory itself.
   var m = UnboundAccountMemory()
   m.accountChanged(from: nil, to: accountA)

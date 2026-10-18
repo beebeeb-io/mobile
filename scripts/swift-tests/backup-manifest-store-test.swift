@@ -387,7 +387,7 @@ do {
   insert(db, "legacy", status: "uploaded", remote: "f-legacy")                 // pre-column, unmarked
   insert(db, "b-left", status: "uploaded", remote: "f-b1", owner: "acct-B")    // left by an older failed reset
   exec(db, "UPDATE backup_assets SET remote_path = 'SECRET-PATH-MARKER' WHERE local_asset_id = 'a-unmarked'")
-  exec(db, "INSERT INTO backup_pending_marks VALUES ('acct-A', 'expired', 'f-old', \(now - 31 * day))")
+  exec(db, "INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms) VALUES ('acct-A', 'expired', 'f-old', \(now - 31 * day))")
 
   expect(BackupManifestStore.adoptUnowned(db, accountId: "acct-A") == 1, "sign-out adopts the one pre-column row for the outgoing account")
   expect(BackupManifestStore.resetInPlace(db, nowMs: now), "resetInPlace commits and truncates")
@@ -400,8 +400,9 @@ do {
          "a kept row older than 30 days is dropped")
   expect(BackupManifestStore.pendingMarkCount(db, accountId: "acct-B") == 1, "acct-B's unmarked row is kept under acct-B, not acct-A")
   expect(text(db, "SELECT group_concat(name) FROM pragma_table_info('backup_pending_marks')")
-         == "account_id,local_asset_id,remote_file_id,created_at_ms",
-         "the kept table holds identifiers only: account, local id, file id, time")
+         // Round 14: plus the resolution flag (0/1), still no name, content, key or hash.
+         == "account_id,local_asset_id,remote_file_id,created_at_ms,needs_resolution",
+         "the kept table holds identifiers only: account, local id, file id, time (and the round-14 flag)")
   expect(walBytes(path) == 0, "WAL truncated to 0 bytes after the reset")
   expect(!fileBytesContain(path, "SECRET-PATH-MARKER") && !fileBytesContain(path + "-wal", "SECRET-PATH-MARKER"),
          "a dropped column value is in neither the database nor the WAL bytes (secure_delete + truncate)")
@@ -431,7 +432,7 @@ do {
   expect(BackupManifestStore.pendingMarkCount(db, accountId: "acct-B") == 1, "acct-B's kept row is untouched by acct-A's sign-in")
 
   // A kept row whose photo has no manifest row yet waits for the next call.
-  exec(db, "INSERT INTO backup_pending_marks VALUES ('acct-A', 'not-scanned-yet', 'f-ns', \(now))")
+  exec(db, "INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms) VALUES ('acct-A', 'not-scanned-yet', 'f-ns', \(now))")
   expect(BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now) == 0, "nothing to promote before the scan")
   expect(BackupManifestStore.pendingMarkCount(db, accountId: "acct-A") == 1, "the unmatched kept row stays")
   insert(db, "not-scanned-yet", status: "pending_upload")
@@ -497,7 +498,7 @@ do {
   exec(a, schema)
   BackupManifestStore.migrate(a)
   insert(a, "p1", status: "uploaded", remote: "f1", owner: "acct-A")
-  exec(a, "INSERT INTO backup_pending_marks VALUES ('acct-B', 'pb', 'f-b', \(now))")
+  exec(a, "INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms) VALUES ('acct-B', 'pb', 'f-b', \(now))")
   sqlite3_close_v2(a)
   let locker = open(path)
   exec(locker, "BEGIN IMMEDIATE")
@@ -540,7 +541,7 @@ do {
   let (db, locker) = lockedManifest("locked-map.db")
   for id in ["p1", "p2", "p3"] { insert(db, id, status: "pending_upload") }
   insert(db, "legacy", status: "uploaded", remote: "f-legacy")
-  exec(db, "INSERT INTO backup_pending_marks VALUES ('acct-A', 'p3', 'f-3', \(now))")
+  exec(db, "INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms) VALUES ('acct-A', 'p3', 'f-3', \(now))")
   let map = ["p1": "f-1", "p2": "f-2"]
 
   exec(locker, "BEGIN IMMEDIATE")
@@ -720,8 +721,8 @@ do {
 
   // Boundary: exactly 30 days is kept, one millisecond more is not.
   exec(db, "DELETE FROM backup_pending_marks")
-  exec(db, "INSERT INTO backup_pending_marks VALUES ('acct-A', 'edge-keep', 'f-k', \(now - BackupManifestStore.pendingMarksRetentionMs))")
-  exec(db, "INSERT INTO backup_pending_marks VALUES ('acct-A', 'edge-drop', 'f-d', \(now - BackupManifestStore.pendingMarksRetentionMs - 1))")
+  exec(db, "INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms) VALUES ('acct-A', 'edge-keep', 'f-k', \(now - BackupManifestStore.pendingMarksRetentionMs))")
+  exec(db, "INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms) VALUES ('acct-A', 'edge-drop', 'f-d', \(now - BackupManifestStore.pendingMarksRetentionMs - 1))")
   expect(BackupManifestStore.expirePendingMarks(db, nowMs: now) == 1, "only the row past 30 days expires")
   expect(countA(db, "edge-keep") == 1 && countA(db, "edge-drop") == 0, "30 days exactly is kept, 30 days + 1 ms is not")
 

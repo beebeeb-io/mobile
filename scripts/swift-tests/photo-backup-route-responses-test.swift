@@ -366,7 +366,7 @@ for (label, reply) in [("empty", Reply(status: 404, headers: [:], body: Data()))
   // Right after sign-out + sign-in: emptied, the scan inserted every photo as
   // pending; one kept mark (p4) from the last sign-out.
   insertPending(db, ["p1", "p2", "p3", "p4", "p5"])
-  exec(db, "INSERT INTO backup_pending_marks VALUES ('\(acctA)', 'p4', 'f-4', \(now))")
+  exec(db, "INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms) VALUES ('\(acctA)', 'p4', 'f-4', \(now))")
 
   StubRoutes.set(identifiersPath, reply)
   let applies = Box<Int>()

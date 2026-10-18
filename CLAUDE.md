@@ -768,10 +768,19 @@ sign-out purge did, the process kept using the deleted inode, and the next cold 
 an empty manifest and uploaded every photo again into the same folder (sim evidence
 `_qa-evidence/1962/sim-dup/`).
 
-- **Never close the JS handle on it.** expo-sqlite compiles its own SQLite (`node_modules/expo-sqlite/ios/sqlite3.c`);
-  the engine links the system one. Two SQLite copies in one process cannot see each other's
-  connections: a JS `closeAsync()` concluded it was the last connection and deleted `-wal`/`-shm`
-  under the engine's open handle (simulator, task 1667).
+- **Never close the JS handle while the engine's connection is open on the file.** expo-sqlite
+  compiles its own SQLite (`node_modules/expo-sqlite/ios/sqlite3.c`); the engine links the system
+  one. Two SQLite copies in one process cannot see each other's connections: a JS `closeAsync()`
+  concluded it was the last connection and deleted `-wal`/`-shm` under the engine's open handle
+  (simulator, task 1667). So an ordinary sign-out keeps the JS handle OPEN (the reset runs through
+  the engine's handle). JS closes it in exactly two places, both after the engine's handle is
+  closed: (1) the failed-reset path: the native reset failed and the engine closed its own handle,
+  then `account-cleanup.ts` calls `closeHandles()` (`closeHandleForStoragePurge`) still under the
+  purge hold, then `finishBackupManifestPurge(closed)`; (2) `admitJsOpen` closes leftover JS
+  connections (`unclosedHandles`) when the native gate answers `pending_reset_deferred`, i.e. a
+  reset is pending and the engine has no connection open. Removing either close breaks that
+  recovery. (Known gap, round 14 follow-up: on a failed reset the ENGINE closes its system-SQLite
+  connection while the JS one is still open, the reverse of this rule.)
 - **Sign-out** (`purgeAllPlaintextCaches` → native `purgePlaintextStorage`): JS holds its database
   work, handle open (`storage-purge-participants.ts`); native `prepareForStoragePurge()` stops and
   unbinds the engine, clears `photoBackupParentFolderId`, empties the manifest IN PLACE through its
@@ -849,7 +858,15 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   content, key or hash. Round 13: the engine remembers the account it last unbound
   (`UnboundAccountMemory`) only until any account binds or JS confirms a different signed-in user;
   an account-deleted reset discards the marks of the accounts JS NAMES, never a remembered account
-  on top of them (none named and only a remembered account: every mark goes, fail closed). JS sign-out first calls
+  on top of them (none named and only a remembered account: every mark goes, fail closed). Round 14:
+  uploads IN FLIGHT at sign-out ('staging'/'staged_upload'/'uploading' with a file id and an upload
+  session id) may be complete on the server unrecorded. The sign-out flush asks `GET /files/{id}`
+  for them and marks the complete ones; whatever it does not settle is kept with
+  `needs_resolution = 1` (`keepInFlightUploads`, BEFORE the staged purge clears the ids). Such a
+  row is never promoted as a mark: the account's next sign-in resolves it in the rebuild gate
+  before any upload (`KeptUploadResolution`: complete -> kept mark, else dropped; unreachable ->
+  defer). At a cold start a 403 account_deleted names the stored key's owner
+  (`accountIdForDeletedElsewhere`). JS sign-out first calls
   `flushBackupServerMarksForSignOut` (before `logout()` revokes the token, ~8 s, no row cap).
 - **A reset counts only if the WAL was truncated** (`sqlite3_wal_checkpoint_v2` TRUNCATE rc, retried).
   Round 13: it runs on the engine's long-lived connection and restores that connection's busy

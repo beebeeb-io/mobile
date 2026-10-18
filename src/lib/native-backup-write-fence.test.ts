@@ -117,7 +117,8 @@ describe('NativeBackupEngine.swift: every manifest write is fenced', () => {
       'uploadSingleAsset', 'uploadStagedAsset', 'stageEncryptedAsset', 'resolveStagedChunks', 'uploadStagedChunk',
       'urlSession', 'claimManifest',
     ]) expect(fenced.has(fn)).toBe(true);
-    expect(audit.sections.filter((s) => s.fn === 'ensureManifestReadyForUploads' && s.status === 'fenced').length).toBe(2);
+    // Round 14: + the kept in-flight load and its resolve write (resolveKept).
+    expect(audit.sections.filter((s) => s.fn === 'ensureManifestReadyForUploads' && s.status === 'fenced').length).toBe(4);
   });
 
   test('the exempt uploadTaskMap branch is dead: nothing ever inserts into uploadTaskMap', () => {
@@ -182,7 +183,8 @@ describe('BackupManifestHandle.swift: every reset advances the fence first', () 
     const enumBody = body(code, 'enum FencedManifestWrites {');
     const fns = [...enumBody.matchAll(/static func (\w+)\(/g)].map((m) => m[1]);
     // Round 10: + promoteCheckedHits (the batch server check).
-    expect(fns.length).toBe(7);
+    // Round 14: + loadSignOutInFlight, recordInFlightComplete, loadKeptInFlight, resolveKeptInFlight.
+    expect(fns.length).toBe(11);
     for (const f of fns) {
       const b = body(enumBody, `static func ${f}(`);
       expect(before(b, 'fence.admits(ticket, writer:', 'guard let db else')).toBe(true);

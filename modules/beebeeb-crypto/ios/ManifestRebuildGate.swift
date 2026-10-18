@@ -35,6 +35,9 @@ enum ManifestRebuildGate {
     case applyMapFailed = "apply_map_failed"
     /// The kept sign-out marks could not be read or written.
     case applyKeptFailed = "apply_kept_failed"
+    /// Round 14: a kept in-flight upload could not be resolved (the server
+    /// could not be asked, or the answer not written).
+    case resolveKeptFailed = "resolve_kept_failed"
   }
 
   enum Outcome: Equatable {
@@ -57,6 +60,13 @@ enum ManifestRebuildGate {
     let applyMap: ([String: String]) -> Int?
     /// Kept sign-out marks promoted; nil when they could not be applied.
     let applyKept: () -> Int?
+    /// Round 14 (review of mobile#182 at 18312919, the P1): resolves the
+    /// account's kept in-flight uploads against the server
+    /// (`KeptUploadResolution.run`) BEFORE the kept marks are applied, so a
+    /// photo whose upload completed unrecorded is promoted instead of
+    /// uploaded again. false = defer (no upload starts). The engine always
+    /// passes it (wiring guard); the default serves tests of other steps.
+    var resolveKept: () async -> Bool = { true }
   }
 
   /// `alreadyReady`: the account's manifest was checked against (or rebuilt
@@ -75,12 +85,15 @@ enum ManifestRebuildGate {
         }
         guard steps.isStillCurrent() else { return .deferred(.accountChanged) }
         guard let promoted = steps.applyMap(map) else { return .deferred(.applyMapFailed) }
+        // Round 14: in-flight uploads kept at sign-out are resolved first.
+        guard await steps.resolveKept() else { return .deferred(.resolveKeptFailed) }
         // AFTER the server map (the rebuild is decided on "nothing uploaded
         // yet"): uploads the server's map did not have at the last sign-out.
         guard let kept = steps.applyKept() else { return .deferred(.applyKeptFailed) }
         return .ready(rebuilt: true, promoted: promoted, keptApplied: kept)
       }
     }
+    guard await steps.resolveKept() else { return .deferred(.resolveKeptFailed) }
     guard let kept = steps.applyKept() else { return .deferred(.applyKeptFailed) }
     return .ready(rebuilt: false, promoted: 0, keptApplied: kept)
   }
@@ -107,11 +120,42 @@ enum ManifestRebuildGate {
     switch reason {
     case .accountChanged:
       return nil
-    case .noDeviceId, .fetchFailed:
+    case .noDeviceId, .fetchFailed, .resolveKeptFailed:
       return fetchFailureBackoff
     case .checkFailed, .applyMapFailed, .applyKeptFailed:
       return databaseFailureBackoff(consecutiveFailures: consecutiveFailures)
     }
+  }
+}
+
+/// Task 1667 round 14 (review of mobile#182 at 18312919, the P1): at an
+/// account's sign-in, its uploads that were in flight at its last sign-out
+/// (`backup_pending_marks.needs_resolution = 1`) are resolved against the
+/// server before any upload: `ask` is `GET /files/{id}` (complete when
+/// `is_uploading` is false). Complete -> the row becomes an ordinary kept
+/// mark, so `applyPendingMarks` promotes the photo to `uploaded` and the mark
+/// catch-up records it on the server. Not complete (still uploading, or 404)
+/// -> the row is dropped and the photo uploads as normal. A failed read, a
+/// failed ask (offline, 5xx, 429) or a failed write returns false and the
+/// gate defers: no upload starts while one of these may be complete. Only
+/// `accountId`'s rows are ever read (the engine's `load`).
+enum KeptUploadResolution {
+  static func run(
+    load: () -> [BackupManifestStore.KeptInFlight]?,
+    ask: (BackupManifestStore.KeptInFlight) async throws -> Bool,
+    record: (BackupManifestStore.KeptInFlight, Bool) -> Bool
+  ) async -> Bool {
+    guard let rows = load() else { return false }
+    for row in rows {
+      let complete: Bool
+      do {
+        complete = try await ask(row)
+      } catch {
+        return false
+      }
+      guard record(row, complete) else { return false }
+    }
+    return true
   }
 }
 

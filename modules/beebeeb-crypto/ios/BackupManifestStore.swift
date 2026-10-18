@@ -56,9 +56,29 @@ enum BackupManifestStore {
     local_asset_id TEXT NOT NULL,
     remote_file_id TEXT NOT NULL,
     created_at_ms INTEGER NOT NULL,
+    needs_resolution INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account_id, local_asset_id)
   )
   """
+
+  /// Task 1667 round 14 (review of mobile#182 at 18312919, the P1): a kept
+  /// row with `needs_resolution = 1` is an upload that was IN FLIGHT at
+  /// sign-out ('staging' / 'staged_upload' / 'uploading', with a server file
+  /// id and an upload session id). Its `upload/complete` may already have
+  /// reached the server without the device recording it (a lost response,
+  /// or the batch cancelled by the sign-out's `stop()` after it sent
+  /// complete). Such a row is NOT known to be uploaded: it is never promoted
+  /// as a mark (`applyPendingMarks` reads only `needs_resolution = 0`). The
+  /// account's next sign-in asks the server first (`GET /files/{id}`,
+  /// `KeptUploadResolution`): complete -> it becomes an ordinary kept mark
+  /// (promoted, then marked on the server by the catch-up); not complete ->
+  /// it is dropped and the photo uploads as normal. Same table, so the same
+  /// 30-day expiry, discard rules (account deletion) and failed-reset carry.
+  static let pendingMarksResolutionColumnSQL =
+    "ALTER TABLE backup_pending_marks ADD COLUMN needs_resolution INTEGER NOT NULL DEFAULT 0"
+
+  /// Round 14: the statuses of an upload that may be in flight on the server.
+  static let inFlightStatuses = "'staging', 'staged_upload', 'uploading'"
 
   /// 30 days. An account that does not sign in again on this device within
   /// that window uploads those photos once more; nothing older is kept.
@@ -99,7 +119,60 @@ enum BackupManifestStore {
     for migration in columnMigrations {
       sqlite3_exec(db, migration, nil, nil, nil)
     }
+    ensurePendingMarksTable(db)
+  }
+
+  /// The kept-marks table with every column (round 14: `needs_resolution`,
+  /// added to a table an earlier build created; the ALTER fails harmlessly
+  /// when the column exists).
+  static func ensurePendingMarksTable(_ db: OpaquePointer) {
     sqlite3_exec(db, pendingMarksTableSQL, nil, nil, nil)
+    sqlite3_exec(db, pendingMarksResolutionColumnSQL, nil, nil, nil)
+  }
+
+  /// Round 14: keeps every upload that may be in flight on the server (see
+  /// `pendingMarksResolutionColumnSQL`) as a kept row to resolve at its
+  /// account's next sign-in. An existing row of that account and photo is
+  /// replaced only when it is itself unresolved: a confirmed mark is the
+  /// stronger fact. `excludedAccountIds` are left out (round 9 discard).
+  /// Owner is `staged_account_id`, the account whose key and session staged
+  /// and opened the upload (task 1531; a row without one is purged as
+  /// mismatched staged state and never resumed).
+  static func keepInFlightSQL(excludedCount: Int) -> String {
+    let excluded = excludedCount == 0
+      ? ""
+      : "\n       AND staged_account_id NOT IN (" + Array(repeating: "?", count: excludedCount).joined(separator: ", ") + ")"
+    return """
+    INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms, needs_resolution)
+    SELECT staged_account_id, local_asset_id, remote_file_id, ?, 1
+      FROM backup_assets
+     WHERE status IN (\(inFlightStatuses))
+       AND staged_account_id IS NOT NULL AND staged_account_id != ''
+       AND remote_file_id IS NOT NULL AND remote_file_id != ''
+       AND upload_session_id IS NOT NULL AND upload_session_id != ''
+    """ + excluded + """
+
+    ON CONFLICT(account_id, local_asset_id) DO UPDATE
+       SET remote_file_id = excluded.remote_file_id, created_at_ms = excluded.created_at_ms
+     WHERE backup_pending_marks.needs_resolution = 1
+    """
+  }
+
+  /// Round 14: the sign-out purge calls this BEFORE `purgeAllStagedAssets`
+  /// (which clears `remote_file_id` and `upload_session_id` of every staged
+  /// row) and before the reset: the in-flight uploads are kept for
+  /// resolution. The reset's own transaction then applies the discard
+  /// (account deletion) and the expiry to these rows as to every kept mark,
+  /// and keeps any in-flight row still carrying its ids. Returns the rows
+  /// kept; nil when the write did not run.
+  @discardableResult
+  static func keepInFlightUploads(_ db: OpaquePointer, nowMs: Int64) -> Int? {
+    guard tableExists(db, "backup_assets") else { return 0 }
+    ensurePendingMarksTable(db)
+    let kept = run(db, keepInFlightSQL(excludedCount: 0)) { stmt in
+      sqlite3_bind_int64(stmt, 1, nowMs)
+    }
+    return kept >= 0 ? kept : nil
   }
 
   static func currentMs() -> Int64 {
@@ -152,7 +225,7 @@ enum BackupManifestStore {
     // assumed. `tableExists` turns a read error into "no such table", and the
     // reset then skipped that DELETE and reported success with its rows kept.
     guard let hasVerification = tableExistsChecked(db, "backup_verification") else { return false }
-    sqlite3_exec(db, pendingMarksTableSQL, nil, nil, nil)
+    ensurePendingMarksTable(db)
     guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
     // Round 9: a deleted account's kept marks go first, and none of its
     // unmarked uploads is kept below.
@@ -176,6 +249,15 @@ enum BackupManifestStore {
         sqlite3_bind_int64(stmt, 1, nowMs)
         for (i, id) in ids.enumerated() { bindText(stmt, Int32(i + 2), id) }
       } >= 0
+      // Round 14 (the P1): uploads still in flight, for resolution at the
+      // account's next sign-in (most were kept before the staged purge by
+      // `keepInFlightUploads`; this keeps any row still carrying its ids).
+      if ok {
+        ok = run(db, keepInFlightSQL(excludedCount: ids.count)) { stmt in
+          sqlite3_bind_int64(stmt, 1, nowMs)
+          for (i, id) in ids.enumerated() { bindText(stmt, Int32(i + 2), id) }
+        } >= 0
+      }
     }
     if ok {
       ok = run(db, "DELETE FROM backup_pending_marks WHERE created_at_ms < ?") { stmt in
@@ -434,6 +516,8 @@ enum BackupManifestStore {
     let assetId: String
     let fileId: String
     let createdAtMs: Int64
+    /// Round 14: an in-flight upload to resolve, not a confirmed upload.
+    var needsResolution: Bool = false
   }
 
   /// Every association a reset would keep: what is already in
@@ -452,8 +536,12 @@ enum BackupManifestStore {
     var out: [PendingMark] = []
     guard let hasKept = tableExistsChecked(db, "backup_pending_marks") else { return nil }
     if hasKept {
+      // Round 14: the resolution flag travels with the row (an in-flight
+      // upload carried as a confirmed mark would skip a photo the server
+      // never completed).
+      ensurePendingMarksTable(db)
       guard let kept = select(db, """
-      SELECT account_id, local_asset_id, remote_file_id, created_at_ms
+      SELECT account_id, local_asset_id, remote_file_id, created_at_ms, needs_resolution
         FROM backup_pending_marks WHERE created_at_ms >= ?
       """, bindMs: nowMs - pendingMarksRetentionMs) else { return nil }
       out += kept
@@ -461,12 +549,23 @@ enum BackupManifestStore {
     guard let hasAssets = tableExistsChecked(db, "backup_assets") else { return nil }
     if hasAssets {
       guard let unmarked = select(db, """
-      SELECT uploaded_account_id, local_asset_id, remote_file_id, ?
+      SELECT uploaded_account_id, local_asset_id, remote_file_id, ?, 0
         FROM backup_assets
        WHERE status = 'uploaded' AND uploaded_account_id IS NOT NULL AND uploaded_account_id != ''
          AND remote_file_id IS NOT NULL AND server_marked_at IS NULL
       """, bindMs: nowMs) else { return nil }
       out += unmarked
+      // Round 14: the in-flight uploads the reset would keep for resolution.
+      guard let inFlight = select(db, """
+      SELECT staged_account_id, local_asset_id, remote_file_id, ?, 1
+        FROM backup_assets
+       WHERE status IN (\(inFlightStatuses))
+         AND staged_account_id IS NOT NULL AND staged_account_id != ''
+         AND remote_file_id IS NOT NULL AND remote_file_id != ''
+         AND upload_session_id IS NOT NULL AND upload_session_id != ''
+      """, bindMs: nowMs) else { return nil }
+      let confirmed = Set(out.filter { !$0.needsResolution }.map { "\($0.accountId)\u{1F}\($0.assetId)" })
+      out += inFlight.filter { !confirmed.contains("\($0.accountId)\u{1F}\($0.assetId)") }
     }
     return out.filter { !discard.discards($0.accountId) }
   }
@@ -486,7 +585,8 @@ enum BackupManifestStore {
             let f = sqlite3_column_text(stmt, 2) else { return nil }
       rows.append(PendingMark(
         accountId: String(cString: a), assetId: String(cString: l),
-        fileId: String(cString: f), createdAtMs: sqlite3_column_int64(stmt, 3)
+        fileId: String(cString: f), createdAtMs: sqlite3_column_int64(stmt, 3),
+        needsResolution: sqlite3_column_int64(stmt, 4) != 0
       ))
     }
   }
@@ -494,18 +594,21 @@ enum BackupManifestStore {
   @discardableResult
   static func insertPendingMarks(_ db: OpaquePointer, _ marks: [PendingMark]) -> Bool {
     guard !marks.isEmpty else { return true }
-    sqlite3_exec(db, pendingMarksTableSQL, nil, nil, nil)
+    ensurePendingMarksTable(db)
     guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
     var ok = true
-    for m in marks where ok {
+    // Round 14: a confirmed mark is written after any unresolved row of the
+    // same photo, so it wins (INSERT OR REPLACE).
+    for m in marks.filter(\.needsResolution) + marks.filter({ !$0.needsResolution }) where ok {
       ok = run(db, """
-      INSERT OR REPLACE INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms)
-      VALUES (?, ?, ?, ?)
+      INSERT OR REPLACE INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms, needs_resolution)
+      VALUES (?, ?, ?, ?, ?)
       """) { stmt in
         bindText(stmt, 1, m.accountId)
         bindText(stmt, 2, m.assetId)
         bindText(stmt, 3, m.fileId)
         sqlite3_bind_int64(stmt, 4, m.createdAtMs)
+        sqlite3_bind_int(stmt, 5, m.needsResolution ? 1 : 0)
       } >= 0
     }
     if ok, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK { return true }
@@ -581,7 +684,8 @@ enum BackupManifestStore {
     UPDATE backup_assets
        SET status = 'uploaded',
            remote_file_id = (SELECT p.remote_file_id FROM backup_pending_marks p
-                              WHERE p.account_id = ?1 AND p.local_asset_id = backup_assets.local_asset_id),
+                              WHERE p.account_id = ?1 AND p.local_asset_id = backup_assets.local_asset_id
+                                AND p.needs_resolution = 0),
            uploaded_at = COALESCE(uploaded_at, ?2),
            uploaded_account_id = ?1,
            server_marked_at = NULL,
@@ -590,7 +694,8 @@ enum BackupManifestStore {
      WHERE staged_file_id IS NULL
        AND status IN (\(rebuildableStatuses))
        AND local_asset_id IN (SELECT local_asset_id FROM backup_pending_marks
-                               WHERE account_id = ?1 AND created_at_ms >= ?3)
+                               WHERE account_id = ?1 AND created_at_ms >= ?3
+                                 AND needs_resolution = 0)
     """
     let iso = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(nowMs) / 1000))
     let promoted = run(db, promoteSQL) { stmt in
@@ -614,6 +719,129 @@ enum BackupManifestStore {
       return nil
     }
     return promoted
+  }
+
+  // MARK: - Round 14: in-flight uploads kept for resolution
+
+  /// One kept in-flight upload of an account (`needs_resolution = 1`).
+  struct KeptInFlight: Equatable {
+    let assetId: String
+    let fileId: String
+  }
+
+  /// The account's kept in-flight uploads inside the retention window, to
+  /// resolve before any upload (`KeptUploadResolution`). Never reads another
+  /// account's rows. nil when they could not be read (round 7 rule: a read
+  /// error is not "none").
+  static func keptInFlight(_ db: OpaquePointer, accountId: String, nowMs: Int64) -> [KeptInFlight]? {
+    guard !accountId.isEmpty else { return [] }
+    guard let exists = tableExistsChecked(db, "backup_pending_marks") else { return nil }
+    guard exists else { return [] }
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, """
+    SELECT local_asset_id, remote_file_id FROM backup_pending_marks
+     WHERE account_id = ? AND needs_resolution = 1 AND created_at_ms >= ?
+     ORDER BY local_asset_id
+    """, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { sqlite3_finalize(stmt) }
+    bindText(stmt, 1, accountId)
+    sqlite3_bind_int64(stmt, 2, nowMs - pendingMarksRetentionMs)
+    var rows: [KeptInFlight] = []
+    while true {
+      let rc = sqlite3_step(stmt)
+      if rc == SQLITE_DONE { return rows }
+      guard rc == SQLITE_ROW,
+            let a = sqlite3_column_text(stmt, 0), let f = sqlite3_column_text(stmt, 1) else { return nil }
+      rows.append(KeptInFlight(assetId: String(cString: a), fileId: String(cString: f)))
+    }
+  }
+
+  /// The server's answer for one kept in-flight upload of `accountId`:
+  /// `complete` -> it becomes an ordinary kept mark (`applyPendingMarks`
+  /// promotes it, the mark catch-up sends it to the server); not complete ->
+  /// the row is dropped and the photo uploads as normal. Matches the file id
+  /// too, so a newer row for the photo is left alone. False when the write
+  /// did not run.
+  @discardableResult
+  static func resolveKeptInFlight(
+    _ db: OpaquePointer, accountId: String, assetId: String, fileId: String, complete: Bool
+  ) -> Bool {
+    let sql = complete
+      ? """
+        UPDATE backup_pending_marks SET needs_resolution = 0
+         WHERE account_id = ? AND local_asset_id = ? AND remote_file_id = ? AND needs_resolution = 1
+        """
+      : """
+        DELETE FROM backup_pending_marks
+         WHERE account_id = ? AND local_asset_id = ? AND remote_file_id = ? AND needs_resolution = 1
+        """
+    return run(db, sql) { stmt in
+      bindText(stmt, 1, accountId)
+      bindText(stmt, 2, assetId)
+      bindText(stmt, 3, fileId)
+    } >= 0
+  }
+
+  /// The sign-out flush's in-flight rows of `accountId` (round 14): uploads
+  /// that may already be complete on the server. nil on a read failure.
+  static func inFlightUploads(_ db: OpaquePointer, accountId: String) -> [KeptInFlight]? {
+    guard !accountId.isEmpty else { return [] }
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, """
+    SELECT local_asset_id, remote_file_id FROM backup_assets
+     WHERE status IN (\(inFlightStatuses))
+       AND staged_account_id = ?
+       AND remote_file_id IS NOT NULL AND remote_file_id != ''
+       AND upload_session_id IS NOT NULL AND upload_session_id != ''
+     ORDER BY local_asset_id
+    """, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { sqlite3_finalize(stmt) }
+    bindText(stmt, 1, accountId)
+    var rows: [KeptInFlight] = []
+    while true {
+      let rc = sqlite3_step(stmt)
+      if rc == SQLITE_DONE { return rows }
+      guard rc == SQLITE_ROW,
+            let a = sqlite3_column_text(stmt, 0), let f = sqlite3_column_text(stmt, 1) else { return nil }
+      rows.append(KeptInFlight(assetId: String(cString: a), fileId: String(cString: f)))
+    }
+  }
+
+  /// The sign-out flush found an in-flight upload complete on the server:
+  /// the row is recorded as uploaded by `accountId` (still unmarked), but
+  /// only while it is still that same in-flight upload. False when nothing
+  /// was recorded.
+  @discardableResult
+  static func recordInFlightComplete(
+    _ db: OpaquePointer, accountId: String, assetId: String, fileId: String, uploadedAtIso: String
+  ) -> Bool {
+    let changed = run(db, """
+    UPDATE backup_assets
+       SET status = 'uploaded',
+           uploaded_at = ?,
+           uploaded_account_id = ?,
+           server_marked_at = NULL,
+           error_message = NULL,
+           retry_count = 0,
+           upload_session_id = NULL,
+           staged_file_id = NULL,
+           staged_name_encrypted = NULL,
+           staged_mime_type = NULL,
+           staged_is_media = 0,
+           staged_original_size = 0,
+           staged_chunk_count = 0,
+           staged_dir = NULL,
+           staged_at = NULL
+     WHERE local_asset_id = ? AND remote_file_id = ? AND staged_account_id = ?
+       AND status IN (\(inFlightStatuses))
+    """) { stmt in
+      bindText(stmt, 1, uploadedAtIso)
+      bindText(stmt, 2, accountId)
+      bindText(stmt, 3, assetId)
+      bindText(stmt, 4, fileId)
+      bindText(stmt, 5, accountId)
+    }
+    return changed == 1
   }
 
   /// Adopt-only half of `claim`, for the sign-out reset: rows written before

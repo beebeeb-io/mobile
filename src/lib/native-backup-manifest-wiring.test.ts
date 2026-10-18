@@ -1176,3 +1176,85 @@ describe('round 13 (review of mobile#182 at a19037f9)', () => {
     expect(t).toMatch(/lifecycle\.runRetry\(token, prepare: \{ self\.prepare\(\) \}\)/);
   });
 });
+
+describe('round 14 (review of mobile#182 at 18312919)', () => {
+  const { existsSync } = require('node:fs');
+  const read = (f: string) => (existsSync(join(IOS, f)) ? readFileSync(join(IOS, f), 'utf8') : '');
+  const lazyBody = (src: string, sig: string): string => {
+    try {
+      return body(src, sig);
+    } catch {
+      return '';
+    }
+  };
+  const purge = lazyBody(
+    engine,
+    'func prepareForStoragePurge(\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> (kept: Set<String>, resetFailed: Bool) {',
+  );
+  const flush = lazyBody(
+    engine,
+    'func flushServerMarksForSignOut(deadline: TimeInterval = SignOutMarkFlush.defaultDeadline, attemptsPerRow: Int = 2) async -> (candidates: Int, marked: Int) {',
+  );
+  const ready = lazyBody(engine, READY_SIG);
+
+  test('item 1: the in-flight uploads are kept BEFORE the staged purge clears their ids, and before the reset', () => {
+    const [keep, staged, reset] = order(
+      code(purge),
+      'BackupManifestStore.keepInFlightUploads(db, nowMs: self.nowMs())',
+      'clearAccountAndPurgeStaged()',
+      'manifestHandle.resetForSignOut(',
+    );
+    expect(keep).toBeGreaterThan(-1);
+    expect(staged).toBeGreaterThan(keep);
+    expect(reset).toBeGreaterThan(staged);
+  });
+
+  test('item 1: the sign-out flush loads the in-flight rows and settles them with GET /files/{id} + the mark', () => {
+    const f = code(flush);
+    expect(f).toMatch(/FencedManifestWrites\.loadSignOutInFlight\(/);
+    expect(f).toMatch(/case let \.inFlight\(assetId, fileId\):\s*\n\s*return await SignOutMarkFlush\.settleInFlight\(/);
+    expect(f).toMatch(/try await self\.inspectExistingUpload\(\s*fileId: fileId, authToken: authToken, baseURL: baseURL, requestTimeout: requestTimeout\s*\) == \.alreadyCompleted/);
+    expect(f).toMatch(/FencedManifestWrites\.recordInFlightComplete\(/);
+    // The in-flight row is marked like an uploaded row (same markOnServer call).
+    expect((f.match(/await self\.markOnServer\(/g) ?? []).length).toBe(2);
+  });
+
+  test('item 1: the rebuild gate resolves the kept in-flight uploads before the kept marks, on every pass', () => {
+    const r = code(ready);
+    expect(r).toMatch(/resolveKept: \{ \[weak self\] in/);
+    expect(r).toMatch(/await KeptUploadResolution\.run\(/);
+    expect(r).toMatch(/FencedManifestWrites\.loadKeptInFlight\(/);
+    expect(r).toMatch(/FencedManifestWrites\.resolveKeptInFlight\(/);
+    expect(r).toMatch(/try await self\.inspectExistingUpload\(\s*fileId: row\.fileId, authToken: authToken, baseURL: baseURL\s*\) == \.alreadyCompleted/);
+    const run = code(lazyBody(gateSwift, 'static func run(alreadyReady: Bool, steps: Steps) async -> Outcome {'));
+    // Both branches: resolve, then apply the kept marks.
+    expect((run.match(/guard await steps\.resolveKept\(\) else \{ return \.deferred\(\.resolveKeptFailed\) \}\s*\n(?:\s*\/\/[^\n]*\n)*\s*guard let kept = steps\.applyKept\(\)/g) ?? []).length).toBe(2);
+  });
+
+  test('item 3: the bridge maps every surface state explicitly (paused is a pause)', () => {
+    expect(code(engine)).not.toMatch(/func mapBridgeState\(/);
+    expect(code(engine)).toMatch(/"state": BackupSurfaceState\.bridgeRunState\(internalState\),/);
+  });
+
+  test('item 2: a cold-start account deletion names the stored key owner', () => {
+    const app = readFileSync(join(import.meta.dir, '../App.tsx'), 'utf8');
+    const refresh = app.slice(app.indexOf('const refreshAuth = useCallback(async () => {'));
+    const [owner, me] = order(refresh, 'await readKeyOwner().catch(() => null);', 'const me = await getMe();');
+    expect(owner).toBeGreaterThan(-1);
+    expect(me).toBeGreaterThan(owner);
+    expect(refresh).toMatch(/coldStartOwnerRef\.current = currentUserIdRef\.current\s*\n\s*\? null\s*\n\s*: await readKeyOwner\(\)\.catch\(\(\) => null\);/);
+    const handler = app.slice(app.indexOf('registerAccountDeletedHandler(('), app.indexOf('registerAccountDeletedHandler((') + 900);
+    expect(handler).toMatch(/noteAccountDeleted\(accountIdForDeletedElsewhere\(currentUserIdRef\.current, coldStartOwnerRef\.current\)\);\s*\n\s*setUser\(null\)/);
+  });
+
+  test('item 4: the docs state the real close rule; enablePhotoBackup has its JSDoc back', () => {
+    const md = readFileSync(join(import.meta.dir, '../../CLAUDE.md'), 'utf8');
+    expect(md).not.toContain('**Never close the JS handle on it.**');
+    expect(md).toContain("**Never close the JS handle while the engine's connection is open on the file.**");
+    expect(md).toMatch(/the failed-reset path/);
+    expect(md).toMatch(/`admitJsOpen` closes leftover JS/);
+    const ts = readFileSync(join(import.meta.dir, '../../modules/beebeeb-crypto/src/BeebeebCrypto.ts'), 'utf8');
+    expect(ts).toMatch(/currently signed-in user's id, never a cached\/stale one\.\n \*\/\nexport async function enablePhotoBackup\(/);
+    expect(ts).not.toMatch(/never a cached\/stale one\.\n \*\/\n\/\*\*/);
+  });
+});

@@ -112,6 +112,28 @@ do {
   }
 }
 
+// MARK: - (s10) round 14 (review of mobile#182 at 18312919, item 3): the
+// bridge state (`getBackupStatus` -> backup-bridge.ts BackupRunState) of
+// every state `decide` can return has its own case; "paused" is a pause.
+
+do {
+  var lacking = ServerCheckPause()
+  lacking.record(.serverLacksBackedUp)
+  let pausedState = BackupSurfaceState.decide(inputs(pause: lacking)).state
+  expect(pausedState == "paused", "s10.1 the server-check pause decides 'paused' (got \(pausedState))")
+  expect(BackupSurfaceState.bridgeRunState(pausedState) == "paused",
+         "s10.2 'paused' maps to the bridge's paused, never idle (got \(BackupSurfaceState.bridgeRunState(pausedState)))")
+  let table: [String: String] = [
+    "uploading": "running", "preparing": "running",
+    "pausedByUser": "paused", "paused": "paused", "waitingForAppOpen": "paused", "waitingForWifi": "paused",
+    "needsAttention": "error", "idle": "idle", "complete": "idle",
+  ]
+  for (state, bridge) in table.sorted(by: { $0.key < $1.key }) {
+    expect(BackupSurfaceState.bridgeRunState(state) == bridge,
+           "s10.3 \(state) -> \(bridge) (got \(BackupSurfaceState.bridgeRunState(state)))")
+  }
+}
+
 if failures.isEmpty {
   print("BackupSurfaceStateTests: \(total) assertions, 0 failed")
   exit(0)

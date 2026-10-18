@@ -136,8 +136,9 @@ describe('(c) wiring guards: every account-deletion purge passes mode account-de
 
   test('App.tsx: deleted elsewhere is a deletion, the next session clears it, no mark flush after one', () => {
     const src = read('src/App.tsx');
-    const handler = src.slice(src.indexOf('registerAccountDeletedHandler(('), src.indexOf('registerAccountDeletedHandler((') + 700);
-    expect(handler).toMatch(/noteAccountDeleted\(currentUserIdRef\.current\);\s*\n\s*setUser\(null\)/);
+    const handler = src.slice(src.indexOf('registerAccountDeletedHandler(('), src.indexOf('registerAccountDeletedHandler((') + 1000);
+    // Round 14 (item 2): at a cold start the stored key's owner names the account.
+    expect(handler).toMatch(/noteAccountDeleted\(accountIdForDeletedElsewhere\(currentUserIdRef\.current, coldStartOwnerRef\.current\)\);\s*\n\s*setUser\(null\)/);
     expect(src).toMatch(/if \(user\) currentUserIdRef\.current = user\.user_id;/);
     expect(src).toMatch(/signedOutPurger\.sessionStarted\(\);[^\n]*\n\s*setUser\(me\);\n(?:\s*\/\/[^\n]*\n)*\s*clearAccountDeletionPurge\(\);/);
     expect(src).toMatch(/if \(Platform\.OS === 'ios' && !accountDeletionPurgePending\(\)\) \{\s*\n\s*await flushMarksBeforeSignOut/);
@@ -183,6 +184,30 @@ describe('account-cleanup: the purge mode reaches the native purge', () => {
     cleanup.noteAccountDeleted('acct-B');
     await cleanup.purgeAllPlaintextCaches();
     expect(nativeCalls).toEqual([{ mode: 'account-deleted', deletedAccountIds: ['acct-B'] }]);
+  });
+
+  // Task 1667 round 14 (review of mobile#182 at 18312919, item 2): the app
+  // cold-starts with A's stored session; refreshAuth reads the stored key's
+  // owner (A) before getMe, and getMe answers 403 account_deleted before any
+  // user is set. The handler's account is what the purge names; native then
+  // discards ONLY A's kept marks (manifest-account-deletion-test e7), so C's
+  // kept marks survive. Before, it named nobody and native discarded every
+  // kept mark on the device (C's too).
+  test('r14-2.1 cold-start deletion: the stored key owner is named, so only that account is discarded', async () => {
+    const id = cleanup.accountIdForDeletedElsewhere(null, 'acct-A'); // currentUserIdRef null at cold start
+    cleanup.noteAccountDeleted(id);
+    await cleanup.purgeAllPlaintextCaches(); // the signed-out surface's purge
+    expect(nativeCalls).toEqual([{ mode: 'account-deleted', deletedAccountIds: ['acct-A'] }]);
+    expect(nativeCalls[0].deletedAccountIds).not.toContain('acct-C');
+  });
+
+  test('r14-2.2 the signed-in user wins over the cold-start owner; neither known: no name (fail closed)', async () => {
+    expect(cleanup.accountIdForDeletedElsewhere('acct-B', 'acct-A')).toBe('acct-B');
+    expect(cleanup.accountIdForDeletedElsewhere(null, null)).toBe(null);
+    expect(cleanup.accountIdForDeletedElsewhere(undefined, '')).toBe(null);
+    cleanup.noteAccountDeleted(cleanup.accountIdForDeletedElsewhere(null, null));
+    await cleanup.purgeAllPlaintextCaches();
+    expect(nativeCalls).toEqual([{ mode: 'account-deleted', deletedAccountIds: [] }]);
   });
 
   test('a deletion with no known account id is still a deletion (the native side uses its own account)', async () => {

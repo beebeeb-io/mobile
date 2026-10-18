@@ -276,7 +276,9 @@ do {
   exec(db, """
   CREATE TABLE backup_assets (
     local_asset_id TEXT PRIMARY KEY, remote_file_id TEXT, created_at TEXT NOT NULL,
-    uploaded_at TEXT, asset_type TEXT NOT NULL, status TEXT NOT NULL, staged_file_id TEXT
+    uploaded_at TEXT, asset_type TEXT NOT NULL, status TEXT NOT NULL, staged_file_id TEXT,
+    -- Round 14: the reset's in-flight keep reads these (ensureTables has them).
+    staged_account_id TEXT, upload_session_id TEXT
   );
   CREATE TABLE backup_upload_chunks (local_asset_id TEXT NOT NULL, chunk_index INTEGER NOT NULL);
   """)

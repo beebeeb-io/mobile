@@ -103,6 +103,20 @@ export function noteAccountDeleted(accountId: string | null | undefined): void {
   if (accountId) deletedAccountIds.add(accountId);
 }
 
+/**
+ * Task 1667 round 14 (review of mobile#182 at 18312919): the account a 403
+ * `account_deleted` on a live session names. The signed-in user when App has
+ * one; at a cold start (no user yet) the stored key's owner, read before
+ * refreshAuth's getMe. null only when neither is known: the purge then
+ * discards every kept mark on the device (fail closed).
+ */
+export function accountIdForDeletedElsewhere(
+  signedInUserId: string | null | undefined,
+  coldStartKeyOwner: string | null | undefined,
+): string | null {
+  return signedInUserId || coldStartKeyOwner || null;
+}
+
 /** A new session started: purges are ordinary sign-outs again. */
 export function clearAccountDeletionPurge(): void {
   deletedAccountIds = null;

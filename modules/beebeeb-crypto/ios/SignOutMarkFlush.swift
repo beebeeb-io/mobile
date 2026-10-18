@@ -76,6 +76,41 @@ enum SignOutMarkFlush {
     return Outcome(candidates: snapshot.candidates, marked: snapshot.marked, timedOut: finished != true)
   }
 
+  /// Task 1667 round 14 (review of mobile#182 at 18312919, the P1): one row
+  /// of the engine's sign-out flush.
+  enum Row: Equatable {
+    /// An upload the manifest recorded and the server's map does not have.
+    case unmarked(assetId: String, fileId: String)
+    /// An upload in flight at sign-out ('staging' / 'staged_upload' /
+    /// 'uploading' with a server file id and an upload session id). Its
+    /// `upload/complete` may have reached the server unrecorded.
+    case inFlight(assetId: String, fileId: String)
+  }
+
+  /// Round 14: settles one in-flight row inside the flush's budget. Asks the
+  /// server (`GET /files/{id}`); complete -> records it locally as uploaded
+  /// (`recordUploaded`, best effort) and marks it on the server like an
+  /// uploaded row. Returns true when the row is settled (marked, or not
+  /// complete: nothing to mark), false when the server could not be asked
+  /// or the mark failed: the flush then stops, and the sign-out reset keeps
+  /// the row for resolution at the account's next sign-in
+  /// (`BackupManifestStore.keepInFlightSQL`).
+  static func settleInFlight(
+    isComplete: () async throws -> Bool,
+    recordUploaded: () -> Bool,
+    mark: () async -> Bool
+  ) async -> Bool {
+    let complete: Bool
+    do {
+      complete = try await isComplete()
+    } catch {
+      return false
+    }
+    guard complete else { return true }
+    _ = recordUploaded()
+    return await mark()
+  }
+
   /// The timeout for one request: the budget left, at least
   /// `minimumRequestTimeout`.
   static func requestTimeout(remaining: TimeInterval) -> TimeInterval {

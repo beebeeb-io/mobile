@@ -368,6 +368,8 @@ struct ServerCheckPause: Equatable {
   mutating func recordRebuild(_ reason: ManifestRebuildGate.DeferReason, lacksBackedUp: Bool) -> Bool {
     switch reason {
     case .fetchFailed: return set(lacksBackedUp ? .serverLacksBackedUp : .checkFailed)
+    // Round 14: a kept in-flight upload could not be checked with the server.
+    case .resolveKeptFailed: return set(.checkFailed)
     case .noDeviceId: return set(.noDeviceId)
     case .checkFailed, .accountChanged, .applyMapFailed, .applyKeptFailed: return false
     }

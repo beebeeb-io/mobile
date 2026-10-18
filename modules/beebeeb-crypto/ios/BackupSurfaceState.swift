@@ -82,6 +82,28 @@ enum BackupSurfaceState {
     return State(state: "idle", reason: "Nothing to back up")
   }
 
+  /// Collapse the engine's internal state to the 4-state shape the JS
+  /// `BackupRunState` (src/lib/backup-bridge.ts) defines. Fine-grained
+  /// reasons like `waitingForWifi` map to `paused` because the user-visible
+  /// behaviour ("not making progress, will resume") is identical. Moved here
+  /// from `NativeBackupEngine.mapBridgeState` (task 1667 round 14, review of
+  /// mobile#182 at 18312919): "paused" (the server-check pause, round 13) is
+  /// a pause, and every state `decide` returns has its own case.
+  static func bridgeRunState(_ internalState: String) -> String {
+    switch internalState {
+    case "uploading", "preparing":
+      return "running"
+    case "pausedByUser", "paused", "waitingForAppOpen", "waitingForWifi":
+      return "paused"
+    case "needsAttention":
+      return "error"
+    case "idle", "complete":
+      return "idle"
+    default:
+      return "idle"
+    }
+  }
+
   /// The heartbeat's status for a surface state. Round 13: "paused" (the
   /// server-check pause) is a pause, never "syncing" or "idle".
   static func heartbeatStatus(state: String, isRunning: Bool, failed: Int, pending: Int) -> String {

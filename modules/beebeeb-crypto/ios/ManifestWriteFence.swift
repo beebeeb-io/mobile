@@ -270,4 +270,67 @@ enum FencedManifestWrites {
     let adoptFailed = BackupManifestStore.adoptUnowned(db, accountId: accountId) == nil
     return (BackupManifestStore.pendingServerMarks(db, accountId: accountId, limit: Int(Int32.max)), adoptFailed)
   }
+
+  /// Round 14: the sign-out flush's in-flight rows (uploads that may be
+  /// complete on the server). nil = fenced, no handle or a failed read.
+  static func loadSignOutInFlight(
+    _ db: OpaquePointer?,
+    fence: ManifestWriteFence,
+    ticket: ManifestWriteFence.Ticket?,
+    accountId: String
+  ) -> [BackupManifestStore.KeptInFlight]? {
+    guard fence.admits(ticket, writer: "server_mark.sign_out_load_in_flight") else { return nil }
+    guard let db else { return nil }
+    return BackupManifestStore.inFlightUploads(db, accountId: accountId)
+  }
+
+  /// Round 14: the sign-out flush found an in-flight upload complete on the
+  /// server; record it as uploaded (unmarked). False = fenced, no handle or
+  /// the row is no longer that upload.
+  static func recordInFlightComplete(
+    _ db: OpaquePointer?,
+    fence: ManifestWriteFence,
+    ticket: ManifestWriteFence.Ticket?,
+    accountId: String,
+    assetId: String,
+    fileId: String,
+    uploadedAtIso: String
+  ) -> Bool {
+    guard fence.admits(ticket, writer: "server_mark.sign_out_in_flight_complete") else { return false }
+    guard let db else { return false }
+    return BackupManifestStore.recordInFlightComplete(
+      db, accountId: accountId, assetId: assetId, fileId: fileId, uploadedAtIso: uploadedAtIso
+    )
+  }
+
+  /// Round 14: the account's kept in-flight uploads, before any upload.
+  /// nil = fenced, no handle or a failed read.
+  static func loadKeptInFlight(
+    _ db: OpaquePointer?,
+    fence: ManifestWriteFence,
+    ticket: ManifestWriteFence.Ticket?,
+    accountId: String,
+    nowMs: Int64
+  ) -> [BackupManifestStore.KeptInFlight]? {
+    guard fence.admits(ticket, writer: "rebuild.load_kept_in_flight") else { return nil }
+    guard let db else { return nil }
+    return BackupManifestStore.keptInFlight(db, accountId: accountId, nowMs: nowMs)
+  }
+
+  /// Round 14: the server's answer for one kept in-flight upload. False =
+  /// fenced, no handle or the write did not run.
+  static func resolveKeptInFlight(
+    _ db: OpaquePointer?,
+    fence: ManifestWriteFence,
+    ticket: ManifestWriteFence.Ticket?,
+    accountId: String,
+    row: BackupManifestStore.KeptInFlight,
+    complete: Bool
+  ) -> Bool {
+    guard fence.admits(ticket, writer: "rebuild.resolve_kept_in_flight") else { return false }
+    guard let db else { return false }
+    return BackupManifestStore.resolveKeptInFlight(
+      db, accountId: accountId, assetId: row.assetId, fileId: row.fileId, complete: complete
+    )
+  }
 }

@@ -128,7 +128,7 @@ func freshManifest(_ name: String) -> (db: OpaquePointer, path: String) {
     VALUES ('\(id)', '2026-10-18T00:00:00Z', 'photo', 'pending_upload')
     """)
   }
-  exec(db, "INSERT INTO backup_pending_marks VALUES ('\(account)', 'p4', 'f-4', \(now))")
+  exec(db, "INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms) VALUES ('\(account)', 'p4', 'f-4', \(now))")
   return (db, path)
 }
 

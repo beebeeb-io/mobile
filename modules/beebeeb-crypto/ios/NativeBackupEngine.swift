@@ -2678,7 +2678,7 @@ final class NativeBackupEngine: NSObject {
       "failedAssets": failedAssets,
       "bytesUploaded": bytesUploaded,
       "bytesTotal": bytesTotal,
-      "state": mapBridgeState(internalState: internalState),
+      "state": BackupSurfaceState.bridgeRunState(internalState),
       "lastErrorMessage": (lastError as Any?) ?? NSNull(),
       "backoffUntil": backoffMillis,
     ]
@@ -2699,26 +2699,6 @@ final class NativeBackupEngine: NSObject {
             sqlite3_column_type(stmt, 0) != SQLITE_NULL else { return nil }
       let raw = String(cString: sqlite3_column_text(stmt, 0))
       return Self.mapBridgeAssetStatus(raw)
-    }
-  }
-
-  /// Collapse the engine's 8-state internal status to the 4-state shape
-  /// ts-engineer's `BackupRunState` defines. The TS UI only cares about the
-  /// macro state (idle / running / paused / error); fine-grained reasons
-  /// like `waitingForWifi` map to `paused` because the user-visible
-  /// behaviour ("not making progress, will resume") is identical.
-  private func mapBridgeState(internalState: String) -> String {
-    switch internalState {
-    case "uploading", "preparing":
-      return "running"
-    case "pausedByUser", "waitingForAppOpen", "waitingForWifi":
-      return "paused"
-    case "needsAttention":
-      return "error"
-    case "idle", "complete":
-      return "idle"
-    default:
-      return "idle"
     }
   }
 
@@ -4798,7 +4778,9 @@ final class NativeBackupEngine: NSObject {
   private func inspectExistingUpload(
     fileId: String,
     authToken: String,
-    baseURL: String
+    baseURL: String,
+    /// Task 1667 round 14: the sign-out flush hands the budget it has left.
+    requestTimeout: TimeInterval? = nil
   ) async throws -> ExistingUploadDisposition {
     guard let url = URL(string: "\(baseURL)/api/v1/files/\(fileId)") else {
       throw BackupError.invalidServerURL
@@ -4807,6 +4789,7 @@ final class NativeBackupEngine: NSObject {
     var request = URLRequest(url: url)
     ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "GET"
+    if let requestTimeout { request.timeoutInterval = requestTimeout }
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 
     let (data, response) = try await metadataSession.data(for: request)
@@ -6393,7 +6376,39 @@ final class NativeBackupEngine: NSObject {
           )
         }
       },
-      applyKept: { [weak self] in self?.applyKeptPendingMarks(accountId: accountId, ticket: ticket) }
+      applyKept: { [weak self] in self?.applyKeptPendingMarks(accountId: accountId, ticket: ticket) },
+      // Task 1667 round 14 (review of mobile#182 at 18312919, the P1): this
+      // account's uploads that were in flight at its last sign-out, asked
+      // before any upload. Complete -> a kept mark (promoted by applyKept,
+      // marked by the catch-up); not complete -> dropped, uploads as normal.
+      resolveKept: { [weak self] in
+        guard let self else { return false }
+        let resolved = await KeptUploadResolution.run(
+          load: {
+            self.dbQueue.sync {
+              FencedManifestWrites.loadKeptInFlight(
+                self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId,
+                nowMs: self.nowMs()
+              )
+            }
+          },
+          ask: { row in
+            try await self.inspectExistingUpload(
+              fileId: row.fileId, authToken: authToken, baseURL: baseURL
+            ) == .alreadyCompleted
+          },
+          record: { row, complete in
+            RuntimeTrace.event("backup.native.pending_marks.in_flight_resolved", ["complete": complete])
+            return self.dbQueue.sync {
+              FencedManifestWrites.resolveKeptInFlight(
+                self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId,
+                row: row, complete: complete
+              )
+            }
+          }
+        )
+        return resolved
+      }
     )
     let outcome = await ManifestRebuildGate.run(alreadyReady: manifestReadyForAccount == accountId, steps: steps)
     switch outcome {
@@ -6891,7 +6906,7 @@ final class NativeBackupEngine: NSObject {
     let outcome = await SignOutMarkFlush.run(
       deadline: deadline,
       attemptsPerRow: attemptsPerRow,
-      loadRows: { [weak self] () -> [(assetId: String, fileId: String)] in
+      loadRows: { [weak self] () -> [SignOutMarkFlush.Row] in
         guard let self else { return [] }
         // Rows from before `uploaded_account_id` belong to this account too.
         // Round 7 sweep: a failed adoption or read is traced, not read as
@@ -6912,16 +6927,52 @@ final class NativeBackupEngine: NSObject {
             ])
             return []
           }
-          return rows
+          // Task 1667 round 14 (review of mobile#182 at 18312919, the P1):
+          // uploads in flight may already be complete on the server. Asked
+          // after the unmarked rows; whatever this flush does not settle,
+          // the reset keeps for resolution at the next sign-in.
+          let inFlight = FencedManifestWrites.loadSignOutInFlight(
+            self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId
+          )
+          if inFlight == nil {
+            RuntimeTrace.event("backup.native.server_mark.load_failed", ["trigger": "sign_out", "step": "in_flight"])
+          }
+          return rows.map { SignOutMarkFlush.Row.unmarked(assetId: $0.assetId, fileId: $0.fileId) }
+            + (inFlight ?? []).map { SignOutMarkFlush.Row.inFlight(assetId: $0.assetId, fileId: $0.fileId) }
         }
       },
       shouldStop: { [weak self] in self?.currentAccountId != accountId },
       mark: { [weak self] row, requestTimeout in
         guard let self else { return false }
-        return await self.markOnServer(
-          assetId: row.assetId, fileId: row.fileId, authToken: authToken, baseURL: baseURL,
-          accountId: accountId, ticket: ticket, requestTimeout: requestTimeout
-        )
+        switch row {
+        case let .unmarked(assetId, fileId):
+          return await self.markOnServer(
+            assetId: assetId, fileId: fileId, authToken: authToken, baseURL: baseURL,
+            accountId: accountId, ticket: ticket, requestTimeout: requestTimeout
+          )
+        case let .inFlight(assetId, fileId):
+          return await SignOutMarkFlush.settleInFlight(
+            isComplete: {
+              try await self.inspectExistingUpload(
+                fileId: fileId, authToken: authToken, baseURL: baseURL, requestTimeout: requestTimeout
+              ) == .alreadyCompleted
+            },
+            recordUploaded: {
+              self.dbQueue.sync {
+                FencedManifestWrites.recordInFlightComplete(
+                  self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId,
+                  assetId: assetId, fileId: fileId, uploadedAtIso: ISO8601DateFormatter().string(from: Date())
+                )
+              }
+            },
+            mark: {
+              await self.markOnServer(
+                assetId: assetId, fileId: fileId, authToken: authToken, baseURL: baseURL,
+                accountId: accountId, ticket: ticket, requestTimeout: requestTimeout
+              )
+            }
+          )
+        }
       }
     )
     RuntimeTrace.event("backup.native.server_mark.sign_out_flush", [
@@ -6962,6 +7013,17 @@ final class NativeBackupEngine: NSObject {
     let outgoing = outgoingAccountForReset()
     stop()
     backupClientSessionId = nil
+    // Task 1667 round 14 (review of mobile#182 at 18312919, the P1): the
+    // staged purge below clears the server file id and session id of every
+    // staged row, and an upload whose `complete` reached the server unrecorded
+    // would then be uploaded again at the next sign-in. Kept first, for
+    // resolution at that account's next sign-in (the reset applies the
+    // discard and the expiry to them like to every kept mark).
+    let keptInFlight: Int? = dbQueue.sync {
+      guard let db = self.db else { return 0 }
+      return BackupManifestStore.keepInFlightUploads(db, nowMs: self.nowMs())
+    }
+    RuntimeTrace.event("backup.native.sign_out.in_flight_kept", ["kept": keptInFlight ?? -1])
     clearAccountAndPurgeStaged()
     // 1962 Bug 4: the next account must not inherit this one's Backups folder.
     parentFolderId = nil

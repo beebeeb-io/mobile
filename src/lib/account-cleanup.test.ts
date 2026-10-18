@@ -219,7 +219,9 @@ describe('App.tsx purges in ONE place — the signed-out surface (task 1593 roun
     expect(app).not.toMatch(/purgeDecryptedCaches/);
   });
   test('sign-in waits for a purge still running, then reopens the plaintext gate before setUser', () => {
-    expect(app).toMatch(/const refreshAuth = useCallback\(async \(\) => \{\s*try \{[\s\S]{0,200}await signedOutPurger\.settled\(\);\s*const me = await getMe\(\);\s*signedOutPurger\.sessionStarted\(\);[^\n]*\n\s*setUser\(me\);/);
+    // Task 1667 round 14 (item 2): the cold-start key-owner read sits between
+    // the settled purge and getMe, and its reset between getMe and sessionStarted.
+    expect(app).toMatch(/const refreshAuth = useCallback\(async \(\) => \{\s*try \{[\s\S]{0,200}await signedOutPurger\.settled\(\);\s*coldStartOwnerRef\.current = currentUserIdRef\.current\s*\? null\s*: await readKeyOwner\(\)\.catch\(\(\) => null\);\s*const me = await getMe\(\);\s*coldStartOwnerRef\.current = null;\s*signedOutPurger\.sessionStarted\(\);[^\n]*\n\s*setUser\(me\);/);
   });
   test('no per-call-site preview-only sweep is left', () => {
     expect(app).not.toMatch(/purgePreviewPlaintextWhileSignedOut/);

@@ -1609,15 +1609,6 @@ export async function setPhotoBackupIncludeVideos(includeVideos: boolean): Promi
 }
 
 /**
- * Start camera roll backup. Registers PHPhotoLibrary observer and schedules BGProcessingTask.
- *
- * `userId` (task 1531 [P0]) tags every newly-staged asset with the account it
- * was encrypted for and, before this call's `start()` drains anything, sweeps
- * any staged asset left over from a DIFFERENT account on this device — see
- * `purgeMismatchedStagedAssets` in NativeBackupEngine.swift. Always pass the
- * currently signed-in user's id, never a cached/stale one.
- */
-/**
  * Task 1667: hand the canonical device id (`getDeviceId()`) to the native
  * engine, which sends it as `X-Beebeeb-Device-Id` when it records completed
  * uploads in the server's per-device photo-backup map and when it rebuilds an
@@ -1690,6 +1681,15 @@ export async function flushBackupServerMarksForSignOut(): Promise<{ candidates: 
   return (await BeebeebCryptoModule.flushBackupServerMarksForSignOut()) as { candidates: number; marked: number }
 }
 
+/**
+ * Start camera roll backup. Registers PHPhotoLibrary observer and schedules BGProcessingTask.
+ *
+ * `userId` (task 1531 [P0]) tags every newly-staged asset with the account it
+ * was encrypted for and, before this call's `start()` drains anything, sweeps
+ * any staged asset left over from a DIFFERENT account on this device — see
+ * `purgeMismatchedStagedAssets` in NativeBackupEngine.swift. Always pass the
+ * currently signed-in user's id, never a cached/stale one.
+ */
 export async function enablePhotoBackup(authToken: string, userId: string): Promise<void> {
   return BeebeebCryptoModule.enablePhotoBackup(authToken, userId)
 }

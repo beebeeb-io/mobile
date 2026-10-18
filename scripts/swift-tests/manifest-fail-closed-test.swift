@@ -174,7 +174,7 @@ func seededFile(_ path: String, rows: Int, wal: Bool = true) {
   exec(db, schema)
   BackupManifestStore.migrate(db)
   exec(db, BackupManifestStore.pendingMarksTableSQL)
-  exec(db, "INSERT INTO backup_pending_marks VALUES ('acct-B', 'pb', 'f-b', \(now))")
+  exec(db, "INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms) VALUES ('acct-B', 'pb', 'f-b', \(now))")
   for i in 0..<rows {
     exec(db, """
     INSERT INTO backup_assets (local_asset_id, remote_file_id, created_at, asset_type, status, uploaded_account_id)
