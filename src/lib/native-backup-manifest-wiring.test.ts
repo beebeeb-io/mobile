@@ -26,6 +26,7 @@ import { join } from 'node:path';
 const IOS = join(import.meta.dir, '../../modules/beebeeb-crypto/ios');
 const engine = readFileSync(join(IOS, 'NativeBackupEngine.swift'), 'utf8');
 const moduleSwift = readFileSync(join(IOS, 'BeebeebCryptoModule.swift'), 'utf8');
+const gateSwift = readFileSync(join(IOS, 'ManifestRebuildGate.swift'), 'utf8');
 const backupContext = readFileSync(join(import.meta.dir, 'backup-context.tsx'), 'utf8');
 
 /** Strip `//` comments so prose that names a call never counts as the call. */
@@ -132,12 +133,16 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
 });
 
 describe('round 2: kept pending marks + sign-out flush', () => {
-  test('ensureManifestReadyForUploads applies kept marks AFTER the server rebuild, and on the ready fast paths', () => {
-    const ready = body(engine, 'func ensureManifestReadyForUploads(accountId: String, authToken: String, baseURL: String) async -> Bool {');
-    const apply = ready.indexOf('BackupManifestStore.applyServerMap(');
+  test('the rebuild gate applies kept marks AFTER the server map, and on the ready fast paths', () => {
+    const gate = body(gateSwift, 'static func run(alreadyReady: Bool, steps: Steps) async -> Outcome {');
+    const apply = gate.indexOf('steps.applyMap(map)');
     expect(apply).toBeGreaterThan(-1);
-    expect(ready.lastIndexOf('applyKeptPendingMarks(accountId: accountId)')).toBeGreaterThan(apply);
-    expect((ready.match(/applyKeptPendingMarks\(accountId: accountId\)/g) ?? []).length).toBe(3);
+    expect(gate.lastIndexOf('steps.applyKept()')).toBeGreaterThan(apply);
+    // Rebuild path + fast path (already ready, or nothing to rebuild).
+    expect((gate.match(/steps\.applyKept\(\)/g) ?? []).length).toBe(2);
+    const ready = body(engine, 'func ensureManifestReadyForUploads(accountId: String, authToken: String, baseURL: String) async -> Bool {');
+    expect(ready).toMatch(/await ManifestRebuildGate\.run\(alreadyReady: manifestReadyForAccount == accountId, steps: steps\)/);
+    expect(ready).toMatch(/applyKept: \{ \[weak self\] in self\?\.applyKeptPendingMarks\(accountId: accountId\) \}/);
   });
 
   test('the sign-out flush has no row cap and is bounded by time', () => {
@@ -171,7 +176,7 @@ describe('round 2: kept pending marks + sign-out flush', () => {
 
   test('App signOut flushes marks BEFORE logout() revokes the session', () => {
     const app = code(readFileSync(join(import.meta.dir, '../App.tsx'), 'utf8'));
-    const signOut = app.slice(app.indexOf('const signOut = useCallback(async () => {'));
+    const signOut = app.slice(app.indexOf('const runSignOut = useCallback(async () => {'));
     const [flush, logout] = order(signOut, 'BeebeebCrypto.flushBackupServerMarksForSignOut()', 'await logout();');
     expect(flush).toBeGreaterThan(-1);
     expect(logout).toBeGreaterThan(flush);
@@ -180,7 +185,7 @@ describe('round 2: kept pending marks + sign-out flush', () => {
   test('round 3: App signOut waits for the native flush through the JS-side bound', () => {
     const app = code(readFileSync(join(import.meta.dir, '../App.tsx'), 'utf8'));
     expect(app).toMatch(/import \{[^}]*\bflushMarksBeforeSignOut\b[^}]*\} from '\.\/lib\/sign-out-mark-flush'/);
-    const signOut = app.slice(app.indexOf('const signOut = useCallback(async () => {'));
+    const signOut = app.slice(app.indexOf('const runSignOut = useCallback(async () => {'));
     const [bounded, native, logout] = order(
       signOut,
       'await flushMarksBeforeSignOut(',
@@ -192,6 +197,19 @@ describe('round 2: kept pending marks + sign-out flush', () => {
     expect(logout).toBeGreaterThan(native);
     // Never awaited raw: a native promise that never settles would hold sign-out.
     expect(signOut.slice(0, logout)).not.toMatch(/await BeebeebCrypto\.flushBackupServerMarksForSignOut\(/);
+  });
+
+  test('round 4: AuthContext signOut is single-flight (a second tap joins the running sign-out)', () => {
+    const app = code(readFileSync(join(import.meta.dir, '../App.tsx'), 'utf8'));
+    expect(app).toMatch(/import \{ singleFlight \} from '\.\/lib\/single-flight'/);
+    expect(app).toMatch(/const signOut = useMemo\(\(\) => singleFlight\(runSignOut\), \[runSignOut\]\);/);
+    const provider = app.slice(app.indexOf('<AuthContext.Provider value={{'));
+    const value = provider.slice(0, provider.indexOf('}}'));
+    expect(value).toMatch(/\bsignOut\b/);
+    expect(value).not.toMatch(/runSignOut/);
+    // Nothing else calls the raw run (it would bypass the join): definition,
+    // the singleFlight wrap, and its dependency list.
+    expect((app.match(/\brunSignOut\b/g) ?? []).length).toBe(3);
   });
 
   test('BackupDatabase calls only the four tracked methods on its handle', () => {
@@ -233,16 +251,49 @@ describe('3. an empty manifest is rebuilt before any upload; uploads are marked 
     expect(pending).toBeGreaterThan(gate);
   });
 
-  test('a failed server fetch blocks uploads (returns false), it never proceeds into an empty manifest', () => {
+  test('round 4: every step of the rebuild path fails closed; the account is ready only on .ready', () => {
+    // The gate: each step's failure returns .deferred before the next step.
+    const gate = body(gateSwift, 'static func run(alreadyReady: Bool, steps: Steps) async -> Outcome {');
+    const seq = order(
+      gate,
+      'guard let needsRebuild = steps.needsRebuild() else { return .deferred(.checkFailed) }',
+      'guard steps.hasDeviceId() else { return .deferred(.noDeviceId) }',
+      'map = try await steps.fetchMap()',
+      'return .deferred(.fetchFailed)',
+      'guard steps.isStillCurrent() else { return .deferred(.accountChanged) }',
+      'guard let promoted = steps.applyMap(map) else { return .deferred(.applyMapFailed) }',
+      'guard let kept = steps.applyKept() else { return .deferred(.applyKeptFailed) }',
+    );
+    expect(seq[0]).toBeGreaterThan(-1);
+    for (let i = 1; i < seq.length; i += 1) expect(seq[i]).toBeGreaterThan(seq[i - 1]);
+
+    // The engine: ready (and `return true`) only in the .ready branch.
     const ready = body(engine, 'func ensureManifestReadyForUploads(accountId: String, authToken: String, baseURL: String) async -> Bool {');
-    const catchBlock = body(ready, 'catch {');
-    expect(catchBlock).toMatch(/return false\s*$/);
-    expect(catchBlock).not.toMatch(/return true/);
-    expect(ready).toMatch(/guard let deviceId = backupDeviceId, !deviceId\.isEmpty else \{[\s\S]*?return false\s*\}/);
-    // Ready only after the server map was applied (or nothing needed it).
-    const [apply, ready1] = order(ready, 'BackupManifestStore.applyServerMap(', 'manifestReadyForAccount = accountId\n    RuntimeTrace');
-    expect(apply).toBeGreaterThan(-1);
-    expect(ready1).toBeGreaterThan(apply);
+    const [readyCase, deferredCase] = order(ready, 'case let .ready(', 'case let .deferred(reason):');
+    expect(readyCase).toBeGreaterThan(-1);
+    expect(deferredCase).toBeGreaterThan(readyCase);
+    const marks = [...ready.matchAll(/manifestReadyForAccount = accountId/g)].map((m) => m.index ?? -1);
+    expect(marks.length).toBe(1);
+    expect(marks[0]).toBeGreaterThan(readyCase);
+    expect(marks[0]).toBeLessThan(deferredCase);
+    expect((ready.match(/return true/g) ?? []).length).toBe(1);
+    expect(ready.indexOf('return true')).toBeLessThan(deferredCase);
+    expect(ready.slice(deferredCase)).toMatch(/return false\s*\}\s*$/);
+    // A deferral pauses uploads behind the gate's bounded backoff.
+    expect(ready.slice(deferredCase)).toMatch(/ManifestRebuildGate\.backoff\(for: reason, consecutiveFailures: failures\)/);
+    expect(ready.slice(deferredCase)).toMatch(/backoffUntil = Date\(\)\.addingTimeInterval\(wait\)/);
+
+    // The steps report failure as nil, never as 0 / "nothing there".
+    expect(ready).toMatch(/guard BackupManifestStore\.claim\(db, accountId: accountId, nowMs: self\.nowMs\(\)\) != nil else \{ return nil \}/);
+    expect(ready).toMatch(/return BackupManifestStore\.needsServerRebuild\(db, accountId: accountId\)/);
+    expect(ready).toMatch(/applyMap: \{ \[weak self\] map in[\s\S]*?guard let db = self\.db else \{ return nil \}[\s\S]*?return BackupManifestStore\.applyServerMap\(/);
+    const stepsSrc = ready.slice(0, ready.indexOf('let outcome = await ManifestRebuildGate.run('));
+    expect(stepsSrc.length).toBeGreaterThan(0);
+    expect(stepsSrc).not.toMatch(/\?\? 0/);
+    expect(ready).toMatch(/guard let self, let deviceId = self\.backupDeviceId, !deviceId\.isEmpty else \{\s*throw/);
+    const kept = body(engine, 'func applyKeptPendingMarks(accountId: String) -> Int? {');
+    expect(kept).toMatch(/guard let db = self\.db else \{ return nil \}/);
+    expect(kept).not.toMatch(/\?\? 0/);
   });
 
   test('both upload completions are followed by a server mark', () => {

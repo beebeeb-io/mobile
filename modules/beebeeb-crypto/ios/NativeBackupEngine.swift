@@ -834,6 +834,14 @@ final class NativeBackupEngine: NSObject {
     set { engineStateLock.lock(); _manifestReadyForAccount = newValue; engineStateLock.unlock() }
   }
 
+  /// Task 1667 round 4: consecutive deferred rebuilds caused by a database
+  /// step (see `ManifestRebuildGate.backoff`); 0 after a ready check.
+  private var _manifestRebuildFailures = 0
+  private var manifestRebuildFailures: Int {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _manifestRebuildFailures }
+    set { engineStateLock.lock(); _manifestRebuildFailures = newValue; engineStateLock.unlock() }
+  }
+
   // Cached UIApplication state — read by `currentApplicationState()` from
   // background queues without blocking on main. The cache is seeded at init
   // and maintained via four lifecycle notification observers; the previous
@@ -5713,9 +5721,15 @@ final class NativeBackupEngine: NSObject {
   /// to run on every bind.
   func claimManifest(forAccount accountId: String) {
     guard !accountId.isEmpty else { return }
-    let result: (adopted: Int, requeued: Int) = dbQueue.sync {
-      guard let db = self.db else { return (0, 0) }
+    // Best-effort here (bind); a claim that could not commit is retried, and
+    // enforced, by `ensureManifestReadyForUploads` before any upload.
+    let claimed: (adopted: Int, requeued: Int)? = dbQueue.sync {
+      guard let db = self.db else { return nil }
       return BackupManifestStore.claim(db, accountId: accountId, nowMs: self.nowMs())
+    }
+    guard let result = claimed else {
+      RuntimeTrace.event("backup.native.manifest.claim_failed")
+      return
     }
     if result.adopted > 0 || result.requeued > 0 {
       RuntimeTrace.event("backup.native.manifest.claimed", [
@@ -5733,60 +5747,84 @@ final class NativeBackupEngine: NSObject {
   /// device is uploaded twice. When the server cannot be asked (no device id
   /// yet, offline, 5xx) this returns false and no upload starts; the next
   /// batch asks again. Never deletes anything.
+  ///
+  /// Round 4 (Codex P1 "Fail closed when applying the server identifier
+  /// map"): the order and the rule live in `ManifestRebuildGate.run`. EVERY
+  /// step fails closed — the claim, the "needs a rebuild?" read, the fetch,
+  /// the server-map write and the kept-marks write each return nil (or
+  /// throw) on failure, never a count of 0 — and a failure keeps uploads
+  /// paused behind a bounded backoff until the step succeeds. The account is
+  /// marked ready only on `.ready`.
   func ensureManifestReadyForUploads(accountId: String, authToken: String, baseURL: String) async -> Bool {
     guard !accountId.isEmpty else { return false }
-    if manifestReadyForAccount == accountId {
-      applyKeptPendingMarks(accountId: accountId)
-      return true
-    }
-    let needsRebuild: Bool? = dbQueue.sync {
-      guard let db = self.db else { return nil }
-      BackupManifestStore.claim(db, accountId: accountId, nowMs: self.nowMs())
-      return BackupManifestStore.needsServerRebuild(db, accountId: accountId)
-    }
-    guard let needsRebuild else { return false }
-    if !needsRebuild {
+    let steps = ManifestRebuildGate.Steps(
+      needsRebuild: { [weak self] in
+        guard let self else { return nil }
+        return self.dbQueue.sync { () -> Bool? in
+          guard let db = self.db else { return nil }
+          guard BackupManifestStore.claim(db, accountId: accountId, nowMs: self.nowMs()) != nil else { return nil }
+          return BackupManifestStore.needsServerRebuild(db, accountId: accountId)
+        }
+      },
+      hasDeviceId: { [weak self] in
+        guard let deviceId = self?.backupDeviceId else { return false }
+        return !deviceId.isEmpty
+      },
+      fetchMap: { [weak self] in
+        guard let self, let deviceId = self.backupDeviceId, !deviceId.isEmpty else {
+          throw BackupError.notConfigured
+        }
+        do {
+          return try await self.fetchServerIdentifierMap(
+            authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId
+          )
+        } catch {
+          RuntimeTrace.event("backup.native.manifest_rebuild.fetch_error", [
+            "error": String(describing: error).prefix(160).description,
+          ])
+          throw error
+        }
+      },
+      isStillCurrent: { [weak self] in self?.currentAccountId == accountId },
+      applyMap: { [weak self] map in
+        guard let self else { return nil }
+        return self.dbQueue.sync { () -> Int? in
+          guard let db = self.db else { return nil }
+          return BackupManifestStore.applyServerMap(
+            db,
+            accountId: accountId,
+            localToFileId: map,
+            uploadedAtIso: ISO8601DateFormatter().string(from: Date()),
+            nowMs: self.nowMs()
+          )
+        }
+      },
+      applyKept: { [weak self] in self?.applyKeptPendingMarks(accountId: accountId) }
+    )
+    let outcome = await ManifestRebuildGate.run(alreadyReady: manifestReadyForAccount == accountId, steps: steps)
+    switch outcome {
+    case let .ready(rebuilt, promoted, keptApplied):
       manifestReadyForAccount = accountId
-      applyKeptPendingMarks(accountId: accountId)
+      manifestRebuildFailures = 0
+      if rebuilt {
+        RuntimeTrace.event("backup.native.manifest_rebuild.done", [
+          "promoted": promoted,
+          "keptApplied": keptApplied,
+        ])
+      }
       return true
-    }
-    guard let deviceId = backupDeviceId, !deviceId.isEmpty else {
-      RuntimeTrace.event("backup.native.manifest_rebuild.deferred", ["reason": "no_device_id"])
-      return false
-    }
-    let map: [String: String]
-    do {
-      map = try await fetchServerIdentifierMap(
-        authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId
-      )
-    } catch {
+    case let .deferred(reason):
+      let failures = manifestRebuildFailures + 1
+      manifestRebuildFailures = failures
+      let wait = ManifestRebuildGate.backoff(for: reason, consecutiveFailures: failures)
+      if let wait { backoffUntil = Date().addingTimeInterval(wait) }
       RuntimeTrace.event("backup.native.manifest_rebuild.deferred", [
-        "reason": "fetch_failed",
-        "error": String(describing: error).prefix(160).description,
+        "reason": reason.rawValue,
+        "consecutive": failures,
+        "backoffSeconds": wait.map { Int($0) } ?? 0,
       ])
-      backoffUntil = Date().addingTimeInterval(30)
       return false
     }
-    guard currentAccountId == accountId else { return false }
-    let promoted: Int = dbQueue.sync {
-      guard let db = self.db else { return 0 }
-      return BackupManifestStore.applyServerMap(
-        db,
-        accountId: accountId,
-        localToFileId: map,
-        uploadedAtIso: ISO8601DateFormatter().string(from: Date()),
-        nowMs: self.nowMs()
-      )
-    }
-    manifestReadyForAccount = accountId
-    RuntimeTrace.event("backup.native.manifest_rebuild.done", [
-      "serverEntries": map.count,
-      "promoted": promoted,
-    ])
-    // AFTER the server rebuild (it is decided on "nothing uploaded yet"):
-    // uploads the server's map did not have at the last sign-out.
-    applyKeptPendingMarks(accountId: accountId)
-    return true
   }
 
   /// Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
@@ -5796,14 +5834,18 @@ final class NativeBackupEngine: NSObject {
   /// second time; the mark catch-up then sends them to the server. Local
   /// only, scoped to `accountId`; runs before every batch because rows the
   /// scan has not inserted yet can only be matched later.
-  func applyKeptPendingMarks(accountId: String) {
-    let promoted: Int = dbQueue.sync {
-      guard let db = self.db else { return 0 }
+  ///
+  /// Round 4: nil when they could not be applied (no handle, writer lock);
+  /// the gate then keeps uploads paused instead of uploading those photos.
+  func applyKeptPendingMarks(accountId: String) -> Int? {
+    let promoted: Int? = dbQueue.sync {
+      guard let db = self.db else { return nil }
       return BackupManifestStore.applyPendingMarks(db, accountId: accountId, nowMs: self.nowMs())
     }
-    if promoted > 0 {
+    if let promoted, promoted > 0 {
       RuntimeTrace.event("backup.native.pending_marks.applied", ["promoted": promoted])
     }
+    return promoted
   }
 
   /// `GET /api/v1/files/photo-backup/identifiers` for this device, as
@@ -5977,6 +6019,7 @@ final class NativeBackupEngine: NSObject {
     // 1962 Bug 4: the next account must not inherit this one's Backups folder.
     parentFolderId = nil
     manifestReadyForAccount = nil
+    manifestRebuildFailures = 0
     let dbPath = Self.backupDatabaseURL().standardizedFileURL.path
     let kept: Set<String> = [dbPath, dbPath + "-wal", dbPath + "-shm"]
     let resetOK: Bool = dbQueue.sync {

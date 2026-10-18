@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
@@ -51,6 +51,7 @@ import { ensureFilesMountedByDefault } from './lib/files-mount-default';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
 import { purgeAllPlaintextCaches } from './lib/account-cleanup';
+import { singleFlight } from './lib/single-flight';
 import { createSignedOutPurger } from './lib/signed-out-purge';
 import {
   setupNotificationHandler,
@@ -1058,7 +1059,7 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
-  const signOut = useCallback(async () => {
+  const runSignOut = useCallback(async () => {
     // Remove the push token before clearing the session.
     void unregisterPushToken();
     // Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
@@ -1107,6 +1108,11 @@ export default function App() {
     setPhraseVerified(true);
     setUser(null);
   }, []);
+  // Task 1667 round 4 (Codex P1 "Serialize overlapping database purge
+  // holds"): one sign-out at a time. Sign out tapped twice (two confirmation
+  // alerts), or two screens asking at once, joins the run already in progress
+  // instead of starting a second flush, logout and storage purge.
+  const signOut = useMemo(() => singleFlight(runSignOut), [runSignOut]);
 
   // Retry getMe() on transient startup failures. A 401 is definitive: the
   // API client clears the invalid token, and startup must render signed-out

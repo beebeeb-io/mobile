@@ -207,13 +207,22 @@ let duringPurge: (() => Promise<void>) | null = null;
 let liveAtNativePurge = -1;
 let liveAtNativePurgeEnd = -1;
 let nativeResult: Record<string, number> = { removed: 0, failed: 0 };
+// Round 4: how many native purges run at the same time (must never exceed 1).
+let nativeConcurrent = 0;
+let maxNativeConcurrent = 0;
 async function nativePurge() {
   purgeCalls.push('native');
   events.push('native-purge');
+  nativeConcurrent += 1;
+  maxNativeConcurrent = Math.max(maxNativeConcurrent, nativeConcurrent);
   liveAtNativePurge = live();
   nativeRunning = true;
-  if (duringPurge) await duringPurge();
-  else await new Promise((r) => setTimeout(r, 10));
+  try {
+    if (duringPurge) await duringPurge();
+    else await new Promise((r) => setTimeout(r, 10));
+  } finally {
+    nativeConcurrent -= 1;
+  }
   nativeRunning = false;
   liveAtNativePurgeEnd = live();
   return nativeResult;
@@ -356,6 +365,124 @@ describe('round 2 (Codex P1): after a failed native reset the JS handle is close
     await purgeAllPlaintextCaches();
     expect(finishCalls).toEqual([]);
     expect(closed).toBe(closedBefore);
+  });
+});
+
+describe('round 4 (Codex P1 "Serialize overlapping database purge holds")', () => {
+  // Every test asserts the hold is gone BEFORE it issues a database call: on
+  // the pre-round-4 code a leaked (already resolved) barrier makes
+  // `while (purgeBarrier) await purgeBarrier` spin forever.
+  test('two holds released first-in-first-out: the database is released after the LAST one only', async () => {
+    await BackupDatabase.initDatabase();
+    const first = await BackupDatabase.suspendForStoragePurge();
+    const second = await BackupDatabase.suspendForStoragePurge();
+    first.resume();
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(true);
+    second.resume();
+    // The bug: the second resume restored the first, already-resolved barrier.
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(false);
+    expect(await BackupDatabase.getUploadedCount()).toBe(0);
+  });
+
+  test('two holds released last-in-first-out: released once, after the last', async () => {
+    await BackupDatabase.initDatabase();
+    const first = await BackupDatabase.suspendForStoragePurge();
+    const second = await BackupDatabase.suspendForStoragePurge();
+    second.resume();
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(true);
+    first.resume();
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(false);
+    expect(await BackupDatabase.getUploadedCount()).toBe(0);
+  });
+
+  test('three overlapping holds released out of order (1, 3, 2): a call waits until the last, then runs', async () => {
+    await BackupDatabase.initDatabase();
+    const holds = [
+      await BackupDatabase.suspendForStoragePurge(),
+      await BackupDatabase.suspendForStoragePurge(),
+      await BackupDatabase.suspendForStoragePurge(),
+    ];
+    let callDone = false;
+    holds[0].resume();
+    holds[2].resume();
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(true);
+    const call = BackupDatabase.getUploadedCount().then(() => { callDone = true; });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(callDone).toBe(false);
+    holds[1].resume();
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(false);
+    await call;
+    expect(callDone).toBe(true);
+  });
+
+  test('a call queued under the FIRST hold runs once the last overlapping hold resumes', async () => {
+    await BackupDatabase.initDatabase();
+    const first = await BackupDatabase.suspendForStoragePurge();
+    let callDone = false;
+    const call = BackupDatabase.getUploadedCount().then(() => { callDone = true; });
+    await new Promise((r) => setTimeout(r, 5));
+    const second = await BackupDatabase.suspendForStoragePurge();
+    first.resume();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(callDone).toBe(false);
+    second.resume();
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(false);
+    // Bounded: a call left waiting on a barrier nobody resolves is a red, not a hang.
+    const outcome = await Promise.race([call.then(() => 'ran'), new Promise((r) => setTimeout(() => r('stuck'), 200))]);
+    expect(outcome).toBe('ran');
+  });
+
+  test('resume is idempotent: a second resume of one hold never releases another hold', async () => {
+    await BackupDatabase.initDatabase();
+    const first = await BackupDatabase.suspendForStoragePurge();
+    const second = await BackupDatabase.suspendForStoragePurge();
+    first.resume();
+    first.resume();
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(true);
+    second.resume();
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(false);
+    second.resume();
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(false);
+    expect(await BackupDatabase.getUploadedCount()).toBe(0);
+  });
+
+  test('Sign out tapped twice: the two purges run one after the other and the database is released', async () => {
+    await BackupDatabase.initDatabase();
+    maxNativeConcurrent = 0;
+    const closedBefore = closed;
+    const nativeBefore = purgeCalls.filter((c) => c === 'native').length;
+    await Promise.all([purgeAllPlaintextCaches(), purgeAllPlaintextCaches()]);
+    expect(purgeCalls.filter((c) => c === 'native').length - nativeBefore).toBe(2);
+    expect(maxNativeConcurrent).toBe(1);
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(false);
+    expect(await BackupDatabase.getUploadedCount()).toBe(0);
+    expect(closed).toBe(closedBefore);
+  });
+
+  test('three overlapping purges, one with a failed reset: serialized, released, and the next call reopens once', async () => {
+    await BackupDatabase.initDatabase();
+    maxNativeConcurrent = 0;
+    const openedBefore = opened;
+    usedAfterClose.length = 0;
+    let n = 0;
+    duringPurge = async () => {
+      n += 1;
+      nativeResult = n === 2
+        ? { removed: 0, failed: 0, backupManifestResetFailed: 1 }
+        : { removed: 0, failed: 0 };
+      await new Promise((r) => setTimeout(r, 5));
+    };
+    finishResult = { ok: 1, unlinked: 1 };
+    await Promise.all([purgeAllPlaintextCaches(), purgeAllPlaintextCaches(), purgeAllPlaintextCaches()]);
+    duringPurge = null;
+    nativeResult = { removed: 0, failed: 0 };
+    expect(n).toBe(3);
+    expect(maxNativeConcurrent).toBe(1);
+    expect(BackupDatabase.isStoragePurgeHoldActive()).toBe(false);
+    await BackupDatabase.getUploadedCount();
+    await BackupDatabase.getDeadLetterItems();
+    expect(opened).toBe(openedBefore + 1);
+    expect(usedAfterClose).toEqual([]);
   });
 });
 

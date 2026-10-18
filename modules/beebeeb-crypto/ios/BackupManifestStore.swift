@@ -294,12 +294,21 @@ enum BackupManifestStore {
 
   /// Pending marks of `accountId` only, for diagnostics and tests.
   static func pendingMarkCount(_ db: OpaquePointer, accountId: String) -> Int {
-    guard tableExists(db, "backup_pending_marks") else { return 0 }
+    pendingMarkCountChecked(db, accountId: accountId) ?? 0
+  }
+
+  /// Round 4: as `pendingMarkCount`, but nil when the count could not be
+  /// read. A missing table (a manifest from before round 2) is 0, a read
+  /// error is NOT: it would read as "nothing kept" and let the scan upload
+  /// those photos again.
+  static func pendingMarkCountChecked(_ db: OpaquePointer, accountId: String) -> Int? {
+    guard let exists = tableExistsChecked(db, "backup_pending_marks") else { return nil }
+    guard exists else { return 0 }
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM backup_pending_marks WHERE account_id = ?", -1, &stmt, nil) == SQLITE_OK else { return 0 }
+    guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM backup_pending_marks WHERE account_id = ?", -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
     bindText(stmt, 1, accountId)
-    guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+    guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
     return Int(sqlite3_column_int64(stmt, 0))
   }
 
@@ -309,11 +318,18 @@ enum BackupManifestStore {
   /// sends it to the server), and its kept row is consumed. Kept rows whose
   /// photo has no manifest row yet stay for the next call. Expired rows of
   /// any account are dropped. Another account's rows are never read.
+  ///
+  /// Round 4 (Codex P1 "Fail closed when applying the server identifier
+  /// map"): nil when it could not run or commit (e.g. another connection
+  /// holds the writer lock). 0 means "nothing to apply" and nothing else: the
+  /// caller must not start uploads on nil, or every kept photo uploads again.
   @discardableResult
-  static func applyPendingMarks(_ db: OpaquePointer, accountId: String, nowMs: Int64) -> Int {
-    guard !accountId.isEmpty, pendingMarkCount(db, accountId: accountId) > 0 else { return 0 }
-    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return 0 }
-    _ = run(db, "DELETE FROM backup_pending_marks WHERE created_at_ms < ?") { stmt in
+  static func applyPendingMarks(_ db: OpaquePointer, accountId: String, nowMs: Int64) -> Int? {
+    guard !accountId.isEmpty else { return 0 }
+    guard let count = pendingMarkCountChecked(db, accountId: accountId) else { return nil }
+    guard count > 0 else { return 0 }
+    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
+    let expired = run(db, "DELETE FROM backup_pending_marks WHERE created_at_ms < ?") { stmt in
       sqlite3_bind_int64(stmt, 1, nowMs - pendingMarksRetentionMs)
     }
     let promoteSQL = """
@@ -346,9 +362,9 @@ enum BackupManifestStore {
                       AND a.uploaded_account_id = ?1
                       AND a.remote_file_id = backup_pending_marks.remote_file_id)
     """) { stmt in bindText(stmt, 1, accountId) }
-    guard promoted >= 0, consumed >= 0, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+    guard expired >= 0, promoted >= 0, consumed >= 0, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
       sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
-      return 0
+      return nil
     }
     return promoted
   }
@@ -381,9 +397,15 @@ enum BackupManifestStore {
   ///     uploaded those photos, whatever the manifest says.
   /// Rows mid-upload (`staged_file_id` set) are left to
   /// `purgeMismatchedStagedAssets`, which owns staged state.
+  ///
+  /// Round 4: both updates commit together or not at all, and nil reports
+  /// that they did not (e.g. another connection holds the writer lock). A
+  /// failed claim leaves another account's rows reading as "uploaded"; the
+  /// rebuild gate does not start uploads on nil.
   @discardableResult
-  static func claim(_ db: OpaquePointer, accountId: String, nowMs: Int64) -> (adopted: Int, requeued: Int) {
+  static func claim(_ db: OpaquePointer, accountId: String, nowMs: Int64) -> (adopted: Int, requeued: Int)? {
     guard !accountId.isEmpty else { return (0, 0) }
+    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
     let adoptSQL = """
     UPDATE backup_assets
        SET uploaded_account_id = ?
@@ -413,26 +435,31 @@ enum BackupManifestStore {
       sqlite3_bind_int64(stmt, 1, nowMs)
       bindText(stmt, 2, accountId)
     }
-    return (max(adopted, 0), max(requeued, 0))
+    guard adopted >= 0, requeued >= 0, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+      sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+      return nil
+    }
+    return (adopted, requeued)
   }
 
-  /// Rows this account has uploaded according to the manifest.
-  static func uploadedCount(_ db: OpaquePointer, accountId: String) -> Int {
+  /// Rows this account has uploaded according to the manifest; nil when the
+  /// count could not be read (round 4: an error is not "none").
+  static func uploadedCount(_ db: OpaquePointer, accountId: String) -> Int? {
     let sql = "SELECT COUNT(*) FROM backup_assets WHERE status = 'uploaded' AND uploaded_account_id = ?"
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
     bindText(stmt, 1, accountId)
-    guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+    guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
     return Int(sqlite3_column_int64(stmt, 0))
   }
 
   /// A manifest holding nothing this account uploaded must be rebuilt from
   /// the server before its first upload: otherwise every photo the account
   /// already backed up from this device (sign-out then sign-in, reinstall)
-  /// is uploaded again.
-  static func needsServerRebuild(_ db: OpaquePointer, accountId: String) -> Bool {
-    uploadedCount(db, accountId: accountId) == 0
+  /// is uploaded again. nil when the manifest could not be read.
+  static func needsServerRebuild(_ db: OpaquePointer, accountId: String) -> Bool? {
+    uploadedCount(db, accountId: accountId).map { $0 == 0 }
   }
 
   // MARK: - Upload completion
@@ -534,6 +561,14 @@ enum BackupManifestStore {
   /// from this device becomes `uploaded` (and already marked). Only rows
   /// that are not uploaded and not mid-upload change; nothing is deleted.
   /// Returns the number of rows promoted.
+  ///
+  /// Round 4 (Codex P1 "Fail closed when applying the server identifier
+  /// map"): nil unless EVERY update ran and the transaction committed. The
+  /// old shape returned 0 when `BEGIN` or a step failed (another connection
+  /// holding the writer lock), the same value as "the server has none of
+  /// these", and the engine then queued every photo again. `BEGIN IMMEDIATE`
+  /// takes the writer lock up front, so a busy database fails before any
+  /// update instead of partway through.
   @discardableResult
   static func applyServerMap(
     _ db: OpaquePointer,
@@ -541,8 +576,9 @@ enum BackupManifestStore {
     localToFileId: [String: String],
     uploadedAtIso: String,
     nowMs: Int64
-  ) -> Int {
-    guard !accountId.isEmpty, !localToFileId.isEmpty else { return 0 }
+  ) -> Int? {
+    guard !accountId.isEmpty else { return nil }
+    guard !localToFileId.isEmpty else { return 0 }
     let sql = """
     UPDATE backup_assets
        SET status = 'uploaded',
@@ -557,9 +593,9 @@ enum BackupManifestStore {
        AND status IN (\(rebuildableStatuses))
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
-    guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { return 0 }
+    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
     var promoted = 0
     for (local, fileId) in localToFileId {
       bindText(stmt, 1, fileId)
@@ -567,15 +603,18 @@ enum BackupManifestStore {
       bindText(stmt, 3, accountId)
       sqlite3_bind_int64(stmt, 4, nowMs)
       bindText(stmt, 5, local)
-      if sqlite3_step(stmt) == SQLITE_DONE {
-        promoted += Int(sqlite3_changes(db))
-      }
+      let rc = sqlite3_step(stmt)
       sqlite3_reset(stmt)
       sqlite3_clear_bindings(stmt)
+      guard rc == SQLITE_DONE else {
+        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        return nil
+      }
+      promoted += Int(sqlite3_changes(db))
     }
     guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
       sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
-      return 0
+      return nil
     }
     return promoted
   }
@@ -599,11 +638,20 @@ enum BackupManifestStore {
   }
 
   static func tableExists(_ db: OpaquePointer, _ name: String) -> Bool {
+    tableExistsChecked(db, name) ?? false
+  }
+
+  /// nil when sqlite_master could not be read (round 4: an error is not "no").
+  static func tableExistsChecked(_ db: OpaquePointer, _ name: String) -> Bool? {
     let sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
     bindText(stmt, 1, name)
-    return sqlite3_step(stmt) == SQLITE_ROW
+    switch sqlite3_step(stmt) {
+    case SQLITE_ROW: return true
+    case SQLITE_DONE: return false
+    default: return nil
+    }
   }
 }

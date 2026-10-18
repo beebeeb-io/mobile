@@ -75,6 +75,16 @@ const LOCAL_MISSING_MIGRATION_MIN_INTERVAL_MS = 60_000;
 // handle while it is set (see `trackedDb`).
 let purgeBarrier: Promise<void> | null = null;
 
+// Task 1667 round 4 (Codex P1 "Serialize overlapping database purge holds"):
+// holds are reference-counted. ONE barrier exists while any hold is
+// installed; it is cleared and released exactly once, when the last hold
+// resumes, in whatever order they resume. (Round 2-3 kept a per-hold barrier
+// and restored the "previous" one on resume: two overlapping purges released
+// first-in-first-out left the first, already-resolved barrier installed, and
+// every later call spun on it forever.)
+let purgeHolds = 0;
+let releasePurgeBarrier: (() => void) | null = null;
+
 // Task 1667 round 2 (Codex P1 "Treat a busy WAL checkpoint as a failed
 // reset"): calls currently running on the handle. A read already started when
 // the purge begins would otherwise keep an old WAL snapshot open while the
@@ -176,25 +186,36 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
  * — its reset failed and its own handle is already closed — so it can replace
  * the file without this module keeping a deleted inode open. The next call
  * after `resume` opens a fresh handle.
+ *
+ * Round 4: holds may overlap (two sign-outs, or a sign-out and the
+ * signed-out-surface purge); they are reference-counted, so the module is
+ * released exactly once, after the last `resume`.
  */
 export async function suspendForStoragePurge(): Promise<StoragePurgeHold> {
-  let release!: () => void;
-  const barrier = new Promise<void>((resolve) => { release = resolve; });
-  const previousBarrier = purgeBarrier;
-  purgeBarrier = barrier;
+  if (purgeHolds === 0) {
+    purgeBarrier = new Promise<void>((resolve) => { releasePurgeBarrier = resolve; });
+  }
+  purgeHolds += 1;
+  let resumed = false;
+  // Idempotent: a second resume of the same hold never releases another one.
+  const resume = () => {
+    if (resumed) return;
+    resumed = true;
+    purgeHolds -= 1;
+    if (purgeHolds === 0) {
+      const release = releasePurgeBarrier;
+      purgeBarrier = null;
+      releasePurgeBarrier = null;
+      release?.();
+    }
+  };
   const open = dbPromise;
   if (open) {
     // Let a migration already running finish before the reset; never close.
     await open.catch(() => undefined);
   }
   await whenIdle();
-  return {
-    resume: () => {
-      if (purgeBarrier === barrier) purgeBarrier = previousBarrier;
-      release();
-    },
-    closeHandle: closeHandleForStoragePurge,
-  };
+  return { resume, closeHandle: closeHandleForStoragePurge };
 }
 
 async function closeHandleForStoragePurge(): Promise<boolean> {
@@ -210,6 +231,11 @@ async function closeHandleForStoragePurge(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Test seam: true while any purge hold is installed (calls would wait). */
+export function isStoragePurgeHoldActive(): boolean {
+  return purgeBarrier !== null;
 }
 
 registerStoragePurgeParticipant(suspendForStoragePurge);

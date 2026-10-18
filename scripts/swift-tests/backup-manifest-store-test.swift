@@ -272,9 +272,11 @@ do {
   insert(db, "a-up", status: "uploaded", remote: "f-a", owner: "acct-A")
   insert(db, "b-staged", status: "uploading", remote: "f-bs", owner: "acct-B", staged: "f-bs")
 
-  let r = BackupManifestStore.claim(db, accountId: "acct-A", nowMs: 1_000)
-  expect(r.adopted == 1, "one legacy row adopted (got \(r.adopted))")
-  expect(r.requeued == 2, "two rows of acct-B re-queued (got \(r.requeued))")
+  // Optional since round 4 (nil = could not commit); typed so the file also
+  // compiles against the pre-round-4 store for the red run.
+  let r: (adopted: Int, requeued: Int)? = BackupManifestStore.claim(db, accountId: "acct-A", nowMs: 1_000)
+  expect(r?.adopted == 1, "one legacy row adopted (got \(String(describing: r?.adopted)))")
+  expect(r?.requeued == 2, "two rows of acct-B re-queued (got \(String(describing: r?.requeued)))")
   expect(text(db, "SELECT uploaded_account_id FROM backup_assets WHERE local_asset_id='legacy-up'") == "acct-A",
          "legacy uploaded row now owned by the binding account")
   expect(text(db, "SELECT status FROM backup_assets WHERE local_asset_id='b-up'") == "pending_upload",
@@ -288,11 +290,11 @@ do {
   expect(text(db, "SELECT status FROM backup_assets WHERE local_asset_id='a-up'") == "uploaded",
          "acct-A's own row untouched")
   expect(BackupManifestStore.uploadedCount(db, accountId: "acct-A") == 2, "acct-A owns 2 uploaded rows")
-  expect(!BackupManifestStore.needsServerRebuild(db, accountId: "acct-A"), "acct-A's manifest needs no rebuild")
-  expect(BackupManifestStore.needsServerRebuild(db, accountId: "acct-B"), "acct-B (nothing of its own) needs a rebuild")
+  expect(BackupManifestStore.needsServerRebuild(db, accountId: "acct-A") == false, "acct-A's manifest needs no rebuild")
+  expect(BackupManifestStore.needsServerRebuild(db, accountId: "acct-B") == true, "acct-B (nothing of its own) needs a rebuild")
 
-  let again = BackupManifestStore.claim(db, accountId: "acct-A", nowMs: 2_000)
-  expect(again.adopted == 0 && again.requeued == 0, "claim is idempotent")
+  let again: (adopted: Int, requeued: Int)? = BackupManifestStore.claim(db, accountId: "acct-A", nowMs: 2_000)
+  expect(again?.adopted == 0 && again?.requeued == 0, "claim is idempotent")
   sqlite3_close_v2(db)
 }
 
@@ -340,7 +342,7 @@ do {
   let promoted = BackupManifestStore.applyServerMap(
     db, accountId: "acct-A", localToFileId: map ?? [:], uploadedAtIso: "2026-10-18T03:00:00Z", nowMs: 7
   )
-  expect(promoted == 2, "two rows promoted (got \(promoted))")
+  expect(promoted == 2, "two rows promoted (got \(String(describing: promoted)))")
   expect(text(db, "SELECT status || ':' || remote_file_id || ':' || uploaded_account_id FROM backup_assets WHERE local_asset_id='p1'")
          == "uploaded:f-1:acct-A", "p1 rebuilt as uploaded, file f-1, owner acct-A")
   expect(scalar(db, "SELECT server_marked_at FROM backup_assets WHERE local_asset_id='p1'") == 7, "rebuilt rows count as marked")
@@ -348,7 +350,7 @@ do {
   expect(text(db, "SELECT status FROM backup_assets WHERE local_asset_id='staged'") == "staged_upload", "a staged row is not touched")
   expect(text(db, "SELECT remote_file_id FROM backup_assets WHERE local_asset_id='up'") == "f-mine", "an uploaded row keeps its file")
   expect(scalar(db, "SELECT COUNT(*) FROM backup_assets") == 6, "nothing deleted")
-  expect(!BackupManifestStore.needsServerRebuild(db, accountId: "acct-A"), "after the rebuild the manifest is ready")
+  expect(BackupManifestStore.needsServerRebuild(db, accountId: "acct-A") == false, "after the rebuild the manifest is ready")
   sqlite3_close_v2(db)
 }
 
@@ -412,7 +414,7 @@ do {
                                                    uploadedAtIso: "2026-10-18T03:00:00Z", nowMs: now)
   expect(rebuilt == 1, "server map promotes the marked upload")
   let applied = BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now)
-  expect(applied == 2, "the 2 kept uploads of acct-A are promoted (got \(applied))")
+  expect(applied == 2, "the 2 kept uploads of acct-A are promoted (got \(String(describing: applied)))")
   expect(text(db, "SELECT status || ':' || remote_file_id || ':' || uploaded_account_id FROM backup_assets WHERE local_asset_id='a-unmarked'")
          == "uploaded:f-a1:acct-A", "a-unmarked is uploaded again with its own file id, owner acct-A")
   expect(text(db, "SELECT status || ':' || remote_file_id FROM backup_assets WHERE local_asset_id='legacy'") == "uploaded:f-legacy",
@@ -514,6 +516,114 @@ do {
   sqlite3_close_v2(fresh)
   exec(locker, "ROLLBACK")
   sqlite3_close_v2(locker)
+}
+
+// MARK: - 7. Round 4 (Codex P1 "Fail closed when applying the server identifier map")
+//
+// Another connection (the JS layer's expo-sqlite handle, or a second engine
+// statement) holds the writer lock. Every step of the rebuild path must then
+// report FAILURE (nil), never a count of 0: 0 reads as "nothing on the server
+// / nothing kept", the engine declares the account ready, and the scan queues
+// every photo the server already has. Typed as optionals so this section also
+// compiles against the pre-round-4 store (Int / Bool / tuple promote to
+// Optional), which is how the red run was taken.
+
+func lockedManifest(_ name: String) -> (db: OpaquePointer, locker: OpaquePointer) {
+  let path = root.appendingPathComponent(name).path
+  let db = open(path)
+  exec(db, schema)
+  BackupManifestStore.migrate(db)
+  return (db, open(path))
+}
+
+do {
+  let (db, locker) = lockedManifest("locked-map.db")
+  for id in ["p1", "p2", "p3"] { insert(db, id, status: "pending_upload") }
+  insert(db, "legacy", status: "uploaded", remote: "f-legacy")
+  exec(db, "INSERT INTO backup_pending_marks VALUES ('acct-A', 'p3', 'f-3', \(now))")
+  let map = ["p1": "f-1", "p2": "f-2"]
+
+  exec(locker, "BEGIN IMMEDIATE")
+  exec(locker, "UPDATE backup_assets SET retry_count = retry_count WHERE 0")
+
+  let claimed: (adopted: Int, requeued: Int)? = BackupManifestStore.claim(db, accountId: "acct-A", nowMs: now)
+  expect(claimed == nil, "claim under another writer's lock reports failure, not (0, 0) (got \(String(describing: claimed)))")
+  let applied: Int? = BackupManifestStore.applyServerMap(
+    db, accountId: "acct-A", localToFileId: map, uploadedAtIso: "2026-10-18T03:00:00Z", nowMs: now
+  )
+  expect(applied == nil, "applyServerMap under another writer's lock reports failure, not 0 (got \(String(describing: applied)))")
+  let kept: Int? = BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now)
+  expect(kept == nil, "applyPendingMarks under another writer's lock reports failure, not 0 (got \(String(describing: kept)))")
+  expect(scalar(db, "SELECT COUNT(*) FROM backup_assets WHERE status = 'pending_upload'") == 3,
+         "nothing promoted while locked: all 3 photos still pending")
+  expect(BackupManifestStore.pendingMarkCount(db, accountId: "acct-A") == 1, "the kept mark is not consumed while locked")
+  expect(text(db, "SELECT uploaded_account_id FROM backup_assets WHERE local_asset_id = 'legacy'") == nil,
+         "no partial claim: the legacy row is not adopted while the requeue could not run")
+
+  exec(locker, "ROLLBACK")
+
+  let claimedAfter: (adopted: Int, requeued: Int)? = BackupManifestStore.claim(db, accountId: "acct-A", nowMs: now)
+  expect(claimedAfter?.adopted == 1, "after release: claim commits (adopted 1, got \(String(describing: claimedAfter)))")
+  let appliedAfter: Int? = BackupManifestStore.applyServerMap(
+    db, accountId: "acct-A", localToFileId: map, uploadedAtIso: "2026-10-18T03:00:00Z", nowMs: now
+  )
+  expect(appliedAfter == 2, "after release: the map applies (2 promoted, got \(String(describing: appliedAfter)))")
+  let keptAfter: Int? = BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now)
+  expect(keptAfter == 1, "after release: the kept mark applies (got \(String(describing: keptAfter)))")
+  expect(scalar(db, "SELECT COUNT(*) FROM backup_assets WHERE status = 'pending_upload'") == 0,
+         "after release nothing is left to upload: every photo was on the server or kept")
+  let empty: Int? = BackupManifestStore.applyServerMap(
+    db, accountId: "acct-A", localToFileId: [:], uploadedAtIso: "2026-10-18T03:00:00Z", nowMs: now
+  )
+  expect(empty == 0, "an empty server map is a SUCCESS with 0 promoted, not a failure")
+  let noneKept: Int? = BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now)
+  expect(noneKept == 0, "nothing kept is a success with 0, not a failure")
+  sqlite3_close_v2(locker)
+  sqlite3_close_v2(db)
+}
+
+do {
+  // A read that cannot run (no manifest table on this handle) is not
+  // "nothing uploaded": needsServerRebuild reports failure.
+  let db = open(root.appendingPathComponent("no-table.db").path)
+  let needs: Bool? = BackupManifestStore.needsServerRebuild(db, accountId: "acct-A")
+  expect(needs == nil, "needsServerRebuild on an unreadable manifest is nil, not true (got \(String(describing: needs)))")
+  let count: Int? = BackupManifestStore.uploadedCount(db, accountId: "acct-A")
+  expect(count == nil, "uploadedCount on an unreadable manifest is nil, not 0 (got \(String(describing: count)))")
+  sqlite3_close_v2(db)
+}
+
+do {
+  // A statement that fails partway (here a trigger aborts the update of p2)
+  // rolls the whole map back and reports failure: no half-applied map.
+  let path = root.appendingPathComponent("abort-map.db").path
+  let db = open(path)
+  exec(db, schema)
+  BackupManifestStore.migrate(db)
+  for id in ["p1", "p2", "p3"] { insert(db, id, status: "pending_upload") }
+  exec(db, """
+  CREATE TRIGGER refuse_p2 BEFORE UPDATE ON backup_assets
+  WHEN NEW.local_asset_id = 'p2' BEGIN SELECT RAISE(ABORT, 'refused'); END
+  """)
+  let applied: Int? = BackupManifestStore.applyServerMap(
+    db, accountId: "acct-A", localToFileId: ["p1": "f-1", "p2": "f-2", "p3": "f-3"],
+    uploadedAtIso: "2026-10-18T03:00:00Z", nowMs: now
+  )
+  expect(applied == nil, "a failing update makes applyServerMap report failure (got \(String(describing: applied)))")
+  expect(scalar(db, "SELECT COUNT(*) FROM backup_assets WHERE status = 'pending_upload'") == 3,
+         "and nothing of the map is kept: all 3 still pending (rolled back)")
+  expect(sqlite3_get_autocommit(db) != 0, "no transaction left open on the engine's handle")
+  sqlite3_close_v2(db)
+}
+
+do {
+  // Kept marks that cannot be read are not "nothing kept".
+  let db = open(root.appendingPathComponent("bad-marks.db").path)
+  exec(db, schema)
+  exec(db, "CREATE TABLE backup_pending_marks (unexpected TEXT)")
+  let kept: Int? = BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now)
+  expect(kept == nil, "unreadable kept marks: applyPendingMarks reports failure, not 0 (got \(String(describing: kept)))")
+  sqlite3_close_v2(db)
 }
 
 // MARK: - Report

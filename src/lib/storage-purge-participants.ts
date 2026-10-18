@@ -52,12 +52,30 @@ export interface StoragePurgeControl {
   closeHandles: () => Promise<boolean>;
 }
 
+// Round 4 (Codex P1 "Serialize overlapping database purge holds"): the tail
+// of the purge queue. Purges run one at a time: two native resets of the same
+// manifest at once (Sign out tapped twice; a sign-out racing the
+// signed-out-surface purge) would each see the other's half-done state.
+let purgeQueue: Promise<unknown> = Promise.resolve();
+
 /**
  * hold every participant -> run `purge` -> resume them.
  * A participant that fails to suspend does not stop the purge (sign-out must
  * never be blocked); `resume` always runs, even when `purge` throws.
+ *
+ * Round 4: serialized. A call made while another purge runs starts after it
+ * has finished (and resumed its participants); a failed purge does not stop
+ * the next one.
  */
-export async function withStoragePurgeParticipantsSuspended<T>(
+export function withStoragePurgeParticipantsSuspended<T>(
+  purge: (control: StoragePurgeControl) => Promise<T>,
+): Promise<T> {
+  const run = purgeQueue.then(() => holdAndPurge(purge));
+  purgeQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function holdAndPurge<T>(
   purge: (control: StoragePurgeControl) => Promise<T>,
 ): Promise<T> {
   const holds: StoragePurgeHold[] = [];
