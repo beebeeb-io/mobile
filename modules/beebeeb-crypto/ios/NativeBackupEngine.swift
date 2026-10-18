@@ -5844,7 +5844,8 @@ final class NativeBackupEngine: NSObject {
   /// should stop sending more marks now (network, 429, 5xx, account change).
   @discardableResult
   func markOnServer(
-    assetId: String, fileId: String, authToken: String, baseURL: String, accountId: String
+    assetId: String, fileId: String, authToken: String, baseURL: String, accountId: String,
+    requestTimeout: TimeInterval? = nil
   ) async -> Bool {
     guard !accountId.isEmpty, currentAccountId == accountId else { return false }
     guard let deviceId = backupDeviceId, !deviceId.isEmpty else { return false }
@@ -5853,6 +5854,9 @@ final class NativeBackupEngine: NSObject {
     ProvenanceHeaders.apply(to: &request)
     applyExpectedUserHeader(to: &request, accountId: accountId)
     request.httpMethod = "POST"
+    // Round 3: the sign-out flush hands the budget it has left; a request
+    // never outlives it (metadataSession's own limit is 30 s).
+    if let requestTimeout { request.timeoutInterval = requestTimeout }
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
     request.setValue(deviceId, forHTTPHeaderField: "X-Beebeeb-Device-Id")
@@ -5911,39 +5915,43 @@ final class NativeBackupEngine: NSObject {
   /// server map"): called by the JS sign-out BEFORE the session is revoked.
   /// Sends EVERY upload of the signed-in account that the server's map does
   /// not have yet (no 300-row cap), each with up to `attemptsPerRow`
-  /// attempts, until `deadline` seconds have passed. Whatever is still
-  /// unmarked afterwards is kept by the reset (`backup_pending_marks`).
-  /// Returns (candidates, marked).
-  func flushServerMarksForSignOut(deadline: TimeInterval = 8, attemptsPerRow: Int = 2) async -> (candidates: Int, marked: Int) {
+  /// attempts. Whatever is still unmarked afterwards is kept by the reset
+  /// (`backup_pending_marks`). Returns (candidates, marked).
+  ///
+  /// Round 3 (Codex P1 "Enforce the eight-second sign-out deadline"): the
+  /// WHOLE flush, row load included, is bounded by `SignOutMarkFlush.run`'s
+  /// hard deadline. A stalled mark request is cancelled when it passes, and
+  /// each request's timeout is the budget left, so a dead endpoint can no
+  /// longer hold sign-out for metadataSession's 30 s / 60 s.
+  func flushServerMarksForSignOut(deadline: TimeInterval = SignOutMarkFlush.defaultDeadline, attemptsPerRow: Int = 2) async -> (candidates: Int, marked: Int) {
     guard let accountId = currentAccountId, !accountId.isEmpty,
           let authToken = token, let baseURL = apiBaseUrl,
           backupDeviceId?.isEmpty == false else { return (0, 0) }
-    // Rows from before `uploaded_account_id` belong to this account too.
-    let rows: [(assetId: String, fileId: String)] = dbQueue.sync {
-      guard let db = self.db else { return [] }
-      BackupManifestStore.adoptUnowned(db, accountId: accountId)
-      return BackupManifestStore.pendingServerMarks(db, accountId: accountId, limit: Int(Int32.max))
-    }
-    guard !rows.isEmpty else { return (0, 0) }
-    let stopAt = Date().addingTimeInterval(deadline)
-    var marked = 0
-    rowLoop: for row in rows {
-      for attempt in 1...max(1, attemptsPerRow) {
-        if Task.isCancelled || Date() > stopAt { break rowLoop }
-        if await markOnServer(
-          assetId: row.assetId, fileId: row.fileId, authToken: authToken, baseURL: baseURL, accountId: accountId
-        ) {
-          marked += 1
-          continue rowLoop
+    let outcome = await SignOutMarkFlush.run(
+      deadline: deadline,
+      attemptsPerRow: attemptsPerRow,
+      loadRows: { [weak self] () -> [(assetId: String, fileId: String)] in
+        guard let self else { return [] }
+        // Rows from before `uploaded_account_id` belong to this account too.
+        return self.dbQueue.sync {
+          guard let db = self.db else { return [] }
+          BackupManifestStore.adoptUnowned(db, accountId: accountId)
+          return BackupManifestStore.pendingServerMarks(db, accountId: accountId, limit: Int(Int32.max))
         }
-        if currentAccountId != accountId { break rowLoop }
-        if attempt < attemptsPerRow { try? await Task.sleep(nanoseconds: 200_000_000) }
+      },
+      shouldStop: { [weak self] in self?.currentAccountId != accountId },
+      mark: { [weak self] row, requestTimeout in
+        guard let self else { return false }
+        return await self.markOnServer(
+          assetId: row.assetId, fileId: row.fileId, authToken: authToken, baseURL: baseURL,
+          accountId: accountId, requestTimeout: requestTimeout
+        )
       }
-      // This row failed every attempt: the server is not taking marks now.
-      break rowLoop
-    }
-    RuntimeTrace.event("backup.native.server_mark.sign_out_flush", ["candidates": rows.count, "marked": marked])
-    return (rows.count, marked)
+    )
+    RuntimeTrace.event("backup.native.server_mark.sign_out_flush", [
+      "candidates": outcome.candidates, "marked": outcome.marked, "timedOut": outcome.timedOut,
+    ])
+    return (outcome.candidates, outcome.marked)
   }
 
   /// Sign-out (every path reaches the native `purgePlaintextStorage`): stop

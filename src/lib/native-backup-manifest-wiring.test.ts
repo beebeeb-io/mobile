@@ -141,17 +141,57 @@ describe('round 2: kept pending marks + sign-out flush', () => {
   });
 
   test('the sign-out flush has no row cap and is bounded by time', () => {
-    const flush = body(engine, 'func flushServerMarksForSignOut(deadline: TimeInterval = 8, attemptsPerRow: Int = 2) async -> (candidates: Int, marked: Int) {');
+    const flush = body(engine, 'func flushServerMarksForSignOut(');
     expect(flush).toMatch(/pendingServerMarks\(db, accountId: accountId, limit: Int\(Int32\.max\)\)/);
-    expect(flush).toMatch(/Date\(\) > stopAt/);
+  });
+
+  test('round 3: the WHOLE sign-out flush (row load included) runs under the hard deadline', () => {
+    const sig = engine.slice(engine.indexOf('func flushServerMarksForSignOut('));
+    expect(sig.slice(0, sig.indexOf('{'))).toMatch(/deadline: TimeInterval = SignOutMarkFlush\.defaultDeadline/);
+    const flush = body(engine, 'func flushServerMarksForSignOut(');
+    const run = flush.indexOf('SignOutMarkFlush.run(');
+    expect(run).toBeGreaterThan(-1);
+    // The row load and every mark happen inside run(...), not before it.
+    expect(flush.indexOf('pendingServerMarks(')).toBeGreaterThan(run);
+    expect(flush.indexOf('markOnServer(')).toBeGreaterThan(run);
+    expect(flush).toMatch(/deadline: deadline/);
+    // Each request gets the budget that is left.
+    expect(flush).toMatch(/requestTimeout: requestTimeout/);
+    expect(flush).not.toMatch(/stopAt/);
+  });
+
+  test('round 3: markOnServer applies the request timeout it is handed', () => {
+    const sig = engine.slice(engine.indexOf('func markOnServer('));
+    expect(sig.slice(0, sig.indexOf('{'))).toMatch(/requestTimeout: TimeInterval\? = nil/);
+    const mark = body(engine, 'func markOnServer(');
+    const [apply, send] = order(mark, 'request.timeoutInterval = requestTimeout', 'metadataSession.data(for: request)');
+    expect(apply).toBeGreaterThan(-1);
+    expect(send).toBeGreaterThan(apply);
   });
 
   test('App signOut flushes marks BEFORE logout() revokes the session', () => {
     const app = code(readFileSync(join(import.meta.dir, '../App.tsx'), 'utf8'));
     const signOut = app.slice(app.indexOf('const signOut = useCallback(async () => {'));
-    const [flush, logout] = order(signOut, 'await BeebeebCrypto.flushBackupServerMarksForSignOut()', 'await logout();');
+    const [flush, logout] = order(signOut, 'BeebeebCrypto.flushBackupServerMarksForSignOut()', 'await logout();');
     expect(flush).toBeGreaterThan(-1);
     expect(logout).toBeGreaterThan(flush);
+  });
+
+  test('round 3: App signOut waits for the native flush through the JS-side bound', () => {
+    const app = code(readFileSync(join(import.meta.dir, '../App.tsx'), 'utf8'));
+    expect(app).toMatch(/import \{[^}]*\bflushMarksBeforeSignOut\b[^}]*\} from '\.\/lib\/sign-out-mark-flush'/);
+    const signOut = app.slice(app.indexOf('const signOut = useCallback(async () => {'));
+    const [bounded, native, logout] = order(
+      signOut,
+      'await flushMarksBeforeSignOut(',
+      'BeebeebCrypto.flushBackupServerMarksForSignOut()',
+      'await logout();',
+    );
+    expect(bounded).toBeGreaterThan(-1);
+    expect(native).toBeGreaterThan(bounded);
+    expect(logout).toBeGreaterThan(native);
+    // Never awaited raw: a native promise that never settles would hold sign-out.
+    expect(signOut.slice(0, logout)).not.toMatch(/await BeebeebCrypto\.flushBackupServerMarksForSignOut\(/);
   });
 
   test('BackupDatabase calls only the four tracked methods on its handle', () => {

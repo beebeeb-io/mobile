@@ -19,6 +19,7 @@ import { ThemeProvider, useTheme } from './lib/theme-context';
 import type { PerformanceStorageProfile } from './lib/performance-storage-settings';
 import { ToastProvider } from './lib/toast-context';
 import { recordRuntimeTrace } from './lib/runtime-trace';
+import { flushMarksBeforeSignOut } from './lib/sign-out-mark-flush';
 import { BBLogo } from './components/BBLogo';
 import {
   hasToken,
@@ -1063,10 +1064,12 @@ export default function App() {
     // Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
     // server map"): mark every completed camera-roll upload the server's
     // per-device map does not have yet WHILE the session still works (the
-    // purge below runs after logout() revoked it). Bounded natively (~8 s);
-    // what is left is kept for this account's next sign-in on this device.
+    // purge below runs after logout() revoked it). Bounded natively by a hard
+    // 8 s deadline and here by 8 s + margin even if the native promise never
+    // settles (round 3); what is left is kept for this account's next sign-in
+    // on this device.
     if (Platform.OS === 'ios') {
-      await BeebeebCrypto.flushBackupServerMarksForSignOut().catch(() => null);
+      await flushMarksBeforeSignOut(() => BeebeebCrypto.flushBackupServerMarksForSignOut());
     }
     try {
       await logout();

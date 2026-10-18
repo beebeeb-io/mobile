@@ -24,6 +24,7 @@ MANIFEST=(
   "share-upload-request-policy-test.swift|targets/share-extension/ShareUploadRequestPolicy.swift targets/file-provider/AccountMismatchDetection.swift"
   "share-recent-folders-test.swift|targets/share-extension/ShareRecentFolders.swift"
   "backup-manifest-store-test.swift|modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift modules/beebeeb-crypto/ios/RuntimeTrace.swift"
+  "sign-out-mark-flush-test.swift|modules/beebeeb-crypto/ios/SignOutMarkFlush.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift"
 )
 
 LOG_DIR="${SWIFT_CI_LOG_DIR:-$(mktemp -d)}"
