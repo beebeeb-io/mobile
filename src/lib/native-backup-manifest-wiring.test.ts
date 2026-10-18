@@ -59,12 +59,12 @@ function order(src: string, ...needles: string[]): number[] {
 }
 
 describe('1. sign-out empties the manifest in place, before the registry purge', () => {
-  const purge = body(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+  const purge = body(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
 
   test('prepareForStoragePurge runs before purgeAll, and purgeAll keeps what it returned', () => {
     const [prep, purgeAll] = order(
       purge,
-      'let manifest = NativeBackupEngine.shared.prepareForStoragePurge()',
+      'let manifest = NativeBackupEngine.shared.prepareForStoragePurge(',
       'PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)',
     );
     expect(prep).toBeGreaterThan(-1);
@@ -75,10 +75,10 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     expect(purge).toMatch(/"backupManifestResetFailed": manifest\.resetFailed \? 1 : 0/);
   });
 
-  const prep = body(engine, 'func prepareForStoragePurge() -> (kept: Set<String>, resetFailed: Bool) {');
+  const prep = body(engine, 'func prepareForStoragePurge(\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> (kept: Set<String>, resetFailed: Bool) {');
 
   test('the engine is stopped and unbound BEFORE the manifest is emptied', () => {
-    const [stop, unbind, reset] = order(prep, 'stop()', 'clearAccountAndPurgeStaged()', 'manifestHandle.resetForSignOut(outgoingAccountId: outgoingAccountId)');
+    const [stop, unbind, reset] = order(prep, 'stop()', 'clearAccountAndPurgeStaged()', 'manifestHandle.resetForSignOut(\n        outgoingAccountId: outgoingAccountId, mode: mode, deletedAccountIds: deletedAccountIds\n      )');
     expect(stop).toBeGreaterThan(-1);
     expect(unbind).toBeGreaterThan(stop);
     expect(reset).toBeGreaterThan(unbind);
@@ -89,14 +89,14 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
   });
 
   // lazy: a missing signature is a failing test, not an error that hides the whole section
-  const resetForSignOut = () => body(handleSwift, 'func resetForSignOut(outgoingAccountId: String?) -> Bool {');
+  const resetForSignOut = () => body(handleSwift, 'func resetForSignOut(\n    outgoingAccountId: String?,\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> Bool {');
 
   test('round 2: the outgoing account (captured before unbind) adopts pre-column rows before the reset', () => {
     const [capture, unbind, reset] = order(
       prep,
       'let outgoingAccountId = currentAccountId ?? lastUnboundAccountId',
       'clearAccountAndPurgeStaged()',
-      'manifestHandle.resetForSignOut(outgoingAccountId: outgoingAccountId)',
+      'manifestHandle.resetForSignOut(\n        outgoingAccountId: outgoingAccountId, mode: mode, deletedAccountIds: deletedAccountIds\n      )',
     );
     expect(capture).toBeGreaterThan(-1);
     expect(unbind).toBeGreaterThan(capture);
@@ -104,7 +104,7 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     // round 6: the adopt + reset live in BackupManifestHandle.resetForSignOut, in that order.
     const [adopt, inPlace] = order(
       resetForSignOut(),
-      'BackupManifestStore.adoptUnowned(db, accountId: outgoingAccountId)',
+      'BackupManifestStore.adoptUnowned(db, accountId: adoptAccountId)',
       'BackupManifestStore.resetInPlace(db',
     );
     expect(adopt).toBeGreaterThan(-1);
@@ -113,9 +113,10 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
 
   test('a failed reset closes the engine handle and flags it, but NEVER drops the file from `kept` (the JS handle is still open on it)', () => {
     // Round 8: the reset's block also reads the fence generation it advanced.
-    expect(prep).toMatch(/dbQueue\.sync \{\s*let ok = manifestHandle\.resetForSignOut\(outgoingAccountId: outgoingAccountId\)\s*return \(ok, manifestHandle\.writeFence\.generation\)\s*\}/);
+    // Round 9: and the purge mode, and whether it discards every kept mark.
+    expect(prep).toMatch(/dbQueue\.sync \{\s*let ok = manifestHandle\.resetForSignOut\(\s*outgoingAccountId: outgoingAccountId, mode: mode, deletedAccountIds: deletedAccountIds\s*\)\s*return \(ok, manifestHandle\.writeFence\.generation, manifestHandle\.activeDiscard\.all\)\s*\}/);
     // Round 7: the close goes through `close(_:)` (checked sqlite3_close).
-    expect(resetForSignOut()).toMatch(/BackupManifestStore\.resetInPlace\(db[\s\S]*close\(db\)\s*self\.db = nil\s*\}\s*pendingReset\.set\(true\)\s*awaitingPurgeFinish = true\s*return false/);
+    expect(resetForSignOut()).toMatch(/BackupManifestStore\.resetInPlace\(db[\s\S]*close\(db\)\s*self\.db = nil\s*\}\s*pendingReset\.set\(true\)\s*if !discard\.isEmpty \{ discardPending\.set\(true\) \}\s*awaitingPurgeFinish = true\s*return false/);
     expect(prep).not.toMatch(/return \[\]/);
     expect(prep).toMatch(/return \(kept, !resetOK\)/);
   });
@@ -154,7 +155,7 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
       'prepareSchema(opened)',
       'BackupManifestStore.tableExistsChecked(opened, "backup_assets") == true',
       'if pendingReset.get() {',
-      'BackupManifestStore.resetInPlace(opened, nowMs: now())',
+      'BackupManifestStore.resetInPlace(opened, nowMs: now(), discard: activeDiscard)',
       'close(opened)\n        return .pendingResetFailed',
       'return .pendingResetFailed',
       'db = opened',
@@ -498,7 +499,7 @@ describe('6. round 6: the native manifest handle is reopened, and nothing runs w
     const [clear, guardRunning] = order(stop, 'clearManifestAvailability()', 'guard isRunning else { return }');
     expect(clear).toBeGreaterThan(-1);
     expect(guardRunning).toBeGreaterThan(clear);
-    const prep = body(engine, 'func prepareForStoragePurge() -> (kept: Set<String>, resetFailed: Bool) {');
+    const prep = body(engine, 'func prepareForStoragePurge(\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> (kept: Set<String>, resetFailed: Bool) {');
     expect(prep).toMatch(/clearManifestAvailability\(\)/);
   });
 
@@ -580,7 +581,7 @@ describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondit
     expect(rec).toMatch(/guard let db = openConnection\(path\) else \{ return \(false, false\) \}/);
     const [snap, closed, guardAll, replace] = order(
       rec,
-      'pendingMarksSnapshot(db, nowMs: nowMs)',
+      'pendingMarksSnapshot(db, nowMs: nowMs, discard: discard)',
       'let closed = closeConnection(db)',
       'guard allowUnlink, closed, let carried else { return (false, false) }',
       'return replaceFile(path: path, carrying: carried)',
@@ -599,9 +600,9 @@ describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondit
     expect(body(handleSwift, 'private func close(_ connection: OpaquePointer) {')).toMatch(/if !BackupManifestStore\.closeConnection\(connection\) \{\s*closeUnconfirmed = true\s*\}/);
     const fin = body(handleSwift, 'func finishAfterFailedReset(allowUnlink: Bool) -> FinishResult {');
     expect(fin).toMatch(/allowUnlink: allowUnlink && !closeUnconfirmed, adoptAccountId: recoveryAccountId/);
-    const reset = body(handleSwift, 'func resetForSignOut(outgoingAccountId: String?) -> Bool {');
-    expect(reset).toMatch(/adopted = BackupManifestStore\.adoptUnowned\(db, accountId: outgoingAccountId\) != nil/);
-    expect(reset).toMatch(/if adopted, BackupManifestStore\.resetInPlace\(db, nowMs: now\(\)\) \{/);
+    const reset = body(handleSwift, 'func resetForSignOut(\n    outgoingAccountId: String?,\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> Bool {');
+    expect(reset).toMatch(/adopted = BackupManifestStore\.adoptUnowned\(db, accountId: adoptAccountId\) != nil/);
+    expect(reset).toMatch(/if adopted, BackupManifestStore\.resetInPlace\(db, nowMs: now\(\), discard: discard\) \{/);
   });
 
   test('a mark list that could not be read is traced, never read as "all marked"', () => {

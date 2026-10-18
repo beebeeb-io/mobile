@@ -50,7 +50,12 @@ import { populateFileProviderCache } from './lib/file-provider-mount';
 import { ensureFilesMountedByDefault } from './lib/files-mount-default';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
-import { purgeAllPlaintextCaches } from './lib/account-cleanup';
+import {
+  accountDeletionPurgePending,
+  clearAccountDeletionPurge,
+  noteAccountDeleted,
+  purgeAllPlaintextCaches,
+} from './lib/account-cleanup';
 import { singleFlight } from './lib/single-flight';
 import { createSignedOutPurger } from './lib/signed-out-purge';
 import {
@@ -1005,6 +1010,9 @@ export default function App() {
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const backgroundAtRef = useRef<number | null>(null);
   const startupRunIdRef = useRef(0);
+  // Task 1667 round 9: the signed-in account, for the account-deleted handler
+  // (registered once, so it cannot read `user` itself).
+  const currentUserIdRef = useRef<string | null>(null);
 
   // Phrase verification: false until the user types back their recovery words.
   // Defaults to true so existing (pre-phrase-flow) users are unaffected.
@@ -1026,6 +1034,9 @@ export default function App() {
       const me = await getMe();
       signedOutPurger.sessionStarted(); // task 1593 r3: reopen the plaintext gate
       setUser(me);
+      // Task 1667 round 9: a new session — purges are ordinary sign-outs again
+      // (an account deletion made every purge since run as 'account-deleted').
+      clearAccountDeletionPurge();
       SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
       // Register this device with the clients API first so we can thread
       // the canonical client_devices UUID into the push-token registration.
@@ -1069,7 +1080,9 @@ export default function App() {
     // 8 s deadline and here by 8 s + margin even if the native promise never
     // settles (round 3); what is left is kept for this account's next sign-in
     // on this device.
-    if (Platform.OS === 'ios') {
+    // Round 9: not after an account deletion. Nothing of a deleted account is
+    // kept for a next sign-in, so there is nothing to mark for it.
+    if (Platform.OS === 'ios' && !accountDeletionPurgePending()) {
       await flushMarksBeforeSignOut(() => BeebeebCrypto.flushBackupServerMarksForSignOut());
     }
     try {
@@ -1355,6 +1368,10 @@ export default function App() {
   useEffect(() => {
     registerAccountDeletedHandler((deletedAt, shredAfter) => {
       stashAccountDeletedNotice({ deletedAt, shredAfter });
+      // Task 1667 round 9 (Codex P1): the account is gone, so the signed-out
+      // purge below runs as 'account-deleted' for it and keeps nothing of it
+      // (no pending marks), not as an ordinary sign-out.
+      noteAccountDeleted(currentUserIdRef.current);
       setUser(null); // plaintext purge: the signed-out effect (task 1593)
     });
   }, []);
@@ -1367,6 +1384,9 @@ export default function App() {
   // registry (round 3: a cold signed-out launch too) — src/lib/signed-out-purge.ts.
   useEffect(() => {
     signedOutPurger.noteUser(user != null);
+  }, [user]);
+  useEffect(() => {
+    if (user) currentUserIdRef.current = user.user_id;
   }, [user]);
   const onSignedOutSurface = !checking && !showDiagnostics && !showSecureStorageError && user == null;
   useEffect(() => {

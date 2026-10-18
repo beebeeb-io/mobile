@@ -536,6 +536,8 @@ final class NativeBackupEngine: NSObject {
   private let manifestHandle = BackupManifestHandle(
     path: NativeBackupEngine.backupDatabaseURL().standardizedFileURL.path,
     pendingReset: .userDefaults(NativeBackupEngine.manifestResetPendingKey),
+    // Round 9: "that pending reset is an account deletion's" (no account id).
+    discardPending: .userDefaults(NativeBackupEngine.manifestResetDiscardPendingKey),
     // Round 8: every write the fence drops is traced (and logged).
     onFencedWrite: { writer, ticketGeneration, generation in
       RuntimeTrace.event("backup.native.manifest.write_fenced", [
@@ -856,6 +858,12 @@ final class NativeBackupEngine: NSObject {
   private var lastUnboundAccountId: String? {
     accountIdLock.lock(); defer { accountIdLock.unlock() }; return _lastUnboundAccountId
   }
+  /// Task 1667 round 9: an account deletion forgets which account was last
+  /// bound (nothing of it is kept for a sign-in that cannot happen).
+  private func forgetUnboundAccount() {
+    accountIdLock.lock(); defer { accountIdLock.unlock() }
+    _lastUnboundAccountId = nil
+  }
   /// Task 1667 round 2: set when a sign-out could not empty the manifest in
   /// place; cleared once it was emptied (or replaced). While set, every
   /// open of the database empties it first, and an open that cannot empty
@@ -863,6 +871,11 @@ final class NativeBackupEngine: NSObject {
   /// 6), so the outgoing account's rows are never read again even if the JS
   /// follow-up never ran.
   static let manifestResetPendingKey = "io.beebeeb.backupManifestResetPending"
+  /// Task 1667 round 9: set with `manifestResetPendingKey` when the reset
+  /// that failed was an account deletion's (`ManifestPurgeMode`). A boolean
+  /// on purpose: the deleted account's id is not persisted, so a later
+  /// process applies that reset keeping no pending mark of any account.
+  static let manifestResetDiscardPendingKey = "io.beebeeb.backupManifestResetDiscardPending"
   private var manifestReadyForAccount: String? {
     get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _manifestReadyForAccount }
     set { engineStateLock.lock(); _manifestReadyForAccount = newValue; engineStateLock.unlock() }
@@ -6324,7 +6337,17 @@ final class NativeBackupEngine: NSObject {
   /// `finishStoragePurgeAfterFailedReset`, which resets (or, failing that,
   /// replaces) the file with no connection open and then reopens the
   /// engine's handle on it (round 6).
-  func prepareForStoragePurge() -> (kept: Set<String>, resetFailed: Bool) {
+  ///
+  /// Round 9 (Codex P1 "Delete retained marks during permanent account
+  /// deletion"): `mode` comes from JS (`purgeAllPlaintextCaches`). With
+  /// `.accountDeleted` the reset keeps nothing of the outgoing account and of
+  /// `deletedAccountIds`, deletes their kept marks, and every later reset in
+  /// this process does the same (`BackupManifestHandle.resetForSignOut`).
+  /// The in-memory "last unbound account" is forgotten too.
+  func prepareForStoragePurge(
+    mode: ManifestPurgeMode = .signOut,
+    deletedAccountIds: Set<String> = []
+  ) -> (kept: Set<String>, resetFailed: Bool) {
     let outgoingAccountId = currentAccountId ?? lastUnboundAccountId
     stop()
     backupClientSessionId = nil
@@ -6345,12 +6368,18 @@ final class NativeBackupEngine: NSObject {
     // write, and none can start until the next sign-in binds the fence.
     // (`stop()` above also cancelled the observer-spawned scans; that cancel
     // is best effort, the fence is the guarantee.)
-    let (resetOK, fenceGeneration): (Bool, UInt64) = dbQueue.sync {
-      let ok = manifestHandle.resetForSignOut(outgoingAccountId: outgoingAccountId)
-      return (ok, manifestHandle.writeFence.generation)
+    let (resetOK, fenceGeneration, discardAll): (Bool, UInt64, Bool) = dbQueue.sync {
+      let ok = manifestHandle.resetForSignOut(
+        outgoingAccountId: outgoingAccountId, mode: mode, deletedAccountIds: deletedAccountIds
+      )
+      return (ok, manifestHandle.writeFence.generation, manifestHandle.activeDiscard.all)
+    }
+    if mode == .accountDeleted {
+      forgetUnboundAccount()
     }
     RuntimeTrace.event("backup.native.storage_purge.prepared", [
       "resetInPlace": resetOK, "fenceGeneration": Int(fenceGeneration),
+      "mode": mode.rawValue, "discardAll": discardAll,
     ])
     return (kept, !resetOK)
   }

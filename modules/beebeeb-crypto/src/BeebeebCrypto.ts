@@ -146,10 +146,30 @@ export interface PlaintextStoragePurgeResult {
  * `clearPersistedOfflineState`) IS the Android purge surface. The two
  * platforms' counts compose additively in `purgeAllPlaintextCaches`.
  */
-export async function purgePlaintextStorage(): Promise<PlaintextStoragePurgeResult> {
+/**
+ * Task 1667 round 9 (Codex P1 "Delete retained marks during permanent account
+ * deletion"): what the purge is for. `'sign-out'` keeps the outgoing account's
+ * not-yet-marked camera-roll uploads as pending marks for its next sign-in on
+ * this device; `'account-deleted'` keeps nothing of the deleted account and
+ * deletes its pending marks (native `ManifestPurgeMode`).
+ */
+export type StoragePurgeMode = 'sign-out' | 'account-deleted'
+
+export interface PlaintextStoragePurgeOptions {
+  mode?: StoragePurgeMode
+  /** Accounts deleted permanently (added to the native engine's outgoing account). */
+  deletedAccountIds?: string[]
+}
+
+export async function purgePlaintextStorage(
+  options: PlaintextStoragePurgeOptions = {},
+): Promise<PlaintextStoragePurgeResult> {
   if (typeof BeebeebCryptoModule.purgePlaintextStorage !== 'function') return { removed: 0, failed: 0 }
   try {
-    return (await BeebeebCryptoModule.purgePlaintextStorage()) as PlaintextStoragePurgeResult
+    return (await BeebeebCryptoModule.purgePlaintextStorage(
+      options.mode ?? 'sign-out',
+      options.deletedAccountIds ?? [],
+    )) as PlaintextStoragePurgeResult
   } catch {
     return { removed: 0, failed: 0 }
   }

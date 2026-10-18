@@ -2325,7 +2325,12 @@ public class BeebeebCryptoModule: Module {
     //      that slips through both of the above (e.g. one already inside
     //      `CacheManager`'s serial queue, past the epoch check, when step 2
     //      ran) is still wiped by this final in-place reset.
-    AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in
+    // Task 1667 round 9 (Codex P1 "Delete retained marks during permanent
+    // account deletion"): `mode` is "sign-out" or "account-deleted"
+    // (`ManifestPurgeMode`; nil = an older JS bundle = sign-out, any other
+    // value fails closed as a deletion). `deletedAccountIds` are the deleted
+    // accounts JS knows, added to the engine's outgoing account.
+    AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in
       var failed = 0
       // Task 1593 f2 (lead design decision: MARKER FIRST) — mark pending
       // BEFORE this purge does ANYTHING else: before the consent reset,
@@ -2416,7 +2421,11 @@ public class BeebeebCryptoModule: Module {
       // `backupManifestResetFailed` tells JS to close that handle and call
       // `finishBackupManifestPurge`, which resets or replaces it with no
       // connection open.
-      let manifest = NativeBackupEngine.shared.prepareForStoragePurge()
+      // Round 9: the mode is read here, not first (marker-first, task 1593 f2).
+      let purgeMode = ManifestPurgeMode.parse(mode)
+      let manifest = NativeBackupEngine.shared.prepareForStoragePurge(
+        mode: purgeMode, deletedAccountIds: Set(deletedAccountIds ?? [])
+      )
       // Task 1593 round 7 (C1) — moved LAST (was first). See the block
       // comment above this AsyncFunction for why.
       let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)

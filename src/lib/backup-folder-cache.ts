@@ -19,13 +19,29 @@ export const BACKUP_FOLDER_CACHE_KEY = 'beebeeb_backup_folders';
 
 /** Never throws: sign-out must not be blocked by it. */
 export async function clearBackupFolderCacheForSignOut(): Promise<void> {
-  try {
-    if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined') window.localStorage.removeItem(BACKUP_FOLDER_CACHE_KEY);
-      return;
+  await clearBackupFolderCacheChecked();
+}
+
+/**
+ * Task 1667 round 9: as above, and reports whether the key is really gone
+ * (deleted, then read back as absent; one retry). Account deletion counts a
+ * false as a failed purge instead of treating "best effort" as done. Never
+ * throws.
+ */
+export async function clearBackupFolderCacheChecked(): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      if (Platform.OS === 'web') {
+        if (typeof window === 'undefined') return true;
+        window.localStorage.removeItem(BACKUP_FOLDER_CACHE_KEY);
+        if (window.localStorage.getItem(BACKUP_FOLDER_CACHE_KEY) == null) return true;
+        continue;
+      }
+      await SecureStore.deleteItemAsync(BACKUP_FOLDER_CACHE_KEY);
+      if ((await SecureStore.getItemAsync(BACKUP_FOLDER_CACHE_KEY)) == null) return true;
+    } catch {
+      // retried once, then reported
     }
-    await SecureStore.deleteItemAsync(BACKUP_FOLDER_CACHE_KEY);
-  } catch {
-    // best-effort
   }
+  return false;
 }

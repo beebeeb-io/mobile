@@ -237,7 +237,7 @@ describe('P1-3: the File Provider domain is removed on every purge, not just an 
 
   test('purgePlaintextStorage — reached by EVERY sign-out incl. forced ones (see signed-out-purge.test.ts + '
     + 'account-cleanup.test.ts, which prove every forced path reaches this native call) — calls it', () => {
-    const body = functionBody(swift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const body = functionBody(swift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     expect(body).toMatch(/removeFileProviderDomainIfRegistered\(\)/);
   });
 });
@@ -277,7 +277,7 @@ describe('P2-4: purgePlaintextStorage and syncFileProviderCache share Expo\'s si
   });
 
   test('purgePlaintextStorage calls it directly, never with await', () => {
-    const body = functionBody(swift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const body = functionBody(swift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     expect(body).toMatch(/\bremoveFileProviderDomainIfRegistered\(\)/);
     expect(body).not.toMatch(/await\s+removeFileProviderDomainIfRegistered/);
   });
@@ -331,7 +331,7 @@ describe('new-1 (round 6, P1): removeFileProviderDomainIfRegistered never blocks
   });
 
   test('purgePlaintextStorage counts a domain lookup/removal failure (incl. a timeout) into the returned "failed" total', () => {
-    const purgeBody = bracedBody(swift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const purgeBody = bracedBody(swift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     // Round 7 (C1) moved `PlaintextStorageProtection.purgeAll()` to the END
     // of this function (see the round-7 describe block below), so `failed`
     // now starts at 0 and `result.failed` is added in afterward — it can no
@@ -356,7 +356,7 @@ describe('new-1 (round 6, P1): removeFileProviderDomainIfRegistered never blocks
 // `BeebeebFileProvider` extension target).
 describe('C1 (round 7, P1): purgePlaintextStorage resets the DB LAST, after consent + domain removal', () => {
   const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
-  const purgeBody = bracedBody(swift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+  const purgeBody = bracedBody(swift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
 
   test('order is: consent reset -> domain removal -> PlaintextStorageProtection.purgeAll(pendingNonce:)', () => {
     // Task 1593 f2 — the real call site's literal text gained
@@ -447,7 +447,7 @@ describe('R2 (round 8, P2): bumpFileProviderCacheVersion bumps PRAGMA user_versi
     // the retry/count/trace assertions. This test's premise (the call
     // exists here at all, before domain removal) still holds; only HOW its
     // result is handled changed.
-    const purgeBody = bracedBody(swift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const purgeBody = bracedBody(swift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     expect(purgeBody).toMatch(/if !bumpFileProviderCacheVersion\(\) \{/);
     const bumpIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
     const removeDomainIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()');
@@ -770,7 +770,7 @@ describe('new-4 (round 6, P2, privacy consent): a forced-sign-out purge also res
   });
 
   test('purgePlaintextStorage — reached by every sign-out, forced or ordinary — calls it', () => {
-    const purgeBody = bracedBody(swift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const purgeBody = bracedBody(swift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     expect(purgeBody).toMatch(/resetFileProviderShowInFilesConsent\(defaults: sharedDefaults\(\)\)/);
   });
 
@@ -1827,7 +1827,7 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1): a failed early epoc
   const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
 
   test('the early bumpFileProviderCacheVersion() call is no longer discarded: a double failure is traced and counted', () => {
-    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     // The OLD, discarding shape must be gone.
     expect(purgeBody).not.toMatch(/_ = bumpFileProviderCacheVersion\(\)/);
     const firstCallIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
@@ -1857,7 +1857,7 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1): a failed early epoc
     // `PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)`
     // (marker-first threads the nonce through); updated here to match, in
     // place, per this task's "never silently" convention.
-    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
     const bumpIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
     const removeIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()');
@@ -2069,7 +2069,7 @@ describe('f3 (item 1): the chmod-0400 fallback is REMOVED — a createFile failu
   // the test exercises the actual branch, not just the trace call.
 
   test('purgePlaintextStorage (BeebeebCryptoModule.swift) already counts a nil pendingNonce as a real, traced purge failure and runs the final reset regardless — the epoch bump is what actually protects, not this marker', () => {
-    const body = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const body = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     const markIdx = body.indexOf('let pendingNonce = PlaintextStorageProtection.markPurgePending()');
     expect(markIdx).toBeGreaterThan(-1);
     const afterMark = body.slice(markIdx, markIdx + 300);
@@ -2581,7 +2581,7 @@ describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIR
   const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
 
   test('markPurgePending() is the first statement in the function body, strictly before resetFileProviderShowInFilesConsent / bumpFileProviderCacheVersion / removeFileProviderDomainIfRegistered / purgeAll', () => {
-    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     const markIdx = purgeBody.indexOf('let pendingNonce = PlaintextStorageProtection.markPurgePending()');
     const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
     const bumpIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
@@ -2603,14 +2603,14 @@ describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIR
   });
 
   test('a total mark-pending failure (nil) is a real, counted purge failure, traced distinctly', () => {
-    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     const markIdx = purgeBody.indexOf('let pendingNonce = PlaintextStorageProtection.markPurgePending()');
     const after = purgeBody.slice(markIdx, markIdx + 300);
     expect(after).toMatch(/if pendingNonce == nil \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.failed", \["stage": "pending_marker"\]\)\s*\n\s*failed \+= 1\s*\n\s*\}/);
   });
 
   test('the two-failed-early-bumps branch no longer calls markPurgePending() itself — marker-first already covers it', () => {
-    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     const failedTraceIdx = purgeBody.indexOf('RuntimeTrace.event("storage.purge.failed", ["stage": "file_provider_cache_version_bump"])');
     expect(failedTraceIdx).toBeGreaterThan(-1);
     const after = purgeBody.slice(failedTraceIdx, failedTraceIdx + 500);
@@ -2623,7 +2623,7 @@ describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIR
   });
 
   test('purgeAll is called with pendingNonce: pendingNonce — the EXACT value markPurgePending() returned, never a fresh read', () => {
-    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     expect(purgeBody).toMatch(/PlaintextStorageProtection\.purgeAll\(pendingNonce: pendingNonce, preserving: manifest\.kept\)/);
   });
 });
@@ -2955,7 +2955,7 @@ describe('f2 (item 3): the purge\'s own early bump stays clearsPendingMarker: fa
   const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
 
   test('purgePlaintextStorage\'s early-bump call sites pass NO clearsPendingMarker argument (using the false default)', () => {
-    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
+    const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     expect(purgeBody).toMatch(/if !bumpFileProviderCacheVersion\(\) \{\s*\n\s*if !bumpFileProviderCacheVersion\(\) \{/);
     expect(purgeBody).not.toMatch(/bumpFileProviderCacheVersion\(clearsPendingMarker:/);
   });

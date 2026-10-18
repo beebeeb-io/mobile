@@ -64,6 +64,36 @@ enum BackupManifestStore {
   /// that window uploads those photos once more; nothing older is kept.
   static let pendingMarksRetentionMs: Int64 = 30 * 24 * 60 * 60 * 1000
 
+  /// Task 1667 round 9 (Codex P1 "Delete retained marks during permanent
+  /// account deletion", mobile#182 at dacc089d): the accounts a reset must
+  /// keep NOTHING of. A permanently deleted account is never coming back, so
+  /// its kept marks are no longer an optimisation for its next sign-in: they
+  /// are its user id, PhotoKit local identifiers and remote file ids left on
+  /// the device after the flow that promised to remove them. Every reset
+  /// that runs with a discard (the deletion's own, the sign-out that follows
+  /// it, its recovery, a pending reset at the next open) deletes the kept
+  /// marks of these accounts and keeps none of their unmarked uploads.
+  ///
+  /// `all` is used when the deleted account is not known (a deletion reset
+  /// that was still pending when the process ended, or a deletion with no
+  /// account id at all): every kept mark goes. That costs other accounts on
+  /// this device a re-upload of their unmarked photos; keeping a deleted
+  /// account's identifiers would cost its privacy, so this fails closed.
+  struct MarkDiscard: Equatable {
+    var accountIds: Set<String>
+    var all: Bool
+
+    static let none = MarkDiscard(accountIds: [], all: false)
+    static let everything = MarkDiscard(accountIds: [], all: true)
+
+    var isEmpty: Bool { !all && accountIds.isEmpty }
+
+    func discards(_ accountId: String) -> Bool { all || accountIds.contains(accountId) }
+
+    /// Sorted, so the bound statement is deterministic.
+    var sortedIds: [String] { accountIds.sorted() }
+  }
+
   /// Idempotent: an ALTER on a column that exists fails harmlessly.
   static func migrate(_ db: OpaquePointer) {
     for migration in columnMigrations {
@@ -91,10 +121,15 @@ enum BackupManifestStore {
   /// reset": a reader holding an old snapshot keeps the outgoing account's
   /// rows in WAL frames, and the checkpoint reports busy without failing the
   /// statement). The caller must then not keep the file as it is.
+  ///
+  /// Round 9: `discard` names the accounts (or all of them) whose kept marks
+  /// are deleted in the same transaction and whose unmarked uploads are not
+  /// kept (`MarkDiscard`). `.none` is the ordinary sign-out.
   @discardableResult
   static func resetInPlace(
     _ db: OpaquePointer,
     nowMs: Int64 = currentMs(),
+    discard: MarkDiscard = .none,
     checkpointAttempts: Int = 3,
     busyTimeoutMs: Int32 = 2_000,
     retryDelayUs: UInt32 = 100_000
@@ -110,17 +145,29 @@ enum BackupManifestStore {
     guard let hasVerification = tableExistsChecked(db, "backup_verification") else { return false }
     sqlite3_exec(db, pendingMarksTableSQL, nil, nil, nil)
     guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
-    let keepSQL = """
-    INSERT OR REPLACE INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms)
-    SELECT uploaded_account_id, local_asset_id, remote_file_id, ?
-      FROM backup_assets
-     WHERE status = 'uploaded'
-       AND uploaded_account_id IS NOT NULL
-       AND uploaded_account_id != ''
-       AND remote_file_id IS NOT NULL
-       AND server_marked_at IS NULL
-    """
-    var ok = run(db, keepSQL) { stmt in sqlite3_bind_int64(stmt, 1, nowMs) } >= 0
+    // Round 9: a deleted account's kept marks go first, and none of its
+    // unmarked uploads is kept below.
+    var ok = deleteDiscardedMarks(db, discard)
+    if ok, !discard.all {
+      let ids = discard.sortedIds
+      let excluded = ids.isEmpty
+        ? ""
+        : "\n       AND uploaded_account_id NOT IN (" + Array(repeating: "?", count: ids.count).joined(separator: ", ") + ")"
+      let keepSQL = """
+      INSERT OR REPLACE INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms)
+      SELECT uploaded_account_id, local_asset_id, remote_file_id, ?
+        FROM backup_assets
+       WHERE status = 'uploaded'
+         AND uploaded_account_id IS NOT NULL
+         AND uploaded_account_id != ''
+         AND remote_file_id IS NOT NULL
+         AND server_marked_at IS NULL
+      """ + excluded
+      ok = run(db, keepSQL) { stmt in
+        sqlite3_bind_int64(stmt, 1, nowMs)
+        for (i, id) in ids.enumerated() { bindText(stmt, Int32(i + 2), id) }
+      } >= 0
+    }
     if ok {
       ok = run(db, "DELETE FROM backup_pending_marks WHERE created_at_ms < ?") { stmt in
         sqlite3_bind_int64(stmt, 1, nowMs - pendingMarksRetentionMs)
@@ -140,6 +187,21 @@ enum BackupManifestStore {
       return false
     }
     return truncateWal(db, attempts: checkpointAttempts, retryDelayUs: retryDelayUs).ok
+  }
+
+  /// Round 9: deletes the kept marks `discard` names (inside the caller's
+  /// transaction). True when nothing is named or the DELETE ran.
+  static func deleteDiscardedMarks(_ db: OpaquePointer, _ discard: MarkDiscard) -> Bool {
+    if discard.all {
+      return sqlite3_exec(db, "DELETE FROM backup_pending_marks", nil, nil, nil) == SQLITE_OK
+    }
+    let ids = discard.sortedIds
+    guard !ids.isEmpty else { return true }
+    let sql = "DELETE FROM backup_pending_marks WHERE account_id IN ("
+      + Array(repeating: "?", count: ids.count).joined(separator: ", ") + ")"
+    return run(db, sql) { stmt in
+      for (i, id) in ids.enumerated() { bindText(stmt, Int32(i + 1), id) }
+    } >= 0
   }
 
   /// Result of the last `truncateWal` attempt: the checkpoint's return code,
@@ -205,11 +267,15 @@ enum BackupManifestStore {
   /// before `uploaded_account_id` existed are adopted first, as
   /// `NativeBackupEngine.prepareForStoragePurge` does before its own reset,
   /// so the reset here keeps their associations instead of dropping them.
+  ///
+  /// Round 9: `discard` is the reset's (`MarkDiscard`). The reset here runs
+  /// with it, and a replacement carries none of a discarded account's marks.
   static func recoverAfterFailedReset(
     path: String,
     nowMs: Int64 = currentMs(),
     allowUnlink: Bool,
-    adoptAccountId: String? = nil
+    adoptAccountId: String? = nil,
+    discard: MarkDiscard = .none
   ) -> (ok: Bool, unlinked: Bool) {
     // Nothing can be read from a file that cannot be opened: never replace it.
     guard let db = openConnection(path) else { return (false, false) }
@@ -224,8 +290,8 @@ enum BackupManifestStore {
         return (false, false)
       }
     }
-    let reset = resetInPlace(db, nowMs: nowMs)
-    let carried: [PendingMark]? = reset ? [] : pendingMarksSnapshot(db, nowMs: nowMs)
+    let reset = resetInPlace(db, nowMs: nowMs, discard: discard)
+    let carried: [PendingMark]? = reset ? [] : pendingMarksSnapshot(db, nowMs: nowMs, discard: discard)
     let closed = closeConnection(db)
     if reset { return (true, false) }
     // Round 7: the replacement needs (1) permission (JS closed its handle),
@@ -323,7 +389,10 @@ enum BackupManifestStore {
   /// ends in anything but SQLITE_DONE, or a row with a NULL column is a
   /// failure, never a shorter list: the caller replaces the file only on a
   /// complete snapshot.
-  static func pendingMarksSnapshot(_ db: OpaquePointer, nowMs: Int64) -> [PendingMark]? {
+  ///
+  /// Round 9: the marks `discard` names are left out (never carried into a
+  /// replacement file).
+  static func pendingMarksSnapshot(_ db: OpaquePointer, nowMs: Int64, discard: MarkDiscard = .none) -> [PendingMark]? {
     var out: [PendingMark] = []
     guard let hasKept = tableExistsChecked(db, "backup_pending_marks") else { return nil }
     if hasKept {
@@ -343,7 +412,7 @@ enum BackupManifestStore {
       """, bindMs: nowMs) else { return nil }
       out += unmarked
     }
-    return out
+    return out.filter { !discard.discards($0.accountId) }
   }
 
   /// nil on any failure (prepare, a step that is not ROW/DONE, a NULL column).

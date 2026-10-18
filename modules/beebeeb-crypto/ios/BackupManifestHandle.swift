@@ -34,6 +34,30 @@ import SQLite3
 /// Not thread-safe by design: every member MUST run on the owner's private
 /// serial queue (`NativeBackupEngine.dbQueue`). `swift-db-queue-audit.ts`
 /// treats `manifestHandle` exactly like the engine's `db` property.
+/// Task 1667 round 9 (Codex P1 "Delete retained marks during permanent
+/// account deletion", mobile#182 at dacc089d): what a storage purge is for.
+/// JS passes it from every purge entry point (`account-cleanup.ts`
+/// `purgeAllPlaintextCaches`) through the native `purgePlaintextStorage`
+/// into `resetForSignOut`.
+/// - `signOut`: the account still exists and may sign in again on this
+///   device. Its unmarked uploads are kept as pending marks (30 days), so
+///   that sign-in does not upload them a second time.
+/// - `accountDeleted`: the account was deleted permanently. Nothing of it is
+///   kept: its pending marks are deleted, none of its uploads is kept, and
+///   every later reset in this process (the sign-out that follows the
+///   deletion, its recovery, a pending reset) does the same.
+enum ManifestPurgeMode: String, Equatable {
+  case signOut = "sign-out"
+  case accountDeleted = "account-deleted"
+
+  /// The JS value. nil (an older JS bundle that passes nothing) is a
+  /// sign-out; any other unknown value fails closed as a deletion.
+  static func parse(_ raw: String?) -> ManifestPurgeMode {
+    guard let raw else { return .signOut }
+    return ManifestPurgeMode(rawValue: raw) ?? .accountDeleted
+  }
+}
+
 final class BackupManifestHandle {
   enum OpenFailure: String, Equatable {
     /// `sqlite3_open_v2` failed (no such directory, no permission, a path
@@ -112,13 +136,27 @@ final class BackupManifestHandle {
   /// previous process (whose producers are gone).
   let writeFence: ManifestWriteFence
 
+  /// Round 9: every account deleted permanently in this process. Sticky for
+  /// the life of the process (a deleted account cannot sign in again), so the
+  /// sign-out that follows the deletion, and any reset after it, cannot keep
+  /// anything of it. In memory only: the user ids are not written anywhere.
+  private(set) var deletedAccountIds: Set<String> = []
+  /// Round 9: a deletion whose account is not known; every kept mark goes at
+  /// the next reset (`MarkDiscard.all`). Cleared once a reset ran with it.
+  private(set) var discardAllPending = false
+
   private let pendingReset: ResetPendingFlag
+  /// Round 9: "the pending reset is a deletion's", kept across launches (a
+  /// boolean, no account id). A new process does not know which account was
+  /// deleted, so it applies that pending reset with `MarkDiscard.all`.
+  private let discardPending: ResetPendingFlag
   private let prepareSchema: (OpaquePointer) -> Void
   private let now: () -> Int64
 
   init(
     path: String,
     pendingReset: ResetPendingFlag,
+    discardPending: ResetPendingFlag? = nil,
     now: @escaping () -> Int64 = BackupManifestStore.currentMs,
     onFencedWrite: @escaping (String, UInt64?, UInt64) -> Void = { _, _, _ in },
     prepareSchema: @escaping (OpaquePointer) -> Void
@@ -126,11 +164,33 @@ final class BackupManifestHandle {
     self.path = path
     self.writeFence = ManifestWriteFence(onDrop: onFencedWrite)
     self.pendingReset = pendingReset
+    if let discardPending {
+      self.discardPending = discardPending
+    } else {
+      final class Box { var value = false }
+      let box = Box()
+      self.discardPending = ResetPendingFlag(get: { box.value }, set: { box.value = $0 })
+    }
     self.now = now
     self.prepareSchema = prepareSchema
   }
 
   var isOpen: Bool { db != nil }
+
+  /// Round 9: what the next reset may not keep. The accounts deleted in this
+  /// process, plus "everything" when a deletion's account is unknown, or when
+  /// a deletion's reset was left pending by an earlier process (whose
+  /// deleted ids this process never had).
+  var activeDiscard: BackupManifestStore.MarkDiscard {
+    let all = discardAllPending || (discardPending.get() && deletedAccountIds.isEmpty)
+    return BackupManifestStore.MarkDiscard(accountIds: deletedAccountIds, all: all)
+  }
+
+  /// Round 9: a reset that ran with `activeDiscard` succeeded.
+  private func discardApplied() {
+    discardPending.set(false)
+    discardAllPending = false
+  }
 
   /// Opens the manifest when no handle is open. Returns nil when a handle is
   /// open on return, and the reason otherwise; a failure never leaves a
@@ -159,11 +219,12 @@ final class BackupManifestHandle {
     }
     var appliedPendingReset = false
     if pendingReset.get() {
-      guard BackupManifestStore.resetInPlace(opened, nowMs: now()) else {
+      guard BackupManifestStore.resetInPlace(opened, nowMs: now(), discard: activeDiscard) else {
         close(opened)
         return .pendingResetFailed
       }
       pendingReset.set(false)
+      discardApplied()
       appliedPendingReset = true
     }
     db = opened
@@ -189,18 +250,44 @@ final class BackupManifestHandle {
   /// or upload finishing later is dropped), and no ticket is issued until
   /// the next sign-in binds the fence. This holds whether the reset below
   /// succeeds or not.
-  func resetForSignOut(outgoingAccountId: String?) -> Bool {
+  ///
+  /// Round 9 (Codex P1 "Delete retained marks during permanent account
+  /// deletion"): `mode` `.accountDeleted` adds the outgoing account and
+  /// `deletedAccountIds` (what JS knows) to `deletedAccountIds` BEFORE the
+  /// reset; with neither known, every kept mark goes. The reset then deletes
+  /// their kept marks and keeps none of their uploads, and so does every
+  /// later reset in this process, whatever its mode. A deleted account's
+  /// pre-column rows are not adopted (nothing of it is kept). When the reset
+  /// fails, `discardPending` is recorded with the pending reset, so the
+  /// recovery, or an open in a later process, does the same.
+  func resetForSignOut(
+    outgoingAccountId: String?,
+    mode: ManifestPurgeMode = .signOut,
+    deletedAccountIds: Set<String> = []
+  ) -> Bool {
     writeFence.advanceForSignOut()
-    recoveryAccountId = outgoingAccountId
+    if mode == .accountDeleted {
+      var deleted = deletedAccountIds.filter { !$0.isEmpty }
+      if let outgoingAccountId, !outgoingAccountId.isEmpty { deleted.insert(outgoingAccountId) }
+      if deleted.isEmpty {
+        discardAllPending = true
+      } else {
+        self.deletedAccountIds.formUnion(deleted)
+      }
+    }
+    let discard = activeDiscard
+    let adoptAccountId = outgoingAccountId.flatMap { discard.discards($0) ? nil : $0 }
+    recoveryAccountId = adoptAccountId
     if let db {
       let adopted: Bool
-      if let outgoingAccountId {
-        adopted = BackupManifestStore.adoptUnowned(db, accountId: outgoingAccountId) != nil
+      if let adoptAccountId {
+        adopted = BackupManifestStore.adoptUnowned(db, accountId: adoptAccountId) != nil
       } else {
         adopted = true
       }
-      if adopted, BackupManifestStore.resetInPlace(db, nowMs: now()) {
+      if adopted, BackupManifestStore.resetInPlace(db, nowMs: now(), discard: discard) {
         pendingReset.set(false)
+        discardApplied()
         recoveryAccountId = nil
         return true
       }
@@ -208,6 +295,7 @@ final class BackupManifestHandle {
       self.db = nil
     }
     pendingReset.set(true)
+    if !discard.isEmpty { discardPending.set(true) }
     awaitingPurgeFinish = true
     return false
   }
@@ -236,7 +324,8 @@ final class BackupManifestHandle {
       self.db = nil
     }
     let recovered = BackupManifestStore.recoverAfterFailedReset(
-      path: path, nowMs: now(), allowUnlink: allowUnlink && !closeUnconfirmed, adoptAccountId: recoveryAccountId
+      path: path, nowMs: now(), allowUnlink: allowUnlink && !closeUnconfirmed, adoptAccountId: recoveryAccountId,
+      discard: activeDiscard
     )
     awaitingPurgeFinish = false
     if recovered.ok { recoveryAccountId = nil }
@@ -244,6 +333,7 @@ final class BackupManifestHandle {
       return FinishResult(ok: false, unlinked: recovered.unlinked, reopened: false, reopenFailure: nil)
     }
     pendingReset.set(false)
+    discardApplied()
     let failure = openIfClosed()
     return FinishResult(ok: true, unlinked: recovered.unlinked, reopened: failure == nil, reopenFailure: failure)
   }

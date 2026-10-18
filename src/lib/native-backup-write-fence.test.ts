@@ -144,7 +144,7 @@ describe('NativeBackupEngine.swift: every manifest write is fenced', () => {
   });
 
   test('the sign-out runs stop() before the reset, and bindAccount (the sign-in) binds the fence before its first write', () => {
-    const prep = body(engine, 'func prepareForStoragePurge() -> (kept: Set<String>, resetFailed: Bool) {');
+    const prep = body(engine, 'func prepareForStoragePurge(\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> (kept: Set<String>, resetFailed: Bool) {');
     expect(before(prep, 'stop()', 'manifestHandle.resetForSignOut(')).toBe(true);
     const bind = body(engine, 'func bindAccount(userId: String) {');
     expect(before(bind, 'dbQueue.sync { manifestHandle.writeFence.bind(accountId: userId) }', 'claimManifest(forAccount: userId)')).toBe(true);
@@ -164,7 +164,7 @@ describe('NativeBackupEngine.swift: every manifest write is fenced', () => {
 
 describe('BackupManifestHandle.swift: every reset advances the fence first', () => {
   test('resetForSignOut seals the fence before it reads or deletes anything', () => {
-    const reset = stripSwift(body(handleSwift, 'func resetForSignOut(outgoingAccountId: String?) -> Bool {'));
+    const reset = stripSwift(body(handleSwift, 'func resetForSignOut(\n    outgoingAccountId: String?,\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> Bool {'));
     expect(reset.trim().startsWith('writeFence.advanceForSignOut()')).toBe(true);
   });
 
@@ -299,7 +299,7 @@ describe('each guard goes RED on a named mutation (guard red-proof)', () => {
 
   test('M7 — resetForSignOut no longer advances the fence first', () => {
     const bad = mutate(handleSwift, '    writeFence.advanceForSignOut()\n', '');
-    const reset = stripSwift(body(bad, 'func resetForSignOut(outgoingAccountId: String?) -> Bool {'));
+    const reset = stripSwift(body(bad, 'func resetForSignOut(\n    outgoingAccountId: String?,\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> Bool {'));
     expect(reset.trim().startsWith('writeFence.advanceForSignOut()')).toBe(false);
   });
 
