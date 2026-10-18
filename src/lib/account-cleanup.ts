@@ -40,6 +40,8 @@ import { clearPreviewCache } from './native-decrypt';
 import { clearPhotoCache } from './photo-cache';
 import { clearThumbnailCache } from './thumbnail-cache';
 import { plaintextGate } from './plaintext-gate';
+import { withStoragePurgeParticipantsSuspended } from './storage-purge-participants';
+import { clearBackupFolderCacheForSignOut } from './backup-folder-cache';
 import * as FileSystem from 'expo-file-system/legacy';
 import { OFFLINE_DIR, offlineManager } from './offline-manager';
 
@@ -99,7 +101,11 @@ export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeRe
       // native counts registry paths, the sweep counts caches entries, the
       // sets are disjoint by construction (the native registry deliberately
       // excludes Library/Caches).
-      const native = await purgePlaintextStorage().catch(() => ({ removed: 0, failed: 0 }) as PlaintextStoragePurgeResult);
+      // Task 1667: JS handles on files the native purge touches (the backup
+      // manifest's expo-sqlite connection) are closed first and reopen
+      // lazily afterwards; the native side empties the manifest in place.
+      const native = await withStoragePurgeParticipantsSuspended(() => purgePlaintextStorage())
+        .catch(() => ({ removed: 0, failed: 0 }) as PlaintextStoragePurgeResult);
       return {
         removed: native.removed + swept.removed.length,
         failed: native.failed + swept.failed.length,
@@ -110,6 +116,8 @@ export async function purgeAllPlaintextCaches(): Promise<PlaintextStoragePurgeRe
   // survive sign-out AND account switches otherwise; cross-account leak).
   // Best-effort: never breaks the sign-out flow, counted or not.
   await sweepAllUploadResumeStates().catch(() => {});
+  // Task 1962 Bug 4: the backup folder ids are per account.
+  await clearBackupFolderCacheForSignOut();
   return result;
 }
 

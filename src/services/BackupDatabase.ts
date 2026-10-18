@@ -19,6 +19,7 @@
 
 import * as SQLite from 'expo-sqlite';
 import { isCurrentAccountEpoch, type AccountEpoch } from '../lib/account-epoch';
+import { registerStoragePurgeParticipant } from '../lib/storage-purge-participants';
 
 export type BackupAssetType = 'photo' | 'video' | 'contact' | 'calendar';
 export type BackupAssetStatus =
@@ -70,10 +71,48 @@ let localMissingMigrationLastRunAt = 0;
 let localMissingMigrationInFlight: Promise<void> | null = null;
 const LOCAL_MISSING_MIGRATION_MIN_INTERVAL_MS = 60_000;
 
+// Task 1667: set while the sign-out storage purge runs. getDb() waits for it,
+// so nothing reopens the file mid-purge; afterwards it reopens lazily.
+let purgeBarrier: Promise<void> | null = null;
+
 async function getDb(): Promise<SQLite.SQLiteDatabase> {
+  while (purgeBarrier) await purgeBarrier;
   if (!dbPromise) dbPromise = openAndMigrate();
   return dbPromise;
 }
+
+/**
+ * Task 1667 — close this module's handle for the sign-out storage purge and
+ * hold every new open until the returned `resume` runs. The native side
+ * empties the manifest in place (`NativeBackupEngine.prepareForStoragePurge`)
+ * and only unlinks the file when it could not; either way no JS connection is
+ * left pointing at a deleted inode, which is what made the old manifest
+ * outlive sign-out in the same process and vanish at the next cold launch
+ * (every photo re-uploaded; `_qa-evidence/1962/sim-dup/00-summary.txt`).
+ */
+export async function suspendForStoragePurge(): Promise<() => void> {
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  const previousBarrier = purgeBarrier;
+  purgeBarrier = barrier;
+  const open = dbPromise;
+  dbPromise = null;
+  if (open) {
+    try {
+      const db = await open;
+      await db.closeAsync();
+    } catch {
+      // A failed open has nothing to close; a failed close is no worse than
+      // before — the native side still empties the manifest in place.
+    }
+  }
+  return () => {
+    if (purgeBarrier === barrier) purgeBarrier = previousBarrier;
+    release();
+  };
+}
+
+registerStoragePurgeParticipant(suspendForStoragePurge);
 
 async function migrateLocalMissingRows(db: SQLite.SQLiteDatabase): Promise<void> {
   await db.execAsync(`

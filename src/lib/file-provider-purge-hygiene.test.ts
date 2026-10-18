@@ -362,7 +362,7 @@ describe('C1 (round 7, P1): purgePlaintextStorage resets the DB LAST, after cons
     // `pendingNonce: pendingNonce` (marker-first threads the nonce through).
     const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
     const removeIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()');
-    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)');
+    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: keptBackupDatabase)');
     expect(consentIdx).toBeGreaterThan(-1);
     expect(removeIdx).toBeGreaterThan(-1);
     expect(purgeAllIdx).toBeGreaterThan(-1);
@@ -1607,7 +1607,7 @@ describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoV, P2): the File Provider c
   });
 
   test('purgeAll() skips containerOnly entries before ever checking existence or calling removeItem', () => {
-    const purgeBody = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil) -> (removed: Int, failed: Int) {');
+    const purgeBody = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = []) -> (removed: Int, failed: Int) {');
     const forIdx = purgeBody.indexOf('for entry in registry() {');
     const skipIdx = purgeBody.indexOf('if entry.containerOnly {');
     const existsIdx = purgeBody.indexOf('FileManager.default.fileExists(atPath: entry.url.path)');
@@ -1777,7 +1777,7 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mi6px, P2): a failed legacy-cac
   });
 
   test('purgeAll() sweeps the legacy top-level cache path on every call, in addition to registry()', () => {
-    const body = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil) -> (removed: Int, failed: Int) {');
+    const body = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = []) -> (removed: Int, failed: Int) {');
     const sweepCallIdx = body.indexOf('sweepLegacyFileProviderCache()');
     expect(sweepCallIdx).toBeGreaterThan(-1);
     // Must actually fold the sweep's counts into the SAME (removed, failed)
@@ -1860,20 +1860,20 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1): a failed early epoc
     const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
     const bumpIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
     const removeIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()');
-    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)');
+    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: keptBackupDatabase)');
     expect(consentIdx).toBeLessThan(bumpIdx);
     expect(bumpIdx).toBeLessThan(removeIdx);
     expect(removeIdx).toBeLessThan(purgeAllIdx);
     // The literal call text must occur EXACTLY once in this function body —
     // if a future comment reintroduces it above the real call, this count
     // goes to 2 and the ordering assertions above stop meaning what they say.
-    const occurrences = purgeBody.split('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)').length - 1;
+    const occurrences = purgeBody.split('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: keptBackupDatabase)').length - 1;
     expect(occurrences).toBe(1);
   });
 
   test('purgeAll() resweeps pinned/temp unconditionally, strictly after registry(), the legacy sweep, and folds its counts in', () => {
     // Task 1593 f2 — signature gained `pendingNonce: Data? = nil`.
-    const purgeAllBody = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil) -> (removed: Int, failed: Int) {');
+    const purgeAllBody = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = []) -> (removed: Int, failed: Int) {');
     const legacyIdx = purgeAllBody.indexOf('sweepLegacyFileProviderCache()');
     const resweepCallIdx = purgeAllBody.indexOf('resweepFileProviderContentDirectories()');
     const returnIdx = purgeAllBody.lastIndexOf('return (removed, failed)');
@@ -2075,7 +2075,7 @@ describe('f3 (item 1): the chmod-0400 fallback is REMOVED — a createFile failu
     expect(afterMark).toMatch(/if pendingNonce == nil \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.failed", \["stage": "pending_marker"\]\)\s*\n\s*failed \+= 1\s*\n\s*\}/);
     // The final in-place reset is unconditional — never gated on
     // pendingNonce, and nothing between the mark and it early-returns.
-    const purgeAllIdx = body.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)');
+    const purgeAllIdx = body.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: keptBackupDatabase)');
     expect(purgeAllIdx).toBeGreaterThan(markIdx);
     const between = body.slice(markIdx, purgeAllIdx);
     expect(between).not.toMatch(/\breturn \[/);
@@ -2417,7 +2417,7 @@ describe('f2 (item 2) / f4 (item 1b): resetSQLiteInPlace never calls markPurgePe
 // already gone even though the purge itself was not yet fully done.
 describe('f4 (item 1b) / f5 (reviewer follow-up 2): purgeAll clears the pending marker itself, only AFTER the legacy sweep and resweep, and only on a durably-committed reset bump with zero legacy/resweep failures', () => {
   const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const PURGE_ALL_SIGNATURE = 'public static func purgeAll(pendingNonce: Data? = nil) -> (removed: Int, failed: Int) {';
+  const PURGE_ALL_SIGNATURE = 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = []) -> (removed: Int, failed: Int) {';
   const body = bracedBody(registrySwift, PURGE_ALL_SIGNATURE);
 
   test('resetSQLiteInPlace is called with no pendingNonce argument — it no longer takes one', () => {
@@ -2585,7 +2585,7 @@ describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIR
     const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
     const bumpIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
     const removeDomainIdx = purgeBody.indexOf('if !removeFileProviderDomainIfRegistered() {');
-    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)');
+    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: keptBackupDatabase)');
     expect(markIdx).toBeGreaterThan(-1);
     // markPurgePending must be BEFORE every one of the other four steps.
     expect(consentIdx).toBeGreaterThan(markIdx);
@@ -2623,7 +2623,7 @@ describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIR
 
   test('purgeAll is called with pendingNonce: pendingNonce — the EXACT value markPurgePending() returned, never a fresh read', () => {
     const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in');
-    expect(purgeBody).toMatch(/PlaintextStorageProtection\.purgeAll\(pendingNonce: pendingNonce\)/);
+    expect(purgeBody).toMatch(/PlaintextStorageProtection\.purgeAll\(pendingNonce: pendingNonce, preserving: keptBackupDatabase\)/);
   });
 });
 

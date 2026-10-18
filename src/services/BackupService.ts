@@ -71,6 +71,7 @@ import {
 } from '../lib/thumbnail-cache';
 import { loadNameCache, pruneNameCache } from '../lib/name-cache';
 import { getDeviceId } from '../lib/device-identity';
+import { BACKUP_FOLDER_CACHE_KEY } from '../lib/backup-folder-cache';
 // Task 1594: stop (never fork the tree) when this key can't read the names.
 import { VaultKeyMismatchError } from './vault-key-mismatch';
 
@@ -165,7 +166,8 @@ function isEncryptionUnavailableError(err: unknown): boolean {
 // Constants
 // ---------------------------------------------------------------------------
 
-const FOLDER_CACHE_KEY = 'beebeeb_backup_folders';
+// Task 1962 Bug 4: cleared at sign-out by account-cleanup.ts.
+const FOLDER_CACHE_KEY = BACKUP_FOLDER_CACHE_KEY;
 const MANIFEST_FILENAME = '.device.json';
 const MANIFEST_VERSION = 1;
 const APP_VERSION = '1.0.0';

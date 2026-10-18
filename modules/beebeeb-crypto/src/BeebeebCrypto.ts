@@ -1569,6 +1569,19 @@ export async function setPhotoBackupIncludeVideos(includeVideos: boolean): Promi
  * `purgeMismatchedStagedAssets` in NativeBackupEngine.swift. Always pass the
  * currently signed-in user's id, never a cached/stale one.
  */
+/**
+ * Task 1667: hand the canonical device id (`getDeviceId()`) to the native
+ * engine, which sends it as `X-Beebeeb-Device-Id` when it records completed
+ * uploads in the server's per-device photo-backup map and when it rebuilds an
+ * empty manifest from that map. Call before `enablePhotoBackup`. Resolves
+ * false on a native build without it.
+ */
+export async function setBackupDeviceId(deviceId: string): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.setBackupDeviceId !== 'function') return false
+  await BeebeebCryptoModule.setBackupDeviceId(deviceId)
+  return true
+}
+
 export async function enablePhotoBackup(authToken: string, userId: string): Promise<void> {
   return BeebeebCryptoModule.enablePhotoBackup(authToken, userId)
 }

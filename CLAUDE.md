@@ -760,6 +760,35 @@ back up `Library/Caches/`. Any path this app writes outside `Caches/` must be re
 - Verify with `bash scripts/verify-backup-exclusion.sh <sim-udid>`; the full inventory and the
   accepted-plaintext rationale live in `docs/0300-plaintext-lifecycle-audit.md`.
 
+## Camera-roll backup manifest — per account, survives sign-out as a file (task 1667)
+
+`Documents/SQLite/beebeeb-backup.db` is open twice: by `NativeBackupEngine` and by
+`BackupDatabase.ts` (expo-sqlite). Never unlink it under those handles: before task 1667 the
+sign-out purge did, the process kept using the deleted inode, and the next cold launch started from
+an empty manifest and uploaded every photo again into the same folder (sim evidence
+`_qa-evidence/1962/sim-dup/`).
+
+- **Sign-out** (`purgeAllPlaintextCaches` → native `purgePlaintextStorage`): JS closes its handle and
+  holds new opens (`storage-purge-participants.ts`); native `prepareForStoragePurge()` stops and
+  unbinds the engine, clears `photoBackupParentFolderId`, empties the manifest IN PLACE through its
+  handle (`BackupManifestStore.resetInPlace`), and `PlaintextStorageProtection.purgeAll(preserving:)`
+  keeps that file while removing the rest of `SQLite/`. If the reset fails the engine closes its
+  handle and the file is unlinked as before. The `beebeeb_backup_folders` SecureStore cache is
+  cleared too (`backup-folder-cache.ts`).
+- **Ownership:** `backup_assets.uploaded_account_id` names the account a row's remote file belongs
+  to. `bindAccount` / every scan run `BackupManifestStore.claim`: rows from before the column are
+  adopted, another account's rows are re-queued. Never trust `status = 'uploaded'` without it.
+- **Server map:** every completed upload is recorded with `POST /api/v1/files/photo-backup/mark`
+  (`X-Beebeeb-Device-Id` = the canonical `getDeviceId()`, handed to native by
+  `setBackupDeviceId`); `server_marked_at` tracks it and scans catch up on unmarked rows. A manifest
+  holding nothing the account uploaded is rebuilt from `GET /api/v1/files/photo-backup/identifiers`
+  BEFORE the first upload (`ensureManifestReadyForUploads`, gated in `processBatch`); if that GET
+  fails, no upload starts. Photos uploaded before the map existed and lost from the manifest are not
+  in the map: they upload once more (content-hash dedup is task 1667 plan item 6).
+- Tests: `scripts/swift-tests/backup-manifest-store-test.swift` (real SQLite, two connections,
+  lsof), `src/lib/account-cleanup.1667-backup-manifest.test.ts`,
+  `src/lib/native-backup-manifest-wiring.test.ts`.
+
 
 ## Files (File Provider extension) — testing it (task 1722)
 

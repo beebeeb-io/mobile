@@ -102,6 +102,8 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   mirrorBackupClientSession: async () => true,
   getPhotoBackupIncludeVideos: async () => true,
   setPhotoBackupIncludeVideos: async () => true,
+  // Task 1667 — backup-context calls this before enable/trigger.
+  setBackupDeviceId: async () => true,
 }));
 
 const {

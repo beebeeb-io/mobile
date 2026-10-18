@@ -2406,9 +2406,15 @@ public class BeebeebCryptoModule: Module {
           failed += 1
         }
       }
+      // Task 1667 — the camera-roll backup manifest is emptied THROUGH the
+      // engine's open handle (and the engine stopped + unbound) before the
+      // registry sweep, which then keeps that file instead of unlinking it
+      // under the engine's and the JS layer's live connections. The JS layer
+      // closes its own handle around this call (storage-purge-participants.ts).
+      let keptBackupDatabase = NativeBackupEngine.shared.prepareForStoragePurge()
       // Task 1593 round 7 (C1) — moved LAST (was first). See the block
       // comment above this AsyncFunction for why.
-      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)
+      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: keptBackupDatabase)
       failed += result.failed
       return ["removed": result.removed, "failed": failed]
     }
@@ -3945,6 +3951,13 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("setPhotoBackupIncludeVideos") { (includeVideos: Bool) -> Bool in
       NativeBackupEngine.shared.includeVideos = includeVideos
       return true
+    }
+
+    // Task 1667: the canonical device id (src/lib/device-identity.ts) for the
+    // photo-backup map calls (`X-Beebeeb-Device-Id`). Set before
+    // `enablePhotoBackup`; persisted for background relaunches.
+    AsyncFunction("setBackupDeviceId") { (deviceId: String) in
+      NativeBackupEngine.shared.backupDeviceId = deviceId
     }
 
     AsyncFunction("enablePhotoBackup") { (authToken: String, userId: String) in

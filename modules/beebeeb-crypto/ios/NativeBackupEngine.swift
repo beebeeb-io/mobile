@@ -812,6 +812,16 @@ final class NativeBackupEngine: NSObject {
     set { engineStateLock.lock(); _backoffUntil = newValue; engineStateLock.unlock() }
   }
 
+  /// Task 1667: the account whose manifest has been checked against (or
+  /// rebuilt from) the server's per-device map in this process — see
+  /// `ensureManifestReadyForUploads`. In memory on purpose: a relaunch checks
+  /// once more (one GET), and `prepareForStoragePurge()` clears it.
+  private var _manifestReadyForAccount: String?
+  private var manifestReadyForAccount: String? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _manifestReadyForAccount }
+    set { engineStateLock.lock(); _manifestReadyForAccount = newValue; engineStateLock.unlock() }
+  }
+
   // Cached UIApplication state — read by `currentApplicationState()` from
   // background queues without blocking on main. The cache is seeded at init
   // and maintained via four lifecycle notification observers; the previous
@@ -895,6 +905,23 @@ final class NativeBackupEngine: NSObject {
         UserDefaults.standard.set(newValue, forKey: "io.beebeeb.photoBackupParentFolderId")
       } else {
         UserDefaults.standard.removeObject(forKey: "io.beebeeb.photoBackupParentFolderId")
+      }
+    }
+  }
+
+  /// Task 1667: the canonical device id (`getDeviceId()`, src/lib/device-identity.ts)
+  /// sent as `X-Beebeeb-Device-Id` on the photo-backup map calls. The server
+  /// keys `photo_backup_state` by (user, device, local identifier), so the mark
+  /// and the rebuild must send the same value. A device property, not an
+  /// account one: it survives sign-out like the JS-side id does. Persisted so
+  /// a background relaunch (no JS yet) still has it.
+  var backupDeviceId: String? {
+    get { UserDefaults.standard.string(forKey: "io.beebeeb.backupDeviceId") }
+    set {
+      if let newValue, !newValue.isEmpty {
+        UserDefaults.standard.set(newValue, forKey: "io.beebeeb.backupDeviceId")
+      } else {
+        UserDefaults.standard.removeObject(forKey: "io.beebeeb.backupDeviceId")
       }
     }
   }
@@ -1836,6 +1863,11 @@ final class NativeBackupEngine: NSObject {
   /// a plain `NSLock` here would deadlock).
   func bindAccount(userId: String) {
     guard !userId.isEmpty else { return }
+    // Task 1667: before anything reads "already uploaded" for this account —
+    // adopt pre-column rows, re-queue another account's. Runs for a re-bind
+    // of the SAME account too (a relaunch keeps `currentAccountId` in the
+    // Keychain), so an upgraded install adopts its rows on the first bind.
+    claimManifest(forAccount: userId)
     guard currentAccountId != userId else { return }
     dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: userId) }
     currentAccountId = userId
@@ -2781,7 +2813,8 @@ final class NativeBackupEngine: NSObject {
     let selectedAlbums = selectedPhotoAlbumIds
     let assets = fetchAssetsForBackup(options: options, selectedAlbumIds: selectedAlbums)
 
-    let hasPending = await withCheckedContinuation { continuation in
+    let scanAccountId = currentAccountId
+    var hasPending = await withCheckedContinuation { continuation in
       dbQueue.async { [weak self] in
         guard let self else {
           continuation.resume(returning: false)
@@ -2791,6 +2824,18 @@ final class NativeBackupEngine: NSObject {
         self.updateAssetSelectionScope(allowedAssetIds: Set(assets.map(\.localIdentifier)), hasAlbumSelection: !selectedAlbums.isEmpty)
         continuation.resume(returning: self.hasPendingUploads())
       }
+    }
+
+    // Task 1667: rebuild an emptied manifest from the server BEFORE reporting
+    // pending work (the batch gate in `processBatch` enforces the same), then
+    // catch up on uploads the server's per-device map does not know yet —
+    // including every row uploaded before the client marked anything.
+    if let accountId = scanAccountId, !accountId.isEmpty,
+       let authToken = token, let baseURL = apiBaseUrl {
+      if await ensureManifestReadyForUploads(accountId: accountId, authToken: authToken, baseURL: baseURL) {
+        await flushServerMarks(accountId: accountId, authToken: authToken, baseURL: baseURL)
+      }
+      hasPending = dbQueue.sync { self.hasPendingUploads() }
     }
 
     DispatchQueue.main.async { [weak self] in
@@ -3079,6 +3124,13 @@ final class NativeBackupEngine: NSObject {
     guard let batchAccountId = currentAccountId, !batchAccountId.isEmpty else {
       RuntimeTrace.event("backup.native.batch.refused_no_account")
       NSLog("[NativeBackupEngine] processBatch: no current account id — refusing batch")
+      return 0
+    }
+
+    // Task 1667: never upload into a manifest that does not yet know what
+    // this account already backed up from this device (after a sign-out the
+    // manifest is empty; uploading would duplicate every photo).
+    guard await ensureManifestReadyForUploads(accountId: batchAccountId, authToken: authToken, baseURL: baseURL) else {
       return 0
     }
 
@@ -3858,12 +3910,21 @@ final class NativeBackupEngine: NSObject {
       ) {
       case .alreadyCompleted:
         dbQueue.sync {
-          markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId)
+          markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId, accountId: batchAccountId)
           deleteStagedChunks(assetId: asset.localAssetId)
         }
         removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
         updateBackupStatusSurfaces(reason: "Recovered completed backup")
         onFileStatus?(asset.localAssetId, "uploaded", nil, nil)
+        // Task 1667: record it in the server's per-device map so an emptied
+        // manifest (sign-out, reinstall) can be rebuilt instead of re-uploaded.
+        await markOnServer(
+          assetId: asset.localAssetId,
+          fileId: serverFileId,
+          authToken: authToken,
+          baseURL: baseURL,
+          accountId: batchAccountId
+        )
         generateAndUploadThumbnail(
           phAssetId: asset.localAssetId,
           serverFileId: serverFileId,
@@ -4034,10 +4095,18 @@ final class NativeBackupEngine: NSObject {
     }
 
     dbQueue.sync {
-      markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId)
+      markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId, accountId: batchAccountId)
       deleteStagedChunks(assetId: asset.localAssetId)
     }
     removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
+    // Task 1667: see the resume branch above.
+    await markOnServer(
+      assetId: asset.localAssetId,
+      fileId: serverFileId,
+      authToken: authToken,
+      baseURL: baseURL,
+      accountId: batchAccountId
+    )
 
     updateBackupStatusSurfaces()
     perfLog("asset.finish", [
@@ -4666,11 +4735,19 @@ final class NativeBackupEngine: NSObject {
 
   /// Open the same database that React Native reads for backup insights.
   /// expo-sqlite stores databases in <documentDir>/SQLite/<name>.
-  private func openDatabase() {
+  /// `<Documents>/SQLite/beebeeb-backup.db` — expo-sqlite's location for the
+  /// JS layer's `openDatabaseAsync('beebeeb-backup.db')`, so both share it.
+  static func backupDatabaseURL() -> URL {
     let documentDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-    let sqliteDir = documentDir.appendingPathComponent("SQLite", isDirectory: true)
-    try? FileManager.default.createDirectory(at: sqliteDir, withIntermediateDirectories: true)
-    let path = sqliteDir.appendingPathComponent("beebeeb-backup.db").path
+    return documentDir
+      .appendingPathComponent("SQLite", isDirectory: true)
+      .appendingPathComponent("beebeeb-backup.db", isDirectory: false)
+  }
+
+  private func openDatabase() {
+    let dbURL = Self.backupDatabaseURL()
+    try? FileManager.default.createDirectory(at: dbURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let path = dbURL.path
 
     let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
     guard sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK else {
@@ -4753,6 +4830,8 @@ final class NativeBackupEngine: NSObject {
     for migration in migrations {
       sqlite3_exec(db, migration, nil, nil, nil)
     }
+    // Task 1667: uploaded_account_id + server_marked_at.
+    BackupManifestStore.migrate(db)
 
     migratePhotoKitMissingAssetRows()
   }
@@ -5161,34 +5240,18 @@ final class NativeBackupEngine: NSObject {
   }
 
   /// Mark an asset as successfully uploaded.
-  private func markUploadComplete(assetId: String, remoteFileId: String) {
+  private func markUploadComplete(assetId: String, remoteFileId: String, accountId: String) {
     guard let db = db else { return }
-    let now = ISO8601DateFormatter().string(from: Date())
-    let sql = """
-    UPDATE backup_assets
-    SET status = 'uploaded',
-        remote_file_id = ?,
-        uploaded_at = ?,
-        error_message = NULL,
-        retry_count = 0,
-        upload_session_id = NULL,
-        staged_file_id = NULL,
-        staged_name_encrypted = NULL,
-        staged_mime_type = NULL,
-        staged_is_media = 0,
-        staged_original_size = 0,
-        staged_chunk_count = 0,
-        staged_dir = NULL,
-        staged_at = NULL
-    WHERE local_asset_id = ?
-    """
-    var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (remoteFileId as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (now as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 3, (assetId as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
+    // Task 1667: the row records WHICH account owns the remote file
+    // (`uploaded_account_id`) and that the server's per-device map does not
+    // know it yet (`server_marked_at = NULL`, see `markOnServer`).
+    BackupManifestStore.markUploaded(
+      db,
+      assetId: assetId,
+      remoteFileId: remoteFileId,
+      accountId: accountId,
+      uploadedAtIso: ISO8601DateFormatter().string(from: Date())
+    )
   }
 
   /// Mark an asset as failed, incrementing retry count.
@@ -5617,6 +5680,216 @@ final class NativeBackupEngine: NSObject {
     masterKeyHandle = nil
     backgroundTaskHandle?.cancel()
     backgroundTaskHandle = nil
+  }
+
+  // MARK: - Task 1667: account-scoped manifest + server map
+
+  /// Adopt pre-column rows for `accountId` and re-queue another account's
+  /// rows (`BackupManifestStore.claim`). Cheap (two indexed UPDATEs); safe
+  /// to run on every bind.
+  func claimManifest(forAccount accountId: String) {
+    guard !accountId.isEmpty else { return }
+    let result: (adopted: Int, requeued: Int) = dbQueue.sync {
+      guard let db = self.db else { return (0, 0) }
+      return BackupManifestStore.claim(db, accountId: accountId, nowMs: self.nowMs())
+    }
+    if result.adopted > 0 || result.requeued > 0 {
+      RuntimeTrace.event("backup.native.manifest.claimed", [
+        "adopted": result.adopted,
+        "requeued": result.requeued,
+      ])
+    }
+  }
+
+  /// True when uploads for `accountId` may start: the manifest holds rows
+  /// this account uploaded, or it was rebuilt from the server's per-device
+  /// map in this process. An EMPTY manifest (after sign-out, or a reinstall)
+  /// is rebuilt first — photos the server already maps to a file of this
+  /// account become `uploaded` — so nothing already backed up from this
+  /// device is uploaded twice. When the server cannot be asked (no device id
+  /// yet, offline, 5xx) this returns false and no upload starts; the next
+  /// batch asks again. Never deletes anything.
+  func ensureManifestReadyForUploads(accountId: String, authToken: String, baseURL: String) async -> Bool {
+    guard !accountId.isEmpty else { return false }
+    if manifestReadyForAccount == accountId { return true }
+    let needsRebuild: Bool? = dbQueue.sync {
+      guard let db = self.db else { return nil }
+      BackupManifestStore.claim(db, accountId: accountId, nowMs: self.nowMs())
+      return BackupManifestStore.needsServerRebuild(db, accountId: accountId)
+    }
+    guard let needsRebuild else { return false }
+    if !needsRebuild {
+      manifestReadyForAccount = accountId
+      return true
+    }
+    guard let deviceId = backupDeviceId, !deviceId.isEmpty else {
+      RuntimeTrace.event("backup.native.manifest_rebuild.deferred", ["reason": "no_device_id"])
+      return false
+    }
+    let map: [String: String]
+    do {
+      map = try await fetchServerIdentifierMap(
+        authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId
+      )
+    } catch {
+      RuntimeTrace.event("backup.native.manifest_rebuild.deferred", [
+        "reason": "fetch_failed",
+        "error": String(describing: error).prefix(160).description,
+      ])
+      backoffUntil = Date().addingTimeInterval(30)
+      return false
+    }
+    guard currentAccountId == accountId else { return false }
+    let promoted: Int = dbQueue.sync {
+      guard let db = self.db else { return 0 }
+      return BackupManifestStore.applyServerMap(
+        db,
+        accountId: accountId,
+        localToFileId: map,
+        uploadedAtIso: ISO8601DateFormatter().string(from: Date()),
+        nowMs: self.nowMs()
+      )
+    }
+    manifestReadyForAccount = accountId
+    RuntimeTrace.event("backup.native.manifest_rebuild.done", [
+      "serverEntries": map.count,
+      "promoted": promoted,
+    ])
+    return true
+  }
+
+  /// `GET /api/v1/files/photo-backup/identifiers` for this device, as
+  /// local identifier -> file id. A 404 (a server without the route) reads
+  /// as an empty map; any other failure throws.
+  private func fetchServerIdentifierMap(
+    authToken: String, baseURL: String, accountId: String, deviceId: String
+  ) async throws -> [String: String] {
+    guard let url = URL(string: "\(baseURL)/api/v1/files/photo-backup/identifiers") else {
+      throw BackupError.invalidServerURL
+    }
+    var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
+    applyExpectedUserHeader(to: &request, accountId: accountId)
+    request.httpMethod = "GET"
+    request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+    request.setValue(deviceId, forHTTPHeaderField: "X-Beebeeb-Device-Id")
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    let (data, response) = try await metadataSession.data(for: request)
+    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+    if statusCode == 409, AccountMismatchDetection.isAccountMismatch(data) {
+      handleConfirmedAccountMismatch()
+      throw BackupError.accountMismatchConfirmed
+    }
+    if statusCode == 404 { return [:] }
+    guard (200..<300).contains(statusCode) else {
+      throw BackupError.httpStatus(statusCode, String(data: data, encoding: .utf8) ?? "")
+    }
+    guard let map = BackupManifestStore.parseIdentifierMap(data) else {
+      throw BackupError.httpStatus(statusCode, "unexpected photo-backup/identifiers body")
+    }
+    return map
+  }
+
+  /// `POST /api/v1/files/photo-backup/mark` for one completed upload, then
+  /// `server_marked_at` on success. Best-effort: a failure leaves the row
+  /// unmarked for `flushServerMarks` to retry. Returns false when the caller
+  /// should stop sending more marks now (network, 429, 5xx, account change).
+  @discardableResult
+  func markOnServer(
+    assetId: String, fileId: String, authToken: String, baseURL: String, accountId: String
+  ) async -> Bool {
+    guard !accountId.isEmpty, currentAccountId == accountId else { return false }
+    guard let deviceId = backupDeviceId, !deviceId.isEmpty else { return false }
+    guard let url = URL(string: "\(baseURL)/api/v1/files/photo-backup/mark") else { return false }
+    var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
+    applyExpectedUserHeader(to: &request, accountId: accountId)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+    request.setValue(deviceId, forHTTPHeaderField: "X-Beebeeb-Device-Id")
+    request.httpBody = try? JSONSerialization.data(withJSONObject: [
+      "local_identifier": assetId,
+      "file_id": fileId,
+    ])
+    do {
+      let (data, response) = try await metadataSession.data(for: request)
+      let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+      if statusCode == 409, AccountMismatchDetection.isAccountMismatch(data) {
+        handleConfirmedAccountMismatch()
+        return false
+      }
+      // 404: the file is gone or not this account's; nothing to map, and
+      // asking again would not change that.
+      guard (200..<300).contains(statusCode) || statusCode == 404 else {
+        RuntimeTrace.event("backup.native.server_mark.failed", ["status": statusCode])
+        return false
+      }
+      dbQueue.sync {
+        guard let db = self.db else { return }
+        BackupManifestStore.recordServerMarked(db, assetId: assetId, fileId: fileId, nowMs: self.nowMs())
+      }
+      return true
+    } catch {
+      RuntimeTrace.event("backup.native.server_mark.failed", ["status": 0])
+      return false
+    }
+  }
+
+  /// Catch-up: marks rows uploaded but not yet in the server map (every row
+  /// uploaded before task 1667, plus any mark that failed). Sequential and
+  /// bounded so a large legacy manifest drains over a few scans without
+  /// pressing the server; stops at the first failure.
+  func flushServerMarks(accountId: String, authToken: String, baseURL: String, limit: Int = 300) async {
+    guard backupDeviceId?.isEmpty == false else { return }
+    let rows: [(assetId: String, fileId: String)] = dbQueue.sync {
+      guard let db = self.db else { return [] }
+      return BackupManifestStore.pendingServerMarks(db, accountId: accountId, limit: limit)
+    }
+    guard !rows.isEmpty else { return }
+    let deadline = Date().addingTimeInterval(20)
+    var marked = 0
+    for row in rows {
+      if Task.isCancelled || Date() > deadline { break }
+      guard await markOnServer(
+        assetId: row.assetId, fileId: row.fileId, authToken: authToken, baseURL: baseURL, accountId: accountId
+      ) else { break }
+      marked += 1
+    }
+    RuntimeTrace.event("backup.native.server_mark.catch_up", ["candidates": rows.count, "marked": marked])
+  }
+
+  /// Sign-out (every path reaches the native `purgePlaintextStorage`): stop
+  /// and unbind the engine, empty the manifest THROUGH the open handle, and
+  /// forget the previous account's backup folder. Returns the database files
+  /// the purge must keep (emptied in place, still open here and in the JS
+  /// layer). Before task 1667 the purge unlinked the file under both
+  /// handles: the process kept writing a deleted inode and the next cold
+  /// launch re-uploaded every photo into the same folder.
+  ///
+  /// If the manifest cannot be emptied, the engine closes its own handle
+  /// instead (nothing in this process may write a file the purge unlinks)
+  /// and returns no paths, so the purge removes the file as before. Backup
+  /// then stays off until the next launch reopens it.
+  func prepareForStoragePurge() -> Set<String> {
+    stop()
+    backupClientSessionId = nil
+    clearAccountAndPurgeStaged()
+    // 1962 Bug 4: the next account must not inherit this one's Backups folder.
+    parentFolderId = nil
+    manifestReadyForAccount = nil
+    let dbPath = Self.backupDatabaseURL().standardizedFileURL.path
+    let kept: Set<String> = dbQueue.sync {
+      guard let db = self.db else { return [] }
+      if BackupManifestStore.resetInPlace(db) {
+        return [dbPath, dbPath + "-wal", dbPath + "-shm"]
+      }
+      sqlite3_close_v2(db)
+      self.db = nil
+      return []
+    }
+    RuntimeTrace.event("backup.native.storage_purge.prepared", ["resetInPlace": !kept.isEmpty])
+    return kept
   }
 
   /// Refresh progress counters from the database.
