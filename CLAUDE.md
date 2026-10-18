@@ -852,6 +852,23 @@ back up `Library/Caches/`. Any path this app writes outside `Caches/` must be re
   couldn't be moved), the device stays `isDeleted`, and it can no longer boot to finish the job
   (`bb-1722-r1`, 57C1B9B7, is stuck that way). Before `simctl shutdown`, check that `Purgatory/` is empty.
 
+## GET /files/index — only through `file-index-loader.ts` (task 1959)
+
+`src/lib/file-index-loader.ts` is the only caller of `getFileIndex()`; the source guard
+`src/lib/file-index-loader.guard.test.ts` fails on any other caller. The server walks the whole
+vault on every call (~2.4 s for a 40k-file vault, hash or not), so the loader coalesces: callers
+that arrive while a request runs share it; for 5 minutes (`FILE_INDEX_REVALIDATE_MS`) after a
+server check, plain callers get the on-disk cache (the sync client writes create / trash / move /
+rename ops through to it; the loader restores the server-only fields the write-through drops, e.g.
+file-request key material and `blurhash`). `force: true` skips the window: pull-to-refresh, the
+Photos bulk-action retry, the Android repair worker, and the backup reconcile, which is itself
+throttled to once per 5 minutes (`RECONCILE_MIN_INTERVAL_MS` in `BackupService.ts`). Before 1959,
+SettingsScreen's `refreshBackupStats` effect (it depends on `backupProgress.completed`) reached the
+reconcile through `getDeviceManifest()` -> `ensureBackupFolders()` once per backed-up item. That
+path, plus a request on every Photos tab focus, is how one 163 MB upload produced 18 index walks
+in 10 minutes. Worst case now: 2 requests per 5 minutes (one reconcile, one plain revalidation),
+plus explicit refreshes.
+
 ## Bottom sheets — one primitive (task 1586)
 
 Every partial-height sheet renders through `src/components/sheet/BottomSheet.tsx` (+

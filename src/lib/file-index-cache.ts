@@ -93,7 +93,20 @@ export async function saveCachedFileIndex(
   await AsyncStorage.setItem(FILE_INDEX_CACHE_KEY, serialized);
 }
 
+/**
+ * Task 1959: bumped on every `clearCachedFileIndex()` (sign-out, account
+ * switch). `file-index-loader.ts` stamps the generation it last checked the
+ * server at, so a cache written after a clear is never treated as already
+ * revalidated.
+ */
+let cacheGeneration = 0;
+
+export function fileIndexCacheGeneration(): number {
+  return cacheGeneration;
+}
+
 export async function clearCachedFileIndex(): Promise<void> {
+  cacheGeneration += 1;
   await Promise.all([
     AsyncStorage.removeItem(FILE_INDEX_CACHE_KEY),
     FileSystem.documentDirectory

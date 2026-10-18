@@ -29,8 +29,7 @@ import {
 } from '../lib/thumbnail-quality';
 import { BeebeebThumbnails } from '../../modules/beebeeb-crypto';
 import { ensurePhotoPermission } from '../lib/photo-permissions';
-import { getFileIndex } from '../lib/api';
-import { loadCachedFileIndex, saveCachedFileIndex } from '../lib/file-index-cache';
+import { loadFileIndex } from '../lib/file-index-loader';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
 import { seedLocalIdentifierMap } from '../lib/local-identifier-map';
 import { formatBytes } from '../lib/format';
@@ -149,12 +148,8 @@ export default function ThumbnailQualityScreen() {
   const loadScope = useCallback(async () => {
     setLoadingScope(true);
     try {
-      const cached = await loadCachedFileIndex();
-      const index = await getFileIndex(cached?.hash);
-      const files = !index.changed && cached
-        ? cached.files
-        : index.files ?? cached?.files ?? [];
-      if (index.changed && index.files) await saveCachedFileIndex(index.hash, index.files);
+      // Task 1959: through the coalescing loader, not a fresh /files/index walk per mount.
+      const files = (await loadFileIndex()).files ?? [];
 
       const localMap = await getRemoteToLocalMap();
       const eligible = files.filter((f) => (

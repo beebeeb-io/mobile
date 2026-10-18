@@ -40,9 +40,9 @@ import {
   moveFile,
   renameFile,
   trashFiles,
-  getFileIndex,
   type FileEntry,
 } from '../lib/api';
+import { FILE_INDEX_REVALIDATE_MS, loadFileIndex } from '../lib/file-index-loader';
 import type { EncryptedData } from '../../modules/beebeeb-crypto';
 import {
   getContactsBackupStatus,
@@ -864,6 +864,32 @@ async function flattenDuplicateBackupFolders(): Promise<void> {
 const RECONCILE_HASH_KEY = 'beebeeb_reconcile_index_hash';
 let _reconcileInFlight: Promise<void> | null = null;
 
+/**
+ * Task 1959: the reconcile asks the server at most once per this interval.
+ *
+ * It is reached from `ensureBackupFolders()`, and that runs on every
+ * `getDeviceManifest()`. SettingsScreen's `refreshBackupStats` effect calls
+ * `getDeviceManifest()` every time `backupProgress.completed` changes, i.e.
+ * once per backed-up item, and the AppState listener in backup-context runs it
+ * on every return to the foreground. The hash gate below did not help during
+ * a backup: each completed item changes the vault, so every call came back
+ * `changed: true` with the whole index (39,783 rows for Guus), and the server
+ * walks the whole vault either way (~2.4 s). That is how one upload produced
+ * 18 GET /files/index in 10 minutes.
+ *
+ * A server-side delete (0817's case) is still picked up: on the next call
+ * after the interval, and on the next foreground after it. ensureBackupFolders
+ * is find-or-create, so a deleted Backups root is recreated regardless.
+ */
+export const RECONCILE_MIN_INTERVAL_MS = FILE_INDEX_REVALIDATE_MS;
+let _lastReconcileAt = Number.NEGATIVE_INFINITY;
+
+/** Test hook: forget the reconcile throttle. */
+export function resetReconcileThrottleForTests(): void {
+  _lastReconcileAt = Number.NEGATIVE_INFINITY;
+  _reconcileInFlight = null;
+}
+
 /** Reset the persisted backup folder cache so ensureBackupFolders rebuilds the
  *  tree from scratch (used when the whole Backups root is gone). */
 async function clearFolderCache(): Promise<void> {
@@ -933,22 +959,29 @@ async function selfHealCategoryBackup(
  */
 export async function reconcileDerivedStateAgainstServer(): Promise<void> {
   if (_reconcileInFlight) return _reconcileInFlight;
+  // Task 1959: throttle — see RECONCILE_MIN_INTERVAL_MS.
+  if (Date.now() - _lastReconcileAt < RECONCILE_MIN_INTERVAL_MS) return;
 
   _reconcileInFlight = (async () => {
     try {
       const lastHash = (await storeGet(RECONCILE_HASH_KEY)) ?? undefined;
       let resp;
       try {
-        resp = await getFileIndex(lastHash);
+        // Forced: orphan detection needs the server's CURRENT list (a stale
+        // list would miss a file uploaded since and re-queue it as an orphan).
+        // Through the shared loader so it joins any /files/index request a
+        // screen already has in flight, and refreshes the index cache.
+        resp = await loadFileIndex({ force: true });
       } catch (err) {
         // Network/auth blip — leave state as-is and retry next warm-up. NEVER
         // demote on an absent index we couldn't fetch.
         console.warn('[BackupService] reconcile: /files/index fetch failed, skipping', err);
         return;
       }
+      _lastReconcileAt = Date.now();
 
       // Hash short-circuit: nothing changed since the last reconcile → no-op.
-      if (!resp.changed || !resp.files) {
+      if (!resp.files || !resp.hash || resp.hash === lastHash) {
         return;
       }
 

@@ -3,38 +3,39 @@
  *
  * Extracted from PhotosScreen.tsx (`getPhotoCandidates`) so the network
  * behaviour of the Photos tab's focus refresh is unit-testable without
- * rendering the screen.
+ * rendering the screen. It reads the vault index through
+ * `file-index-loader.ts`, which coalesces the per-focus requests (in-flight
+ * dedupe + a revalidation window + the hash path). Before task 1959 this
+ * called GET /files/index on every focus of the Photos tab.
  */
 
-import { ApiError, getAllImages, getFileIndex } from './api';
+import { ApiError, getAllImages } from './api';
 import type { FileEntry } from './api';
-import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from './file-index-cache';
+import type { CachedFileIndex } from './file-index-cache';
+import { loadFileIndex } from './file-index-loader';
 import { photoCandidatesFromIndex } from './photo-candidates';
 import { filterByExcludedFolders, filterByExcludedFoldersDirect } from './photo-library-filter';
+
+export interface PhotoCandidatesOptions {
+  /** Explicit refresh (pull-to-refresh, retry after a bulk action found
+   *  missing rows): ask the server even inside the revalidation window. */
+  force?: boolean;
+}
 
 export async function getPhotoCandidates(
   cachedIndex?: CachedFileIndex | null,
   excludedFolderIds?: Set<string>,
+  options: PhotoCandidatesOptions = {},
 ): Promise<FileEntry[]> {
   const excluded = excludedFolderIds ?? new Set<string>();
   try {
-    const existingIndex = cachedIndex ?? await loadCachedFileIndex();
-    const index = await getFileIndex(existingIndex?.hash);
-    if (!index.changed && existingIndex) {
+    const { files } = await loadFileIndex({
+      force: options.force,
+      ...(cachedIndex !== undefined ? { cached: cachedIndex } : {}),
+    });
+    if (files) {
       // Pass the FULL index (folder rows included) so exclusion is transitive.
-      return filterByExcludedFolders(
-        existingIndex.files,
-        photoCandidatesFromIndex(existingIndex.files),
-        excluded,
-      );
-    }
-    if (index.files) {
-      await saveCachedFileIndex(index.hash, index.files);
-      return filterByExcludedFolders(
-        index.files,
-        photoCandidatesFromIndex(index.files),
-        excluded,
-      );
+      return filterByExcludedFolders(files, photoCandidatesFromIndex(files), excluded);
     }
   } catch (err) {
     // Older API builds do not have /files/index yet. Because /files/{id}

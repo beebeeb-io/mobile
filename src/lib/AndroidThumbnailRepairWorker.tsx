@@ -7,10 +7,9 @@ if (Platform.OS !== 'android' && __DEV__) {
   console.warn('AndroidThumbnailRepairWorker loaded on non-Android — App.tsx should gate this.');
 }
 
-import { getFileIndex } from './api';
 import type { FileEntry } from './api';
 import { encryptedMetadataPayloadToBytes } from './encrypted-metadata';
-import { loadCachedFileIndex, saveCachedFileIndex } from './file-index-cache';
+import { loadFileIndex } from './file-index-loader';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
 import { ensureThumbnailForImage, generateAndUploadPhotoLibraryThumbnail, MAX_THUMBNAIL_REPAIR_SOURCE_BYTES } from './thumbnail';
 import { invalidateCachedThumbnail } from './thumbnail-cache';
@@ -384,14 +383,10 @@ function withActivity(
 }
 
 async function loadIndexFiles(): Promise<FileEntry[]> {
-  const cached = await loadCachedFileIndex();
-  const index = await getFileIndex(cached?.hash);
-  if (!index.changed && cached) return cached.files;
-  if (index.files) {
-    await saveCachedFileIndex(index.hash, index.files);
-    return index.files;
-  }
-  return cached?.files ?? [];
+  // Task 1959: through the shared loader (joins an in-flight request). Forced:
+  // the repair pass needs the server's current `thumbnail_bytes` for files it
+  // just re-uploaded, so it keeps its old always-ask-the-server behaviour.
+  return (await loadFileIndex({ force: true })).files ?? [];
 }
 
 async function resolveMime(

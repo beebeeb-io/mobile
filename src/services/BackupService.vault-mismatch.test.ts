@@ -86,6 +86,14 @@ mock.module('../lib/api', () => ({
   trashFiles: async () => {},
   getFileIndex: async () => ({ changed: false }),
 }));
+// Task 1959: the reconcile reads the index through file-index-loader, whose
+// cache module writes to the documents directory — keep it in memory here.
+mock.module('../lib/file-index-cache', () => ({
+  loadCachedFileIndex: async () => null,
+  saveCachedFileIndex: async () => {},
+  clearCachedFileIndex: async () => {},
+  fileIndexCacheGeneration: () => 0,
+}));
 mock.module('../../modules/beebeeb-crypto', () => ({
   getContactsBackupStatus: async () => ({ hasKnownBackupState: false }),
   getCalendarBackupStatus: async () => ({ hasKnownBackupState: false }),

@@ -1005,7 +1005,11 @@ export default function PhotosScreen() {
     return () => { cancelled = true; };
   }, [activePhotoIds, photos, photosById, isUnlocked, decryptMetadata]);
 
-  const fetchPhotos = useCallback(async (isRefresh = false) => {
+  // Task 1959: `force` asks the server even inside the file-index loader's
+  // revalidation window (pull-to-refresh; a bulk action that found rows
+  // already gone). A plain focus does not: it reuses the request in flight or
+  // the cache the sync client keeps current (src/lib/file-index-loader.ts).
+  const fetchPhotos = useCallback(async (isRefresh = false, force = isRefresh) => {
     const hasVisiblePhotos = photosCountRef.current > 0;
     recordRuntimeTrace('photos.fetch.request', {
       refresh: isRefresh,
@@ -1045,7 +1049,7 @@ export default function PhotosScreen() {
         }
       }
 
-      const allImages = await getPhotoCandidates(cachedIndex, excludedFolderIds);
+      const allImages = await getPhotoCandidates(cachedIndex, excludedFolderIds, { force });
       setPhotosFolderId(null);
       // Server usually returns image/media rows sorted newest first, but defend
       // against future changes by re-applying both invariants here.
@@ -1443,7 +1447,7 @@ export default function PhotosScreen() {
                   'Some photos were not moved',
                   'Beebeeb refreshed the photo list because a few selected items were already gone or unavailable.',
                 );
-                void fetchPhotos();
+                void fetchPhotos(false, true);
               }
             } catch (err) {
               Alert.alert('Delete failed', friendlyError(err));

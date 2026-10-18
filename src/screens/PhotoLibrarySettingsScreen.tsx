@@ -14,8 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { RootStackParamList } from '../App';
 import type { FileEntry } from '../lib/api';
-import { getFileIndex } from '../lib/api';
-import { loadCachedFileIndex, saveCachedFileIndex } from '../lib/file-index-cache';
+import { loadFileIndex } from '../lib/file-index-loader';
 import { useCrypto } from '../lib/crypto-context';
 import { useTheme } from '../lib/theme-context';
 import { NativeSwitch } from '../components/NativeSwitch';
@@ -81,12 +80,8 @@ export default function PhotoLibrarySettingsScreen() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const cached = await loadCachedFileIndex();
-      const index = await getFileIndex(cached?.hash);
-      const files = !index.changed && cached
-        ? cached.files
-        : index.files ?? cached?.files ?? [];
-      if (index.changed && index.files) await saveCachedFileIndex(index.hash, index.files);
+      // Task 1959: through the coalescing loader, not a fresh /files/index walk per mount.
+      const files = (await loadFileIndex()).files ?? [];
 
       const media = files.filter(isMediaCandidate);
       const counts = mediaCountByFolder(files, media);
