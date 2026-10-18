@@ -59,11 +59,18 @@ let getSnapshotImpl: () => Promise<{ seq_id: number; nodes: unknown[] }> = async
 let getSyncOpsCalls: number[] = [];
 let getSyncOpsImpl: (since: number) => Promise<unknown[]> = async () => [];
 
+// Task 1667 round 13 (review item 1): the ops the client sent, with their
+// device id.
+const submittedOps: Array<{ client_op_id: string; device_id: string }> = [];
+
 mock.module('./api', () => ({
   getApiUrl: () => 'https://api.test',
   getToken: async () => 'session-token',
   getStreamToken: async () => ({ stream_token: 'tok', expires_at: '2099-01-01T00:00:00Z' }),
-  submitSyncOps: async () => ({ applied: [], rejected: [] }),
+  submitSyncOps: async (ops: Array<{ client_op_id: string; device_id: string }>) => {
+    submittedOps.push(...ops);
+    return { applied: [], rejected: [] };
+  },
   getSnapshot: async () => {
     getSnapshotCalls += 1;
     return getSnapshotImpl();
@@ -99,8 +106,10 @@ mock.module('./file-provider-mount', () => ({
   syncDecryptedEntriesToFileProvider: async () => {},
 }));
 
+// Round 13: reassignable, so a test can make the keychain unreadable.
+let getDeviceIdImpl: () => Promise<string> = async () => 'device-1';
 mock.module('./device-identity', () => ({
-  getDeviceId: async () => 'device-1',
+  getDeviceId: () => getDeviceIdImpl(),
 }));
 
 const { SyncClient, fileEntryToSyncNode } = await import('./sync-client');
@@ -424,5 +433,42 @@ describe('SyncClient write-through across a sign-out (task 1959 round 2)', () =>
     await new Promise((r) => setTimeout(r, 5));
     expect(savedScopes.length).toBe(1);
     expect(savedScopes[0]).toBe(constructionScope);
+  });
+});
+
+// Task 1667 round 13 (review of mobile#182 at a19037f9, item 1, sweep of
+// every getDeviceId() caller): getDeviceId() now REJECTS while the keychain
+// cannot be read, instead of minting a throwaway id. The sync client must
+// still start (not fail the whole sync engine), and must never send an op
+// with a made-up or empty origin: the op stays pending until the id reads.
+describe('SyncClient with an unreadable device id (task 1667 round 13)', () => {
+  test('start succeeds; ops wait for the device id instead of carrying a made-up one', async () => {
+    secureStore.set('bb_sync_last_seq', '0');
+    getSnapshotImpl = async () => ({ seq_id: 1, nodes: [] });
+    submittedOps.length = 0;
+    let unreadable = true;
+    getDeviceIdImpl = async () => {
+      if (unreadable) {
+        const err = new Error('device id unavailable: the secure storage read failed');
+        err.name = 'DeviceIdUnavailableError';
+        throw err;
+      }
+      return 'device-real';
+    };
+    try {
+      const client = new SyncClient();
+      await client.start(); // must not throw
+      const r = await client.submitOp('folder_create', { id: 'f-1', name_encrypted: 'n', parent_id: null });
+      expect(r.accepted).toBe(true); // optimistic, kept pending
+      expect(submittedOps).toEqual([]); // nothing sent without the real id
+
+      unreadable = false;
+      await client.submitOp('folder_create', { id: 'f-2', name_encrypted: 'n2', parent_id: null });
+      expect(submittedOps.length).toBeGreaterThan(0);
+      expect(submittedOps.every((op) => op.device_id === 'device-real')).toBe(true);
+      client.stop();
+    } finally {
+      getDeviceIdImpl = async () => 'device-1';
+    }
   });
 });

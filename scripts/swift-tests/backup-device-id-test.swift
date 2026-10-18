@@ -121,6 +121,77 @@ do {
   expect(q[kSecUseOperationPrompt as String] == nil, "d4: no operation prompt")
 }
 
+// MARK: - (e) round 13 (review of mobile#182 at a19037f9, item 1): the JS
+// handoff never replaces the real id with one JS made up
+//
+// `accept` is `NativeBackupEngine.acceptBackupDeviceId` minus the pause/trace
+// side effects: the existing id is what the getter resolves (UserDefaults,
+// else the keychain), the decision is the shipped `BackupDeviceId.decideSet`,
+// and only `.store` writes UserDefaults.
+
+@discardableResult
+func accept(_ d: FakeDefaults, _ k: FakeKeychain, _ incoming: String, persisted: Bool) -> BackupDeviceId.SetDecision {
+  let existing = resolve(d, k).id
+  let decision = BackupDeviceId.decideSet(existing: existing, incoming: incoming, persisted: persisted)
+  if case .store = decision { d.persist(incoming) }
+  return decision
+}
+
+do {
+  // e1: the review's scenario. The app starts in the background with the
+  // phone locked; native already has the real id. JS's keychain read failed;
+  // a19037f's JS minted a UUID and sent it with no durability flag.
+  let d = FakeDefaults()
+  d.value = "dev-real"
+  let k = FakeKeychain()
+  k.items[BackupDeviceId.canonicalSecureStoreKey] = .unavailable(errSecInteractionNotAllowed)
+  let decision = accept(d, k, "minted-while-locked", persisted: false)
+  expect(decision == .refused(reason: "different_id_not_persisted"), "e1: an undurable different id is refused (got \(decision))")
+  expect(d.value == "dev-real" && resolve(d, k).id == "dev-real", "e1: native keeps the real id (got \(String(describing: d.value)))")
+  expect(d.writes.isEmpty, "e1: nothing written")
+}
+
+do {
+  // e2: the same with the real id only in the keychain (UserDefaults empty):
+  // the existing id is the resolved one, not just UserDefaults.
+  let d = FakeDefaults()
+  let k = FakeKeychain()
+  k.items[BackupDeviceId.canonicalSecureStoreKey] = .value("dev-real")
+  let decision = accept(d, k, "minted-elsewhere", persisted: false)
+  expect(decision == .refused(reason: "different_id_not_persisted"), "e2: refused against the keychain's id (got \(decision))")
+  expect(d.value == "dev-real", "e2: native keeps the keychain's id (got \(String(describing: d.value)))")
+}
+
+do {
+  // e3: first run: native has no id; JS minted and persisted one.
+  let d = FakeDefaults()
+  let k = FakeKeychain()
+  let decision = accept(d, k, "dev-first-run", persisted: true)
+  expect(decision == .store(replacing: nil), "e3: stored (got \(decision))")
+  expect(d.value == "dev-first-run", "e3: native uses it")
+}
+
+do {
+  // e4: the same id again (every launch) changes nothing; a durable
+  // different id (the keychain item was reset) replaces it.
+  let d = FakeDefaults()
+  d.value = "dev-real"
+  let k = FakeKeychain()
+  expect(accept(d, k, "dev-real", persisted: true) == .unchanged, "e4: the same id is unchanged")
+  expect(d.writes.isEmpty, "e4: and not rewritten")
+  expect(accept(d, k, "dev-new", persisted: true) == .store(replacing: "dev-real"), "e4: a durable different id replaces it")
+  expect(d.value == "dev-new", "e4: native uses the durable one")
+}
+
+do {
+  // e5: an empty id never removes the existing one (a19037f's setter did).
+  let d = FakeDefaults()
+  d.value = "dev-real"
+  let k = FakeKeychain()
+  expect(accept(d, k, "", persisted: true) == .refused(reason: "empty_id"), "e5: an empty id is refused")
+  expect(d.value == "dev-real", "e5: the existing id is kept")
+}
+
 if failures.isEmpty {
   print("BackupDeviceIdTests: \(total) assertions, 0 failed")
   exit(0)

@@ -89,6 +89,35 @@ enum BackupDeviceId {
     return Resolution(id: nil, source: nil, unavailable: unavailable)
   }
 
+  // MARK: - JS handoff (round 13, review of mobile#182 at a19037f9, item 1)
+
+  /// What the setter does with an id JS hands over.
+  enum SetDecision: Equatable {
+    /// Store it (no id yet, or a durable replacement).
+    case store(replacing: String?)
+    /// It is the id native already has.
+    case unchanged
+    /// Keep the existing id; `reason` is logged.
+    case refused(reason: String)
+  }
+
+  /// Round 13 (item 1, duplicate upload): before, the setter stored whatever
+  /// JS sent. At a `BackupProvider` mount with the device locked, JS's
+  /// keychain read failed, `getDeviceId()` minted a new UUID, and native
+  /// stored it over the real id: every later /check, /identifiers and /mark
+  /// used an id the server had no map for, and the photos uploaded again
+  /// after the next sign-in. Now an existing, DIFFERENT id is replaced only
+  /// when JS says the incoming one is durable (`persisted`: read from, or
+  /// written to and read back from, secure storage). An empty id is never
+  /// stored and never removes the existing one.
+  static func decideSet(existing: String?, incoming: String, persisted: Bool) -> SetDecision {
+    guard !incoming.isEmpty else { return .refused(reason: "empty_id") }
+    guard let existing, !existing.isEmpty else { return .store(replacing: nil) }
+    if existing == incoming { return .unchanged }
+    guard persisted else { return .refused(reason: "different_id_not_persisted") }
+    return .store(replacing: existing)
+  }
+
   // MARK: - expo-secure-store's keychain layout (expo-secure-store 57,
   // ios/SecureStoreModule.swift `query(with:options:requireAuthentication:)`)
 

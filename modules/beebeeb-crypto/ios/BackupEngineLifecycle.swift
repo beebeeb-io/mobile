@@ -78,6 +78,11 @@ final class BackupEngineLifecycle {
   private var _runOwner: RunOwner = .none
   /// Round 12: user stops so far (a start whose key load spans one yields).
   private var _userStops: UInt64 = 0
+  /// Round 13 (item 4): a key a start read but could not use (the manifest
+  /// refused in the body), for that account's retry.
+  private var _stashedStartKey: (accountId: String, key: AnyObject)?
+  /// Round 13 (item 5): the background task's expiration paused its own run.
+  private var _backgroundExpiryPause = false
 
   /// Round 12 (review item 3): who set the engine running.
   enum RunOwner: Equatable {
@@ -113,15 +118,6 @@ final class BackupEngineLifecycle {
 
   // MARK: start / stop / retry
 
-  /// The user (JS) asked for backup to run: `enablePhotoBackup`, resume, the
-  /// manual trigger. `body` is the engine's start, run as one transition.
-  func userStart(_ body: () -> Void) {
-    locked {
-      write { _wantsRunning = true }
-      body()
-    }
-  }
-
   /// What a start body asks of its caller.
   enum StartStep: Equatable {
     case done
@@ -135,8 +131,15 @@ final class BackupEngineLifecycle {
   /// before giving up on a state that keeps changing under it.
   static let maxStartAttempts = 2
 
+  /// The user (JS) asked for backup to run: `enablePhotoBackup`, resume, the
+  /// manual trigger.
+  ///
   /// Round 12 (review item 8): the user's start with a slow `prepare` (the
-  /// master-key load) that runs OUTSIDE the transition lock. `body` then runs
+  /// master-key load) that runs OUTSIDE the transition lock.
+  ///
+  /// Round 13 (item 12): the only start entry point (the lock-only
+  /// `userStart(_:)` and `runRetry(_:_:)` that production stopped calling in
+  /// round 12 are gone; the lifecycle test drives this one). `body` then runs
   /// as one transition with what `prepare` returned, and re-validates it
   /// there. A user stop that lands while `prepare` runs wins: the start then
   /// does nothing (with the lock held across the load, as before, the stop
@@ -170,6 +173,8 @@ final class BackupEngineLifecycle {
         _fetchResult = nil
         _runOwner = .none
         _userStops &+= 1
+        _stashedStartKey = nil
+        _backgroundExpiryPause = false
       }
       body()
     }
@@ -192,8 +197,37 @@ final class BackupEngineLifecycle {
 
   /// The user's start set up the run (both of `startLocked`'s running
   /// branches). MUST be called inside a transition.
-  func claimUserRun() {
-    locked { write { _runOwner = .user } }
+  ///
+  /// Round 13 (item 5): returns true when the background task's expiration
+  /// had paused the run the user now takes over; the caller unpauses it.
+  @discardableResult
+  func claimUserRun() -> Bool {
+    locked {
+      var resumeExpiryPause = false
+      write {
+        _runOwner = .user
+        resumeExpiryPause = _backgroundExpiryPause
+        _backgroundExpiryPause = false
+      }
+      return resumeExpiryPause
+    }
+  }
+
+  /// Round 13 (review of mobile#182 at a19037f9, item 5): the
+  /// `BGProcessingTask` expiration handler. `pause` runs only while the task
+  /// OWNS the run (it set `isRunning` itself). Before, it always paused:
+  /// when the user's run was going (`beginBackgroundRun` found it running,
+  /// or the user claimed it), the system expiring the task as the user
+  /// picked up the phone set `isPaused`, and the drain loop slept in the
+  /// foreground with nothing to clear it. Returns whether it paused.
+  @discardableResult
+  func expireBackgroundRun(_ pause: () -> Void) -> Bool {
+    locked {
+      guard read({ _runOwner == .background }) else { return false }
+      pause()
+      write { _backgroundExpiryPause = true }
+      return true
+    }
   }
 
   /// The background task's start, as one transition: when the engine is not
@@ -225,7 +259,10 @@ final class BackupEngineLifecycle {
     locked {
       guard read({ _runOwner == .background }), stillCurrent() else { return false }
       idle()
-      write { _runOwner = .none }
+      write {
+        _runOwner = .none
+        _backgroundExpiryPause = false
+      }
       return true
     }
   }
@@ -248,19 +285,6 @@ final class BackupEngineLifecycle {
     locked { write { _retryToken &+= 1 } }
   }
 
-  /// Runs `body` (the engine's start) for the retry `token` only while the
-  /// user still wants backup running and no stop, cancel or newer retry came
-  /// after it. Checked and run as one transition, so a stop either finished
-  /// before (the retry does nothing) or waits until the start is done.
-  @discardableResult
-  func runRetry(_ token: UInt64, _ body: () -> Void) -> Bool {
-    locked {
-      guard read({ _wantsRunning && token == _retryToken }) else { return false }
-      body()
-      return true
-    }
-  }
-
   /// Round 12 (review item 8): the retry with its `prepare` outside the lock
   /// (see `userStart(prepare:_:)`). The intent and token are checked in the
   /// lock before each body. Returns whether a body ran.
@@ -280,6 +304,52 @@ final class BackupEngineLifecycle {
     }
     return ran
   }
+
+  // MARK: start key preparation (round 13, review of mobile#182 at a19037f9, item 4)
+
+  /// The order of a start's slow half (`prepare`, outside the lock):
+  /// 1. `manifestReady`: can the manifest open? If not, `manifestUnavailable`
+  ///    and NO key read: the body refuses and schedules a retry anyway.
+  /// 2. `cached`: the in-process key cache (no prompt).
+  /// 3. a key this account's earlier start read and could not use
+  ///    (`stashStartKey`), so a retry does not prompt again.
+  /// 4. `load`: the keychain read, which can show a keychain / Face ID prompt.
+  /// Before (round 12), the key was loaded first; on a cache miss every
+  /// refused start and every retry (2, 4, 8, 16, then every 30 s) prompted
+  /// and threw the key away.
+  func prepareStartKey<R>(
+    accountId: String,
+    manifestReady: () -> Bool,
+    manifestUnavailable: () -> R,
+    cached: () -> R?,
+    stashed: (AnyObject) -> R?,
+    load: () -> R
+  ) -> R {
+    guard manifestReady() else { return manifestUnavailable() }
+    if let fromCache = cached() { return fromCache }
+    if let key = takeStashedStartKey(accountId: accountId), let fromStash = stashed(key) { return fromStash }
+    return load()
+  }
+
+  /// A key the start read for `accountId` and could not use because the
+  /// manifest refused in the body. Kept for that account's next attempt
+  /// (the retry); a user stop or sign-out (`userStop`) drops it.
+  func stashStartKey(_ key: AnyObject, accountId: String) {
+    write { _stashedStartKey = (accountId, key) }
+  }
+
+  /// The stashed key for `accountId`, once. A stash of another account is
+  /// dropped, never returned.
+  func takeStashedStartKey(accountId: String) -> AnyObject? {
+    var key: AnyObject?
+    write {
+      if let stash = _stashedStartKey, stash.accountId == accountId { key = stash.key }
+      _stashedStartKey = nil
+    }
+    return key
+  }
+
+  var hasStashedStartKey: Bool { read { _stashedStartKey != nil } }
 
   // MARK: observer / monitor
 

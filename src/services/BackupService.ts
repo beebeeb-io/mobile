@@ -169,6 +169,24 @@ function isEncryptionUnavailableError(err: unknown): boolean {
 
 // Task 1962 Bug 4: cleared at sign-out by account-cleanup.ts.
 const FOLDER_CACHE_KEY = BACKUP_FOLDER_CACHE_KEY;
+/**
+ * Task 1667 round 13 (review of mobile#182 at a19037f9, item 2): the
+ * once-per-DEVICE "legacy root backups migrated" record. It used to live in
+ * the folder cache (`legacyMigration.completedAt`), which sign-out clears
+ * since this PR (1962 Bug 4), so every sign-in ran the migration again and
+ * moved the user's own root "Photos" folder and contacts.vcf / calendar.ics.
+ * Its own key, never cleared by sign-out or account deletion: it holds no
+ * account data (a timestamp and three counts).
+ */
+export const LEGACY_MIGRATION_DONE_KEY = 'beebeeb_backup_legacy_migration';
+/**
+ * The root "Photos" folder id the May 2026 JS photo runner stored
+ * (PhotoBackupRunner, commits 8ca1047..b082fef, which created that folder
+ * with an ENCRYPTED name). Read only, as a legacy marker.
+ */
+const LEGACY_PHOTOS_FOLDER_ID_KEY = 'beebeeb_photos_folder_id';
+/** The plaintext names the pre-category backup code wrote at the vault root. */
+const LEGACY_ROOT_NAMES = { photosFolder: 'Photos', contacts: 'contacts.vcf', calendar: 'calendar.ics' } as const;
 const MANIFEST_FILENAME = '.device.json';
 const MANIFEST_VERSION = 1;
 const APP_VERSION = '1.0.0';
@@ -244,6 +262,16 @@ interface DeviceInfo {
   app_version: string;
 }
 
+function deviceName(): string {
+  return Device.deviceName ?? 'Unknown Device';
+}
+
+/**
+ * Round 13 (review item 1): rejects with `DeviceIdUnavailableError` while the
+ * keychain cannot be read. Its callers write the encrypted device manifest
+ * (`.device.json`); a rejected write is retried by the next run, instead of
+ * writing a made-up id into the manifest. Every UI caller catches it.
+ */
 async function getDeviceInfo(): Promise<DeviceInfo> {
   return {
     // Canonical device id (task 0863). The manifest's device_id is write-only
@@ -253,7 +281,7 @@ async function getDeviceInfo(): Promise<DeviceInfo> {
     // `beebeeb_device_id` value (when no sync id exists) so the manifest stays
     // byte-identical across the upgrade.
     device_id: await getDeviceId(),
-    device_name: Device.deviceName ?? 'Unknown Device',
+    device_name: deviceName(),
     device_model: Device.modelName ?? 'Unknown Model',
     os_version: `${Device.osName ?? Platform.OS} ${Device.osVersion ?? ''}`.trim(),
     app_version: APP_VERSION,
@@ -538,11 +566,68 @@ async function moveLegacyItem(item: FileEntry, parentId: string, newPlaintextNam
   }
 }
 
+type LegacyMigration = NonNullable<FolderCache['legacyMigration']>;
+
+/**
+ * Round 13 (item 2): the device's migration record. Its own key first; else
+ * a record an earlier build left in the folder cache, copied to the key so a
+ * later sign-out (which clears the cache) cannot re-arm the migration.
+ */
+async function readLegacyMigration(cache: FolderCache): Promise<LegacyMigration | undefined> {
+  const raw = await storeGet(LEGACY_MIGRATION_DONE_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as LegacyMigration;
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch {
+      // An unreadable record still says "done": never run twice.
+      return { completedAt: 'unknown' };
+    }
+  }
+  if (cache.legacyMigration?.completedAt) {
+    await storeSet(LEGACY_MIGRATION_DONE_KEY, JSON.stringify(cache.legacyMigration));
+    return cache.legacyMigration;
+  }
+  return undefined;
+}
+
+/**
+ * Round 13 (item 2): which legacy layout item a root entry is, by a marker
+ * only the pre-category backup code (May 2026, before names were encrypted)
+ * left, never by its decrypted name:
+ * - a folder whose RAW `name_encrypted` is the plaintext "Photos" (the JS
+ *   photo runner before 8ca1047), or whose id is the one that runner stored
+ *   in `beebeeb_photos_folder_id` (8ca1047..b082fef, encrypted name);
+ * - a file whose RAW `name_encrypted` is "contacts.vcf" / "calendar.ics" (the
+ *   native contacts/calendar uploads before 6f1d007 sent no parent and a
+ *   plaintext name).
+ * Since 60a941f every client encrypts names and the server rejects a
+ * plaintext one, so a folder or file the user made (web, app) never has a
+ * plaintext name and is never moved. Before round 13 the check compared the
+ * DECRYPTED name, so a user's own root "Photos" folder matched.
+ */
+function legacyRootItemKind(
+  f: FileEntry,
+  legacyPhotosFolderId: string | null,
+): 'camera_roll' | 'contacts' | 'calendar' | null {
+  if (f.is_folder) {
+    if (f.name_encrypted === LEGACY_ROOT_NAMES.photosFolder) return 'camera_roll';
+    if (legacyPhotosFolderId && f.id === legacyPhotosFolderId) return 'camera_roll';
+    return null;
+  }
+  if (f.name_encrypted === LEGACY_ROOT_NAMES.contacts) return 'contacts';
+  if (f.name_encrypted === LEGACY_ROOT_NAMES.calendar) return 'calendar';
+  return null;
+}
+
 async function migrateLegacyRootBackups(
   cache: FolderCache,
   categoryIds: Record<BackupCategory, string>,
 ): Promise<FolderCache> {
-  if (cache.legacyMigration?.completedAt) return cache;
+  // Round 13 (item 2): once per DEVICE, recorded in its own key (main's
+  // semantics; the folder cache this used is cleared at every sign-out now).
+  const done = await readLegacyMigration(cache);
+  if (done?.completedAt) return { ...cache, legacyMigration: done };
 
   const summary: Record<BackupCategory, number> = {
     camera_roll: 0,
@@ -558,35 +643,30 @@ async function migrateLegacyRootBackups(
     return cache;
   }
 
-  // Decrypt names for comparison — legacy items may have plaintext or encrypted names
+  const legacyPhotosFolderId = await storeGet(LEGACY_PHOTOS_FOLDER_ID_KEY);
+  const targets: Record<BackupCategory, { parent: string; name: string }> = {
+    camera_roll: { parent: categoryIds.camera_roll, name: 'Photos (legacy)' },
+    contacts: { parent: categoryIds.contacts, name: 'contacts.legacy.vcf' },
+    calendar: { parent: categoryIds.calendar, name: 'calendar.legacy.ics' },
+  };
   for (const f of rootChildren) {
-    const decrypted = await decryptName(f);
-    if (f.is_folder && decrypted === 'Photos') {
-      if (await moveLegacyItem(f, categoryIds.camera_roll, 'Photos (legacy)')) {
-        summary.camera_roll += 1;
-      }
-    }
-    if (!f.is_folder && decrypted === 'contacts.vcf') {
-      if (await moveLegacyItem(f, categoryIds.contacts, 'contacts.legacy.vcf')) {
-        summary.contacts += 1;
-      }
-    }
-    if (!f.is_folder && decrypted === 'calendar.ics') {
-      if (await moveLegacyItem(f, categoryIds.calendar, 'calendar.legacy.ics')) {
-        summary.calendar += 1;
-      }
+    const kind = legacyRootItemKind(f, legacyPhotosFolderId);
+    if (!kind) continue;
+    if (await moveLegacyItem(f, targets[kind].parent, targets[kind].name)) {
+      summary[kind] += 1;
     }
   }
 
-  return {
-    ...cache,
-    legacyMigration: {
-      completedAt: new Date().toISOString(),
-      camera_roll: summary.camera_roll,
-      contacts: summary.contacts,
-      calendar: summary.calendar,
-    },
+  const legacyMigration: LegacyMigration = {
+    completedAt: new Date().toISOString(),
+    camera_roll: summary.camera_roll,
+    contacts: summary.contacts,
+    calendar: summary.calendar,
   };
+  // Device-level, so not epoch-gated: the moves above already happened.
+  await storeSet(LEGACY_MIGRATION_DONE_KEY, JSON.stringify(legacyMigration));
+  recordRuntimeTrace('backup.legacy_root_migration.done', { ...summary });
+  return { ...cache, legacyMigration };
 }
 
 async function selfHealKnownBackupMetadata(
@@ -1173,7 +1253,11 @@ export async function ensureBackupFolders(
   // produced duplicates is closed by ensureFolder's in-flight coalescing above
   // plus sequencing the enables, not by trusting a possibly-stale cache. The
   // cache is still written below for diagnostics / future validated reuse.
-  const info = await getDeviceInfo();
+  // Task 1667 round 13 (review item 1): the folders need the device NAME
+  // only. `getDeviceInfo()` also reads the device id, which now rejects
+  // while the keychain cannot be read (it never mints one), and that must
+  // not stop the folder resolve.
+  const info = { device_name: deviceName() };
   const rootId = await ensureFolder(undefined, ROOT_FOLDER_NAME);
   const deviceFolderId = await ensureFolder(rootId, info.device_name);
 
@@ -1341,7 +1425,7 @@ export async function getDeviceManifest(): Promise<DeviceManifest | null> {
 
   const text = await decryptDownloadedText(manifestFile);
   try {
-    return mergeLegacyMigration(JSON.parse(text) as DeviceManifest, cache.legacyMigration);
+    return mergeLegacyMigration(JSON.parse(text) as DeviceManifest, await readLegacyMigration(cache));
   } catch {
     return null;
   }
@@ -1385,7 +1469,7 @@ export async function updateDeviceManifest(updates: Partial<DeviceManifest>): Pr
   const cache = await readFolderCache();
   const current = (await getDeviceManifest()) ?? mergeLegacyMigration(
     buildDefaultManifest(await getDeviceInfo()),
-    cache.legacyMigration,
+    await readLegacyMigration(cache),
   );
   const next: DeviceManifest = {
     ...current,
@@ -1408,7 +1492,7 @@ export async function updateBackupCategoryState(
   const cache = await readFolderCache();
   const current = (await getDeviceManifest()) ?? mergeLegacyMigration(
     buildDefaultManifest(info),
-    cache.legacyMigration,
+    await readLegacyMigration(cache),
   );
 
   const next: DeviceManifest = {
@@ -1442,7 +1526,7 @@ export async function initializeBackup(
   const cache = await readFolderCache();
   const current = (await getDeviceManifest()) ?? mergeLegacyMigration(
     buildDefaultManifest(info),
-    cache.legacyMigration,
+    await readLegacyMigration(cache),
   );
 
   const categoryState: BackupCategoryState = {

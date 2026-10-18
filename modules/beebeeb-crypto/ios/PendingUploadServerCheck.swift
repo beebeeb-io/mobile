@@ -235,19 +235,36 @@ enum PendingUploadServerCheck {
   /// `backed_up` clears the flag (the probe's `check` step records it) and the
   /// map is fetched in the same pass. Otherwise it throws
   /// `ServerLacksBackedUp`, and the gate defers.
+  ///
+  /// Round 13 (review of mobile#182 at a19037f9, item 7, deploy order): the
+  /// map is applied only once THIS process/account knows the server has
+  /// `backed_up` (`backedUpSupported() == true`). "Not known yet" (the first
+  /// rebuild after launch or after a sign-in: every `/check` runs after the
+  /// rebuild gate) probes first, like "known to lack it". Before, unknown
+  /// counted as supported: on a server without task 2036 the first rebuild
+  /// after every sign-in applied an identifiers map that still includes
+  /// files in the Trash, and those photos were never uploaded again.
   static func rebuildFetch(
-    lacksBackedUp: () -> Bool,
+    backedUpSupported: () -> Bool?,
     takeProbeSlot: () -> Bool,
     probe: () async throws -> Void,
     fetch: () async throws -> [String: String]
   ) async throws -> [String: String] {
-    if lacksBackedUp() {
-      guard takeProbeSlot() else { throw PhotoBackupServerResponses.ServerLacksBackedUp() }
+    if backedUpSupported() != true {
+      guard takeProbeSlot() else {
+        if backedUpSupported() == false { throw PhotoBackupServerResponses.ServerLacksBackedUp() }
+        throw BackedUpSupportUnknown()
+      }
       try await probe()
-      guard !lacksBackedUp() else { throw PhotoBackupServerResponses.ServerLacksBackedUp() }
+      guard backedUpSupported() == true else { throw PhotoBackupServerResponses.ServerLacksBackedUp() }
     }
     return try await fetch()
   }
+
+  /// Round 13 (item 7): the rebuild needs the server's `backed_up` support
+  /// and this process does not know it yet (its probe slot is taken for this
+  /// period). A failed fetch: the gate defers with the fetch backoff.
+  struct BackedUpSupportUnknown: Error, Equatable {}
 }
 
 /// Task 1667 round 12 (review item 2): whether this process has seen a server
@@ -259,25 +276,44 @@ struct BackedUpSupport: Equatable {
   /// One probe per rebuild backoff period at most.
   static let probeInterval: TimeInterval = ManifestRebuildGate.fetchFailureBackoff
 
-  private(set) var lacksBackedUp = false
+  /// Round 13 (item 7): what this process/account knows of the server.
+  enum Known: Equatable {
+    case unknown
+    case supported
+    case lacking
+  }
+
+  private(set) var known: Known = .unknown
   private(set) var lastProbeAt: Date?
+
+  var lacksBackedUp: Bool { known == .lacking }
+
+  /// true / false once a `/check` answered; nil while not known.
+  var supported: Bool? {
+    switch known {
+    case .unknown: return nil
+    case .supported: return true
+    case .lacking: return false
+    }
+  }
 
   /// A `/check` answer: with `backed_up` (true) or without (false).
   mutating func note(supported: Bool) {
-    lacksBackedUp = !supported
+    known = supported ? .supported : .lacking
   }
 
-  /// Takes the probe slot when one is due: the flag is set and no probe ran
-  /// in the last `probeInterval` (or the clock went back).
+  /// Takes the probe slot when one is due: support is not known to be there
+  /// (round 13: unknown too) and no probe ran in the last `probeInterval`
+  /// (or the clock went back).
   mutating func takeProbeSlot(now: Date) -> Bool {
-    guard lacksBackedUp else { return false }
+    guard known != .supported else { return false }
     if let last = lastProbeAt, now >= last, now.timeIntervalSince(last) < Self.probeInterval { return false }
     lastProbeAt = now
     return true
   }
 
   mutating func reset() {
-    lacksBackedUp = false
+    known = .unknown
     lastProbeAt = nil
   }
 }

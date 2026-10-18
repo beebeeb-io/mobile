@@ -779,7 +779,11 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   keeps that file while removing the rest of `SQLite/`. If the reset fails, the file is still
   KEPT, never unlinked under the JS handle (see "A reset counts only if the WAL was truncated"
   below for what happens instead). The `beebeeb_backup_folders` SecureStore cache is cleared too
-  (`backup-folder-cache.ts`).
+  (`backup-folder-cache.ts`). Round 13: the once-per-DEVICE legacy root-backup migration record
+  lives in its own key `beebeeb_backup_legacy_migration` that NO sign-out or deletion clears, and
+  `migrateLegacyRootBackups` moves only items with a legacy marker (a plaintext `name_encrypted`,
+  or the folder id in `beebeeb_photos_folder_id`), never by decrypted name: a user's own root
+  "Photos" folder or contacts.vcf is never moved.
 - **Ownership:** `backup_assets.uploaded_account_id` names the account a row's remote file belongs
   to. `bindAccount` / every scan run `BackupManifestStore.claim`: rows from before the column are
   adopted, another account's rows are re-queued. Never trust `status = 'uploaded'` without it.
@@ -787,7 +791,11 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   (`X-Beebeeb-Device-Id` = the canonical `getDeviceId()`, handed to native by
   `setBackupDeviceId` at every launch (BackupProvider mount) and at enable; round 12: before the
   first launch of a build, native reads the same id from expo-secure-store's keychain item
-  `bb_sync_device_id`, `BackupDeviceId.swift`, and NEVER mints one); `server_marked_at` tracks it and scans catch up on unmarked rows. A manifest
+  `bb_sync_device_id`, `BackupDeviceId.swift`, and NEVER mints one; round 13: JS's `getDeviceId()`
+  REJECTS (`DeviceIdUnavailableError`) when the keychain read fails, e.g. device locked, and mints
+  only when both keys READ as absent; the handoff, `backup-device-id-handoff.ts`, sends only a read
+  or durably persisted id, and native's `acceptBackupDeviceId` never replaces an existing,
+  different id unless JS says it is durable, logging the refusal); `server_marked_at` tracks it and scans catch up on unmarked rows. A manifest
   holding nothing the account uploaded is rebuilt from `GET /api/v1/files/photo-backup/identifiers`
   BEFORE the first upload (`ensureManifestReadyForUploads`, gated in `processBatch`); if that GET
   fails, no upload starts. The rebuild is only a FAST PATH (round 10): it runs once per account, on
@@ -809,13 +817,20 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   Trash after the bulk answer uploaded twice in round 11). Any failed step defers the WHOLE batch
   with a backoff (30 s for a server read or a missing device id, 2..30 s for a write): nothing
   uploads on a failure. A deferral shows `serverCheckPausedReason` (progress dict, status surfaces,
-  Settings) until a check answers, a stop, or sign-out (round 12).
+  Settings) until a check answers, a stop, or sign-out (round 12). Round 13: every status update
+  (widget, Live Activity, heartbeat) decides its state with that pause (`BackupSurfaceState`):
+  "paused" (or "waitingForAppOpen" without a device id), never "Preparing backup". The server check
+  and its promotion run ONLY inside the batch slot (`processBatch`, and the scan's rebuild gate,
+  round 13), so a hit on a 'staging' / 'uploading' row without a staged file is promoted (it is stale).
 - **A server without `backed_up` (no task 2036) fails closed (round 11).** Nothing is promoted and
   nothing of the batch uploads (`serverLacksBackedUp`, 30 s backoff), and once that was seen the
   rebuild fast path applies no identifiers map either. Round 12: that state (`BackedUpSupport`) is
   reset at sign-out, and while it is set the rebuild sends ONE capability probe `/check` per backoff
   period (`PendingUploadServerCheck.rebuildFetch`, a non-PhotoKit id), so a deploy of 2036 is picked
-  up in-process; never gate it on a `/check` that runs after the rebuild. Logged ONCE per process:
+  up in-process; never gate it on a `/check` that runs after the rebuild. Round 13: support is
+  three-state (unknown / supported / lacking); the rebuild applies a map only when it is KNOWN
+  supported, so "unknown" (every launch and sign-in) probes first too: an old server's map, which
+  includes trashed files, is never applied. Logged ONCE per process:
   `server lacks backed_up (task 2036)`. Task 2036 must be deployed to prod before a build with this
   reaches TestFlight. Native code has NO liveness read and never calls `GET /api/v1/files/index`
   (the rule below; `native-backup-manifest-wiring.test.ts` fails on any native caller).
@@ -831,9 +846,14 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   sends them. 30-day expiry for EVERY account, as its own step (round 5): at every sign-in
   (`confirmMasterKeyHandle`) and bind, before every batch's kept-marks step (ahead of its account
   count) and at the sign-out reset, so rows of an account that never comes back still go. No name,
-  content, key or hash. JS sign-out first calls
+  content, key or hash. Round 13: the engine remembers the account it last unbound
+  (`UnboundAccountMemory`) only until any account binds or JS confirms a different signed-in user;
+  an account-deleted reset discards the marks of the accounts JS NAMES, never a remembered account
+  on top of them (none named and only a remembered account: every mark goes, fail closed). JS sign-out first calls
   `flushBackupServerMarksForSignOut` (before `logout()` revokes the token, ~8 s, no row cap).
 - **A reset counts only if the WAL was truncated** (`sqlite3_wal_checkpoint_v2` TRUNCATE rc, retried).
+  Round 13: it runs on the engine's long-lived connection and restores that connection's busy
+  timeout and `secure_delete` on every return (`BackupManifestStore.connectionSettings`).
   JS drains calls already running before the reset (`inFlight` in `BackupDatabase.ts`). On a
   failed reset the file is still KEPT (never unlinked under the JS handle): native closes its
   handle and sets `io.beebeeb.backupManifestResetPending`, JS closes its handle, then

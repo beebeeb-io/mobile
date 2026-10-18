@@ -150,7 +150,8 @@ describe('(c) wiring guards: every account-deletion purge passes mode account-de
     expect(module).toContain('AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
     expect(module).toMatch(/let purgeMode = ManifestPurgeMode\.parse\(mode\)\s*\n\s*let manifest = NativeBackupEngine\.shared\.prepareForStoragePurge\(\s*mode: purgeMode, deletedAccountIds: Set\(deletedAccountIds \?\? \[\]\)\s*\)/);
     const engine = read('modules/beebeeb-crypto/ios/NativeBackupEngine.swift');
-    expect(engine).toMatch(/manifestHandle\.resetForSignOut\(\s*outgoingAccountId: outgoingAccountId, mode: mode, deletedAccountIds: deletedAccountIds\s*\)/);
+    // Round 13 (review item 3): with whether the outgoing account is only remembered.
+    expect(engine).toMatch(/manifestHandle\.resetForSignOut\(\s*outgoingAccountId: outgoing\.accountId, outgoingInferred: outgoing\.inferred,\s*mode: mode, deletedAccountIds: deletedAccountIds\s*\)/);
     expect(engine).toMatch(/discardPending: \.userDefaults\(NativeBackupEngine\.manifestResetDiscardPendingKey\)/);
   });
 });

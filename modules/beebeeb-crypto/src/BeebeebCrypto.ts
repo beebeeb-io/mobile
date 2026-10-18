@@ -1624,10 +1624,17 @@ export async function setPhotoBackupIncludeVideos(includeVideos: boolean): Promi
  * empty manifest from that map. Call before `enablePhotoBackup`. Resolves
  * false on a native build without it.
  */
-export async function setBackupDeviceId(deviceId: string): Promise<boolean> {
+export async function setBackupDeviceId(
+  deviceId: string,
+  options: { persisted: boolean } = { persisted: false },
+): Promise<boolean> {
   if (typeof BeebeebCryptoModule.setBackupDeviceId !== 'function') return false
-  await BeebeebCryptoModule.setBackupDeviceId(deviceId)
-  return true
+  // Task 1667 round 13 (review item 1): native replaces an existing,
+  // DIFFERENT id only when this says the id is durable (read from, or
+  // persisted to, secure storage). Resolves native's verdict: false when it
+  // refused (it logs why) or on a build without the function.
+  const accepted = await BeebeebCryptoModule.setBackupDeviceId(deviceId, options.persisted)
+  return accepted !== false
 }
 
 /**

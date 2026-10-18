@@ -134,6 +134,15 @@ enum BackupManifestStore {
     busyTimeoutMs: Int32 = 2_000,
     retryDelayUs: UInt32 = 100_000
   ) -> Bool {
+    // Round 13 (review of mobile#182 at a19037f9, item 8): the reset runs on
+    // the engine's LONG-LIVED connection. Its busy timeout and `secure_delete`
+    // are restored on every return. Before, they stayed set for the rest of
+    // the process: every later engine write that met JS's write lock waited
+    // up to the timeout on the serial dbQueue (and every caller waiting on
+    // that queue with it), and every later DELETE overwrote pages. A
+    // connection whose settings cannot be read is not reset (fail closed).
+    guard let previous = connectionSettings(db) else { return false }
+    defer { restoreConnectionSettings(db, previous) }
     sqlite3_busy_timeout(db, busyTimeoutMs)
     // Round 7 sweep: an unconfirmed `secure_delete` would leave the outgoing
     // account's rows in the freed pages while reporting the reset done.
@@ -187,6 +196,40 @@ enum BackupManifestStore {
       return false
     }
     return truncateWal(db, attempts: checkpointAttempts, retryDelayUs: retryDelayUs).ok
+  }
+
+  /// Round 13 (item 8): a connection's busy timeout (ms) and `secure_delete`
+  /// mode (0 off, 1 on, 2 fast), read with their PRAGMAs. nil when either
+  /// cannot be read.
+  struct ConnectionSettings: Equatable {
+    let busyTimeoutMs: Int32
+    let secureDelete: Int32
+  }
+
+  static func connectionSettings(_ db: OpaquePointer) -> ConnectionSettings? {
+    guard let busy = pragmaInt(db, "PRAGMA busy_timeout"),
+          let secure = pragmaInt(db, "PRAGMA secure_delete") else { return nil }
+    return ConnectionSettings(busyTimeoutMs: busy, secureDelete: secure)
+  }
+
+  static func restoreConnectionSettings(_ db: OpaquePointer, _ settings: ConnectionSettings) {
+    sqlite3_busy_timeout(db, settings.busyTimeoutMs)
+    // The PRAGMA takes OFF / ON / FAST (an integer 2 reads as ON).
+    let mode: String
+    switch settings.secureDelete {
+    case 0: mode = "OFF"
+    case 2: mode = "FAST"
+    default: mode = "ON"
+    }
+    sqlite3_exec(db, "PRAGMA secure_delete = \(mode)", nil, nil, nil)
+  }
+
+  private static func pragmaInt(_ db: OpaquePointer, _ sql: String) -> Int32? {
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { sqlite3_finalize(stmt) }
+    guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+    return sqlite3_column_int(stmt, 0)
   }
 
   /// Round 9: deletes the kept marks `discard` names (inside the caller's
@@ -698,37 +741,46 @@ enum BackupManifestStore {
   /// case: every full scan re-upserts the whole library) counts 0. nil when
   /// the insert failed (rolled back). The engine requests a bulk server check
   /// only for a count above 0; before, every full scan owed one.
+  ///
+  /// Round 13 (review of mobile#182 at a19037f9, item 11): no SELECT per row.
+  /// Round 12 read every row's status before its upsert, inside the
+  /// `BEGIN IMMEDIATE` on the serial dbQueue: a 50k-asset library ran 50k
+  /// extra statements on every full scan while holding the writer lock. Now
+  /// one statement per row in the common case:
+  /// 1. the upsert, whose UPDATE half skips `local_missing` rows. A row it
+  ///    INSERTED is told apart from one it updated by
+  ///    `sqlite3_last_insert_rowid` (reset to 0 before each step; an upsert
+  ///    that updates leaves it untouched; `backup_assets` is a rowid table);
+  /// 2. only when the upsert changed nothing (`sqlite3_changes` 0: the row is
+  ///    `local_missing`), the revive UPDATE, counted by `sqlite3_changes`.
   static func insertScannedAssetsCounting(_ db: OpaquePointer, _ assets: [ScannedAsset], nowMs: Int64) -> Int? {
-    let sql = """
+    let upsertSQL = """
     INSERT INTO backup_assets
       (local_asset_id, content_hash, file_size, created_at, asset_type, status, queued_at)
     VALUES (?, '', 0, ?, ?, 'pending_upload', ?)
     ON CONFLICT(local_asset_id) DO UPDATE SET
       created_at = excluded.created_at,
       asset_type = excluded.asset_type,
-      selected_for_backup = 1,
-      status = CASE
-        WHEN backup_assets.status = 'local_missing' THEN 'pending_upload'
-        ELSE backup_assets.status
-      END,
-      retry_count = CASE
-        WHEN backup_assets.status = 'local_missing' THEN 0
-        ELSE COALESCE(backup_assets.retry_count, 0)
-      END,
-      error_message = CASE
-        WHEN backup_assets.status = 'local_missing' THEN NULL
-        ELSE backup_assets.error_message
-      END
+      selected_for_backup = 1
+    WHERE backup_assets.status != 'local_missing'
     """
-    var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
-    // Round 12: the row's status before the upsert (no row: a new one).
-    var probe: OpaquePointer?
-    guard sqlite3_prepare_v2(db, "SELECT status FROM backup_assets WHERE local_asset_id = ?", -1, &probe, nil) == SQLITE_OK else {
-      return nil
-    }
-    defer { sqlite3_finalize(probe) }
+    let reviveSQL = """
+    UPDATE backup_assets
+       SET created_at = ?,
+           asset_type = ?,
+           selected_for_backup = 1,
+           status = 'pending_upload',
+           retry_count = 0,
+           error_message = NULL
+     WHERE local_asset_id = ?
+       AND status = 'local_missing'
+    """
+    var upsert: OpaquePointer?
+    guard sqlite3_prepare_v2(db, upsertSQL, -1, &upsert, nil) == SQLITE_OK else { return nil }
+    defer { sqlite3_finalize(upsert) }
+    var revive: OpaquePointer?
+    guard sqlite3_prepare_v2(db, reviveSQL, -1, &revive, nil) == SQLITE_OK else { return nil }
+    defer { sqlite3_finalize(revive) }
 
     // Round 7 sweep: every step is checked. Before, a failed BEGIN or a
     // failed row (writer lock, I/O) was ignored and COMMIT reported the
@@ -738,30 +790,33 @@ enum BackupManifestStore {
     guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
     var entered = 0
     for asset in assets {
-      bindText(probe, 1, asset.localAssetId)
-      let probeRc = sqlite3_step(probe)
-      let enters: Bool
-      if probeRc == SQLITE_DONE {
-        enters = true
-      } else if probeRc == SQLITE_ROW {
-        enters = sqlite3_column_text(probe, 0).map { String(cString: $0) } == "local_missing"
-      } else {
-        sqlite3_reset(probe)
-        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
-        return nil
-      }
-      sqlite3_reset(probe)
-      bindText(stmt, 1, asset.localAssetId)
-      bindText(stmt, 2, asset.createdAt)
-      bindText(stmt, 3, asset.assetType)
-      sqlite3_bind_int64(stmt, 4, nowMs)
-      let rc = sqlite3_step(stmt)
-      sqlite3_reset(stmt)
+      bindText(upsert, 1, asset.localAssetId)
+      bindText(upsert, 2, asset.createdAt)
+      bindText(upsert, 3, asset.assetType)
+      sqlite3_bind_int64(upsert, 4, nowMs)
+      sqlite3_set_last_insert_rowid(db, 0)
+      let rc = sqlite3_step(upsert)
+      sqlite3_reset(upsert)
       guard rc == SQLITE_DONE else {
         sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
         return nil
       }
-      if enters { entered += 1 }
+      if sqlite3_last_insert_rowid(db) != 0 {
+        entered += 1
+        continue
+      }
+      guard sqlite3_changes(db) == 0 else { continue }
+      // The upsert left the row alone: it is `local_missing`. Revive it.
+      bindText(revive, 1, asset.createdAt)
+      bindText(revive, 2, asset.assetType)
+      bindText(revive, 3, asset.localAssetId)
+      let reviveRc = sqlite3_step(revive)
+      sqlite3_reset(revive)
+      guard reviveRc == SQLITE_DONE else {
+        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        return nil
+      }
+      entered += Int(sqlite3_changes(db))
     }
     guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
       sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
@@ -966,15 +1021,28 @@ enum BackupManifestStore {
   /// (the batch's server check skips exactly those, and every other live
   /// hit). Same statement, same all-or-nothing transaction; nil on any
   /// failure.
+  ///
+  /// Round 13 (review of mobile#182 at a19037f9, item 9): with
+  /// `includeStaleInFlight`, also a 'staging' / 'uploading' row with no staged
+  /// file. Only the batch's server check passes it, and it runs inside the
+  /// engine's batch slot: no other batch is staging or uploading in this
+  /// process then, so such a row is left over from a crash or a cancelled
+  /// batch (not actively uploading). Before, the check skipped those hits
+  /// without promoting them, and the drain loop asked the server again every
+  /// 5 s until `recoverStuckUploads` reset the row after 5 minutes.
+  static let staleInFlightStatuses = "'staging', 'uploading'"
+
   static func promoteServerBackedUp(
     _ db: OpaquePointer,
     accountId: String,
     localToFileId: [String: String],
     uploadedAtIso: String,
-    nowMs: Int64
+    nowMs: Int64,
+    includeStaleInFlight: Bool = false
   ) -> Set<String>? {
     guard !accountId.isEmpty else { return nil }
     guard !localToFileId.isEmpty else { return [] }
+    let statuses = includeStaleInFlight ? "\(rebuildableStatuses), \(staleInFlightStatuses)" : rebuildableStatuses
     let sql = """
     UPDATE backup_assets
        SET status = 'uploaded',
@@ -986,7 +1054,7 @@ enum BackupManifestStore {
            retry_count = 0
      WHERE local_asset_id = ?
        AND staged_file_id IS NULL
-       AND status IN (\(rebuildableStatuses))
+       AND status IN (\(statuses))
     """
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }

@@ -217,8 +217,13 @@ enum FencedManifestWrites {
   ) -> Set<String>? {
     guard fence.admits(ticket, writer: "batch.promote_checked") else { return nil }
     guard let db else { return nil }
+    // Round 13 (review item 9): the server check runs only inside the batch
+    // slot (`processBatch`: the bulk pass and the per-batch guard), so a
+    // 'staging' / 'uploading' row without a staged file is stale and its hit
+    // is promoted, not skipped and asked again every 5 s.
     return BackupManifestStore.promoteServerBackedUp(
-      db, accountId: accountId, localToFileId: hits, uploadedAtIso: uploadedAtIso, nowMs: nowMs
+      db, accountId: accountId, localToFileId: hits, uploadedAtIso: uploadedAtIso, nowMs: nowMs,
+      includeStaleInFlight: true
     )
   }
 

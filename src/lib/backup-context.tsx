@@ -18,10 +18,9 @@ import {
   mirrorBackupClientSession,
   getPhotoBackupIncludeVideos,
   setPhotoBackupIncludeVideos,
-  setBackupDeviceId,
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
-import { getDeviceId } from './device-identity';
+import { syncBackupDeviceIdToNative } from './backup-device-id-handoff';
 import { ensureBackupFolders, reconcileDerivedStateAgainstServer, type BackupCategory } from '../services/BackupService';
 import { isVaultKeyMismatchError } from '../services/vault-key-mismatch';
 import { useCrypto } from './crypto-context';
@@ -357,28 +356,9 @@ async function getStoredToken(): Promise<string | null> {
   }
 }
 
-/**
- * Task 1667: the native engine records every completed upload in the server's
- * per-device photo-backup map, and rebuilds an empty manifest (after sign-out
- * or a reinstall) from it, both keyed by `X-Beebeeb-Device-Id`. It must be the
- * canonical id (`getDeviceId()`), the one the server already keys this device
- * by. Best-effort and exported standalone so it is unit testable.
- */
-export async function syncBackupDeviceIdToNative(
-  deps: { getDeviceId: () => Promise<string>; setBackupDeviceId: (id: string) => Promise<boolean> } = {
-    getDeviceId,
-    setBackupDeviceId,
-  },
-): Promise<boolean> {
-  if (Platform.OS !== 'ios') return false;
-  try {
-    const id = await deps.getDeviceId();
-    if (!id) return false;
-    return await deps.setBackupDeviceId(id);
-  } catch {
-    return false;
-  }
-}
+// Task 1667 round 13 (review item 1): the handoff lives in its own module and
+// sends only a durable id (read, or minted and persisted).
+export { syncBackupDeviceIdToNative };
 
 /**
  * Task 1667 round 12 (review item 6): the reason native gives while it holds

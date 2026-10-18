@@ -167,7 +167,7 @@ describe('NativeBackupEngine.swift: every manifest write is fenced', () => {
 
 describe('BackupManifestHandle.swift: every reset advances the fence first', () => {
   test('resetForSignOut seals the fence before it reads or deletes anything', () => {
-    const reset = stripSwift(body(handleSwift, 'func resetForSignOut(\n    outgoingAccountId: String?,\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> Bool {'));
+    const reset = stripSwift(body(handleSwift, 'func resetForSignOut(\n    outgoingAccountId: String?,\n    outgoingInferred: Bool = false,\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> Bool {'));
     expect(reset.trim().startsWith('writeFence.advanceForSignOut()')).toBe(true);
   });
 
@@ -303,7 +303,7 @@ describe('each guard goes RED on a named mutation (guard red-proof)', () => {
 
   test('M7 — resetForSignOut no longer advances the fence first', () => {
     const bad = mutate(handleSwift, '    writeFence.advanceForSignOut()\n', '');
-    const reset = stripSwift(body(bad, 'func resetForSignOut(\n    outgoingAccountId: String?,\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> Bool {'));
+    const reset = stripSwift(body(bad, 'func resetForSignOut(\n    outgoingAccountId: String?,\n    outgoingInferred: Bool = false,\n    mode: ManifestPurgeMode = .signOut,\n    deletedAccountIds: Set<String> = []\n  ) -> Bool {'));
     expect(reset.trim().startsWith('writeFence.advanceForSignOut()')).toBe(false);
   });
 

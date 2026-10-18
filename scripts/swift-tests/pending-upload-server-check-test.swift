@@ -400,7 +400,7 @@ func runRebuildGate(_ handle: BackupManifestHandle, ticket: ManifestWriteFence.T
       // `rebuildFetch`, with its capability probe (one /check per period).
       let probeSteps = steps(handle, ticket: ticket, state: state)
       return try await PendingUploadServerCheck.rebuildFetch(
-        lacksBackedUp: { state.support.lacksBackedUp },
+        backedUpSupported: { state.support.supported },
         takeProbeSlot: { state.support.takeProbeSlot(now: probeClock) },
         probe: { _ = try await probeSteps.check([PendingUploadServerCheck.capabilityProbeIdentifier]) },
         fetch: { try await c.identifierMap() }
@@ -912,14 +912,23 @@ do {
   server.with { $0.log = [] }
   let gate = runRebuildGate(h2, ticket: t3, alreadyReady: false, state: st2)
   expect(gate == .ready(rebuilt: true, promoted: 1, keptApplied: 0), "m2.4: the rebuild runs at once after the sign-in (got \(String(describing: gate)))")
-  expect(server.requests(checkPath).isEmpty, "m2.4: no probe needed: the flag went with the sign-out")
+  // Round 13 (review item 7), changed in meaning: the sign-out reset leaves
+  // the support UNKNOWN (not "supported"), so the first rebuild of the new
+  // session probes once before it applies a map. Round 12 asserted no probe.
+  let m2Probes = server.requests(checkPath)
+  expect(m2Probes.count == 1 && m2Probes[0].checkCount == 1, "m2.4: one probe (support unknown after the sign-out), then the map (got \(m2Probes.map(\.checkCount)))")
   let up = checkBatch(h2, ticket: t3, candidates: [Candidate(id: "s2", staged: false)], state: st2)
   expect(up == ["s2"] && status(db2, "s1") == "uploaded", "m2.5: backup resumes in-process (got \(String(describing: up)))")
 
   // (m3) BackedUpSupport itself.
   var support = BackedUpSupport()
   let t0 = Date()
-  expect(!support.takeProbeSlot(now: t0), "m3.1: no probe while the server is not known to lack backed_up")
+  // Round 13 (item 7), changed in meaning: UNKNOWN support takes the probe
+  // slot too (round 12: only "known to lack"). Known support never does.
+  expect(support.supported == nil && support.takeProbeSlot(now: t0), "m3.1: unknown support: the probe is due at once")
+  support.note(supported: true)
+  expect(!support.takeProbeSlot(now: t0.addingTimeInterval(3600)), "m3.1: no probe once support is known")
+  support.reset()
   support.note(supported: false)
   expect(support.takeProbeSlot(now: t0), "m3.2: the first probe is due at once")
   expect(!support.takeProbeSlot(now: t0.addingTimeInterval(BackedUpSupport.probeInterval - 1)), "m3.3: one per period")
@@ -932,6 +941,102 @@ do {
   expect(support == BackedUpSupport(), "m3.7: the sign-out reset forgets it")
   expect(PendingUploadServerCheck.capabilityProbeIdentifier.isEmpty == false && !PendingUploadServerCheck.capabilityProbeIdentifier.contains("/L0/"),
          "m3.8: the probe id is not a PhotoKit local identifier")
+}
+
+// MARK: - (m4, m5) round 13 item 7: no map until backed_up support is known
+
+do {
+  // m4: the review's deploy-order case. The client ships before task 2036:
+  // the old server's identifiers map still includes files in the Trash. A
+  // fresh process (support unknown) needs a rebuild.
+  resetServer()
+  server.with { $0.task2036 = false }
+  let (handle, db) = manifest("m4-unknown-old")
+  let ticket = handle.writeFence.issue(for: accountA)!
+  onServer("t1", "f-t1", trashed: true)  // backed up, then moved to the Trash
+  onServer("t2", "f-t2")
+  expect(insert(db, ["t1", "t2"]), "m4.0: an emptied manifest")
+  let state = EngineState()
+  probeClock = Date()
+  expect(state.support.supported == nil, "m4.0: support unknown at launch")
+  let gate = runRebuildGate(handle, ticket: ticket, alreadyReady: false, state: state)
+  expect(gate == .deferred(.fetchFailed), "m4.1: the rebuild defers (got \(String(describing: gate)))")
+  let probes = server.requests(checkPath)
+  expect(probes.count == 1 && probes[0].checkCount == 1, "m4.2: it probed first (got \(probes.map(\.checkCount)))")
+  expect(server.requests(idsPath).isEmpty, "m4.3: the old server's map was never fetched")
+  expect(status(db, "t1") == "pending_upload" && status(db, "t2") == "pending_upload",
+         "m4.4: no map applied: the trashed t1 is not 'uploaded' (t1 \(status(db, "t1")), t2 \(status(db, "t2")))")
+  expect(state.support.supported == false && state.pause.stopReason == ServerCheckPause.serverLacksBackedUpMessage,
+         "m4.5: now known to lack it, and Settings says so")
+  // Inside the period: no second probe, still no map.
+  server.with { $0.log = [] }
+  _ = runRebuildGate(handle, ticket: ticket, alreadyReady: false, state: state)
+  expect(server.requests(checkPath).isEmpty && server.requests(idsPath).isEmpty, "m4.6: no probe and no map inside the period")
+
+  // m5: the same on a server WITH 2036: one probe, then the map, once.
+  resetServer()
+  let (h5, db5) = manifest("m5-unknown-new")
+  let t5 = h5.writeFence.issue(for: accountA)!
+  onServer("u1", "f-u1")
+  expect(insert(db5, ["u1", "u2"]), "m5.0: an emptied manifest")
+  let st5 = EngineState()
+  probeClock = Date()
+  let g5 = runRebuildGate(h5, ticket: t5, alreadyReady: false, state: st5)
+  expect(g5 == .ready(rebuilt: true, promoted: 1, keptApplied: 0), "m5.1: rebuilt after the probe (got \(String(describing: g5)))")
+  expect(server.requests(checkPath).count == 1 && server.requests(idsPath).count == 1, "m5.2: one probe, then one map")
+  expect(st5.support.supported == true, "m5.3: support known for the rest of the session")
+  // A later rebuild in this session (e.g. a new manifest need) asks no probe.
+  server.with { $0.log = [] }
+  _ = runRebuildGate(h5, ticket: t5, alreadyReady: false, state: st5)
+  expect(server.requests(checkPath).isEmpty, "m5.4: no second probe once known")
+}
+
+// MARK: - (o) round 13 item 9: a stale 'staging' row the server has is promoted
+
+/// The rows `getPendingUploads` selects (the engine's query, minus the limit).
+func selectedForBatch(_ db: OpaquePointer) -> [Candidate] {
+  rows(db, """
+  SELECT local_asset_id, COALESCE(staged_file_id, '') FROM backup_assets
+   WHERE status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading')
+     AND COALESCE(selected_for_backup, 1) = 1 AND COALESCE(retry_count, 0) < 10
+   ORDER BY created_at DESC
+  """).map { Candidate(id: $0[0], staged: !$0[1].isEmpty) }
+}
+
+do {
+  resetServer()
+  let (handle, db) = manifest("o-stale-staging")
+  let ticket = handle.writeFence.issue(for: accountA)!
+  expect(insert(db, ["v1", "v2"]), "o0: rows")
+  // A crash during encryption left v1 'staging' with no staged file, less
+  // than 5 minutes ago (recoverStuckUploads will not reset it yet). The
+  // server already has v1 (it was uploaded from this device before).
+  exec(db, "UPDATE backup_assets SET status = 'staging', last_attempt_at = \(now) WHERE local_asset_id = 'v1'")
+  onServer("v1", "f-v1")
+  let state = EngineState()
+  server.with { $0.log = [] }
+  let first = checkBatch(handle, ticket: ticket, candidates: selectedForBatch(db), state: state)
+  expect(first == ["v2"], "o1: v1 is left out of the batch (got \(String(describing: first)))")
+  expect(status(db, "v1") == "uploaded" && remote(db, "v1") == "f-v1",
+         "o2: and PROMOTED to uploaded with its file id (status \(status(db, "v1")))")
+  // The next batch (5 s later) does not select v1, so it does not ask again.
+  server.with { $0.log = [] }
+  let next = selectedForBatch(db)
+  expect(!next.contains { $0.id == "v1" }, "o3: v1 is no longer selected")
+  _ = checkBatch(handle, ticket: ticket, candidates: next, state: state)
+  expect(!server.requests(checkPath).contains { $0.checkCount > 1 }, "o3: no /check about v1 again")
+  // A staged 'uploading' row resumes its upload: never asked, never promoted.
+  expect(insert(db, ["v3"]), "o4: row")
+  exec(db, "UPDATE backup_assets SET status = 'uploading', staged_file_id = 'fid-v3' WHERE local_asset_id = 'v3'")
+  onServer("v3", "f-v3")
+  let staged = checkBatch(handle, ticket: ticket, candidates: [Candidate(id: "v3", staged: true)], state: state)
+  expect(staged == ["v3"] && status(db, "v3") == "uploading", "o4: a staged upload resumes untouched")
+  // Control: the rebuild's map (outside this guarantee) still leaves a
+  // 'staging' row alone.
+  expect(insert(db, ["v4"]), "o5: row")
+  exec(db, "UPDATE backup_assets SET status = 'staging' WHERE local_asset_id = 'v4'")
+  let applied = BackupManifestStore.applyServerMap(db, accountId: accountA, localToFileId: ["v4": "f-v4"], uploadedAtIso: "2026-10-18T10:00:00Z", nowMs: now)
+  expect(applied == 0 && status(db, "v4") == "staging", "o5: the rebuild map does not promote a 'staging' row")
 }
 
 // MARK: - (n) round 12 item 6: the pause reason

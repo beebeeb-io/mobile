@@ -360,8 +360,22 @@ final class BackupManifestHandle {
   /// pre-column rows are not adopted (nothing of it is kept). When the reset
   /// fails, `discardPending` is recorded with the pending reset, so the
   /// recovery, or an open in a later process, does the same.
+  ///
+  /// Round 13 (review of mobile#182 at a19037f9, item 3, duplicate upload): a
+  /// deletion discards the marks of the accounts JS NAMES in
+  /// `deletedAccountIds`, and never the outgoing account on top of them. Only
+  /// when JS names none: the account the engine is still BOUND to
+  /// (`outgoingInferred` false) is the deleted one, as before; an outgoing
+  /// account the engine only REMEMBERS from an earlier sign-out
+  /// (`outgoingInferred`, `UnboundAccountMemory`) is not known to be the
+  /// deleted one, so the reset fails closed and discards every mark
+  /// (round 9's rule for a deletion with no known account). Before, the
+  /// remembered account A of an earlier sign-out was added to the deleted
+  /// set when a later user B deleted their account: A's kept marks went, and
+  /// A's photos uploaded again at A's next sign-in.
   func resetForSignOut(
     outgoingAccountId: String?,
+    outgoingInferred: Bool = false,
     mode: ManifestPurgeMode = .signOut,
     deletedAccountIds: Set<String> = []
   ) -> Bool {
@@ -373,7 +387,9 @@ final class BackupManifestHandle {
     scanInsertHealth = ScanInsertHealth()
     if mode == .accountDeleted {
       var deleted = deletedAccountIds.filter { !$0.isEmpty }
-      if let outgoingAccountId, !outgoingAccountId.isEmpty { deleted.insert(outgoingAccountId) }
+      if deleted.isEmpty, !outgoingInferred, let outgoingAccountId, !outgoingAccountId.isEmpty {
+        deleted.insert(outgoingAccountId)
+      }
       if deleted.isEmpty {
         discardAllPending = true
       } else {
@@ -557,5 +573,60 @@ struct ManifestAvailability: Equatable {
   mutating func clear() {
     failure = nil
     consecutiveFailures = 0
+  }
+}
+
+/// Task 1667 round 13 (review of mobile#182 at a19037f9, item 3, duplicate
+/// upload): the account a sign-out reset keeps the not-yet-marked uploads
+/// for, when the engine is no longer bound to it. `clearToken()` unbinds the
+/// engine before the sign-out purge runs (round 2), so the engine remembers
+/// the account it last unbound. Before round 13 nothing but an account
+/// deletion forgot it: a later account B that signed in (and never turned on
+/// backup, so never bound the engine) and deleted their account made the
+/// deletion's reset treat A as the outgoing account and discard A's kept
+/// marks. Now the memory ends when ANY account binds, and when JS reports a
+/// DIFFERENT signed-in user (`confirmMasterKeyHandle`).
+///
+/// Guarded by the engine's `accountIdLock`.
+struct UnboundAccountMemory: Equatable {
+  private(set) var lastUnbound: String?
+
+  /// Who the reset's outgoing account is, and whether it is still bound or
+  /// only remembered.
+  struct Outgoing: Equatable {
+    let accountId: String?
+    /// True when the engine is not bound to it (remembered from a sign-out).
+    let inferred: Bool
+  }
+
+  /// `currentAccountId` changed from `previous` to `next` (a real change).
+  mutating func accountChanged(from previous: String?, to next: String?) {
+    if let next, !next.isEmpty {
+      lastUnbound = nil
+    } else if let previous, !previous.isEmpty {
+      lastUnbound = previous
+    }
+  }
+
+  /// JS confirmed a signed-in user. Another account than the remembered one
+  /// ends the memory: the remembered account is no longer the one a later
+  /// sign-out or deletion on this device is about.
+  mutating func signedIn(_ accountId: String) {
+    guard !accountId.isEmpty, let lastUnbound, lastUnbound != accountId else { return }
+    self.lastUnbound = nil
+  }
+
+  mutating func forget() {
+    lastUnbound = nil
+  }
+
+  func outgoing(currentAccountId: String?) -> Outgoing {
+    if let currentAccountId, !currentAccountId.isEmpty {
+      return Outgoing(accountId: currentAccountId, inferred: false)
+    }
+    if let lastUnbound, !lastUnbound.isEmpty {
+      return Outgoing(accountId: lastUnbound, inferred: true)
+    }
+    return Outgoing(accountId: nil, inferred: false)
   }
 }

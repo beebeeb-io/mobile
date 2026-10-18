@@ -402,7 +402,10 @@ export class SyncClient {
     try {
       // Async load of persisted state — RN storage is async, unlike the web's
       // synchronous localStorage. Done here so the constructor stays cheap.
-      this.deviceId = await getDeviceId();
+      // Task 1667 round 13 (review item 1): a keychain that cannot be read
+      // (device locked at a background launch) no longer mints a throwaway
+      // id; the id stays unknown and is read again before any op is sent.
+      await this.ensureDeviceId();
       this.lastSeq = await loadLastSeq();
       this.pendingOps = await loadPendingOps();
 
@@ -1066,6 +1069,10 @@ export class SyncClient {
     await savePendingOps(this.pendingOps);
     this.emit({ type: 'op' });
 
+    // Round 13: no device id yet (keychain unreadable): the op stays pending
+    // and is flushed later, like after a network error.
+    if (!(await this.ensureDeviceId())) return { accepted: true };
+
     try {
       const result = await submitSyncOps([
         {
@@ -1105,8 +1112,25 @@ export class SyncClient {
     }
   }
 
+  /**
+   * Task 1667 round 13 (review item 1): the canonical device id (CRDT op
+   * origin), read lazily. `getDeviceId()` rejects while secure storage cannot
+   * be read; then no op is sent (it stays pending, flushed on the next
+   * reconnect or op) instead of carrying a made-up origin.
+   */
+  private async ensureDeviceId(): Promise<boolean> {
+    if (this.deviceId) return true;
+    try {
+      this.deviceId = await getDeviceId();
+      return this.deviceId.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
   private async flushPending(): Promise<void> {
     if (this.pendingOps.length === 0) return;
+    if (!(await this.ensureDeviceId())) return;
     const batch = this.pendingOps.map((p) => ({
       client_op_id: p.client_op_id,
       op_type: p.op_type,

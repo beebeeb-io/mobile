@@ -10,8 +10,9 @@ import Foundation
 // monitor / fetch-result wiring, reduced to what the lifecycle decides: the
 // engine itself needs PhotoKit/UIKit/Network and cannot be compiled here;
 // src/lib/native-backup-manifest-wiring.test.ts pins that the engine calls
-// the lifecycle exactly like this (`start()` -> `userStart { startLocked() }`,
-// `stop()` -> `userStop { stopLocked() }`, the retry -> `runRetry`, the
+// the lifecycle exactly like this (`start()` -> `userStart(prepare:)` with
+// `prepareStartKey`, `stop()` -> `userStop { stopLocked() }`, the retry ->
+// `runRetry(_:prepare:_:)`, the
 // observer -> `registerObserverOnce`, the monitor -> `startMonitorIfNeeded`,
 // the scan -> `acceptFetchResult`).
 //
@@ -35,6 +36,15 @@ import Foundation
 //   (e) round 12 item 8: the master-key load (`prepare`) runs outside the
 //       transition lock: a slow load does not block `acceptFetchResult`;
 //       `prepareAgain` re-prepares, bounded; a voided retry does not run.
+//   (f) round 13 item 4: the manifest is asked BEFORE the key is read; a
+//       refused start and its retries read no key; a key read for a start
+//       the body refused is reused by the retry (at most one read per
+//       user-visible start).
+//   (g) round 13 item 5: the background task's expiration pauses only a run
+//       the task owns; a pause it set ends when the user takes the run over.
+//   Round 13 item 12: every start and retry here goes through the entry
+//   points production calls (`userStart(prepare:_:)`,
+//   `runRetry(_:prepare:_:)`); the lock-only overloads are gone.
 
 var failures: [String] = []
 var total = 0
@@ -85,34 +95,70 @@ final class Engine {
   /// Called inside start()'s body between its `isRunning` check and its
   /// write (where the engine opens the manifest and applies the key).
   var slowStep: () -> Void = {}
-  /// Round 12: `prepareStartMasterKey` (outside the lock; nil = no key in
-  /// the keychain, a refused start).
+  /// Round 12: the keychain read in `prepareStartMasterKey` (outside the
+  /// lock; nil = no key in the keychain, a refused start).
   var keyLoad: () -> String? = { "key" }
+  /// Round 13 (item 4): keychain reads (each one can prompt).
+  let keyLoads = Counter()
+  /// Round 13 (item 4): what `prepare` sees of the manifest (defaults to
+  /// what the body sees; a test can make them differ for the race).
+  var manifestReadyAtPrepare: (() -> Bool)?
   var refusedStarts = 0
+  /// Round 13 (item 5).
+  private var _isPaused = false
+  var isPaused: Bool {
+    get { stateLock.lock(); defer { stateLock.unlock() }; return _isPaused }
+    set { stateLock.lock(); _isPaused = newValue; stateLock.unlock() }
+  }
+
+  static let manifestUnavailable = "manifest-unavailable"
+  final class KeyBox { let value: String; init(_ value: String) { self.value = value } }
+
+  /// `prepareStartMasterKey` (round 13: through `prepareStartKey`, the
+  /// manifest first; the model has no in-process cache).
+  func prepare() -> String? {
+    if isRunning { return "not-needed" }
+    return lifecycle.prepareStartKey(
+      accountId: "acct-A",
+      manifestReady: { (self.manifestReadyAtPrepare ?? { self.manifestOpens })() },
+      manifestUnavailable: { Engine.manifestUnavailable },
+      cached: { nil },
+      stashed: { ($0 as? KeyBox)?.value },
+      load: { self.keyLoads.add(); return self.keyLoad() }
+    )
+  }
 
   /// Round 12 (item 8): `start()` -> `userStart(prepare:)`.
-  func start() { lifecycle.userStart(prepare: { self.keyLoad() }) { self.startLocked(prepared: $0) } }
+  func start() { lifecycle.userStart(prepare: { self.prepare() }) { self.startLocked(prepared: $0) } }
   func stop() { lifecycle.userStop { stopLocked() } }
 
   @discardableResult
   func startLocked(prepared: String?) -> BackupEngineLifecycle.StartStep {
     guard manifestOpens else {
       if isRunning { lifecycle.internalStop { stopLocked() } }
+      // Round 13 (item 4): a key read for this start is kept for the retry.
+      if let prepared, prepared != Engine.manifestUnavailable, prepared != "not-needed" {
+        lifecycle.stashStartKey(KeyBox(prepared), accountId: "acct-A")
+      }
       return .done
     }
     if isRunning {
       registerPhotoObserver()
       startNetworkMonitor()
-      lifecycle.claimUserRun()
+      if lifecycle.claimUserRun() { isPaused = false }
       return .done
     }
+    if prepared == Engine.manifestUnavailable || prepared == "not-needed" { return .prepareAgain }
     guard prepared != nil else {
       refusedStarts += 1
       return .done
     }
     slowStep()
     isRunning = true
-    lifecycle.claimUserRun()
+    // (Typed so the red shim's two overloads resolve; the engine discards it:
+    // a fresh start sets `isPaused = false` anyway.)
+    let _: Bool = lifecycle.claimUserRun()
+    isPaused = false
     registerPhotoObserver()
     startNetworkMonitor()
     return .done
@@ -144,13 +190,24 @@ final class Engine {
     lifecycle.startMonitorIfNeeded { FakeMonitor() }
   }
 
-  /// `scheduleManifestOpenRetry`: the work item runs `runRetry(token)`.
+  /// `scheduleManifestOpenRetry`: the work item runs `runRetry(token, prepare:)`.
   func scheduleRetry(after delay: TimeInterval, done: DispatchSemaphore) {
     let token = lifecycle.scheduleRetry()
     DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-      self.lifecycle.runRetry(token, prepare: { self.keyLoad() }) { self.startLocked(prepared: $0) }
+      self.runRetry(token)
       done.signal()
     }
+  }
+
+  @discardableResult
+  func runRetry(_ token: UInt64) -> Bool {
+    lifecycle.runRetry(token, prepare: { self.prepare() }) { self.startLocked(prepared: $0) }
+  }
+
+  /// Round 13 (item 5): the `BGProcessingTask` expiration handler.
+  @discardableResult
+  func backgroundTaskExpires() -> Bool {
+    lifecycle.expireBackgroundRun { self.isPaused = true }
   }
 }
 
@@ -195,12 +252,17 @@ do {
   expect(!engine.lifecycle.wantsRunning, "a3: the user's intent is cleared")
 
   // A retry that fires AFTER the stop does nothing.
+  // Round 13 (item 12): through the production entry points. The user's
+  // start is refused by the manifest (a retry is owed, intent kept)...
   let late = DispatchSemaphore(value: 0)
-  engine.lifecycle.userStart {} // the user started...
+  engine.manifestOpens = false
+  engine.start()
+  expect(engine.lifecycle.wantsRunning && !engine.isRunning, "a4: the user started (refused by the manifest, intent kept)")
   let token = engine.lifecycle.scheduleRetry()
   engine.stop() // ...and stopped again before the retry fired
+  engine.manifestOpens = true
   DispatchQueue.global().async {
-    let ran = engine.lifecycle.runRetry(token) { engine.startLocked(prepared: "key") }
+    let ran = engine.runRetry(token)
     expect(!ran, "a4: the retry after a stop does not run")
     late.signal()
   }
@@ -208,11 +270,15 @@ do {
   expect(!engine.isRunning, "a4: still not running")
 
   // A newer retry voids an older one.
-  engine.lifecycle.userStart {}
+  engine.manifestOpens = false
+  engine.start()
+  engine.manifestOpens = true
   let old = engine.lifecycle.scheduleRetry()
   let newer = engine.lifecycle.scheduleRetry()
-  expect(!engine.lifecycle.runRetry(old) {}, "a5: an older retry is void")
-  expect(engine.lifecycle.runRetry(newer) {}, "a5: the latest retry runs while the user wants backup")
+  expect(!engine.runRetry(old), "a5: an older retry is void")
+  expect(!engine.isRunning, "a5: the void retry started nothing")
+  expect(engine.runRetry(newer), "a5: the latest retry runs while the user wants backup")
+  expect(engine.isRunning, "a5: and starts backup")
   engine.stop()
 }
 
@@ -542,9 +608,115 @@ do {
   var retryPrepares = 0
   let notWanted = lifecycle.runRetry(lifecycle.scheduleRetry(), prepare: { retryPrepares += 1 }) { _ in .done }
   expect(!notWanted && retryPrepares == 0, "e7: no intent: the retry does not even prepare")
-  lifecycle.userStart {}
+  _ = lifecycle.userStart(prepare: { 0 }) { _ in .done }
   let t2 = lifecycle.scheduleRetry()
   expect(lifecycle.runRetry(t2, prepare: { 1 }) { _ in .done }, "e8: control: the latest retry with the intent runs")
+}
+
+// MARK: - (f) round 13 item 4: the manifest is asked before the key is read
+
+do {
+  // f1: the manifest cannot open (pending reset deferred, unreadable). The
+  // user's start and three retries read no key at all.
+  let engine = Engine()
+  engine.manifestOpens = false
+  engine.start()
+  for _ in 0..<3 {
+    engine.runRetry(engine.lifecycle.scheduleRetry())
+  }
+  expect(engine.keyLoads.get == 0, "f1: manifest refused: 0 key loads across the start and 3 retries (got \(engine.keyLoads.get))")
+  expect(!engine.isRunning && engine.lifecycle.wantsRunning, "f1: refused, intent kept")
+  // f2: the manifest opens: the next retry reads the key once and starts.
+  engine.manifestOpens = true
+  engine.runRetry(engine.lifecycle.scheduleRetry())
+  expect(engine.keyLoads.get == 1 && engine.isRunning, "f2: one key load once the manifest opens (got \(engine.keyLoads.get)), running")
+  engine.stop()
+}
+
+do {
+  // f3: the race: the manifest opened at prepare, then refused in the body.
+  // The key read for that start is kept; the retries reuse it.
+  let engine = Engine()
+  engine.manifestReadyAtPrepare = { true }
+  engine.manifestOpens = false
+  engine.start()
+  expect(engine.keyLoads.get == 1 && !engine.isRunning, "f3: one key load, start refused in the body")
+  expect(engine.lifecycle.hasStashedStartKey, "f3: the key is kept for the retry")
+  engine.runRetry(engine.lifecycle.scheduleRetry()) // still refused: the key is kept again
+  engine.runRetry(engine.lifecycle.scheduleRetry())
+  engine.manifestReadyAtPrepare = nil
+  engine.manifestOpens = true
+  engine.runRetry(engine.lifecycle.scheduleRetry())
+  expect(engine.isRunning, "f3: the retry starts once the manifest opens")
+  expect(engine.keyLoads.get == 1, "f3: no second key load across the retries (got \(engine.keyLoads.get))")
+  expect(!engine.lifecycle.hasStashedStartKey, "f3: the kept key was used up")
+  engine.stop()
+}
+
+do {
+  // f4: a user stop drops a kept key: the next start the user makes reads
+  // again (one read per user-visible start).
+  let engine = Engine()
+  engine.manifestReadyAtPrepare = { true }
+  engine.manifestOpens = false
+  engine.start()
+  expect(engine.lifecycle.hasStashedStartKey, "f4: kept after the refused start")
+  engine.stop()
+  expect(!engine.lifecycle.hasStashedStartKey, "f4: the user's stop drops it")
+  engine.manifestReadyAtPrepare = nil
+  engine.manifestOpens = true
+  engine.start()
+  expect(engine.isRunning && engine.keyLoads.get == 2, "f4: the new start reads the key again (got \(engine.keyLoads.get))")
+  engine.stop()
+  // f5: a kept key of another account is never returned (and is dropped).
+  let lifecycle = BackupEngineLifecycle()
+  lifecycle.stashStartKey(Engine.KeyBox("key-A"), accountId: "acct-A")
+  expect(lifecycle.takeStashedStartKey(accountId: "acct-B") == nil, "f5: another account's kept key is not returned")
+  expect(!lifecycle.hasStashedStartKey, "f5: and is dropped")
+}
+
+// MARK: - (g) round 13 item 5: the task's expiration pauses only its own run
+
+do {
+  // g1: the review's scenario: the user's run is going, a BGProcessingTask
+  // finds it running (owns nothing), and expires as the user picks up the
+  // phone. The user's run is NOT paused.
+  let engine = Engine()
+  engine.start()
+  let batchStart = engine.backgroundTaskBegins()
+  expect(batchStart, "g1: the task found the user's run going")
+  expect(!engine.backgroundTaskExpires(), "g1: the expiration does not pause")
+  expect(!engine.isPaused && engine.isRunning, "g1: the user's run is running, not paused")
+  expect(!engine.backgroundTaskEnds(batchStart: batchStart) && engine.isRunning, "g1: and the task's exit leaves it")
+  engine.stop()
+}
+
+do {
+  // g2: the task started the run, the user claimed it, then the task
+  // expired: not paused either.
+  let engine = Engine()
+  let batchStart = engine.backgroundTaskBegins()
+  engine.start()
+  expect(!engine.backgroundTaskExpires() && !engine.isPaused, "g2: a run the user claimed is not paused")
+  expect(!engine.backgroundTaskEnds(batchStart: batchStart) && engine.isRunning, "g2: still running")
+  engine.stop()
+}
+
+do {
+  // g3: control: a run the task owns IS paused by its expiration; when the
+  // user starts backup before the task exits, the pause ends.
+  let engine = Engine()
+  let batchStart = engine.backgroundTaskBegins()
+  expect(engine.backgroundTaskExpires() && engine.isPaused, "g3: the task's own run is paused")
+  engine.start()
+  expect(!engine.isPaused && engine.isRunning, "g3: the user's start ends the expiration pause")
+  expect(!engine.backgroundTaskEnds(batchStart: batchStart), "g3: the task's exit idles nothing")
+  engine.stop()
+  // The task's own run, no user start: its exit idles it.
+  let e2 = Engine()
+  let b2 = e2.backgroundTaskBegins()
+  e2.backgroundTaskExpires()
+  expect(e2.backgroundTaskEnds(batchStart: b2) && !e2.isRunning, "g3: the task's own run idles at its exit")
 }
 
 print("backup-engine-lifecycle-test: \(failures.isEmpty ? "PASS" : "FAIL")")

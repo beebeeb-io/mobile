@@ -3159,6 +3159,11 @@ public class BeebeebCryptoModule: Module {
       // of ANY account older than 30 days, also when this account has none
       // and photo backup is off.
       NativeBackupEngine.shared.expireKeptPendingMarks(trigger: "sign_in")
+      // Task 1667 round 13 (review item 3): a different signed-in user ends
+      // the engine's memory of the account it last unbound.
+      if let normalizedOwnerId {
+        NativeBackupEngine.shared.noteSignedInAccount(normalizedOwnerId)
+      }
       RuntimeTrace.event("keychain.bridge.confirm_handle", ["handleId": handleId, "hasOwner": normalizedOwnerId != nil])
       return true
     }
@@ -4012,8 +4017,12 @@ public class BeebeebCryptoModule: Module {
     // Task 1667: the canonical device id (src/lib/device-identity.ts) for the
     // photo-backup map calls (`X-Beebeeb-Device-Id`). Set before
     // `enablePhotoBackup`; persisted for background relaunches.
-    AsyncFunction("setBackupDeviceId") { (deviceId: String) in
-      NativeBackupEngine.shared.backupDeviceId = deviceId
+    // Round 13 (review item 1): `persisted` is JS saying the id is durable
+    // (read from, or written to, secure storage). Without it (nil: an older
+    // JS bundle) an existing, different id is never replaced. Returns whether
+    // native took the id.
+    AsyncFunction("setBackupDeviceId") { (deviceId: String, persisted: Bool?) -> Bool in
+      NativeBackupEngine.shared.acceptBackupDeviceId(deviceId, persisted: persisted ?? false)
     }
 
     AsyncFunction("enablePhotoBackup") { (authToken: String, userId: String) in

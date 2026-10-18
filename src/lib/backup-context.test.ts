@@ -952,23 +952,26 @@ describe('runAccountRefusalPollTick (task 1605 review round 3, P1)', () => {
 // empty manifest from, the server's per-device photo-backup map. Both are keyed
 // by X-Beebeeb-Device-Id, so native must get the CANONICAL device id.
 describe('syncBackupDeviceIdToNative (task 1667)', () => {
-  test('hands the canonical device id to native', async () => {
-    const seen: string[] = [];
+  // Round 13 (review item 1): the deps are the resolution (with its
+  // durability) and the native setter, which now takes the durability flag.
+  test('hands the canonical device id to native, flagged durable', async () => {
+    const seen: Array<[string, boolean]> = [];
     const ok = await syncBackupDeviceIdToNative({
-      getDeviceId: async () => 'canonical-device-1',
-      setBackupDeviceId: async (id: string) => { seen.push(id); return true; },
+      resolveDeviceId: async () => ({ id: 'canonical-device-1', source: 'stored', persisted: true }),
+      setBackupDeviceId: async (id: string, o: { persisted: boolean }) => { seen.push([id, o.persisted]); return true; },
     });
     expect(ok).toBe(true);
-    expect(seen).toEqual(['canonical-device-1']);
+    expect(seen).toEqual([['canonical-device-1', true]]);
   });
 
-  test('never throws and never sends an empty id', async () => {
+  test('never throws and never sends an empty, unreadable or undurable id', async () => {
     const seen: string[] = [];
     const set = async (id: string) => { seen.push(id); return true; };
-    expect(await syncBackupDeviceIdToNative({ getDeviceId: async () => { throw new Error('keychain'); }, setBackupDeviceId: set })).toBe(false);
-    expect(await syncBackupDeviceIdToNative({ getDeviceId: async () => '', setBackupDeviceId: set })).toBe(false);
+    expect(await syncBackupDeviceIdToNative({ resolveDeviceId: async () => { throw new Error('keychain'); }, setBackupDeviceId: set })).toBe(false);
+    expect(await syncBackupDeviceIdToNative({ resolveDeviceId: async () => ({ id: '', source: 'stored', persisted: true }), setBackupDeviceId: set })).toBe(false);
+    expect(await syncBackupDeviceIdToNative({ resolveDeviceId: async () => ({ id: 'm', source: 'minted', persisted: false }), setBackupDeviceId: set })).toBe(false);
     expect(await syncBackupDeviceIdToNative({
-      getDeviceId: async () => 'd',
+      resolveDeviceId: async () => ({ id: 'd', source: 'stored', persisted: true }),
       setBackupDeviceId: async () => { throw new Error('old native build'); },
     })).toBe(false);
     expect(seen).toEqual([]);

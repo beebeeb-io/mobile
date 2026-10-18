@@ -830,6 +830,86 @@ do {
   sqlite3_close_v2(db)
 }
 
+// MARK: - 11. Round 13 (review item 8): the reset restores the connection's settings
+
+do {
+  let path = root.appendingPathComponent("reset-settings.db").path
+  let db = open(path)
+  exec(db, schema)
+  BackupManifestStore.migrate(db)
+  insert(db, "s-1", status: "uploaded", remote: "f-s1", owner: "acct-A")
+  // The engine's long-lived connection: no busy timeout, secure_delete off.
+  sqlite3_busy_timeout(db, 0)
+  exec(db, "PRAGMA secure_delete = 0")
+  let before = BackupManifestStore.connectionSettings(db)
+  expect(before == BackupManifestStore.ConnectionSettings(busyTimeoutMs: 0, secureDelete: 0), "r13-8.0: read the settings (got \(String(describing: before)))")
+  expect(BackupManifestStore.resetInPlace(db, nowMs: now), "r13-8.1: the reset succeeds")
+  let after = BackupManifestStore.connectionSettings(db)
+  expect(after == before, "r13-8.2: busy timeout and secure_delete are restored after the reset (got \(String(describing: after)))")
+  // A failing reset restores them too (another connection holds the writer lock).
+  insert(db, "s-2", status: "uploaded", remote: "f-s2", owner: "acct-A")
+  let locker = open(path)
+  exec(locker, "BEGIN IMMEDIATE")
+  expect(!BackupManifestStore.resetInPlace(db, nowMs: now, busyTimeoutMs: 50), "r13-8.3: the reset fails under another writer")
+  exec(locker, "ROLLBACK")
+  sqlite3_close_v2(locker)
+  expect(BackupManifestStore.connectionSettings(db) == before, "r13-8.4: and the settings are restored on that path too")
+  // Other values round-trip (secure_delete FAST, a 750 ms timeout).
+  insert(db, "scrub-me-r13", status: "pending_upload")
+  sqlite3_busy_timeout(db, 750)
+  exec(db, "PRAGMA secure_delete = FAST")
+  let fast = BackupManifestStore.connectionSettings(db)
+  expect(BackupManifestStore.resetInPlace(db, nowMs: now) && BackupManifestStore.connectionSettings(db) == fast,
+         "r13-8.5: FAST and 750 ms are restored as they were (got \(String(describing: BackupManifestStore.connectionSettings(db))))")
+  // The reset itself still overwrote the freed pages (secure_delete was on during it).
+  let data = fm.contents(atPath: path) ?? Data()
+  expect(data.range(of: Data("scrub-me-r13".utf8)) == nil, "r13-8.6: the reset still scrubbed a deleted row's bytes")
+  sqlite3_close_v2(db)
+}
+
+// MARK: - 12. Round 13 (review item 11): no SELECT per scanned row
+
+/// Statements stepped on a connection (SQLITE_TRACE_STMT), and how many were
+/// SELECTs. Global: the C callback cannot capture.
+var tracedStatements = 0
+var tracedSelects = 0
+
+do {
+  let db = open(root.appendingPathComponent("insert-cost.db").path)
+  exec(db, schema)
+  BackupManifestStore.migrate(db)
+  let ids = (0..<1000).map { "k\($0)" }
+  let assets = ids.map { BackupManifestStore.ScannedAsset(localAssetId: $0, createdAt: "2026-10-18T10:00:00Z", assetType: "photo") }
+  expect(BackupManifestStore.insertScannedAssetsCounting(db, assets, nowMs: now) == 1000, "r13-11.1: 1000 new rows entered")
+  exec(db, "UPDATE backup_assets SET status = 'uploaded' WHERE local_asset_id IN ('k1', 'k2')")
+  exec(db, "UPDATE backup_assets SET status = 'failed', retry_count = 4, error_message = 'net' WHERE local_asset_id = 'k3'")
+  exec(db, "UPDATE backup_assets SET status = 'local_missing', retry_count = 9, error_message = 'gone' WHERE local_asset_id = 'k4'")
+  exec(db, "UPDATE backup_assets SET selected_for_backup = 0 WHERE local_asset_id = 'k5'")
+  sqlite3_trace_v2(db, UInt32(SQLITE_TRACE_STMT), { _, _, _, x in
+    tracedStatements += 1
+    if let x, String(cString: x.assumingMemoryBound(to: CChar.self)).uppercased().hasPrefix("SELECT") { tracedSelects += 1 }
+    return 0
+  }, nil)
+  // The full scan again (the common case: the whole library re-upserted).
+  let entered = BackupManifestStore.insertScannedAssetsCounting(db, assets, nowMs: now)
+  sqlite3_trace_v2(db, 0, nil, nil)
+  expect(entered == 1, "r13-11.2: only the local_missing row entered (got \(String(describing: entered)))")
+  expect(tracedSelects == 0, "r13-11.3: no SELECT per row (got \(tracedSelects))")
+  // BEGIN + COMMIT + one upsert per row + one revive for k4.
+  expect(tracedStatements == 1000 + 3, "r13-11.4: one statement per row, plus the one revive (got \(tracedStatements))")
+  expect(text(db, "SELECT status || '/' || retry_count || '/' || COALESCE(error_message, '') FROM backup_assets WHERE local_asset_id = 'k4'") == "pending_upload/0/",
+         "r13-11.5: the revived row is queued with a clean retry count")
+  expect(text(db, "SELECT status || '/' || retry_count || '/' || COALESCE(error_message, '') FROM backup_assets WHERE local_asset_id = 'k3'") == "failed/4/net",
+         "r13-11.6: a failed row keeps its status, retry count and error")
+  expect(text(db, "SELECT status FROM backup_assets WHERE local_asset_id = 'k1'") == "uploaded", "r13-11.7: an uploaded row stays uploaded")
+  expect(scalar(db, "SELECT selected_for_backup FROM backup_assets WHERE local_asset_id = 'k5'") == 1, "r13-11.8: a scanned row is selected again")
+  // A duplicate id in one scan counts once.
+  let dup = [BackupManifestStore.ScannedAsset(localAssetId: "new-1", createdAt: "2026-10-18T10:00:00Z", assetType: "photo"),
+             BackupManifestStore.ScannedAsset(localAssetId: "new-1", createdAt: "2026-10-18T10:00:00Z", assetType: "photo")]
+  expect(BackupManifestStore.insertScannedAssetsCounting(db, dup, nowMs: now) == 1, "r13-11.9: a duplicate in one scan counts once")
+  sqlite3_close_v2(db)
+}
+
 // MARK: - Report
 
 if failures.isEmpty {

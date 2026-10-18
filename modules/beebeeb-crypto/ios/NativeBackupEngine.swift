@@ -853,15 +853,29 @@ final class NativeBackupEngine: NSObject {
   private var _manifestReadyForAccount: String?
   /// Task 1667 round 2: the account `currentAccountId` held before it was
   /// last cleared (guarded by `accountIdLock`, written in its setter).
-  private var _lastUnboundAccountId: String?
-  private var lastUnboundAccountId: String? {
-    accountIdLock.lock(); defer { accountIdLock.unlock() }; return _lastUnboundAccountId
+  /// Round 13 (review item 3): `UnboundAccountMemory`, which also forgets it
+  /// when another account binds or JS reports another signed-in user.
+  private var _unboundAccount = UnboundAccountMemory()
+  /// The sign-out reset's outgoing account: the bound one, else the one last
+  /// unbound (`inferred`).
+  private func outgoingAccountForReset() -> UnboundAccountMemory.Outgoing {
+    let current = currentAccountId
+    accountIdLock.lock(); defer { accountIdLock.unlock() }
+    return _unboundAccount.outgoing(currentAccountId: current)
   }
   /// Task 1667 round 9: an account deletion forgets which account was last
   /// bound (nothing of it is kept for a sign-in that cannot happen).
   private func forgetUnboundAccount() {
     accountIdLock.lock(); defer { accountIdLock.unlock() }
-    _lastUnboundAccountId = nil
+    _unboundAccount.forget()
+  }
+  /// Round 13 (review item 3): JS confirmed `accountId` signed in
+  /// (`confirmMasterKeyHandle`). A different account than the one last
+  /// unbound ends that memory, so a later deletion by this user can never
+  /// count the earlier account as the outgoing one.
+  func noteSignedInAccount(_ accountId: String) {
+    accountIdLock.lock(); defer { accountIdLock.unlock() }
+    _unboundAccount.signedIn(accountId)
   }
   /// Task 1667 round 2: set when a sign-out could not empty the manifest in
   /// place; cleared once it was emptied (or replaced). While set, every
@@ -1034,32 +1048,58 @@ final class NativeBackupEngine: NSObject {
   /// not handed it over yet (a background task can run first). The getter
   /// then reads the same id from expo-secure-store's keychain item
   /// (`BackupDeviceId.resolve`, never minting one) and keeps it in
-  /// `UserDefaults`. The setter (JS, at every launch and at enable) ends a
-  /// `noDeviceId` pause at once.
+  /// `UserDefaults`. JS's handoff (at every launch and at enable,
+  /// `acceptBackupDeviceId` since round 13) ends a `noDeviceId` pause at once.
   var backupDeviceId: String? {
-    get {
-      let resolution = BackupDeviceId.resolve(
-        defaults: { UserDefaults.standard.string(forKey: BackupDeviceId.defaultsKey) },
-        secureStore: { BackupDeviceId.readSecureStore($0) },
-        persist: { UserDefaults.standard.set($0, forKey: BackupDeviceId.defaultsKey) }
-      )
-      if let source = resolution.source, source != .defaults {
-        RuntimeTrace.event("backup.native.device_id.adopted_from_secure_store", ["source": source.rawValue])
-      }
-      return resolution.id
+    let resolution = BackupDeviceId.resolve(
+      defaults: { UserDefaults.standard.string(forKey: BackupDeviceId.defaultsKey) },
+      secureStore: { BackupDeviceId.readSecureStore($0) },
+      persist: { UserDefaults.standard.set($0, forKey: BackupDeviceId.defaultsKey) }
+    )
+    if let source = resolution.source, source != .defaults {
+      RuntimeTrace.event("backup.native.device_id.adopted_from_secure_store", ["source": source.rawValue])
     }
-    set {
-      if let newValue, !newValue.isEmpty {
-        UserDefaults.standard.set(newValue, forKey: BackupDeviceId.defaultsKey)
-        if serverCheckPauseCause == .noDeviceId {
-          clearServerCheckPause()
-          backoffUntil = nil
-          wakeDrainLoop(reason: "device-id")
-        }
-      } else {
-        UserDefaults.standard.removeObject(forKey: BackupDeviceId.defaultsKey)
-      }
+    return resolution.id
+  }
+
+  /// Serializes `acceptBackupDeviceId`'s read-decide-write.
+  private let backupDeviceIdLock = NSLock()
+
+  /// Round 13 (review of mobile#182 at a19037f9, item 1, duplicate upload):
+  /// the JS handoff (`setBackupDeviceId`). An existing, different id is
+  /// replaced only when JS says the new one is durable (`persisted`); a
+  /// refusal is logged and keeps the id native has. Before, the setter stored
+  /// whatever JS sent, including a UUID JS minted because the keychain read
+  /// failed (device locked). Returns whether native has `deviceId` now.
+  @discardableResult
+  func acceptBackupDeviceId(_ deviceId: String, persisted: Bool) -> Bool {
+    backupDeviceIdLock.lock()
+    let existing = backupDeviceId
+    let decision = BackupDeviceId.decideSet(existing: existing, incoming: deviceId, persisted: persisted)
+    if case .store = decision {
+      UserDefaults.standard.set(deviceId, forKey: BackupDeviceId.defaultsKey)
     }
+    backupDeviceIdLock.unlock()
+    switch decision {
+    case .refused(let reason):
+      RuntimeTrace.event("backup.native.device_id.set_refused", [
+        "reason": reason, "persisted": persisted, "hasExisting": existing?.isEmpty == false,
+      ])
+      NSLog("[NativeBackupEngine] setBackupDeviceId refused (\(reason)); keeping the existing device id")
+      return false
+    case .store(let replacing):
+      if replacing != nil {
+        RuntimeTrace.event("backup.native.device_id.replaced", ["persisted": persisted])
+      }
+    case .unchanged:
+      break
+    }
+    if serverCheckPauseCause == .noDeviceId {
+      clearServerCheckPause()
+      backoffUntil = nil
+      wakeDrainLoop(reason: "device-id")
+    }
+    return true
   }
 
   // Backup auth token and server URL are persisted in the Keychain (not
@@ -1129,11 +1169,12 @@ final class NativeBackupEngine: NSObject {
         try? KeychainManager.storeString(normalizedNew, key: backupCurrentAccountIdKey)
       } else {
         KeychainManager.deleteString(key: backupCurrentAccountIdKey)
-        // Task 1667 round 2: the sign-out reset keeps this account's
-        // not-yet-marked uploads under its id; `clearToken()` unbinds the
-        // engine before the purge runs, so remember who it was.
-        if let previous { _lastUnboundAccountId = previous }
       }
+      // Task 1667 round 2: the sign-out reset keeps this account's
+      // not-yet-marked uploads under its id; `clearToken()` unbinds the
+      // engine before the purge runs, so remember who it was. Round 13
+      // (review item 3): a bind (any account) ends that memory.
+      _unboundAccount.accountChanged(from: previous, to: normalizedNew)
       // Task 1531 [P1-3]: a REAL change is a new account epoch — see
       // `accountGeneration`'s doc comment above. Round 5 (P2-C) narrowed
       // this from "every write" to "every write that actually changes the
@@ -1553,39 +1594,28 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
+  /// Round 13 (review of mobile#182 at a19037f9, item 6): decided by
+  /// `BackupSurfaceState` (the rules moved there unchanged), which also
+  /// keeps the server-check pause on every surface and every update.
   private func backupState(pending: Int) -> (state: String, reason: String) {
-    // Task 1667 round 6: an engine that could not open its manifest is not
-    // "ready" or "complete"; say what is.
-    if let manifestReason = manifestUnavailableStopReason {
-      return ("needsAttention", manifestReason)
-    }
-    if isPaused {
-      return ("pausedByUser", "Backup paused")
-    }
-    if pending > 0, !canExecuteBackupWorkNow() {
-      return ("waitingForAppOpen", "Open Beebeeb to continue")
-    }
-    if !isRunning && pending > 0 {
-      return ("idle", "Backup ready")
-    }
-    if failedAssets > 0 && pending == 0 && inProgressAssets == 0 {
-      return ("needsAttention", "Some items need attention")
-    }
+    var networkAvailable = true
     #if os(iOS)
-    if !isNetworkAvailable && pending > 0 {
-      return ("waitingForWifi", "Waiting for connection")
-    }
+    networkAvailable = isNetworkAvailable
     #endif
-    if isRunning && (pending > 0 || inProgressAssets > 0) {
-      if inProgressAssets > 0 || backupWorkBreakdown().uploading > 0 {
-        return ("uploading", "Uploading")
-      }
-      return ("preparing", "Preparing backup")
-    }
-    if totalAssets > 0 && pending == 0 && inProgressAssets == 0 {
-      return ("complete", "Backup complete")
-    }
-    return ("idle", "Nothing to back up")
+    let decided = BackupSurfaceState.decide(BackupSurfaceState.Inputs(
+      manifestUnavailableReason: manifestUnavailableStopReason,
+      serverCheckPause: serverCheckPauseSurface,
+      isPaused: isPaused,
+      pending: pending,
+      canExecuteNow: canExecuteBackupWorkNow(),
+      isRunning: isRunning,
+      failed: failedAssets,
+      inProgress: inProgressAssets,
+      networkAvailable: networkAvailable,
+      total: totalAssets,
+      uploading: { self.backupWorkBreakdown().uploading }
+    ))
+    return (decided.state, decided.reason)
   }
 
   private func makeBackupStatusPayload(reason explicitReason: String? = nil) -> BackupStatusPayload {
@@ -1624,18 +1654,10 @@ final class NativeBackupEngine: NSObject {
   }
 
   private func heartbeatStatus(for payload: BackupStatusPayload) -> String {
-    switch payload.state {
-    case "uploading", "preparing":
-      return "syncing"
-    case "pausedByUser", "waitingForAppOpen", "waitingForWifi":
-      return "paused"
-    case "needsAttention":
-      return "error"
-    case "complete", "idle":
-      return isRunning ? "watching" : "idle"
-    default:
-      return payload.failed > 0 && payload.pending == 0 ? "error" : "idle"
-    }
+    // Round 13 (item 6): `BackupSurfaceState` (the server-check pause is "paused").
+    BackupSurfaceState.heartbeatStatus(
+      state: payload.state, isRunning: isRunning, failed: payload.failed, pending: payload.pending
+    )
   }
 
   private func makeSafeCurrentFile(payload: BackupStatusPayload, status: String) -> String? {
@@ -2236,6 +2258,10 @@ final class NativeBackupEngine: NSObject {
       /// The engine was running when prepared: no key needed (the running
       /// branch). If it stopped before the lock, `startLocked` asks again.
       case notNeeded
+      /// Round 13 (review item 4): the manifest could not open, so no key
+      /// was read (no prompt). `startLocked` refuses on the manifest, or
+      /// prepares again if it opened since.
+      case manifestUnavailable
     }
     let accountId: String
     let outcome: Outcome
@@ -2249,32 +2275,52 @@ final class NativeBackupEngine: NSObject {
   private func prepareStartMasterKey() -> PreparedStartKey? {
     guard let accountId = currentAccountId, !accountId.isEmpty else { return nil }
     if isRunning { return PreparedStartKey(accountId: accountId, outcome: .notNeeded) }
-    // Task 1599 followups (round 2, item 3): a cached handle existing is NOT,
-    // by itself, proof it belongs to `accountId`. Read the "is there a cached
-    // handle" flag and its owner from ONE locked snapshot
-    // (`cachedMasterKeySnapshot()`); a cache whose recorded owner is set and
-    // differs from `accountId` refuses, never reaching `masterKeyHandle`.
-    let cacheSnapshot = BeebeebCryptoBridge.cachedMasterKeySnapshot()
-    RuntimeTrace.event("backup.native.start.master_key_request", [
-      "promptMayAppear": masterKeyHandle == nil && cacheSnapshot.handle == nil,
-      "bridgeCacheAvailable": cacheSnapshot.handle != nil
-    ])
-    if let snapshotHandle = cacheSnapshot.handle {
-      guard CachedKeyOwnership.mayAdopt(cachedOwnerId: cacheSnapshot.ownerId, currentAccountId: accountId) else {
-        return PreparedStartKey(accountId: accountId, outcome: .refusedCachedOwner)
+    // Round 13 (review of mobile#182 at a19037f9, item 4): the manifest
+    // FIRST. A start the manifest refuses reads no key (no prompt); the
+    // body refuses and schedules the retry, which asks the manifest first
+    // again. A key read for a start the body then refused is kept for the
+    // retry (`lifecycle.stashStartKey`), so a retry never prompts again.
+    return lifecycle.prepareStartKey(
+      accountId: accountId,
+      manifestReady: { self.dbQueue.sync { self.openManifestIfClosed(trigger: "start_prepare") } == nil },
+      manifestUnavailable: {
+        RuntimeTrace.event("backup.native.start.master_key_skipped_manifest_unavailable")
+        return PreparedStartKey(accountId: accountId, outcome: .manifestUnavailable)
+      },
+      cached: { () -> PreparedStartKey? in
+        // Task 1599 followups (round 2, item 3): a cached handle existing is
+        // NOT, by itself, proof it belongs to `accountId`. Read the "is there
+        // a cached handle" flag and its owner from ONE locked snapshot
+        // (`cachedMasterKeySnapshot()`); a cache whose recorded owner is set
+        // and differs from `accountId` refuses, never reaching
+        // `masterKeyHandle`.
+        let cacheSnapshot = BeebeebCryptoBridge.cachedMasterKeySnapshot()
+        RuntimeTrace.event("backup.native.start.master_key_request", [
+          "promptMayAppear": self.masterKeyHandle == nil && cacheSnapshot.handle == nil,
+          "bridgeCacheAvailable": cacheSnapshot.handle != nil
+        ])
+        guard let snapshotHandle = cacheSnapshot.handle else { return nil }
+        guard CachedKeyOwnership.mayAdopt(cachedOwnerId: cacheSnapshot.ownerId, currentAccountId: accountId) else {
+          return PreparedStartKey(accountId: accountId, outcome: .refusedCachedOwner)
+        }
+        // Task 1599 followups round 3 (P2): the SAME handle object the
+        // ownership guard just verified, never a second `loadMasterKey()` read.
+        return PreparedStartKey(accountId: accountId, outcome: .cached(snapshotHandle))
+      },
+      stashed: { key in
+        (key as? MasterKeyHandle).map { PreparedStartKey(accountId: accountId, outcome: .loaded($0)) }
+      },
+      load: {
+        do {
+          guard let loaded = try BeebeebCryptoBridge.loadMasterKeyUncached() else {
+            return PreparedStartKey(accountId: accountId, outcome: .missing)
+          }
+          return PreparedStartKey(accountId: accountId, outcome: .loaded(loaded))
+        } catch {
+          return PreparedStartKey(accountId: accountId, outcome: .failed(error.localizedDescription))
+        }
       }
-      // Task 1599 followups round 3 (P2): the SAME handle object the
-      // ownership guard just verified, never a second `loadMasterKey()` read.
-      return PreparedStartKey(accountId: accountId, outcome: .cached(snapshotHandle))
-    }
-    do {
-      guard let loaded = try BeebeebCryptoBridge.loadMasterKeyUncached() else {
-        return PreparedStartKey(accountId: accountId, outcome: .missing)
-      }
-      return PreparedStartKey(accountId: accountId, outcome: .loaded(loaded))
-    } catch {
-      return PreparedStartKey(accountId: accountId, outcome: .failed(error.localizedDescription))
-    }
+    )
   }
 
   /// `start()`'s body. MUST run inside a `lifecycle` transition (`start()`,
@@ -2297,7 +2343,14 @@ final class NativeBackupEngine: NSObject {
     // it, and a launch open can fail. Reopen here, or refuse visibly
     // (`manifestUnavailableReason`) and retry; before, every scan, manifest
     // check and upload silently no-oped on `db == nil` until a relaunch.
-    guard ensureManifestOpenForStart(accountId: accountId) else { return .done }
+    guard ensureManifestOpenForStart(accountId: accountId) else {
+      // Round 13 (review item 4): a key read from the keychain for this start
+      // is kept for the retry the refusal just scheduled (no second prompt).
+      if let prepared, prepared.accountId == accountId, case .loaded(let handle) = prepared.outcome {
+        lifecycle.stashStartKey(handle, accountId: accountId)
+      }
+      return .done
+    }
 
     if isRunning {
       // Task 1531 [P2-C] (round 5 delta review): `handleBackgroundTask`
@@ -2328,7 +2381,10 @@ final class NativeBackupEngine: NSObject {
       }
       // Round 12 (review item 3): this run is the user's now; a background
       // task that set `isRunning` no longer idles it when it ends.
-      lifecycle.claimUserRun()
+      // Round 13 (review item 5): and a pause its expiration set ends here.
+      if lifecycle.claimUserRun() {
+        isPaused = false
+      }
       wakeDrainLoop(reason: "start")
       return .done
     }
@@ -2339,7 +2395,9 @@ final class NativeBackupEngine: NSObject {
     let mk: MasterKeyHandle
     let bridgeCacheAvailable: Bool
     switch prepared.outcome {
-    case .notNeeded:
+    case .notNeeded, .manifestUnavailable:
+      // Round 13 (item 4): `.manifestUnavailable` here means the manifest
+      // opened since `prepare` refused to read a key: read it now.
       return .prepareAgain
     case .refusedCachedOwner:
       // Re-checked under the lock: the cache may have changed since.
@@ -2990,11 +3048,18 @@ final class NativeBackupEngine: NSObject {
       // — `completeBackgroundTaskOnce` is idempotent, so the body's
       // own terminal call is a no-op if we win the race.
       NSLog("[NativeBackupEngine] Background task expiring — cancelling work")
-      self?.backgroundTaskHandle?.cancel()
-      self?.pause()
-      if let self {
-        self.completeBackgroundTaskOnce(task, success: false)
+      guard let self else { return }
+      self.backgroundTaskHandle?.cancel()
+      // Round 13 (review of mobile#182 at a19037f9, item 5): pause only a
+      // run this task owns. When the user's run was going (the task found
+      // the engine running, or the user claimed the run meanwhile), the
+      // expiration that comes as the user picks up the phone used to set
+      // `isPaused`, and the foreground drain loop slept with nothing to
+      // clear it until a network change, "Back up now" or a relaunch.
+      if !self.lifecycle.expireBackgroundRun({ self.pause() }) {
+        RuntimeTrace.event("backup.native.background_task.expired_user_run_kept")
       }
+      self.completeBackgroundTaskOnce(task, success: false)
     }
   }
 
@@ -3147,7 +3212,23 @@ final class NativeBackupEngine: NSObject {
     // including every row uploaded before the client marked anything.
     // Round 8: both run under the scan's ticket.
     if !scanAccountId.isEmpty, let authToken = token, let baseURL = apiBaseUrl {
-      if await ensureManifestReadyForUploads(accountId: scanAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket) {
+      // Round 13 (review of mobile#182 at a19037f9, item 10): the rebuild
+      // gate runs only inside the batch slot, like `processBatch`'s (round 12
+      // item 9). Before, a scan and a batch both ran it: both fetched
+      // /identifiers and applied the map, and a scan whose gate deferred
+      // wrote `backoffUntil` and raised `manifestRebuildFailures` for the
+      // drain loop although the batch's own gate had succeeded. While a batch
+      // holds the slot, the scan leaves the gate to it. The mark catch-up
+      // runs after the slot is released: it writes no backoff, and a mark
+      // sent twice is idempotent on the server.
+      var ready = false
+      if beginBatchProcessing() {
+        ready = await ensureManifestReadyForUploads(accountId: scanAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket)
+        finishBatchProcessing()
+      } else {
+        perfLog("scan.rebuild_gate_skip", ["reason": "batch-running"])
+      }
+      if ready {
         await flushServerMarks(accountId: scanAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket)
       }
       hasPending = dbQueue.sync { self.hasPendingUploads() }
@@ -6282,7 +6363,8 @@ final class NativeBackupEngine: NSObject {
             accountId: accountId, authToken: authToken, baseURL: baseURL, ticket: ticket
           )
           return try await PendingUploadServerCheck.rebuildFetch(
-            lacksBackedUp: { self.serverLacksBackedUp },
+            // Round 13 (review item 7): unknown support probes first too.
+            backedUpSupported: { self.serverBackedUpSupported },
             takeProbeSlot: { self.takeBackedUpProbeSlot() },
             probe: {
               RuntimeTrace.event("backup.native.server_check.capability_probe")
@@ -6430,9 +6512,11 @@ final class NativeBackupEngine: NSObject {
     )
   }
 
-  private var serverLacksBackedUp: Bool {
+  /// Round 13 (review item 7): nil until a `/check` (or the rebuild's probe)
+  /// answered in this process/account.
+  private var serverBackedUpSupported: Bool? {
     engineStateLock.lock(); defer { engineStateLock.unlock() }
-    return _backedUpSupport.lacksBackedUp
+    return _backedUpSupport.supported
   }
 
   /// Round 12 (review item 2): the rebuild's probe slot (one per backoff
@@ -6448,6 +6532,12 @@ final class NativeBackupEngine: NSObject {
   private var serverCheckPausedReason: String? {
     engineStateLock.lock(); defer { engineStateLock.unlock() }
     return _serverCheckPause.stopReason
+  }
+
+  /// Round 13 (item 6): the pause as the status surfaces show it.
+  private var serverCheckPauseSurface: BackupSurfaceState.State? {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _serverCheckPause.surface
   }
 
   private var serverCheckPauseCause: ServerCheckPause.Cause? {
@@ -6867,7 +6957,9 @@ final class NativeBackupEngine: NSObject {
     mode: ManifestPurgeMode = .signOut,
     deletedAccountIds: Set<String> = []
   ) -> (kept: Set<String>, resetFailed: Bool) {
-    let outgoingAccountId = currentAccountId ?? lastUnboundAccountId
+    // Round 13 (review item 3): bound, or only remembered (`inferred`); a
+    // deletion never counts a remembered account as deleted unless JS names it.
+    let outgoing = outgoingAccountForReset()
     stop()
     backupClientSessionId = nil
     clearAccountAndPurgeStaged()
@@ -6903,7 +6995,8 @@ final class NativeBackupEngine: NSObject {
     // is best effort, the fence is the guarantee.)
     let (resetOK, fenceGeneration, discardAll): (Bool, UInt64, Bool) = dbQueue.sync {
       let ok = manifestHandle.resetForSignOut(
-        outgoingAccountId: outgoingAccountId, mode: mode, deletedAccountIds: deletedAccountIds
+        outgoingAccountId: outgoing.accountId, outgoingInferred: outgoing.inferred,
+        mode: mode, deletedAccountIds: deletedAccountIds
       )
       return (ok, manifestHandle.writeFence.generation, manifestHandle.activeDiscard.all)
     }

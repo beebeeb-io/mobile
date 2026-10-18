@@ -537,6 +537,109 @@ do {
          "d5: B's gate is ready, not deferred(checkFailed) (got \(String(describing: outcome)))")
 }
 
+// MARK: - (e) round 13 (review of mobile#182 at a19037f9, item 3): a later
+// user's deletion never discards an earlier account's kept marks
+//
+// The engine side is `UnboundAccountMemory` (shipped, in
+// BackupManifestHandle.swift), driven the way the engine drives it:
+//   bind / `clearToken()`           -> accountChanged(from:to:)
+//   `confirmMasterKeyHandle(owner)` -> signedIn(owner)
+//   `prepareForStoragePurge`        -> outgoing(currentAccountId:) -> resetForSignOut
+
+do {
+  // e1-e3: the review's exact scenario.
+  let path = manifestPath("e")
+  let handle = newHandle(path, Flag(), Flag())
+  expect(handle.openIfClosed() == nil, "e0: launch open")
+  seedDevice(handle.db!)
+  var memory = UnboundAccountMemory()
+  memory.accountChanged(from: nil, to: accountA)      // A enabled backup (bind)
+  memory.accountChanged(from: accountA, to: nil)      // A signs out: clearToken() unbinds first
+  var out = memory.outgoing(currentAccountId: nil)
+  expect(out == UnboundAccountMemory.Outgoing(accountId: accountA, inferred: true), "e1: A is the remembered outgoing account (got \(out))")
+  expect(handle.resetForSignOut(outgoingAccountId: out.accountId, outgoingInferred: out.inferred, mode: .signOut),
+         "e1: A's sign-out reset succeeds")
+  expect(onDisk(path, marksA) == 6, "e1: A keeps 6 marks (some uploads not yet marked) (got \(onDisk(path, marksA)))")
+
+  // B signs in on this device (JS confirms B's key), never turns on camera
+  // backup (the engine is never bound), and deletes the account.
+  memory.signedIn(accountB)
+  out = memory.outgoing(currentAccountId: nil)
+  expect(out.accountId == nil, "e2: B's sign-in ends the memory of A (got \(out))")
+  expect(handle.resetForSignOut(outgoingAccountId: out.accountId, outgoingInferred: out.inferred,
+                                mode: .accountDeleted, deletedAccountIds: [accountB]),
+         "e3: B's deletion reset succeeds")
+  expect(onDisk(path, marksA) == 6, "e3: A's 6 kept marks survive B's deletion (got \(onDisk(path, marksA)))")
+  expect(onDisk(path, marksB) == 0, "e3: B's kept marks are gone (got \(onDisk(path, marksB)))")
+  expect(handle.deletedAccountIds == [accountB], "e3: only B is recorded as deleted (got \(handle.deletedAccountIds))")
+  // A later sign-out in the same process still keeps A's marks.
+  expect(handle.resetForSignOut(outgoingAccountId: nil, mode: .signOut), "e3: a later sign-out succeeds")
+  expect(onDisk(path, marksA) == 6, "e3: A's marks still kept after it (got \(onDisk(path, marksA)))")
+}
+
+do {
+  // e4: defense in depth: the memory still names A (no sign-in was reported
+  // between), and JS names B as deleted. The handle never adds the
+  // remembered A to the deleted set.
+  let path = manifestPath("e4")
+  let handle = newHandle(path, Flag(), Flag())
+  expect(handle.openIfClosed() == nil, "e4.0: launch open")
+  seedDevice(handle.db!)
+  expect(handle.resetForSignOut(outgoingAccountId: accountA, outgoingInferred: true, mode: .signOut), "e4.1: A's sign-out")
+  expect(handle.resetForSignOut(outgoingAccountId: accountA, outgoingInferred: true,
+                                mode: .accountDeleted, deletedAccountIds: [accountB]),
+         "e4.2: B's deletion with A still remembered")
+  expect(onDisk(path, marksA) == 6, "e4.3: A's 6 marks survive (got \(onDisk(path, marksA)))")
+  expect(handle.deletedAccountIds == [accountB], "e4.3: only B recorded (got \(handle.deletedAccountIds))")
+}
+
+do {
+  // e5: the controls. The remembered account IS the deleted one: its marks go.
+  let path = manifestPath("e5")
+  let handle = newHandle(path, Flag(), Flag())
+  expect(handle.openIfClosed() == nil, "e5.0: launch open")
+  seedDevice(handle.db!)
+  expect(handle.resetForSignOut(outgoingAccountId: accountA, outgoingInferred: true,
+                                mode: .accountDeleted, deletedAccountIds: [accountA]),
+         "e5.1: A's own deletion")
+  expect(onDisk(path, marksA) == 0 && onDisk(path, marksB) == 2, "e5.1: A's marks gone, B's kept")
+  // JS names nobody, the engine is BOUND to B: B is the deleted one (round 9).
+  let pathB = manifestPath("e5b")
+  let hB = newHandle(pathB, Flag(), Flag())
+  expect(hB.openIfClosed() == nil, "e5.2: launch open")
+  seedDevice(hB.db!)
+  expect(hB.resetForSignOut(outgoingAccountId: accountB, outgoingInferred: false, mode: .accountDeleted), "e5.2: reset")
+  // A keeps its 2 earlier marks plus a2-a4 (its own unmarked uploads); the
+  // pre-column a6 is not adopted by the deleted B.
+  expect(onDisk(pathB, marksB) == 0 && onDisk(pathB, marksA) == 5,
+         "e5.2: the bound account's marks go, A's 5 stay (got B \(onDisk(pathB, marksB)), A \(onDisk(pathB, marksA)))")
+  // JS names nobody and the account is only remembered: unknown who was
+  // deleted, so every mark goes (fail closed, round 9's rule).
+  let pathC = manifestPath("e5c")
+  let hC = newHandle(pathC, Flag(), Flag())
+  expect(hC.openIfClosed() == nil, "e5.3: launch open")
+  seedDevice(hC.db!)
+  expect(hC.resetForSignOut(outgoingAccountId: accountA, outgoingInferred: true, mode: .accountDeleted), "e5.3: reset")
+  expect(onDisk(pathC, marksAll) == 0, "e5.3: no named account and only a remembered one: every mark goes (got \(onDisk(pathC, marksAll)))")
+}
+
+do {
+  // e6: the memory itself.
+  var m = UnboundAccountMemory()
+  m.accountChanged(from: nil, to: accountA)
+  m.accountChanged(from: accountA, to: nil)
+  expect(m.lastUnbound == accountA, "e6.1: remembered after the unbind")
+  m.signedIn(accountA)
+  expect(m.lastUnbound == accountA, "e6.2: the SAME user signing in again keeps it")
+  m.accountChanged(from: nil, to: accountB)
+  expect(m.lastUnbound == nil, "e6.3: another account binding ends it")
+  m.accountChanged(from: accountB, to: nil)
+  expect(m.outgoing(currentAccountId: accountA) == UnboundAccountMemory.Outgoing(accountId: accountA, inferred: false),
+         "e6.4: a bound account is the outgoing one, not inferred")
+  m.forget()
+  expect(m.outgoing(currentAccountId: nil).accountId == nil, "e6.5: forgotten")
+}
+
 // MARK: - Report
 
 if failures.isEmpty {
