@@ -18,7 +18,12 @@
  */
 
 import * as SQLite from 'expo-sqlite';
-import { isCurrentAccountEpoch, type AccountEpoch } from '../lib/account-epoch';
+import { isCurrentAccountEpoch } from '../lib/account-epoch';
+import {
+  admitsBackupWrite,
+  advanceBackupPurgeGeneration,
+  type BackupWriteTicket,
+} from '../lib/backup-write-ticket';
 import { registerStoragePurgeParticipant, type StoragePurgeHold } from '../lib/storage-purge-participants';
 
 export type BackupAssetType = 'photo' | 'video' | 'contact' | 'calendar';
@@ -200,6 +205,64 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
   return trackedHandle;
 }
 
+// Task 1667 round 8 (Codex P1 "Fence late photo scans before resetting the
+// manifest"): every WRITE in this module runs behind the caller's
+// `BackupWriteTicket` (backup-write-ticket.ts), taken when the caller's work
+// started. A ticket from before a sign-out, a sign-in or a storage purge is
+// dead, and its writes are dropped (counted in `droppedWrites`).
+const droppedWrites: string[] = [];
+const FENCED_RUN: SQLite.SQLiteRunResult = { changes: 0, lastInsertRowId: 0 };
+
+/** Test seam: the writers whose statements the fence dropped, in order. */
+export function droppedBackupWrites(): readonly string[] {
+  return droppedWrites;
+}
+
+/**
+ * `onHandle` for a write. The ticket is checked AFTER the purge barrier and
+ * the handle await, in the same synchronous step that counts the call and
+ * starts the statement: a purge hold installed while this call waited has
+ * already advanced the purge generation (the hold does it first), so the
+ * check fails; a call that passed the check is counted before any later hold
+ * reads `inFlight`, so the hold waits for it and the reset removes its rows.
+ */
+async function onHandleFenced<T>(
+  ticket: BackupWriteTicket,
+  writer: string,
+  call: (db: SQLite.SQLiteDatabase) => Promise<T>,
+  dropped: T,
+): Promise<T> {
+  while (purgeBarrier) await purgeBarrier;
+  if (!dbPromise) dbPromise = openAndMigrate();
+  const db = await dbPromise;
+  if (!admitsBackupWrite(ticket)) {
+    droppedWrites.push(writer);
+    return dropped;
+  }
+  callStarted();
+  try {
+    return await call(db);
+  } finally {
+    callFinished();
+  }
+}
+
+/** The write handle for one writer: `execAsync` / `runAsync` behind `ticket`. */
+async function getWriteDb(ticket: BackupWriteTicket, writer: string): Promise<SQLite.SQLiteDatabase> {
+  await openHandle();
+  const fenced = {
+    execAsync: (source: string) => onHandleFenced(ticket, writer, (db) => db.execAsync(source), undefined),
+    runAsync: (source: string, ...params: SQLite.SQLiteBindParams[]) =>
+      onHandleFenced(
+        ticket,
+        writer,
+        (db) => (db.runAsync as (s: string, ...p: unknown[]) => Promise<SQLite.SQLiteRunResult>)(source, ...params),
+        FENCED_RUN,
+      ),
+  };
+  return fenced as unknown as SQLite.SQLiteDatabase;
+}
+
 /**
  * Task 1667 — hold this module's database work for the duration of the
  * sign-out storage purge. The native side empties the manifest IN PLACE
@@ -226,6 +289,9 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
  * released exactly once, after the last `resume`.
  */
 export async function suspendForStoragePurge(): Promise<StoragePurgeHold> {
+  // Round 8: first, synchronously: every write ticket taken before this hold
+  // is dead (the reset it guards empties the manifest).
+  advanceBackupPurgeGeneration();
   if (purgeHolds === 0) {
     purgeBarrier = new Promise<void>((resolve) => { releasePurgeBarrier = resolve; });
   }
@@ -530,17 +596,18 @@ export async function getUploadedBytes(
 
 export async function markFailed(
   localAssetId: string,
-  error?: string,
+  error: string | undefined,
+  ticket: BackupWriteTicket,
 ): Promise<void> {
-  const db = await getDb();
+  const db = await getWriteDb(ticket, 'markFailed');
   await db.runAsync(
     `UPDATE backup_assets SET status = 'failed', error_message = ?, retry_count = COALESCE(retry_count, 0) + 1, last_attempt_at = ? WHERE local_asset_id = ?`,
     [error ?? null, Date.now(), localAssetId],
   );
 }
 
-export async function markUploading(localAssetId: string): Promise<void> {
-  const db = await getDb();
+export async function markUploading(localAssetId: string, ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'markUploading');
   await db.runAsync(
     `UPDATE backup_assets SET status = 'uploading', last_attempt_at = ? WHERE local_asset_id = ?`,
     [Date.now(), localAssetId],
@@ -568,8 +635,8 @@ export async function getPendingUploads(
  * 'pending_reupload' so they get retried. This handles the case where the
  * app was killed mid-upload or the upload timed out silently.
  */
-export async function recoverStuckUploads(): Promise<number> {
-  const db = await getDb();
+export async function recoverStuckUploads(ticket: BackupWriteTicket): Promise<number> {
+  const db = await getWriteDb(ticket, 'recoverStuckUploads');
   const fiveMinAgo = Date.now() - 5 * 60 * 1000;
   const result = await db.runAsync(
     `UPDATE backup_assets SET status = 'pending_reupload'
@@ -659,8 +726,9 @@ export async function upsertPendingUpload(
   assetType: BackupAssetType,
   sizeBytes: number,
   creationAt: number,
+  ticket: BackupWriteTicket,
 ): Promise<void> {
-  const db = await getDb();
+  const db = await getWriteDb(ticket, 'upsertPendingUpload');
   const now = Date.now();
   await db.runAsync(
     `INSERT INTO backup_assets (local_asset_id, status, asset_type, file_size, created_at, queued_at, content_hash, selected_for_backup)
@@ -678,32 +746,33 @@ export async function upsertPendingUpload(
 export async function markUploadComplete(
   localId: string,
   fileId: string,
+  ticket: BackupWriteTicket,
 ): Promise<void> {
-  const db = await getDb();
+  const db = await getWriteDb(ticket, 'markUploadComplete');
   await db.runAsync(
     `UPDATE backup_assets SET status = 'uploaded', remote_file_id = ?, uploaded_at = ?, error_message = NULL, retry_count = 0 WHERE local_asset_id = ?`,
     [fileId, new Date().toISOString(), localId],
   );
 }
 
-export async function markPendingDelete(localId: string): Promise<void> {
-  const db = await getDb();
+export async function markPendingDelete(localId: string, ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'markPendingDelete');
   await db.runAsync(
     `UPDATE backup_assets SET status = 'pending_delete', queued_at = ? WHERE local_asset_id = ? AND status = 'uploaded'`,
     [Date.now(), localId],
   );
 }
 
-export async function markOrphaned(localId: string): Promise<void> {
-  const db = await getDb();
+export async function markOrphaned(localId: string, ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'markOrphaned');
   await db.runAsync(
     `UPDATE backup_assets SET status = 'orphaned' WHERE local_asset_id = ? AND status = 'uploaded'`,
     [localId],
   );
 }
 
-export async function markRemoteDeleted(localId: string): Promise<void> {
-  const db = await getDb();
+export async function markRemoteDeleted(localId: string, ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'markRemoteDeleted');
   await db.runAsync(
     `UPDATE backup_assets
         SET status = 'remote_deleted',
@@ -716,16 +785,16 @@ export async function markRemoteDeleted(localId: string): Promise<void> {
   );
 }
 
-export async function removePendingDelete(localId: string): Promise<void> {
-  const db = await getDb();
+export async function removePendingDelete(localId: string, ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'removePendingDelete');
   await db.runAsync(
     `DELETE FROM backup_assets WHERE local_asset_id = ? AND status = 'pending_delete'`,
     [localId],
   );
 }
 
-export async function retryAllFailed(): Promise<number> {
-  const db = await getDb();
+export async function retryAllFailed(ticket: BackupWriteTicket): Promise<number> {
+  const db = await getWriteDb(ticket, 'retryAllFailed');
   await migrateLocalMissingRows(db);
   const result = await db.runAsync(
     `UPDATE backup_assets
@@ -738,8 +807,8 @@ export async function retryAllFailed(): Promise<number> {
   return result.changes;
 }
 
-export async function clearAllData(): Promise<void> {
-  const db = await getDb();
+export async function clearAllData(ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'clearAllData');
   await db.runAsync(`DELETE FROM backup_assets`);
 }
 
@@ -779,13 +848,16 @@ export async function getAllUploadedRemoteIds(): Promise<Set<string>> {
  *  briefly wrong. Returns rows changed. */
 export async function resetUploadedState(
   remoteFileIds: string[] | undefined,
-  epoch: AccountEpoch,
+  epoch: BackupWriteTicket,
 ): Promise<number> {
   // Task 1959 round 3: `epoch` is REQUIRED — the account epoch the caller (the
   // backup reconcile) decided these re-queues under. The decision compares
   // that account's server ids against this manifest; once the account signed
   // out, no further UPDATE may run (checked after every await below).
-  const db = await getDb();
+  // Round 8: and each UPDATE runs behind the ticket, checked in the same
+  // step that starts it (`getWriteDb`), so a sign-out or purge that lands
+  // between the check below and the statement drops it too.
+  const db = await getWriteDb(epoch, 'resetUploadedState');
   if (!isCurrentAccountEpoch(epoch)) return 0;
   const SET_CLAUSE =
     `SET status = 'pending_upload', remote_file_id = NULL, uploaded_at = NULL, ` +
@@ -818,8 +890,11 @@ export async function resetUploadedState(
  *  'remote_deleted', ids cleared). Unlike resetUploadedState these are NOT
  *  re-queued — for the EXPLICIT delete-cascade (0818) where the user deleted the
  *  file on purpose, so it must not silently re-upload. Returns rows changed. */
-export async function markRemoteDeletedByFileIds(remoteFileIds: string[]): Promise<number> {
-  const db = await getDb();
+export async function markRemoteDeletedByFileIds(
+  remoteFileIds: string[],
+  ticket: BackupWriteTicket,
+): Promise<number> {
+  const db = await getWriteDb(ticket, 'markRemoteDeletedByFileIds');
   let changed = 0;
   for (let i = 0; i < remoteFileIds.length; i += SQL_IN_CHUNK) {
     const batch = remoteFileIds.slice(i, i + SQL_IN_CHUNK);
@@ -935,10 +1010,11 @@ export interface VerificationRecord {
 export async function recordVerification(
   remoteFileId: string,
   success: boolean,
-  errorMessage?: string,
-  fileSize?: number,
+  errorMessage: string | undefined,
+  fileSize: number | undefined,
+  ticket: BackupWriteTicket,
 ): Promise<void> {
-  const db = await getDb();
+  const db = await getWriteDb(ticket, 'recordVerification');
   await db.runAsync(
     `INSERT INTO backup_verification (remote_file_id, success, error_message, file_size)
      VALUES (?, ?, ?, ?)`,

@@ -76,6 +76,7 @@ import { onFilesDeleted } from '../lib/delete-cascade';
 import { removeFromFileProviderCache } from '../lib/file-provider-mount';
 import { loadCachedFileIndex } from '../lib/file-index-cache';
 import { getRemoteCreatedAtMap, getRemoteToLocalMap, markRemoteDeleted } from '../services/BackupDatabase';
+import { backupWriteTicket } from '../lib/backup-write-ticket';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import { mapInBatches } from '../lib/async-batch';
 import { perfMark } from '../lib/perf-mark';
@@ -1423,6 +1424,9 @@ export default function PhotosScreen() {
           onPress: async () => {
             setBulkAction('delete');
             setBulkStatus('Deleting from Beebeeb...');
+            // Task 1667 round 8: the backup manifest update below runs only
+            // if no sign-out or storage purge happened since this delete began.
+            const writeTicket = backupWriteTicket();
             try {
               const selectedIds = selectedPhotos.map((photo) => photo.id);
               const result = await trashFiles(selectedIds);
@@ -1430,7 +1434,7 @@ export default function PhotosScreen() {
               await Promise.all(selectedPhotos.map(async (photo) => {
                 if (!deletedIds.has(photo.id)) return;
                 const localAssetId = localAssetMap.get(photo.id);
-                if (localAssetId) await markRemoteDeleted(localAssetId);
+                if (localAssetId) await markRemoteDeleted(localAssetId, writeTicket);
               }));
 
               setPhotos((prev) => prev.filter((photo) => !deletedIds.has(photo.id)));

@@ -819,10 +819,23 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   `manifestUnavailableReason` (progress dict, status `needsAttention`, Settings) and retries 2, 4, 8,
   16, then every 30 s; `stop()` and sign-out cancel the retry. Never add a path that leaves `db` nil
   silently.
+- **Every manifest write is fenced (round 8, `ManifestWriteFence.swift`).** An async producer (scan,
+  photo-library callback, background task, batch, rebuild step, mark record, sign-out flush, chunk
+  PUT) takes a write ticket with `manifestWriteTicket(...)` BEFORE its slow step (PhotoKit fetch,
+  network, encrypt), and each write checks it with `admitsWrite(ticket, ...)` (or a
+  `FencedManifestWrites` function) as the first statement of the SAME `dbQueue` block.
+  `resetForSignOut` advances and seals the fence first, so a late write from before a sign-out is
+  dropped (traced `backup.native.manifest.write_fenced`); only `bindAccount` (a JS-confirmed sign-in)
+  binds it again. Chunk callbacks also match the row's `upload_session_id`. On the JS side every
+  `BackupDatabase` writer takes a `BackupWriteTicket` (`src/lib/backup-write-ticket.ts`: account epoch
+  + storage-purge generation) taken where the caller's work starts. A new writer without a ticket
+  check fails `src/lib/native-backup-write-fence.test.ts` (`swift-write-fence-audit.ts`); an
+  exemption needs a reason in its `EXEMPT` table.
 - Tests: `scripts/swift-tests/backup-manifest-store-test.swift` (real SQLite, two connections,
-  lsof), `scripts/swift-tests/{manifest-rebuild-gate,sign-out-mark-flush,photo-backup-route-responses,manifest-reopen}-test.swift`,
+  lsof), `scripts/swift-tests/{manifest-rebuild-gate,sign-out-mark-flush,photo-backup-route-responses,manifest-reopen,manifest-write-fence}-test.swift`,
   `src/lib/account-cleanup.1667-backup-manifest.test.ts`,
-  `src/lib/native-backup-manifest-wiring.test.ts`.
+  `src/lib/native-backup-manifest-wiring.test.ts`, `src/lib/native-backup-write-fence.test.ts`,
+  `src/services/BackupDatabase.1667-write-fence.test.ts`.
 
 
 ## Files (File Provider extension) — testing it (task 1722)

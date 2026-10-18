@@ -27,8 +27,9 @@ MANIFEST=(
   "sign-out-mark-flush-test.swift|modules/beebeeb-crypto/ios/SignOutMarkFlush.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift"
   "manifest-rebuild-gate-test.swift|modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift"
   "photo-backup-route-responses-test.swift|modules/beebeeb-crypto/ios/PhotoBackupServerResponses.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/SignOutMarkFlush.swift"
-  "manifest-reopen-test.swift|modules/beebeeb-crypto/ios/BackupManifestHandle.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift"
-  "manifest-fail-closed-test.swift|modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/BackupManifestHandle.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/PhotoBackupServerResponses.swift"
+  "manifest-reopen-test.swift|modules/beebeeb-crypto/ios/BackupManifestHandle.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/ManifestWriteFence.swift"
+  "manifest-fail-closed-test.swift|modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/BackupManifestHandle.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/PhotoBackupServerResponses.swift modules/beebeeb-crypto/ios/ManifestWriteFence.swift"
+  "manifest-write-fence-test.swift|modules/beebeeb-crypto/ios/ManifestWriteFence.swift modules/beebeeb-crypto/ios/BackupManifestHandle.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift"
 )
 
 LOG_DIR="${SWIFT_CI_LOG_DIR:-$(mktemp -d)}"

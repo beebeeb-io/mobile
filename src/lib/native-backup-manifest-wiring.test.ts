@@ -28,6 +28,9 @@ const engine = readFileSync(join(IOS, 'NativeBackupEngine.swift'), 'utf8');
 const moduleSwift = readFileSync(join(IOS, 'BeebeebCryptoModule.swift'), 'utf8');
 const gateSwift = readFileSync(join(IOS, 'ManifestRebuildGate.swift'), 'utf8');
 const handleSwift = readFileSync(join(IOS, 'BackupManifestHandle.swift'), 'utf8');
+// Round 8: the async producers' manifest writes, behind the write fence.
+const fenceSwift = readFileSync(join(IOS, 'ManifestWriteFence.swift'), 'utf8');
+const READY_SIG = 'func ensureManifestReadyForUploads(\n    accountId: String, authToken: String, baseURL: String, ticket: ManifestWriteFence.Ticket\n  ) async -> Bool {';
 const backupContext = readFileSync(join(import.meta.dir, 'backup-context.tsx'), 'utf8');
 
 /** Strip `//` comments so prose that names a call never counts as the call. */
@@ -109,7 +112,8 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
   });
 
   test('a failed reset closes the engine handle and flags it, but NEVER drops the file from `kept` (the JS handle is still open on it)', () => {
-    expect(prep).toMatch(/dbQueue\.sync \{\s*manifestHandle\.resetForSignOut\(outgoingAccountId: outgoingAccountId\)\s*\}/);
+    // Round 8: the reset's block also reads the fence generation it advanced.
+    expect(prep).toMatch(/dbQueue\.sync \{\s*let ok = manifestHandle\.resetForSignOut\(outgoingAccountId: outgoingAccountId\)\s*return \(ok, manifestHandle\.writeFence\.generation\)\s*\}/);
     // Round 7: the close goes through `close(_:)` (checked sqlite3_close).
     expect(resetForSignOut()).toMatch(/BackupManifestStore\.resetInPlace\(db[\s\S]*close\(db\)\s*self\.db = nil\s*\}\s*pendingReset\.set\(true\)\s*awaitingPurgeFinish = true\s*return false/);
     expect(prep).not.toMatch(/return \[\]/);
@@ -174,14 +178,16 @@ describe('round 2: kept pending marks + sign-out flush', () => {
     expect(gate.lastIndexOf('steps.applyKept()')).toBeGreaterThan(apply);
     // Rebuild path + fast path (already ready, or nothing to rebuild).
     expect((gate.match(/steps\.applyKept\(\)/g) ?? []).length).toBe(2);
-    const ready = body(engine, 'func ensureManifestReadyForUploads(accountId: String, authToken: String, baseURL: String) async -> Bool {');
+    const ready = body(engine, READY_SIG);
     expect(ready).toMatch(/await ManifestRebuildGate\.run\(alreadyReady: manifestReadyForAccount == accountId, steps: steps\)/);
-    expect(ready).toMatch(/applyKept: \{ \[weak self\] in self\?\.applyKeptPendingMarks\(accountId: accountId\) \}/);
+    expect(ready).toMatch(/applyKept: \{ \[weak self\] in self\?\.applyKeptPendingMarks\(accountId: accountId, ticket: ticket\) \}/);
   });
 
   test('the sign-out flush has no row cap and is bounded by time', () => {
     const flush = body(engine, 'func flushServerMarksForSignOut(');
-    expect(flush).toMatch(/pendingServerMarks\(db, accountId: accountId, limit: Int\(Int32\.max\)\)/);
+    // Round 8: the load moved behind the fence (FencedManifestWrites.loadSignOutMarks).
+    expect(flush).toMatch(/FencedManifestWrites\.loadSignOutMarks\(/);
+    expect(body(fenceSwift, 'static func loadSignOutMarks(')).toMatch(/pendingServerMarks\(db, accountId: accountId, limit: Int\(Int32\.max\)\)/);
   });
 
   test('round 3: the WHOLE sign-out flush (row load included) runs under the hard deadline', () => {
@@ -191,7 +197,7 @@ describe('round 2: kept pending marks + sign-out flush', () => {
     const run = flush.indexOf('SignOutMarkFlush.run(');
     expect(run).toBeGreaterThan(-1);
     // The row load and every mark happen inside run(...), not before it.
-    expect(flush.indexOf('pendingServerMarks(')).toBeGreaterThan(run);
+    expect(flush.indexOf('FencedManifestWrites.loadSignOutMarks(')).toBeGreaterThan(run);
     expect(flush.indexOf('markOnServer(')).toBeGreaterThan(run);
     expect(flush).toMatch(/deadline: deadline/);
     // Each request gets the budget that is left.
@@ -277,10 +283,10 @@ describe('2. rows carry the account that owns them', () => {
 
 describe('3. an empty manifest is rebuilt before any upload; uploads are marked on the server', () => {
   test('processBatch gates on ensureManifestReadyForUploads before it reads pending uploads', () => {
-    const batch = body(engine, 'func processBatch(limit: Int = 12) async throws -> Int {');
+    const batch = body(engine, 'func processBatch(limit: Int = 12, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async throws -> Int {');
     const [gate, pending] = order(
       batch,
-      'guard await ensureManifestReadyForUploads(accountId: batchAccountId, authToken: authToken, baseURL: baseURL) else {',
+      'guard await ensureManifestReadyForUploads(accountId: batchAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket) else {',
       'getPendingUploads(limit: limit)',
     );
     expect(gate).toBeGreaterThan(-1);
@@ -304,7 +310,7 @@ describe('3. an empty manifest is rebuilt before any upload; uploads are marked 
     for (let i = 1; i < seq.length; i += 1) expect(seq[i]).toBeGreaterThan(seq[i - 1]);
 
     // The engine: ready (and `return true`) only in the .ready branch.
-    const ready = body(engine, 'func ensureManifestReadyForUploads(accountId: String, authToken: String, baseURL: String) async -> Bool {');
+    const ready = body(engine, READY_SIG);
     const [readyCase, deferredCase] = order(ready, 'case let .ready(', 'case let .deferred(reason):');
     expect(readyCase).toBeGreaterThan(-1);
     expect(deferredCase).toBeGreaterThan(readyCase);
@@ -320,16 +326,21 @@ describe('3. an empty manifest is rebuilt before any upload; uploads are marked 
     expect(ready.slice(deferredCase)).toMatch(/backoffUntil = Date\(\)\.addingTimeInterval\(wait\)/);
 
     // The steps report failure as nil, never as 0 / "nothing there".
-    expect(ready).toMatch(/guard BackupManifestStore\.claim\(db, accountId: accountId, nowMs: self\.nowMs\(\)\) != nil else \{ return nil \}/);
-    expect(ready).toMatch(/guard let needs = BackupManifestStore\.needsServerRebuild\(db, accountId: accountId\) else \{ return nil \}/);
-    expect(ready).toMatch(/applyMap: \{ \[weak self\] map in[\s\S]*?guard let db = self\.db else \{ return nil \}[\s\S]*?return BackupManifestStore\.applyServerMap\(/);
+    // Round 8: the step bodies moved behind the fence (FencedManifestWrites).
+    expect(ready).toMatch(/needsRebuild: \{ \[weak self\] in[\s\S]*?FencedManifestWrites\.needsRebuild\(/);
+    expect(ready).toMatch(/applyMap: \{ \[weak self\] map in[\s\S]*?FencedManifestWrites\.applyServerMap\(/);
+    const needs = body(fenceSwift, 'static func needsRebuild(');
+    expect(needs).toMatch(/guard BackupManifestStore\.claim\(db, accountId: accountId, nowMs: nowMs\) != nil else \{ return nil \}/);
+    expect(needs).toMatch(/guard let needs = BackupManifestStore\.needsServerRebuild\(db, accountId: accountId\) else \{ return nil \}/);
+    expect(body(fenceSwift, 'static func applyServerMap(')).toMatch(/guard let db else \{ return nil \}\s*return BackupManifestStore\.applyServerMap\(/);
     const stepsSrc = ready.slice(0, ready.indexOf('let outcome = await ManifestRebuildGate.run('));
     expect(stepsSrc.length).toBeGreaterThan(0);
     expect(stepsSrc).not.toMatch(/\?\? 0/);
     expect(ready).toMatch(/guard let self, let deviceId = self\.backupDeviceId, !deviceId\.isEmpty else \{\s*throw/);
-    const kept = body(engine, 'func applyKeptPendingMarks(accountId: String) -> Int? {');
-    expect(kept).toMatch(/guard let db = self\.db else \{ return nil \}/);
+    const kept = body(engine, 'func applyKeptPendingMarks(accountId: String, ticket: ManifestWriteFence.Ticket) -> Int? {');
+    expect(kept).toMatch(/FencedManifestWrites\.applyKept\(/);
     expect(kept).not.toMatch(/\?\? 0/);
+    expect(body(fenceSwift, 'static func applyKept(')).toMatch(/guard let db else \{ return nil \}\s*return BackupManifestStore\.applyPendingMarks\(/);
   });
 
   test('both upload completions are followed by a server mark', () => {
@@ -345,7 +356,7 @@ describe('3. an empty manifest is rebuilt before any upload; uploads are marked 
   });
 
   test('the scan rebuilds and catches up on server marks', () => {
-    const scan = body(engine, 'func scanPhotoLibraryForPendingUploads(reason: String) async -> Bool {');
+    const scan = body(engine, 'func scanPhotoLibraryForPendingUploads(reason: String, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async -> Bool {');
     const [rebuild, flush] = order(scan, 'await ensureManifestReadyForUploads(', 'await flushServerMarks(');
     expect(rebuild).toBeGreaterThan(-1);
     expect(flush).toBeGreaterThan(rebuild);
@@ -395,7 +406,8 @@ describe('5. round 5: route 404s and the kept-marks expiry', () => {
     expect(mark).not.toMatch(/statusCode == 404/);
     expect(mark).toMatch(/PhotoBackupServerResponses\.markOutcome\(/);
     expect(mark).toMatch(/contentType: http\?\.value\(forHTTPHeaderField: "Content-Type"\)/);
-    const [guard, record] = order(mark, 'guard outcome.recordsServerMark else {', 'BackupManifestStore.recordServerMarked(');
+    // Round 8: the record runs behind the fence (FencedManifestWrites.recordServerMarked).
+    const [guard, record] = order(mark, 'guard outcome.recordsServerMark else {', 'FencedManifestWrites.recordServerMarked(');
     expect(guard).toBeGreaterThan(-1);
     expect(record).toBeGreaterThan(guard);
     expect((mark.match(/recordServerMarked\(/g) ?? []).length).toBe(1);
@@ -525,8 +537,12 @@ describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondit
     expect(starts.length).toBe(2);
     for (const at of starts) {
       const site = src.slice(at, src.indexOf('removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)', at));
+      // Round 8: the fence check comes first in the same block.
+      expect(site.indexOf('guard admitsWrite(ticket, "markUploadComplete") else { return false }')).toBeGreaterThan(-1);
+      expect(site.indexOf('guard admitsWrite(ticket, "markUploadComplete")')).toBeLessThan(site.indexOf('guard markUploadComplete('));
+      const after = site.slice(site.indexOf('guard markUploadComplete('));
       const idx = order(
-        site,
+        after,
         'guard markUploadComplete(',
         'return false',
         'deleteStagedChunks(assetId: asset.localAssetId)',
@@ -541,10 +557,15 @@ describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondit
   });
 
   test('a failed scan insert is recorded, and the rebuild does not run on a manifest it could not fill', () => {
-    const ins = body(engine, 'private func insertNewAssets(_ assets: [PHAsset]) {');
-    expect(ins).toMatch(/let inserted = BackupManifestStore\.insertScannedAssets\(db, scanned, nowMs: nowMs\(\)\)\s*lastScanInsertFailed = !inserted/);
-    const ready = body(engine, 'func ensureManifestReadyForUploads(accountId: String, authToken: String, baseURL: String) async -> Bool {');
-    expect(ready).toMatch(/if needs && self\.lastScanInsertFailed \{ return nil \}\s*return needs/);
+    // Round 8: the insert is FencedManifestWrites.scanInsert; the engine
+    // records its outcome in the same dbQueue block (recordScanInsert).
+    const ins = body(fenceSwift, 'static func scanInsert(');
+    expect(ins).toMatch(/let inserted = BackupManifestStore\.insertScannedAssets\(db, assets, nowMs: nowMs\)/);
+    expect(ins).toMatch(/return \.written\(inserted: inserted\)/);
+    const rec = body(engine, 'private func recordScanInsert(_ written: FencedManifestWrites.ScanWrite, assets: Int) {');
+    expect(rec).toMatch(/case \.written\(let inserted\):\s*lastScanInsertFailed = !inserted/);
+    expect(body(engine, READY_SIG)).toMatch(/scanInsertFailed: self\.lastScanInsertFailed/);
+    expect(body(fenceSwift, 'static func needsRebuild(')).toMatch(/if needs && scanInsertFailed \{ return nil \}\s*return needs/);
   });
 
   test('the reset reads backup_verification\'s existence (an error fails the reset) and checks secure_delete', () => {
@@ -584,10 +605,14 @@ describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondit
   });
 
   test('a mark list that could not be read is traced, never read as "all marked"', () => {
-    const flush = body(engine, 'func flushServerMarks(accountId: String, authToken: String, baseURL: String, limit: Int = 300) async {');
+    const flush = body(engine, 'func flushServerMarks(\n    accountId: String, authToken: String, baseURL: String, ticket: ManifestWriteFence.Ticket, limit: Int = 300\n  ) async {');
     expect(flush).toMatch(/guard let rows = loaded else \{\s*RuntimeTrace\.event\("backup\.native\.server_mark\.load_failed"/);
     const signOut = body(engine, 'func flushServerMarksForSignOut(');
-    expect(signOut).toMatch(/if BackupManifestStore\.adoptUnowned\(db, accountId: accountId\) == nil \{\s*RuntimeTrace\.event/);
-    expect(signOut).toMatch(/guard let rows = BackupManifestStore\.pendingServerMarks\(db, accountId: accountId, limit: Int\(Int32\.max\)\) else \{\s*RuntimeTrace\.event/);
+    // Round 8: the load runs behind the fence; both failures are still traced.
+    expect(signOut).toMatch(/if loaded\.adoptFailed \{\s*RuntimeTrace\.event/);
+    expect(signOut).toMatch(/guard let rows = loaded\.rows else \{\s*RuntimeTrace\.event/);
+    const load = body(fenceSwift, 'static func loadSignOutMarks(');
+    expect(load).toMatch(/let adoptFailed = BackupManifestStore\.adoptUnowned\(db, accountId: accountId\) == nil/);
+    expect(load).toMatch(/BackupManifestStore\.pendingServerMarks\(db, accountId: accountId, limit: Int\(Int32\.max\)\)/);
   });
 });

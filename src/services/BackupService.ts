@@ -63,6 +63,7 @@ import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { guessMimeType } from '../lib/media';
 // 0817 — reconcile derived state against /files/index (server truth).
 import { getAllUploadedRemoteIds, resetUploadedState } from './BackupDatabase';
+import { backupWriteTicket } from '../lib/backup-write-ticket';
 import { offlineManager } from '../lib/offline-manager';
 import {
   pruneThumbnailsForRemoteFiles,
@@ -991,6 +992,9 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
   // the account epoch it started under, and stops at the first await after
   // that account is gone, before the next read or write of local state.
   const epoch = accountEpoch();
+  // Task 1667 round 8: the manifest re-queue below runs behind a write ticket
+  // taken here (account epoch + storage-purge generation).
+  const writeTicket = backupWriteTicket();
   if (_reconcileInFlight && sameAccountEpoch(_reconcileInFlight.epoch, epoch)) {
     return _reconcileInFlight.promise;
   }
@@ -1051,12 +1055,12 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
         // The founder's exact case: the entire Backups tree was deleted
         // server-side. Re-queue ALL uploaded assets (so re-enabling backup
         // re-uploads them) and drop the stale folder cache so the tree rebuilds.
-        const requeued = await resetUploadedState(undefined, epoch);
+        const requeued = await resetUploadedState(undefined, writeTicket);
         live();
         await clearFolderCache(epoch);
         console.info(`[BackupService] reconcile: Backups root gone — re-queued ${requeued} asset(s), cleared folder cache`);
       } else if (backupOrphans.length > 0) {
-        const requeued = await resetUploadedState(backupOrphans, epoch);
+        const requeued = await resetUploadedState(backupOrphans, writeTicket);
         console.info(`[BackupService] reconcile: re-queued ${requeued} orphaned backup asset(s)`);
       }
 

@@ -40,7 +40,11 @@ mock.module('expo-sqlite', () => ({
   },
 }));
 
-const { accountEpoch, advanceAccountEpoch } = await import('../lib/account-epoch');
+const { advanceAccountEpoch } = await import('../lib/account-epoch');
+// Task 1667 round 8: writers take a BackupWriteTicket (account epoch + the
+// storage-purge generation); the epoch rules below are unchanged.
+const { backupWriteTicket } = await import('../lib/backup-write-ticket');
+const accountEpoch = backupWriteTicket;
 
 async function loadBackupDatabase() {
   return import(`./BackupDatabase?backupDatabaseEpochTest=${Math.random()}`);

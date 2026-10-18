@@ -657,6 +657,58 @@ enum BackupManifestStore {
     return true
   }
 
+  /// The scan's album selection: with no album selection every row is
+  /// selected; otherwise only `allowedAssetIds`. Moved here unchanged from
+  /// `NativeBackupEngine.updateAssetSelectionScope` (round 8) so the scan's
+  /// fenced write (`FencedManifestWrites.scanInsert`) is one function the
+  /// fence test drives. False when a step failed (rolled back).
+  @discardableResult
+  static func updateSelectionScope(_ db: OpaquePointer, allowedAssetIds: Set<String>, hasAlbumSelection: Bool) -> Bool {
+    guard hasAlbumSelection else {
+      return sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 1 WHERE COALESCE(selected_for_backup, 1) != 1", nil, nil, nil) == SQLITE_OK
+    }
+
+    let sqlInChunk = 400
+    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { return false }
+    var didCommit = false
+    defer {
+      if !didCommit {
+        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+      }
+    }
+
+    guard sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 0", nil, nil, nil) == SQLITE_OK else { return false }
+
+    let assetIds = Array(allowedAssetIds)
+    for start in stride(from: 0, to: assetIds.count, by: sqlInChunk) {
+      let end = min(start + sqlInChunk, assetIds.count)
+      let batch = assetIds[start..<end]
+      let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
+      let sql = "UPDATE backup_assets SET selected_for_backup = 1 WHERE local_asset_id IN (\(placeholders))"
+      var stmt: OpaquePointer?
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+      var didBindBatch = true
+      for (index, assetId) in batch.enumerated() {
+        if sqlite3_bind_text(stmt, Int32(index + 1), (assetId as NSString).utf8String, -1, transient) != SQLITE_OK {
+          didBindBatch = false
+          break
+        }
+      }
+      guard didBindBatch else {
+        sqlite3_finalize(stmt)
+        return false
+      }
+      let stepResult = sqlite3_step(stmt)
+      sqlite3_finalize(stmt)
+      guard stepResult == SQLITE_DONE else { return false }
+    }
+
+    guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else { return false }
+    didCommit = true
+    return true
+  }
+
   // MARK: - Upload completion
 
   /// Completed upload: the row now points at `remoteFileId`, owned by

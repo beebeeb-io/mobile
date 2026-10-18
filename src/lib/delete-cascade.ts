@@ -22,6 +22,7 @@ import { offlineManager } from './offline-manager';
 import { invalidateCachedThumbnails, invalidateNativeThumbnailCache } from './thumbnail-cache';
 import { pruneNameCache } from './name-cache';
 import { accountEpoch } from './account-epoch';
+import { backupWriteTicket } from './backup-write-ticket';
 
 export interface DeleteCascadeOptions {
   /** True when `ids` already includes a folder's expanded subtree. Advisory —
@@ -55,12 +56,14 @@ export async function onFilesDeleted(
   // name-cache prune below runs after several awaits and must not write once
   // that account has signed out.
   const epoch = accountEpoch();
+  // Task 1667 round 8: the backup manifest write below is fenced the same way.
+  const writeTicket = backupWriteTicket();
   const idSet = new Set(unique);
 
   // 1. Backup manifest — EXPLICIT delete: mark remote_deleted (NOT re-queued —
   //    the user deleted these, so they must not silently re-upload; contrast
   //    with the reconcile's re-queue when the server lost them unexpectedly).
-  await markRemoteDeletedByFileIds(unique).catch(() => {});
+  await markRemoteDeletedByFileIds(unique, writeTicket).catch(() => {});
 
   // 2. Offline-pinned copies — drop the on-disk copy + manifest entry. A pinned
   //    folder id is removed as a folder; everything else as a file.

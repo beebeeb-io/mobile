@@ -100,6 +100,17 @@ final class BackupManifestHandle {
   /// the recovery so its pre-column rows are adopted (and their
   /// associations kept) there too.
   private var recoveryAccountId: String?
+  /// Round 8 (Codex P1 "Fence late photo scans before resetting the
+  /// manifest"): the write fence of every async producer. Advanced and
+  /// sealed at the start of `resetForSignOut`, in the same block as the
+  /// reset, so no ticket issued before it can write afterwards
+  /// (`ManifestWriteFence`). The other two resets need no advance of their
+  /// own: `finishAfterFailedReset` is the second half of that same sign-out
+  /// (the fence is still sealed, no ticket can have been issued since), and
+  /// a pending reset applied by `openIfClosed` belongs to a sign-out whose
+  /// own `resetForSignOut` already advanced it (same process) or to a
+  /// previous process (whose producers are gone).
+  let writeFence: ManifestWriteFence
 
   private let pendingReset: ResetPendingFlag
   private let prepareSchema: (OpaquePointer) -> Void
@@ -109,9 +120,11 @@ final class BackupManifestHandle {
     path: String,
     pendingReset: ResetPendingFlag,
     now: @escaping () -> Int64 = BackupManifestStore.currentMs,
+    onFencedWrite: @escaping (String, UInt64?, UInt64) -> Void = { _, _, _ in },
     prepareSchema: @escaping (OpaquePointer) -> Void
   ) {
     self.path = path
+    self.writeFence = ManifestWriteFence(onDrop: onFencedWrite)
     self.pendingReset = pendingReset
     self.now = now
     self.prepareSchema = prepareSchema
@@ -169,7 +182,15 @@ final class BackupManifestHandle {
   /// does not run either (it would delete those rows without keeping their
   /// associations): the sign-out takes the failed-reset path, and the
   /// recovery adopts them for the same account first.
+  ///
+  /// Round 8: the fence is advanced and sealed FIRST, before anything is
+  /// read or deleted, in the caller's `dbQueue` block. A producer that took
+  /// its ticket before this line can no longer write (its scan, rebuild step
+  /// or upload finishing later is dropped), and no ticket is issued until
+  /// the next sign-in binds the fence. This holds whether the reset below
+  /// succeeds or not.
   func resetForSignOut(outgoingAccountId: String?) -> Bool {
+    writeFence.advanceForSignOut()
     recoveryAccountId = outgoingAccountId
     if let db {
       let adopted: Bool
