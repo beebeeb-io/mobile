@@ -12,6 +12,9 @@
 // `applyNativeProgress` kept its last-RECEIVED payload. After re-enable,
 // native returned the identical 25/25 payload, every poll returned early,
 // and the display stayed at 0 until the process restarted.
+// Fix: the shown state is written only by native reads (so the dedupe always
+// compares against it), and "backup off shows nothing" is derived from the
+// toggle instead of written into that state.
 //
 // These tests render the REAL BackupProvider with react-test-renderer (every
 // dependency mocked, same convention as ConfirmActionPrompt.test.tsx) and
@@ -141,7 +144,9 @@ const {
 } = await import('./backup-context');
 
 let latest: ReturnType<typeof useBackup> | null = null;
+let renders = 0;
 function Probe() {
+  renders += 1;
   latest = useBackup();
   return null;
 }
@@ -183,6 +188,7 @@ beforeEach(() => {
   heldTrigger = null;
   disableThrows = false;
   latest = null;
+  renders = 0;
 });
 
 afterEach(async () => {
@@ -305,6 +311,31 @@ describe('task 1667 5b — account switch and sign-out never show the previous a
   });
 });
 
+describe('task 1686 kept — an unchanged native read re-renders nothing', () => {
+  test('two "Back up now" reads with the identical payload: 0 provider re-renders', async () => {
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    await mount();
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+    const before = renders;
+    await act(async () => { await latest!.triggerBackupNow(); });
+    await settle();
+    await act(async () => { await latest!.triggerBackupNow(); });
+    await settle();
+    expect(renders - before).toBe(0);
+  });
+
+  test('a changed read does re-render (the probe can see renders)', async () => {
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    await mount();
+    const before = renders;
+    nativeProgressFor = () => ({ ...full25(), completed: 24, pending: 1, state: 'idle' });
+    await act(async () => { await latest!.triggerBackupNow(); });
+    await settle();
+    expect(renders - before).toBeGreaterThan(0);
+    expect(shown()).toEqual({ completed: 24, total: 25 });
+  });
+});
+
 describe('task 1667 5b + task 1686 — nextShownProgress compares against what is shown', () => {
   test('an equal payload returns the SAME state object (React bails out: no idle re-render)', () => {
     const first = nextShownProgress(EMPTY_SHOWN_PROGRESS, full25());
@@ -313,12 +344,11 @@ describe('task 1667 5b + task 1686 — nextShownProgress compares against what i
     expect(nextShownProgress(first, full25())).toBe(first);
   });
 
-  test('after a reset the identical payload is shown again', () => {
-    const shownBefore = nextShownProgress(EMPTY_SHOWN_PROGRESS, full25());
-    const afterReset = EMPTY_SHOWN_PROGRESS;
-    const again = nextShownProgress(afterReset, full25());
-    expect(again).not.toBe(afterReset);
-    expect(again.progress).toEqual(shownBefore.progress);
+  test('from the empty state the payload is always shown', () => {
+    const again = nextShownProgress(EMPTY_SHOWN_PROGRESS, full25());
+    expect(again).not.toBe(EMPTY_SHOWN_PROGRESS);
+    expect(again.source).not.toBeNull();
+    expect(again.progress.completed).toBe(25);
   });
 
   test('a changed payload replaces the shown one', () => {
