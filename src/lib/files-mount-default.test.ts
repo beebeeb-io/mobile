@@ -340,7 +340,7 @@ describe('where the choice is kept', () => {
   });
 
   test('sign-out does not delete it', () => {
-    const start = app.indexOf('const signOut = useCallback(async () => {');
+    const start = app.indexOf('const runSignOut = useCallback(async () => {');
     const signOut = app.slice(start, app.indexOf('}, [', start));
     expect(signOut).not.toContain('files-mount');
   });

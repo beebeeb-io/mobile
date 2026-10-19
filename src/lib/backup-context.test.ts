@@ -117,6 +117,8 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   mirrorBackupClientSession: async () => true,
   getPhotoBackupIncludeVideos: async () => true,
   setPhotoBackupIncludeVideos: async () => true,
+  // Task 1667 — backup-context calls this before enable/trigger.
+  setBackupDeviceId: async () => true,
 }));
 
 // backupPrefKey and stopBackupEngines don't depend on the module's
@@ -135,6 +137,7 @@ const {
   INITIAL_ACCOUNT_MISMATCH_POLL_STATE,
   decideAccountRefusalResume,
   runAccountRefusalPollTick,
+  syncBackupDeviceIdToNative,
 } = await import('./backup-context');
 
 const LEGACY_PHOTO_KEY = 'beebeeb_camera_backup';
@@ -942,5 +945,35 @@ describe('runAccountRefusalPollTick (task 1605 review round 3, P1)', () => {
     expect(fetchCount).toBe(3); // the 4th queue entry is never fetched — polling truly stopped
     expect(resumeCameraBackup.mock.calls.length).toBe(1); // resume called exactly once
     expect(onUnblocked.mock.calls.length).toBe(1);
+  });
+});
+
+// Task 1667 — the native engine marks completed uploads in, and rebuilds an
+// empty manifest from, the server's per-device photo-backup map. Both are keyed
+// by X-Beebeeb-Device-Id, so native must get the CANONICAL device id.
+describe('syncBackupDeviceIdToNative (task 1667)', () => {
+  // Round 13 (review item 1): the deps are the resolution (with its
+  // durability) and the native setter, which now takes the durability flag.
+  test('hands the canonical device id to native, flagged durable', async () => {
+    const seen: Array<[string, boolean]> = [];
+    const ok = await syncBackupDeviceIdToNative({
+      resolveDeviceId: async () => ({ id: 'canonical-device-1', source: 'stored', persisted: true }),
+      setBackupDeviceId: async (id: string, o: { persisted: boolean }) => { seen.push([id, o.persisted]); return true; },
+    });
+    expect(ok).toBe(true);
+    expect(seen).toEqual([['canonical-device-1', true]]);
+  });
+
+  test('never throws and never sends an empty, unreadable or undurable id', async () => {
+    const seen: string[] = [];
+    const set = async (id: string) => { seen.push(id); return true; };
+    expect(await syncBackupDeviceIdToNative({ resolveDeviceId: async () => { throw new Error('keychain'); }, setBackupDeviceId: set })).toBe(false);
+    expect(await syncBackupDeviceIdToNative({ resolveDeviceId: async () => ({ id: '', source: 'stored', persisted: true }), setBackupDeviceId: set })).toBe(false);
+    expect(await syncBackupDeviceIdToNative({ resolveDeviceId: async () => ({ id: 'm', source: 'minted', persisted: false }), setBackupDeviceId: set })).toBe(false);
+    expect(await syncBackupDeviceIdToNative({
+      resolveDeviceId: async () => ({ id: 'd', source: 'stored', persisted: true }),
+      setBackupDeviceId: async () => { throw new Error('old native build'); },
+    })).toBe(false);
+    expect(seen).toEqual([]);
   });
 });

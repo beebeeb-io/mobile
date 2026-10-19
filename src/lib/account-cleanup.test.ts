@@ -124,6 +124,8 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   // index.js — bun checks named bindings against the real file even when a
   // mock is registered (seen: ac-alone4/5.log).
   purgePlaintextStorage: async () => { purgeCalls.push('native'); return { removed: 0, failed: 0 }; },
+  // Task 1667 round 2: account-cleanup.ts imports it (failed-reset follow-up).
+  finishBackupManifestPurge: async () => ({ ok: 1, unlinked: 0 }),
   hardenPlaintextStorage: async () => ({}),
   auditPlaintextStorage: async () => [],
   decryptLocalFileNative: async () => { throw new Error('not exercised in this file'); },
@@ -217,7 +219,10 @@ describe('App.tsx purges in ONE place — the signed-out surface (task 1593 roun
     expect(app).not.toMatch(/purgeDecryptedCaches/);
   });
   test('sign-in waits for a purge still running, then reopens the plaintext gate before setUser', () => {
-    expect(app).toMatch(/const refreshAuth = useCallback\(async \(\) => \{\s*try \{[\s\S]{0,200}await signedOutPurger\.settled\(\);\s*const me = await getMe\(\);\s*signedOutPurger\.sessionStarted\(\);[^\n]*\n\s*setUser\(me\);/);
+    // Task 1667 round 14 (item 2): the cold-start key-owner read sits between
+    // the settled purge and getMe, and its reset between getMe and sessionStarted.
+    // Round 15 (item 4): both are inside getMeNamingKeyOwner.
+    expect(app).toMatch(/const refreshAuth = useCallback\(async \(\) => \{\s*try \{[\s\S]{0,200}await signedOutPurger\.settled\(\);\s*(?:\/\/[^\n]*\n\s*)*const me = await getMeNamingKeyOwner\(\{\s*owner: coldStartOwnerRef,\s*signedInUserId: currentUserIdRef\.current,\s*readKeyOwner,\s*getMe,\s*\}\);\s*signedOutPurger\.sessionStarted\(\);[^\n]*\n\s*setUser\(me\);/);
   });
   test('no per-call-site preview-only sweep is left', () => {
     expect(app).not.toMatch(/purgePreviewPlaintextWhileSignedOut/);

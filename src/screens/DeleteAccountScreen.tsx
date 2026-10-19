@@ -62,7 +62,7 @@ export default function DeleteAccountScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
-  const { signOut } = useAuth();
+  const { user, signOut } = useAuth();
 
   const [confirmation, setConfirmation] = useState('');
   const [understood, setUnderstood] = useState(false);
@@ -113,12 +113,21 @@ export default function DeleteAccountScreen() {
       // signOut() also purges internally (every ordinary sign-out does), but
       // this call makes the deletion flow's own cleanup guarantee explicit
       // rather than solely dependent on signOut()'s internal step order.
-      await purgeThenSignOut({ purge: purgeAllPlaintextCaches, signOut });
+      // Task 1667 round 9 (Codex P1): mode 'account-deleted' — the native
+      // reset keeps NOTHING of this account (no pending marks: user id,
+      // PhotoKit identifiers, file ids), and the signOut() that follows runs
+      // its own purge in the same mode (account-cleanup.ts, sticky until the
+      // next session), so it cannot carry anything forward again.
+      const deletedAccountId = user?.user_id ?? null;
+      await purgeThenSignOut({
+        purge: () => purgeAllPlaintextCaches({ mode: 'account-deleted', accountId: deletedAccountId }),
+        signOut,
+      });
     } catch (err) {
       setError(friendlyError(err));
       setLoading(false);
     }
-  }, [canDelete, confirmation, signOut]);
+  }, [canDelete, confirmation, signOut, user?.user_id]);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>

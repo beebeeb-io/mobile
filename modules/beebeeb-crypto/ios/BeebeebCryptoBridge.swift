@@ -138,6 +138,27 @@ enum BeebeebCryptoBridge {
 
     // MARK: - Master key
 
+    /// Task 1667 round 12 (review of mobile#182, item 8): `loadMasterKey()`'s
+    /// keychain read WITHOUT touching the in-process cache. The camera-roll
+    /// engine reads the key outside its lifecycle lock (this can show a
+    /// Face ID / passcode prompt) and caches it, with its verified owner, only
+    /// once it re-validated the start under the lock. `loadMasterKey()` would
+    /// cache it here with no owner, and a start that then did not use it (the
+    /// account changed, a stop came first) would leave an unowned cached
+    /// handle that every later start refuses until the next JS sign-in.
+    static func loadMasterKeyUncached() throws -> MasterKeyHandle? {
+        RuntimeTrace.event("native_master_key_cache.uncached_load", ["promptMayAppear": true])
+        if let bytes = try KeychainManager.load(label: kMasterKeyLabel) {
+            return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+        }
+        #if targetEnvironment(simulator)
+        if let bytes = loadSimulatorFallbackMasterKey() {
+            return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+        }
+        #endif
+        return nil
+    }
+
     /// Decrypt the wrapped master key from the Secure Enclave-backed keychain
     /// and reconstruct a `MasterKeyHandle`. Returns `nil` if no key is stored.
     /// May trigger a biometric/passcode prompt if SE access control requires it.

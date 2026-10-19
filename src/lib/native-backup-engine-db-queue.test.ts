@@ -88,15 +88,15 @@ describe('the audit goes RED on each deliberate mutation (guard red-proof)', () 
   });
 
   test('MUTATION 3 — openDatabase called a second time, off init', () => {
-    const bad = mutate('  private func ensureTables() {', '  func reopenForTest() { openDatabase() }\n  private func ensureTables() {');
+    const bad = mutate('  static func ensureTables(_ db: OpaquePointer) {', '  func reopenForTest() { openDatabase() }\n  static func ensureTables(_ db: OpaquePointer) {');
     const audit = auditDbQueue(bad);
     expect(audit.violations.some((v) => v.includes('expected exactly 1 openDatabase() call site, found 2'))).toBe(true);
   });
 
   test('MUTATION 4 — a db accessor that bypasses dbQueue (new function reading db unguarded, called from a plain method)', () => {
     const bad = mutate(
-      '  private func ensureTables() {',
-      '  private func rogueCount() -> Int { guard let db = db else { return 0 }; return Int(sqlite3_total_changes(db)) }\n  func rogueCaller() -> Int { return rogueCount() }\n  private func ensureTables() {',
+      '  static func ensureTables(_ db: OpaquePointer) {',
+      '  private func rogueCount() -> Int { guard let db = db else { return 0 }; return Int(sqlite3_total_changes(db)) }\n  func rogueCaller() -> Int { return rogueCount() }\n  static func ensureTables(_ db: OpaquePointer) {',
     );
     const audit = auditDbQueue(bad);
     expect(audit.violations.some((v) => v.startsWith('rogueCount() called at line'))).toBe(true);
@@ -110,7 +110,7 @@ describe('the audit goes RED on each deliberate mutation (guard red-proof)', () 
     // Replace the wrapper with a plain `do {` so braces stay balanced but db is no longer on dbQueue.
     const bad = source.slice(0, open) + 'do {' + source.slice(open + 'dbQueue.sync {'.length);
     // a caller off dbQueue must now be flagged
-    const callerSrc = bad.replace('  private func ensureTables() {', '  func callsReset() { resetRetryExhaustedUploadsForManualRun() }\n  private func ensureTables() {');
+    const callerSrc = bad.replace('  static func ensureTables(_ db: OpaquePointer) {', '  func callsReset() { resetRetryExhaustedUploadsForManualRun() }\n  static func ensureTables(_ db: OpaquePointer) {');
     const audit = auditDbQueue(callerSrc);
     expect(audit.violations.some((v) => v.startsWith('resetRetryExhaustedUploadsForManualRun() called at line'))).toBe(true);
   });
@@ -128,7 +128,7 @@ describe('the audit goes RED on each deliberate mutation (guard red-proof)', () 
 const ROGUE = '  private func rogueCount() -> Int { guard let db = db else { return 0 }; return Int(sqlite3_total_changes(db)) }\n';
 /** Adds `rogueCount()` (a REQUIRES accessor) plus `extra` members to the class. */
 function withRogue(extra: string): string {
-  return mutate('  private func ensureTables() {', `${ROGUE}${extra}\n  private func ensureTables() {`);
+  return mutate('  static func ensureTables(_ db: OpaquePointer) {', `${ROGUE}${extra}\n  static func ensureTables(_ db: OpaquePointer) {`);
 }
 const violatesCall = (src: string) => auditDbQueue(src).violations.some((v) => v.startsWith('rogueCount() called at line'));
 
@@ -185,8 +185,8 @@ describe('round 2: the audit goes RED on receiver forms and queue/Task hops (in-
 
   test('MUTATION 14 — a direct db read inside a Task nested in a dbQueue closure', () => {
     const src = mutate(
-      '  private func ensureTables() {',
-      '  func m14() { dbQueue.async { Task { _ = self.db } } }\n  private func ensureTables() {',
+      '  static func ensureTables(_ db: OpaquePointer) {',
+      '  func m14() { dbQueue.async { Task { _ = self.db } } }\n  static func ensureTables(_ db: OpaquePointer) {',
     );
     expect(auditDbQueue(src).violations.some((v) => /db touched at line \d+ inside a Task hop/.test(v))).toBe(true);
   });
@@ -227,7 +227,7 @@ describe('round 3: callback closures and function references leave dbQueue (in-t
       expect(violatesCall(src)).toBe(true);
     });
     test(`MUTATION 16 — ${label} inside a dbQueue closure: a direct db read in it is NOT on dbQueue`, () => {
-      const src = mutate('  private func ensureTables() {', `  func m16() { dbQueue.async {\n      ${body.replace('_ = self.rogueCount()', '_ = self.db')}\n  } }\n  private func ensureTables() {`);
+      const src = mutate('  static func ensureTables(_ db: OpaquePointer) {', `  func m16() { dbQueue.async {\n      ${body.replace('_ = self.rogueCount()', '_ = self.db')}\n  } }\n  static func ensureTables(_ db: OpaquePointer) {`);
       expect(violatesDbRead(src)).toBe(true);
     });
   }
@@ -297,5 +297,53 @@ describe('round 3: callback closures and function references leave dbQueue (in-t
   test('CONTROL — the same callback shapes are fine when they do not touch REQUIRES functions or db', () => {
     const src = withRogue('  func c() { dbQueue.async { Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { _ in print("tick") }; URLSession.shared.getAllTasks { _ in } } }');
     expect(auditDbQueue(src).violations).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 1667 round 6: `db` is now a read-only view of `manifestHandle.db`, and
+// `manifestHandle` (BackupManifestHandle.swift) opens, resets, closes and
+// reopens it. Its members are dbQueue-only, so the audit counts every
+// `manifestHandle` reference exactly like a `db` reference.
+// ---------------------------------------------------------------------------
+const ANCHOR = '  static func ensureTables(_ db: OpaquePointer) {';
+describe('round 6: manifestHandle is held to the same dbQueue rule as db', () => {
+  const audit = auditDbQueue(source);
+
+  test('the real file: every function that opens, resets or reopens the handle is on dbQueue', () => {
+    expect(audit.violations).toEqual([]);
+    // openDatabase (init's enqueued open) and openManifestIfClosed touch the handle unguarded,
+    // so they are REQUIRES; prepare/finish touch it only inside their own dbQueue.sync.
+    expect(audit.requires.some((k) => k.startsWith('openDatabase@'))).toBe(true);
+    expect(audit.requires.some((k) => k.startsWith('openManifestIfClosed@'))).toBe(true);
+    expect(audit.guarded.some((k) => k.startsWith('prepareForStoragePurge@'))).toBe(true);
+    expect(audit.guarded.some((k) => k.startsWith('finishStoragePurgeAfterFailedReset@'))).toBe(true);
+  });
+
+  test('MUTATION R6-A — the handle reopened off dbQueue (a plain method) is RED', () => {
+    const bad = mutate(ANCHOR, `  func rogueReopen() { _ = manifestHandle.openIfClosed() }\n  func callsRogueReopen() { rogueReopen() }\n${ANCHOR}`);
+    expect(auditDbQueue(bad).violations.some((v) => v.startsWith('rogueReopen() called at line'))).toBe(true);
+  });
+
+  test('MUTATION R6-B — the handle touched inside a Task hop nested in dbQueue.async is RED', () => {
+    const bad = mutate(ANCHOR, `  func rogueHop() { dbQueue.async { Task { _ = self.manifestHandle.openIfClosed() } } }\n${ANCHOR}`);
+    expect(auditDbQueue(bad).violations.some((v) => v.includes('inside a Task hop'))).toBe(true);
+  });
+
+  test('MUTATION R6-C — finish without its dbQueue.sync wrapper is RED once called', () => {
+    const start = source.indexOf('func finishStoragePurgeAfterFailedReset(allowUnlink: Bool)');
+    const open = source.indexOf('dbQueue.sync {', start);
+    expect(open).toBeGreaterThan(start);
+    const bad = source.slice(0, open) + 'do {' + source.slice(open + 'dbQueue.sync {'.length);
+    // The audit reads text: the handle is now touched off dbQueue, and an engine caller off dbQueue is flagged.
+    const called = bad.replace(ANCHOR, `  func callsFinish() { _ = finishStoragePurgeAfterFailedReset(allowUnlink: true) }\n${ANCHOR}`);
+    const a = auditDbQueue(called);
+    expect(a.requires.some((k) => k.startsWith('finishStoragePurgeAfterFailedReset@'))).toBe(true);
+    expect(a.violations.some((v) => v.startsWith('finishStoragePurgeAfterFailedReset() called at line'))).toBe(true);
+  });
+
+  test('CONTROL — the handle used inside dbQueue.sync stays green', () => {
+    const ok = mutate(ANCHOR, `  func okReopen() -> Bool { dbQueue.sync { manifestHandle.openIfClosed() == nil } }\n${ANCHOR}`);
+    expect(auditDbQueue(ok).violations).toEqual([]);
   });
 });

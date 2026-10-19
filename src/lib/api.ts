@@ -158,9 +158,17 @@ export function registerAccountDeletedHandler(fn: AccountDeletedHandler): void {
 let cachedToken: string | null = null;
 let cachedDeviceConfirmationSecret: string | null | undefined;
 let sessionGeneration = 0;
+// Task 1962 Bug 2: how many clearToken() calls have not yet removed the token
+// from the secure store. While one is pending, the store still holds the
+// signed-out token, so a read from it must not be returned or cached.
+let tokenClearsPending = 0;
 
 export async function getToken(): Promise<string | null> {
   if (cachedToken) return cachedToken;
+  // Task 1962 Bug 2: clearToken() nulls the in-memory token at once but
+  // removes the stored copy only after awaiting the native clear. A read
+  // in that window used to put the signed-out token back in memory.
+  if (tokenClearsPending > 0) return null;
   const generationAtStart = sessionGeneration;
   const token = await tokenStore.get(TOKEN_KEY);
   if (generationAtStart === sessionGeneration) {
@@ -215,8 +223,13 @@ export async function clearToken(): Promise<void> {
   // order can only ever leave native cleared while JS still holds the old
   // token, which every caller of `clearToken` already treats as "signed
   // out" and will call again on the next launch/retry.
-  await BeebeebCrypto.mirrorSessionToAppGroup(null, null).catch(() => false);
-  await tokenStore.remove(TOKEN_KEY);
+  tokenClearsPending += 1;
+  try {
+    await BeebeebCrypto.mirrorSessionToAppGroup(null, null).catch(() => false);
+    await tokenStore.remove(TOKEN_KEY);
+  } finally {
+    tokenClearsPending -= 1;
+  }
   await tokenStore.remove(DEVICE_CONFIRMATION_SECRET_KEY);
   await clearCachedFileIndex().catch(() => {});
   // Task 1601, root cause 4 — same per-account cache-cleanup slot as the

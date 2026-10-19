@@ -408,12 +408,6 @@ private struct UploadSessionInit {
   let heartbeatIntervalSecs: Double
 }
 
-private enum ExistingUploadDisposition {
-  case resumable
-  case alreadyCompleted
-  case missingRemote
-}
-
 private enum BackupPacingMode: String {
   case foregroundActive
   case foregroundIdle
@@ -529,7 +523,42 @@ final class NativeBackupEngine: NSObject {
   private let accountIdLock = NSLock()
   private var backgroundSession: URLSession!
   private var metadataSession: URLSession!
-  private var db: OpaquePointer?
+  /// Task 1667 round 6: the engine's one native connection to the manifest
+  /// and every open / reset / recover / reopen of it
+  /// (`BackupManifestHandle.swift`). dbQueue-only, like `db` below
+  /// (`swift-db-queue-audit.ts` checks both names).
+  private let manifestHandle = BackupManifestHandle(
+    path: NativeBackupEngine.backupDatabaseURL().standardizedFileURL.path,
+    pendingReset: .userDefaults(NativeBackupEngine.manifestResetPendingKey),
+    // Round 9: "that pending reset is an account deletion's" (no account id).
+    discardPending: .userDefaults(NativeBackupEngine.manifestResetDiscardPendingKey),
+    // Round 8: every write the fence drops is traced (and logged).
+    onFencedWrite: { writer, ticketGeneration, generation in
+      RuntimeTrace.event("backup.native.manifest.write_fenced", [
+        "writer": writer,
+        "ticketGeneration": ticketGeneration.map { Int($0) } ?? -1,
+        "generation": Int(generation),
+      ])
+      NSLog("[NativeBackupEngine] Manifest write dropped by the sign-out fence: \(writer)")
+    },
+    prepareSchema: NativeBackupEngine.ensureTables
+  )
+  /// The open manifest handle, or nil while it is closed. Read-only here:
+  /// only `manifestHandle` opens or closes it.
+  private var db: OpaquePointer? { manifestHandle.db }
+  /// Round 8: scans spawned by `registerPhotoObserver` / `photoLibraryDidChange`
+  /// (guarded by `engineStateLock`). `stop()` cancels them; the write fence,
+  /// not the cancel, is what keeps a late scan out of a reset manifest.
+  private var _scanTasks: [UUID: Task<Void, Never>] = [:]
+  /// Round 8: the write ticket of each in-flight chunk PUT, by task id, for
+  /// its completion callback (`urlSession(_:task:didCompleteWithError:)`).
+  private let chunkTaskTickets = LockedDictionary<Int, ManifestWriteFence.Ticket>()
+  /// Task 1667 round 6: why `start()` could not open the manifest, and the
+  /// retry it scheduled (both guarded by `engineStateLock`). Surfaced as
+  /// `manifestUnavailableReason` in the progress dict and as the status
+  /// reason; cleared by the next successful open, `stop()` and sign-out.
+  private var _manifestAvailability = ManifestAvailability()
+  private var _manifestOpenRetry: DispatchWorkItem?
 
   /// Task 1600 [P2]: dedicated lock for every plain scalar/reference `var`
   /// below that is written from more than one of the engine's concurrent
@@ -717,17 +746,20 @@ final class NativeBackupEngine: NSObject {
   )
   private var batchProcessingActive = false // already serialized via batchProcessingQueue.sync — not touched by task 1600
 
-  private var _currentFetchResult: PHFetchResult<PHAsset>?
+  /// Task 1667 round 11 (review findings 3 and 5): start / stop / the
+  /// manifest-open retry, the photo observer, the network monitor and the
+  /// PhotoKit fetch result, behind one transition lock
+  /// (`BackupEngineLifecycle`).
+  private let lifecycle = BackupEngineLifecycle()
+
+  /// The fetch result the PhotoKit change observer diffs against. Written
+  /// only through `lifecycle` (`acceptFetchResult` / `replaceFetchResult`,
+  /// cleared by every stop and after the sign-out reset).
   private var currentFetchResult: PHFetchResult<PHAsset>? {
-    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _currentFetchResult }
-    set { engineStateLock.lock(); _currentFetchResult = newValue; engineStateLock.unlock() }
+    lifecycle.fetchResult as? PHFetchResult<PHAsset>
   }
 
-  private var _photoObserverRegistered = false
-  private var photoObserverRegistered: Bool {
-    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _photoObserverRegistered }
-    set { engineStateLock.lock(); _photoObserverRegistered = newValue; engineStateLock.unlock() }
-  }
+  private var photoObserverRegistered: Bool { lifecycle.observerRegistered }
 
   private var _isBackgroundTaskActive = false
   private var isBackgroundTaskActive: Bool {
@@ -773,11 +805,7 @@ final class NativeBackupEngine: NSObject {
   private let chunkResponseBodyBuffers = LockedDictionary<Int, Data>()
   private static let chunkResponseBodyCapBytes = 4096
   #if os(iOS)
-  private var _networkMonitor: NWPathMonitor?
-  private var networkMonitor: NWPathMonitor? {
-    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _networkMonitor }
-    set { engineStateLock.lock(); _networkMonitor = newValue; engineStateLock.unlock() }
-  }
+  private var networkMonitor: NWPathMonitor? { lifecycle.monitor as? NWPathMonitor }
 
   private var _isNetworkAvailable = true
   private var isNetworkAvailable: Bool {
@@ -810,6 +838,110 @@ final class NativeBackupEngine: NSObject {
   private var backoffUntil: Date? {
     get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _backoffUntil }
     set { engineStateLock.lock(); _backoffUntil = newValue; engineStateLock.unlock() }
+  }
+
+  /// Task 1667: the account whose manifest has been checked against (or
+  /// rebuilt from) the server's per-device map in this process — see
+  /// `ensureManifestReadyForUploads`. In memory on purpose: a relaunch checks
+  /// once more (one GET), and `prepareForStoragePurge()` clears it.
+  private var _manifestReadyForAccount: String?
+  /// Task 1667 round 2: the account `currentAccountId` held before it was
+  /// last cleared (guarded by `accountIdLock`, written in its setter).
+  /// Round 13 (review item 3): `UnboundAccountMemory`, which also forgets it
+  /// when another account binds or JS reports another signed-in user.
+  private var _unboundAccount = UnboundAccountMemory()
+  /// The sign-out reset's outgoing account: the bound one, else the one last
+  /// unbound (`inferred`).
+  private func outgoingAccountForReset() -> UnboundAccountMemory.Outgoing {
+    let current = currentAccountId
+    accountIdLock.lock(); defer { accountIdLock.unlock() }
+    return _unboundAccount.outgoing(currentAccountId: current)
+  }
+  /// Task 1667 round 9: an account deletion forgets which account was last
+  /// bound (nothing of it is kept for a sign-in that cannot happen).
+  private func forgetUnboundAccount() {
+    accountIdLock.lock(); defer { accountIdLock.unlock() }
+    _unboundAccount.forget()
+  }
+  /// Round 13 (review item 3): JS confirmed `accountId` signed in
+  /// (`confirmMasterKeyHandle`). A different account than the one last
+  /// unbound ends that memory, so a later deletion by this user can never
+  /// count the earlier account as the outgoing one.
+  func noteSignedInAccount(_ accountId: String) {
+    accountIdLock.lock(); defer { accountIdLock.unlock() }
+    _unboundAccount.signedIn(accountId)
+  }
+  /// Task 1667 round 2: set when a sign-out could not empty the manifest in
+  /// place; cleared once it was emptied (or replaced). While set, every
+  /// open of the database empties it first, and an open that cannot empty
+  /// it leaves no handle open (`BackupManifestHandle.openIfClosed`, round
+  /// 6), so the outgoing account's rows are never read again even if the JS
+  /// follow-up never ran.
+  static let manifestResetPendingKey = "io.beebeeb.backupManifestResetPending"
+  /// Task 1667 round 9: set with `manifestResetPendingKey` when the reset
+  /// that failed was an account deletion's (`ManifestPurgeMode`). A boolean
+  /// on purpose: the deleted account's id is not persisted, so a later
+  /// process applies that reset keeping no pending mark of any account.
+  static let manifestResetDiscardPendingKey = "io.beebeeb.backupManifestResetDiscardPending"
+  private var manifestReadyForAccount: String? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _manifestReadyForAccount }
+    set { engineStateLock.lock(); _manifestReadyForAccount = newValue; engineStateLock.unlock() }
+  }
+
+  // Task 1667 round 7 sweep: the last camera-roll insert into the manifest
+  // failed (`BackupManifestStore.insertScannedAssets` returned false). While
+  // set, the rebuild gate does not apply the server map: the map is applied
+  // once per account, to the rows the manifest holds at that moment, and a
+  // photo whose row was missing then would be uploaded again when a later
+  // scan inserts it. Read and written only on `dbQueue`.
+  //
+  // Round 10 (review finding 4): sticky. Any failed insert sets it, and
+  // only a successful FULL scan insert clears it (`ScanInsertHealth`); a
+  // one-photo insert from `photoLibraryDidChange` used to clear the full
+  // scan's failure.
+  //
+  // Round 11 (review finding 7): it lives on the manifest handle
+  // (`manifestHandle.scanInsertHealth`, dbQueue-only), and the sign-out
+  // reset (`prepareForStoragePurge` -> `resetForSignOut`) clears it with the
+  // rows it describes, like every other account-scoped cache. Before, the
+  // engine kept it across sign-out and account A's failed insert deferred
+  // account B's first rebuild.
+
+  /// Task 1667 round 11 (review finding 9): the fresh pending rows a bulk
+  /// `/photo-backup/check` answered "needs backup" for; the per-batch guard
+  /// skips them. Guarded by `engineStateLock`; cleared at every stop and
+  /// sign-out, keyed by account and write-fence generation, 15-minute window.
+  private var _serverCheckCoverage = ServerCheckCoverage()
+  /// Round 11: a bulk pass is owed (set at every drain start, background task
+  /// and scan insert; consumed by the next batch). Guarded by `engineStateLock`.
+  private var _bulkServerCheckRequested = true
+  /// Round 11 (review finding 2): the server answered `/check` without
+  /// `backed_up` (no task 2036). While set, the rebuild fast path does not
+  /// apply the identifiers map either (on such a server that map includes
+  /// files in the Trash). Cleared by a `/check` that carries the field.
+  /// Round 12 (review item 2): reset at sign-out (`prepareForStoragePurge`),
+  /// and the rebuild probes the server once per backoff period while it is
+  /// set (`PendingUploadServerCheck.rebuildFetch`), because every other
+  /// `/check` runs after the rebuild gate. Before, nothing cleared it in
+  /// that process: deploying 2036 changed nothing until the app was killed.
+  /// Guarded by `engineStateLock`.
+  private var _backedUpSupport = BackedUpSupport()
+  /// Round 12 (review item 6): why uploads are paused on the server check
+  /// (`serverCheckPausedReason` in the progress dict). Guarded by
+  /// `engineStateLock`.
+  private var _serverCheckPause = ServerCheckPause()
+  /// Round 10: rows the last batch's server check promoted (they count as
+  /// progress for the drain loop, which otherwise waits 5 s after a batch
+  /// that uploaded nothing). Guarded by `engineStateLock`.
+  private var _lastBatchServerPromoted = 0
+  private var _serverCheckFailures = 0
+
+  /// Task 1667 round 4: consecutive deferred rebuilds caused by a database
+  /// step (see `ManifestRebuildGate.backoff`); 0 after a ready check.
+  private var _manifestRebuildFailures = 0
+  private var manifestRebuildFailures: Int {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _manifestRebuildFailures }
+    set { engineStateLock.lock(); _manifestRebuildFailures = newValue; engineStateLock.unlock() }
   }
 
   // Cached UIApplication state — read by `currentApplicationState()` from
@@ -899,6 +1031,71 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
+  /// Task 1667: the canonical device id (`getDeviceId()`, src/lib/device-identity.ts)
+  /// sent as `X-Beebeeb-Device-Id` on the photo-backup map calls. The server
+  /// keys `photo_backup_state` by (user, device, local identifier), so the mark
+  /// and the rebuild must send the same value. A device property, not an
+  /// account one: it survives sign-out like the JS-side id does. Persisted so
+  /// a background relaunch (no JS yet) still has it.
+  ///
+  /// Round 12 (review item 7): before the first launch of this build JS has
+  /// not handed it over yet (a background task can run first). The getter
+  /// then reads the same id from expo-secure-store's keychain item
+  /// (`BackupDeviceId.resolve`, never minting one) and keeps it in
+  /// `UserDefaults`. JS's handoff (at every launch and at enable,
+  /// `acceptBackupDeviceId` since round 13) ends a `noDeviceId` pause at once.
+  var backupDeviceId: String? {
+    let resolution = BackupDeviceId.resolve(
+      defaults: { UserDefaults.standard.string(forKey: BackupDeviceId.defaultsKey) },
+      secureStore: { BackupDeviceId.readSecureStore($0) },
+      persist: { UserDefaults.standard.set($0, forKey: BackupDeviceId.defaultsKey) }
+    )
+    if let source = resolution.source, source != .defaults {
+      RuntimeTrace.event("backup.native.device_id.adopted_from_secure_store", ["source": source.rawValue])
+    }
+    return resolution.id
+  }
+
+  /// Serializes `acceptBackupDeviceId`'s read-decide-write.
+  private let backupDeviceIdLock = NSLock()
+
+  /// Round 13 (review of mobile#182 at a19037f9, item 1, duplicate upload):
+  /// the JS handoff (`setBackupDeviceId`). An existing, different id is
+  /// replaced only when JS says the new one is durable (`persisted`); a
+  /// refusal is logged and keeps the id native has. Before, the setter stored
+  /// whatever JS sent, including a UUID JS minted because the keychain read
+  /// failed (device locked). Returns whether native has `deviceId` now.
+  @discardableResult
+  func acceptBackupDeviceId(_ deviceId: String, persisted: Bool) -> Bool {
+    backupDeviceIdLock.lock()
+    let existing = backupDeviceId
+    let decision = BackupDeviceId.decideSet(existing: existing, incoming: deviceId, persisted: persisted)
+    if case .store = decision {
+      UserDefaults.standard.set(deviceId, forKey: BackupDeviceId.defaultsKey)
+    }
+    backupDeviceIdLock.unlock()
+    switch decision {
+    case .refused(let reason):
+      RuntimeTrace.event("backup.native.device_id.set_refused", [
+        "reason": reason, "persisted": persisted, "hasExisting": existing?.isEmpty == false,
+      ])
+      NSLog("[NativeBackupEngine] setBackupDeviceId refused (\(reason)); keeping the existing device id")
+      return false
+    case .store(let replacing):
+      if replacing != nil {
+        RuntimeTrace.event("backup.native.device_id.replaced", ["persisted": persisted])
+      }
+    case .unchanged:
+      break
+    }
+    if serverCheckPauseCause == .noDeviceId {
+      clearServerCheckPause()
+      backoffUntil = nil
+      wakeDrainLoop(reason: "device-id")
+    }
+    return true
+  }
+
   // Backup auth token and server URL are persisted in the Keychain (not
   // UserDefaults) so they do not propagate via unencrypted iTunes / iCloud
   // backups. See `KeychainManager.storeString` for the storage class and
@@ -967,6 +1164,11 @@ final class NativeBackupEngine: NSObject {
       } else {
         KeychainManager.deleteString(key: backupCurrentAccountIdKey)
       }
+      // Task 1667 round 2: the sign-out reset keeps this account's
+      // not-yet-marked uploads under its id; `clearToken()` unbinds the
+      // engine before the purge runs, so remember who it was. Round 13
+      // (review item 3): a bind (any account) ends that memory.
+      _unboundAccount.accountChanged(from: previous, to: normalizedNew)
       // Task 1531 [P1-3]: a REAL change is a new account epoch — see
       // `accountGeneration`'s doc comment above. Round 5 (P2-C) narrowed
       // this from "every write" to "every write that actually changes the
@@ -1010,7 +1212,7 @@ final class NativeBackupEngine: NSObject {
     }
     set {
       UserDefaults.standard.set(newValue, forKey: backupIncludeVideosKey)
-      currentFetchResult = nil
+      lifecycle.clearFetchResult()
     }
   }
 
@@ -1386,34 +1588,28 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
+  /// Round 13 (review of mobile#182 at a19037f9, item 6): decided by
+  /// `BackupSurfaceState` (the rules moved there unchanged), which also
+  /// keeps the server-check pause on every surface and every update.
   private func backupState(pending: Int) -> (state: String, reason: String) {
-    if isPaused {
-      return ("pausedByUser", "Backup paused")
-    }
-    if pending > 0, !canExecuteBackupWorkNow() {
-      return ("waitingForAppOpen", "Open Beebeeb to continue")
-    }
-    if !isRunning && pending > 0 {
-      return ("idle", "Backup ready")
-    }
-    if failedAssets > 0 && pending == 0 && inProgressAssets == 0 {
-      return ("needsAttention", "Some items need attention")
-    }
+    var networkAvailable = true
     #if os(iOS)
-    if !isNetworkAvailable && pending > 0 {
-      return ("waitingForWifi", "Waiting for connection")
-    }
+    networkAvailable = isNetworkAvailable
     #endif
-    if isRunning && (pending > 0 || inProgressAssets > 0) {
-      if inProgressAssets > 0 || backupWorkBreakdown().uploading > 0 {
-        return ("uploading", "Uploading")
-      }
-      return ("preparing", "Preparing backup")
-    }
-    if totalAssets > 0 && pending == 0 && inProgressAssets == 0 {
-      return ("complete", "Backup complete")
-    }
-    return ("idle", "Nothing to back up")
+    let decided = BackupSurfaceState.decide(BackupSurfaceState.Inputs(
+      manifestUnavailableReason: manifestUnavailableStopReason,
+      serverCheckPause: serverCheckPauseSurface,
+      isPaused: isPaused,
+      pending: pending,
+      canExecuteNow: canExecuteBackupWorkNow(),
+      isRunning: isRunning,
+      failed: failedAssets,
+      inProgress: inProgressAssets,
+      networkAvailable: networkAvailable,
+      total: totalAssets,
+      uploading: { self.backupWorkBreakdown().uploading }
+    ))
+    return (decided.state, decided.reason)
   }
 
   private func makeBackupStatusPayload(reason explicitReason: String? = nil) -> BackupStatusPayload {
@@ -1452,18 +1648,10 @@ final class NativeBackupEngine: NSObject {
   }
 
   private func heartbeatStatus(for payload: BackupStatusPayload) -> String {
-    switch payload.state {
-    case "uploading", "preparing":
-      return "syncing"
-    case "pausedByUser", "waitingForAppOpen", "waitingForWifi":
-      return "paused"
-    case "needsAttention":
-      return "error"
-    case "complete", "idle":
-      return isRunning ? "watching" : "idle"
-    default:
-      return payload.failed > 0 && payload.pending == 0 ? "error" : "idle"
-    }
+    // Round 13 (item 6): `BackupSurfaceState` (the server-check pause is "paused").
+    BackupSurfaceState.heartbeatStatus(
+      state: payload.state, isRunning: isRunning, failed: payload.failed, pending: payload.pending
+    )
   }
 
   private func makeSafeCurrentFile(payload: BackupStatusPayload, status: String) -> String? {
@@ -1836,6 +2024,21 @@ final class NativeBackupEngine: NSObject {
   /// a plain `NSLock` here would deadlock).
   func bindAccount(userId: String) {
     guard !userId.isEmpty else { return }
+    // Task 1667 round 8: the JS-confirmed sign-in is the ONE place the
+    // manifest write fence is bound (and, after a sign-out reset, unsealed).
+    // A different account is a new generation, so a producer that started
+    // for the previous account can no longer write. Same Expo serial-queue
+    // ordering as the rest of this method (see the doc comment above): a
+    // bind queued before a sign-out runs before its reset, never after.
+    dbQueue.sync { manifestHandle.writeFence.bind(accountId: userId) }
+    // Task 1667: before anything reads "already uploaded" for this account —
+    // adopt pre-column rows, re-queue another account's. Runs for a re-bind
+    // of the SAME account too (a relaunch keeps `currentAccountId` in the
+    // Keychain), so an upgraded install adopts its rows on the first bind.
+    claimManifest(forAccount: userId)
+    // Round 5: kept marks of ANY account older than 30 days go at every bind
+    // (Codex P2), whatever this account holds.
+    expireKeptPendingMarks(trigger: "bind")
     guard currentAccountId != userId else { return }
     dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: userId) }
     currentAccountId = userId
@@ -2018,13 +2221,129 @@ final class NativeBackupEngine: NSObject {
   /// untouched (not failed, not cleared) so a subsequent `enablePhotoBackup`
   /// call — which sets `currentAccountId` immediately before calling this —
   /// picks the same pending rows back up.
+  ///
+  /// Task 1667 round 11 (review finding 3): the user's start. It records that
+  /// the user wants backup running and runs the whole start as ONE
+  /// transition of `lifecycle`: a `stop()` / `disablePhotoBackup` / sign-out
+  /// on another queue either finished before it or waits until it is done,
+  /// and the manifest-open retry runs the same body only while that intent
+  /// is still set (`scheduleManifestOpenRetry`).
+  ///
+  /// Round 12 (review item 8): the master key is loaded OUTSIDE that
+  /// transition (`prepareStartMasterKey`; the keychain read can show a Face ID
+  /// prompt), and `startLocked` re-validates it inside. Before, the lock was
+  /// held across the prompt, and every scan's `acceptFetchResult` and a
+  /// sign-out's `stop()` waited for the user to answer it.
   func start() {
+    lifecycle.userStart(prepare: { prepareStartMasterKey() }) { startLocked(prepared: $0) }
+  }
+
+  /// Round 12 (review item 8): what `prepareStartMasterKey` found, OUTSIDE
+  /// the lifecycle lock, for `startLocked` to re-validate inside it.
+  struct PreparedStartKey {
+    enum Outcome {
+      /// The bridge cache's handle, whose recorded owner `mayAdopt` accepted.
+      case cached(MasterKeyHandle)
+      /// A handle `loadMasterKey()` read from the keychain (cache miss).
+      case loaded(MasterKeyHandle)
+      case refusedCachedOwner
+      case missing
+      case failed(String)
+      /// The engine was running when prepared: no key needed (the running
+      /// branch). If it stopped before the lock, `startLocked` asks again.
+      case notNeeded
+      /// Round 13 (review item 4): the manifest could not open, so no key
+      /// was read (no prompt). `startLocked` refuses on the manifest, or
+      /// prepares again if it opened since.
+      case manifestUnavailable
+    }
+    let accountId: String
+    let outcome: Outcome
+  }
+
+  /// Round 12 (review item 8): the slow half of the start, with no lock held.
+  /// Reads the bridge cache and, on a miss, the keychain
+  /// (`loadMasterKeyUncached()`, which can prompt, and unlike
+  /// `loadMasterKey()` caches nothing: `startLocked` caches the handle with
+  /// its owner only once it decided to use it). Writes no engine state.
+  private func prepareStartMasterKey() -> PreparedStartKey? {
+    guard let accountId = currentAccountId, !accountId.isEmpty else { return nil }
+    if isRunning { return PreparedStartKey(accountId: accountId, outcome: .notNeeded) }
+    // Round 13 (review of mobile#182 at a19037f9, item 4): the manifest
+    // FIRST. A start the manifest refuses reads no key (no prompt); the
+    // body refuses and schedules the retry, which asks the manifest first
+    // again. A key read for a start the body then refused is kept for the
+    // retry (`lifecycle.stashStartKey`), so a retry never prompts again.
+    return lifecycle.prepareStartKey(
+      accountId: accountId,
+      manifestReady: { self.dbQueue.sync { self.openManifestIfClosed(trigger: "start_prepare") } == nil },
+      manifestUnavailable: {
+        RuntimeTrace.event("backup.native.start.master_key_skipped_manifest_unavailable")
+        return PreparedStartKey(accountId: accountId, outcome: .manifestUnavailable)
+      },
+      cached: { () -> PreparedStartKey? in
+        // Task 1599 followups (round 2, item 3): a cached handle existing is
+        // NOT, by itself, proof it belongs to `accountId`. Read the "is there
+        // a cached handle" flag and its owner from ONE locked snapshot
+        // (`cachedMasterKeySnapshot()`); a cache whose recorded owner is set
+        // and differs from `accountId` refuses, never reaching
+        // `masterKeyHandle`.
+        let cacheSnapshot = BeebeebCryptoBridge.cachedMasterKeySnapshot()
+        RuntimeTrace.event("backup.native.start.master_key_request", [
+          "promptMayAppear": self.masterKeyHandle == nil && cacheSnapshot.handle == nil,
+          "bridgeCacheAvailable": cacheSnapshot.handle != nil
+        ])
+        guard let snapshotHandle = cacheSnapshot.handle else { return nil }
+        guard CachedKeyOwnership.mayAdopt(cachedOwnerId: cacheSnapshot.ownerId, currentAccountId: accountId) else {
+          return PreparedStartKey(accountId: accountId, outcome: .refusedCachedOwner)
+        }
+        // Task 1599 followups round 3 (P2): the SAME handle object the
+        // ownership guard just verified, never a second `loadMasterKey()` read.
+        return PreparedStartKey(accountId: accountId, outcome: .cached(snapshotHandle))
+      },
+      stashed: { key in
+        (key as? MasterKeyHandle).map { PreparedStartKey(accountId: accountId, outcome: .loaded($0)) }
+      },
+      load: {
+        do {
+          guard let loaded = try BeebeebCryptoBridge.loadMasterKeyUncached() else {
+            return PreparedStartKey(accountId: accountId, outcome: .missing)
+          }
+          return PreparedStartKey(accountId: accountId, outcome: .loaded(loaded))
+        } catch {
+          return PreparedStartKey(accountId: accountId, outcome: .failed(error.localizedDescription))
+        }
+      }
+    )
+  }
+
+  /// `start()`'s body. MUST run inside a `lifecycle` transition (`start()`,
+  /// or the retry's `runRetry`). Round 12 (review item 8): `prepared` was
+  /// read outside the lock; anything it relied on that changed since (the
+  /// account, the cache's handle or owner, the running state) asks the
+  /// caller to prepare again (`.prepareAgain`) instead of loading here.
+  private func startLocked(prepared: PreparedStartKey?) -> BackupEngineLifecycle.StartStep {
     guard let accountId = currentAccountId, !accountId.isEmpty else {
       RuntimeTrace.event("backup.native.start.refused_no_account", [
         "isRunning": isRunning
       ])
       NSLog("[NativeBackupEngine] No current account id — refusing to start (queue kept for later)")
-      return
+      return .done
+    }
+
+    // Task 1667 round 6 (Codex P2 "Reopen the native manifest after
+    // successful recovery"): never run without the manifest. `init()`'s
+    // open is not proof a handle is open now: a failed sign-out reset closes
+    // it, and a launch open can fail. Reopen here, or refuse visibly
+    // (`manifestUnavailableReason`) and retry; before, every scan, manifest
+    // check and upload silently no-oped on `db == nil` until a relaunch.
+    guard ensureManifestOpenForStart(accountId: accountId) else {
+      // Round 13 (review item 4): a key read from the keychain for this start
+      // is kept for the retry the refusal just scheduled (no second prompt).
+      if let prepared, prepared.accountId == accountId, case .loaded(let handle) = prepared.outcome {
+        lifecycle.stashStartKey(handle, accountId: accountId)
+      }
+      return .done
     }
 
     if isRunning {
@@ -2041,11 +2360,8 @@ final class NativeBackupEngine: NSObject {
       // are idempotent/guarded so calling them on an already-running
       // engine that DID go through the full path below is a cheap no-op.
       registerPhotoObserver()
-      #if os(iOS)
-      if networkMonitor == nil {
-        startNetworkMonitor()
-      }
-      #endif
+      // Round 11: a no-op while a monitor runs (never a second one).
+      startNetworkMonitor()
       // Task 1605: this IS the "next start after the account state
       // refreshes" resume point `accountRefusalStopReason`'s doc comment
       // promises. Clear unconditionally, same trade-off
@@ -2057,138 +2373,123 @@ final class NativeBackupEngine: NSObject {
         accountRefusalStopReason = nil
         isPaused = false
       }
+      // Round 12 (review item 3): this run is the user's now; a background
+      // task that set `isRunning` no longer idles it when it ends.
+      // Round 13 (review item 5): and a pause its expiration set ends here.
+      if lifecycle.claimUserRun() {
+        isPaused = false
+      }
       wakeDrainLoop(reason: "start")
-      return
+      return .done
     }
 
-    do {
-      // Task 1599 followups (round 2, item 3): a cached handle existing is
-      // NOT, by itself, proof it belongs to `accountId` — reusing the SAME
-      // `CachedKeyOwnership.mayAdopt` decision the background-task
-      // adoption site below already applies. Read the cache's recorded
-      // owner BEFORE calling `loadMasterKey()` (which would otherwise just
-      // hand back the same unverified cached handle) — a cache whose
-      // recorded owner is SET and differs from `accountId` refuses here,
-      // never reaching `masterKeyHandle`.
-      //
-      // Task 1599 followups round 2 review (P1): read the "is there a
-      // cached handle" flag and its owner from ONE locked snapshot
-      // (`cachedMasterKeySnapshot()`), not two separate locked calls — same
-      // fix, same reason, as the background-task adoption site below (a
-      // concurrent `setCachedMasterKey`/`clearCachedMasterKey` between two
-      // separate reads could pair a stale handle with a newer owner id).
-      let cacheSnapshot = BeebeebCryptoBridge.cachedMasterKeySnapshot()
-      let bridgeCacheAvailable = cacheSnapshot.handle != nil
-      let cachedOwnerBeforeLoad = cacheSnapshot.ownerId
-      RuntimeTrace.event("backup.native.start.master_key_request", [
-        "promptMayAppear": masterKeyHandle == nil && !bridgeCacheAvailable,
-        "bridgeCacheAvailable": bridgeCacheAvailable
-      ])
-      if bridgeCacheAvailable,
-         !CachedKeyOwnership.mayAdopt(cachedOwnerId: cachedOwnerBeforeLoad, currentAccountId: accountId) {
-        RuntimeTrace.event("backup.native.start.refused_cached_key_owner_mismatch")
-        NSLog("[NativeBackupEngine] Cached master key owner unconfirmed or mismatched — refusing to start")
-        // Task 1599 followups round 3 (P2): this refusal never reaches a
-        // server (no request is ever built), so `accountMismatchStopReason`
-        // — which only fires on a server-confirmed 409 — would never surface
-        // it. Without this, Settings just kept showing whatever stale
-        // progress line it had, with no indication backup was refusing to
-        // even start. Cleared on this function's own next successful run.
-        ownerUnconfirmedStopReason = Self.ownerUnconfirmedStopReasonMessage
-        return
+    // Round 12 (review item 8): the key was read outside the lock, for this
+    // account, with the engine not running. Anything else: read it again.
+    guard let prepared, prepared.accountId == accountId else { return .prepareAgain }
+    let mk: MasterKeyHandle
+    let bridgeCacheAvailable: Bool
+    switch prepared.outcome {
+    case .notNeeded, .manifestUnavailable:
+      // Round 13 (item 4): `.manifestUnavailable` here means the manifest
+      // opened since `prepare` refused to read a key: read it now.
+      return .prepareAgain
+    case .refusedCachedOwner:
+      // Re-checked under the lock: the cache may have changed since.
+      let now = BeebeebCryptoBridge.cachedMasterKeySnapshot()
+      if now.handle == nil || CachedKeyOwnership.mayAdopt(cachedOwnerId: now.ownerId, currentAccountId: accountId) {
+        return .prepareAgain
       }
-      let mk: MasterKeyHandle
-      if let snapshotHandle = cacheSnapshot.handle {
-        // Task 1599 followups round 3 (P2): use the SAME handle object the
-        // ownership guard above just verified, instead of calling
-        // `loadMasterKey()` again — that call takes its OWN separate lock on
-        // `BeebeebCryptoBridge`'s cache, a non-atomic re-read of state
-        // already read once into `cacheSnapshot` above. If the cache were
-        // cleared by another thread (a confirmed mismatch, a sign-out) in
-        // the window between the snapshot and this second read,
-        // `loadMasterKey()` would silently fall through to its own
-        // Keychain-read fallback and cache THAT unconfirmed handle with no
-        // owner — while this function's `bridgeCacheAvailable` flag, still
-        // reflecting the OLDER snapshot, would wrongly take the "cache
-        // already verified" branch below and skip the mirror-owner check
-        // entirely for a handle that was never actually checked. Using
-        // `cacheSnapshot.handle` directly closes that window: the exact
-        // handle the guard above verified is the exact handle used here,
-        // with no second read in between to go stale.
-        mk = snapshotHandle
-      } else {
-        guard let loaded = try BeebeebCryptoBridge.loadMasterKey() else {
-          RuntimeTrace.event("backup.native.start.master_key_missing")
-          NSLog("[NativeBackupEngine] No master key in keychain — cannot start")
-          return
-        }
-        mk = loaded
-      }
-      if bridgeCacheAvailable {
-        // The guard above already confirmed the CACHE's recorded owner
-        // matches `accountId`, and `mk` above is that SAME cached handle —
-        // nothing further to attest before trusting it.
-        masterKeyHandle = mk
-      } else {
-        // Task 1599 followups (round 2, item 3): the cache was empty, so
-        // this handle came straight off the per-app Keychain
-        // (`KeychainManager.load`, inside `loadMasterKey()`'s cache-miss
-        // branch) — there is no JS-confirmed `confirmMasterKeyHandle`
-        // ownership verdict for THIS load. Only trust it for `accountId`,
-        // and only then record that trust in the bridge cache, when the
-        // SHARED "proven vault key owner" mirror
-        // (`BeebeebKeychainCore.masterKeyOwnerKey` — written by
-        // `key-ownership.ts`'s `writeKeyOwner`, the exact signal task
-        // 1594's File Provider / Share Extension already gate their own
-        // key access on) independently agrees. Reusing
-        // `CachedKeyOwnership.mayAdopt` here too keeps "nil/mismatched
-        // owner refuses" a single decision, not two copies that can drift.
-        let mirroredOwner = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.masterKeyOwnerKey)
-        guard CachedKeyOwnership.mayAdopt(cachedOwnerId: mirroredOwner, currentAccountId: accountId) else {
-          RuntimeTrace.event("backup.native.start.refused_unmirrored_key_owner")
-          NSLog("[NativeBackupEngine] Master key owner not confirmed by the shared keychain mirror — refusing to start")
-          // Task 1599 followups round 3 (P2): same local-refusal-needs-a-
-          // reason fix as the cached-owner-mismatch branch above.
-          ownerUnconfirmedStopReason = Self.ownerUnconfirmedStopReasonMessage
-          return
-        }
-        masterKeyHandle = mk
-      }
-      // Task 1599 followups round 3 (P2): this run got past both ownership
-      // guards above — whatever previously refused a start (if anything) no
-      // longer applies. Clear unconditionally rather than only inside the
-      // two refusal branches, so a stale reason from an EARLIER failed
-      // `start()` attempt never survives a later successful one.
-      ownerUnconfirmedStopReason = nil
-      // Task 1605: same unconditional clear, same rationale — see
-      // `accountRefusalStopReason`'s doc comment for why clearing here (a
-      // FRESH start, `isRunning` was false) is the "next start" resume
-      // point. `isPaused` is already reset to `false` a few lines below
-      // (this function's own tail), so there is nothing further to flip.
-      accountRefusalStopReason = nil
-      // Task 1599 followup 3: `currentAccountId` here is `start()`'s OWN
-      // persisted account id (Keychain-backed — see its property doc), which
-      // is only ever WRITTEN by `bindAccount(userId:)`, called by JS only
-      // after ITS OWN ownership verdict succeeds (task 1599's own grounding:
-      // `enablePhotoBackup`'s `currentAccountId = userId` is gated on
-      // `crypto-context.tsx`'s `isUnlocked`, which flips true only right
-      // after `confirmMasterKeyHandle` for that SAME owner). So re-stamping
-      // the bridge cache with it here is safe — both branches above already
-      // proved this SPECIFIC load's owner (cache-owner match, or the shared
-      // mirror) before this line is ever reached.
-      BeebeebCryptoBridge.setCachedMasterKey(mk, ownerId: currentAccountId)
-      RuntimeTrace.event("backup.native.start.master_key_ready")
-    } catch {
+      RuntimeTrace.event("backup.native.start.refused_cached_key_owner_mismatch")
+      NSLog("[NativeBackupEngine] Cached master key owner unconfirmed or mismatched — refusing to start")
+      // Task 1599 followups round 3 (P2): this refusal never reaches a
+      // server (no request is ever built), so `accountMismatchStopReason`
+      // — which only fires on a server-confirmed 409 — would never surface
+      // it. Cleared on this function's own next successful run.
+      ownerUnconfirmedStopReason = Self.ownerUnconfirmedStopReasonMessage
+      return .done
+    case .missing:
+      RuntimeTrace.event("backup.native.start.master_key_missing")
+      NSLog("[NativeBackupEngine] No master key in keychain — cannot start")
+      return .done
+    case .failed(let message):
       RuntimeTrace.event("backup.native.start.master_key_failed", [
-        "error": error.localizedDescription
+        "error": message
       ])
-      NSLog("[NativeBackupEngine] Failed to load master key: \(error.localizedDescription)")
-      return
+      NSLog("[NativeBackupEngine] Failed to load master key: \(message)")
+      return .done
+    case .cached(let handle):
+      // Re-validated under the lock: the SAME handle is still cached and its
+      // recorded owner still matches (a sign-out or a confirmed mismatch in
+      // between clears or changes it).
+      let now = BeebeebCryptoBridge.cachedMasterKeySnapshot()
+      guard let current = now.handle, current === handle,
+            CachedKeyOwnership.mayAdopt(cachedOwnerId: now.ownerId, currentAccountId: accountId) else {
+        return .prepareAgain
+      }
+      mk = handle
+      bridgeCacheAvailable = true
+    case .loaded(let handle):
+      // Read from the keychain outside the lock; owner-checked below (the
+      // shared mirror) before it is used or cached.
+      mk = handle
+      bridgeCacheAvailable = false
     }
+
+    if bridgeCacheAvailable {
+      // The cached handle and its recorded owner were confirmed for
+      // `accountId` above, under the lock (task 1599 followups round 3: the
+      // exact handle the guard verified is the one used, no second read).
+      masterKeyHandle = mk
+    } else {
+      // Task 1599 followups (round 2, item 3): the cache was empty, so
+      // this handle came straight off the per-app Keychain
+      // (`KeychainManager.load`, inside `loadMasterKey()`'s cache-miss
+      // branch) — there is no JS-confirmed `confirmMasterKeyHandle`
+      // ownership verdict for THIS load. Only trust it for `accountId`,
+      // and only then record that trust in the bridge cache, when the
+      // SHARED "proven vault key owner" mirror
+      // (`BeebeebKeychainCore.masterKeyOwnerKey` — written by
+      // `key-ownership.ts`'s `writeKeyOwner`, the exact signal task
+      // 1594's File Provider / Share Extension already gate their own
+      // key access on) independently agrees. Reusing
+      // `CachedKeyOwnership.mayAdopt` here too keeps "nil/mismatched
+      // owner refuses" a single decision, not two copies that can drift.
+      // Read here, under the lock, against the account it binds to.
+      let mirroredOwner = BeebeebKeychainCore.loadString(key: BeebeebKeychainCore.masterKeyOwnerKey)
+      guard CachedKeyOwnership.mayAdopt(cachedOwnerId: mirroredOwner, currentAccountId: accountId) else {
+        RuntimeTrace.event("backup.native.start.refused_unmirrored_key_owner")
+        NSLog("[NativeBackupEngine] Master key owner not confirmed by the shared keychain mirror — refusing to start")
+        // Task 1599 followups round 3 (P2): same local-refusal-needs-a-
+        // reason fix as the cached-owner-mismatch branch above.
+        ownerUnconfirmedStopReason = Self.ownerUnconfirmedStopReasonMessage
+        return .done
+      }
+      masterKeyHandle = mk
+    }
+    // Task 1599 followups round 3 (P2): this run got past both ownership
+    // guards above — whatever previously refused a start (if anything) no
+    // longer applies. Clear unconditionally rather than only inside the
+    // two refusal branches, so a stale reason from an EARLIER failed
+    // `start()` attempt never survives a later successful one.
+    ownerUnconfirmedStopReason = nil
+    // Task 1605: same unconditional clear, same rationale — see
+    // `accountRefusalStopReason`'s doc comment for why clearing here (a
+    // FRESH start, `isRunning` was false) is the "next start" resume
+    // point. `isPaused` is already reset to `false` a few lines below
+    // (this function's own tail), so there is nothing further to flip.
+    accountRefusalStopReason = nil
+    // Task 1599 followup 3: `currentAccountId` here is `start()`'s OWN
+    // persisted account id (Keychain-backed — see its property doc), which
+    // is only ever WRITTEN by `bindAccount(userId:)`, called by JS only
+    // after ITS OWN ownership verdict succeeds. Both branches above already
+    // proved this SPECIFIC load's owner (cache-owner match, or the shared
+    // mirror) before this line is ever reached.
+    BeebeebCryptoBridge.setCachedMasterKey(mk, ownerId: currentAccountId)
+    RuntimeTrace.event("backup.native.start.master_key_ready")
 
     guard token != nil, apiBaseUrl != nil else {
       NSLog("[NativeBackupEngine] Missing token or apiBaseUrl — cannot start")
-      return
+      return .done
     }
 
     // Task 1531 [P0]: before draining anything, drop any staged asset whose
@@ -2203,6 +2504,9 @@ final class NativeBackupEngine: NSObject {
     dbQueue.sync { purgeMismatchedStagedAssets(currentAccountId: accountId) }
 
     isRunning = true
+    // Round 12 (review item 3): the user's run (a background task that ends
+    // later never idles it).
+    lifecycle.claimUserRun()
     perfLog("start", [
       "total": totalAssets,
       "completed": completedAssets
@@ -2219,6 +2523,7 @@ final class NativeBackupEngine: NSObject {
     logDiagnosticSnapshot(reason: "start")
 
     NSLog("[NativeBackupEngine] Started — \(totalAssets) total, \(completedAssets) completed")
+    return .done
   }
 
   /// Stop the backup engine. Cancels the drain loop and unregisters observers.
@@ -2226,7 +2531,20 @@ final class NativeBackupEngine: NSObject {
   /// still unlocked so backup stop/start does not trigger an extra keychain
   /// biometric prompt. In-flight NSURLSession background uploads continue
   /// independently.
+  ///
+  /// Task 1667 round 11 (review finding 3): the user's stop (and sign-out,
+  /// teardown, a confirmed account mismatch). It clears the "wants backup
+  /// running" intent, voids every scheduled manifest-open retry and every
+  /// running scan's fetch result, and runs the stop as one `lifecycle`
+  /// transition. A retry that is already executing waits for this and then
+  /// does nothing.
   func stop() {
+    lifecycle.userStop { stopLocked() }
+  }
+
+  /// `stop()`'s body. MUST run inside a `lifecycle` transition (`stop()`, or
+  /// `internalStop` when `start()` cannot open the manifest).
+  private func stopLocked() {
     // Task 1531 [P1-3]: release the engine-owned master-key handle and
     // cancel any in-flight BGProcessingTask work FIRST, unconditionally —
     // BEFORE the `isRunning` early-return below. The old code put both
@@ -2245,6 +2563,36 @@ final class NativeBackupEngine: NSObject {
       "bridgeCacheRetained": BeebeebCryptoBridge.hasCachedMasterKey(),
       "wasRunning": isRunning
     ])
+    // Task 1667 round 6: a stopped engine has no "could not open" reason
+    // and no pending start() retry (a retry after `disablePhotoBackup`
+    // would start backup again).
+    clearManifestAvailability()
+    // Round 8: cancel observer-spawned scans (best effort; a PhotoKit fetch
+    // already running finishes, and its insert is then dropped by the write
+    // fence the sign-out reset advances).
+    cancelScanTasks()
+    // Round 11 (review finding 9): the bulk coverage is per run; the next
+    // start asks again.
+    engineStateLock.lock()
+    _serverCheckCoverage.clear()
+    engineStateLock.unlock()
+    // Round 10 (review finding 3): drop the PhotoKit fetch result the change
+    // observer diffs against. Kept, a PHChange after the next sign-in was
+    // diffed against the pre-sign-out result and inserted a few rows before
+    // the new full scan. The next full scan sets a fresh one.
+    // Round 11 (review finding 5): done by the transition this runs in
+    // (`userStop` / `internalStop` clear it and advance the generation a scan
+    // must still match to store its result, `acceptFetchResult`).
+
+    // Round 12 (review item 3): the observer and the monitor go whatever
+    // `isRunning` says. Before, they were removed only past the guard below,
+    // so a stop after a background task had idled the engine under a user
+    // start left both registered. Both calls are no-ops when nothing is
+    // registered.
+    lifecycle.unregisterObserver { PHPhotoLibrary.shared().unregisterChangeObserver(self) }
+    stopNetworkMonitor()
+    // Round 12 (review item 6): a stopped engine is not "paused on the server".
+    clearServerCheckPause()
 
     guard isRunning else { return }
     isRunning = false
@@ -2253,12 +2601,6 @@ final class NativeBackupEngine: NSObject {
     drainTask?.cancel()
     drainTask = nil
     pendingDrainWakeReason = nil
-
-    if photoObserverRegistered {
-      PHPhotoLibrary.shared().unregisterChangeObserver(self)
-      photoObserverRegistered = false
-    }
-    stopNetworkMonitor()
 
     uploadTaskMap.removeAll()
     // Task 1605: sibling cleanup for `chunkResponseBodyBuffers` — cancelled
@@ -2330,7 +2672,7 @@ final class NativeBackupEngine: NSObject {
       "failedAssets": failedAssets,
       "bytesUploaded": bytesUploaded,
       "bytesTotal": bytesTotal,
-      "state": mapBridgeState(internalState: internalState),
+      "state": BackupSurfaceState.bridgeRunState(internalState),
       "lastErrorMessage": (lastError as Any?) ?? NSNull(),
       "backoffUntil": backoffMillis,
     ]
@@ -2346,31 +2688,11 @@ final class NativeBackupEngine: NSObject {
       defer { sqlite3_finalize(stmt) }
       let sql = "SELECT status FROM backup_assets WHERE local_asset_id = ? LIMIT 1"
       guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-      sqlite3_bind_text(stmt, 1, (localId as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 1, localId)
       guard sqlite3_step(stmt) == SQLITE_ROW,
             sqlite3_column_type(stmt, 0) != SQLITE_NULL else { return nil }
       let raw = String(cString: sqlite3_column_text(stmt, 0))
       return Self.mapBridgeAssetStatus(raw)
-    }
-  }
-
-  /// Collapse the engine's 8-state internal status to the 4-state shape
-  /// ts-engineer's `BackupRunState` defines. The TS UI only cares about the
-  /// macro state (idle / running / paused / error); fine-grained reasons
-  /// like `waitingForWifi` map to `paused` because the user-visible
-  /// behaviour ("not making progress, will resume") is identical.
-  private func mapBridgeState(internalState: String) -> String {
-    switch internalState {
-    case "uploading", "preparing":
-      return "running"
-    case "pausedByUser", "waitingForAppOpen", "waitingForWifi":
-      return "paused"
-    case "needsAttention":
-      return "error"
-    case "idle", "complete":
-      return "idle"
-    default:
-      return "idle"
     }
   }
 
@@ -2459,6 +2781,13 @@ final class NativeBackupEngine: NSObject {
       // round-trip (a confirmed 409/413), but like it, it never ends the
       // JS session — this is the right account, just billing-blocked.
       "accountRefusalReason": accountRefusalStopReason ?? NSNull(),
+      // Task 1667 round 6: `start()` could not open the backup manifest and
+      // is retrying (`ensureManifestOpenForStart`). Null otherwise.
+      "manifestUnavailableReason": manifestUnavailableStopReason ?? NSNull(),
+      // Task 1667 round 12 (review item 6): uploads are paused on the server
+      // check (server without backed_up, a failed check, no device id), with
+      // the reason. Null otherwise.
+      "serverCheckPausedReason": serverCheckPausedReason ?? NSNull(),
     ]
   }
 
@@ -2549,7 +2878,29 @@ final class NativeBackupEngine: NSObject {
       // again before this task's exit is allowed to flip `isRunning` off
       // (below) — see `accountGeneration`'s doc comment.
       let taskGeneration = self.accountGenerationSnapshot()
+      // Task 1667 round 6: this entry point sets `isRunning` without
+      // `start()`, so it opens the manifest itself and refuses without one
+      // (the reason is published; the OS reschedules this task) instead of
+      // scanning and uploading into a closed handle.
+      let manifestFailure = self.dbQueue.sync { self.openManifestIfClosed(trigger: "background_task") }
+      if case .refuse(let reason, _) = self.recordManifestOpen(manifestFailure) {
+        RuntimeTrace.event("backup.native.background_task.refused_manifest_unavailable", [
+          "failure": manifestFailure?.rawValue ?? NSNull()
+        ])
+        self.updateBackupStatusSurfaces(reason: reason)
+        self.completeBackgroundTaskOnce(task, success: false)
+        return
+      }
       self.dbQueue.sync { self.purgeMismatchedStagedAssets(currentAccountId: accountId) }
+      // Round 8: the background task's manifest write ticket, taken at its
+      // start; its scan and its batch write behind it. None (signed out
+      // since the account check, another account bound) = nothing to do.
+      guard let writeTicket = self.manifestWriteTicket("background_task", accountId: accountId) else {
+        self.completeBackgroundTaskOnce(task, success: false)
+        return
+      }
+      // Round 11 (review finding 9): the task's batch starts with a bulk check.
+      self.requestBulkServerCheck()
 
       // Ensure master key is available for background processing
       if self.masterKeyHandle == nil {
@@ -2611,10 +2962,14 @@ final class NativeBackupEngine: NSObject {
         "delayMs": mode.delayNanoseconds / 1_000_000
       ])
 
-      let batchStart = self.isRunning
-      if !self.isRunning {
+      // Round 11 (review finding 3): the check-and-set is one `lifecycle`
+      // transition, like start() and stop(). Round 12 (review item 3): when it
+      // sets `isRunning`, this task owns the run until a user start claims it.
+      let batchStart: Bool = self.lifecycle.beginBackgroundRun(isRunning: { self.isRunning }) {
         self.isRunning = true
         self.isPaused = false
+      }
+      if !batchStart {
         self.updateBackupStatusSurfaces(reason: "Background backup running")
       }
 
@@ -2623,9 +2978,9 @@ final class NativeBackupEngine: NSObject {
         // expiration that fires while we're between long-running async
         // calls unwinds immediately instead of starting another batch.
         try Task.checkCancellation()
-        _ = await self.scanPhotoLibraryForPendingUploads(reason: "Background backup scan")
+        _ = await self.scanPhotoLibraryForPendingUploads(reason: "Background backup scan", ticket: writeTicket)
         try Task.checkCancellation()
-        let uploaded = try await self.processBatch(limit: mode.batchLimit)
+        let uploaded = try await self.processBatch(limit: mode.batchLimit, ticket: writeTicket)
         self.completeBackgroundTaskOnce(task, success: uploaded >= 0)
       } catch is CancellationError {
         self.perfLog("bg-task.expired", [:])
@@ -2639,8 +2994,18 @@ final class NativeBackupEngine: NSObject {
       // `taskGeneration` was captured, a newer `start()`/account-switch
       // began while this task's `processBatch` was awaiting — that newer
       // run owns `isRunning` now, and this stale task must not stop it.
-      if !batchStart && self.accountGenerationSnapshot() == taskGeneration {
+      // Round 12 (review item 3): nor when the user started backup on the
+      // SAME account meanwhile (no generation bump): `start()` claimed the
+      // run (`claimUserRun`), and only a stop ends it. Before, the task's
+      // exit set `isRunning = false` under the user's foreground backup, and
+      // `stop()` then returned early, leaving the observer and the monitor
+      // registered.
+      let idled: Bool = !batchStart && self.lifecycle.endBackgroundRun(
+        stillCurrent: { self.accountGenerationSnapshot() == taskGeneration }
+      ) {
         self.isRunning = false
+      }
+      if idled {
         self.updateBackupStatusSurfaces()
         self.scheduleOpenAppReminderIfNeeded()
       }
@@ -2657,11 +3022,18 @@ final class NativeBackupEngine: NSObject {
       // — `completeBackgroundTaskOnce` is idempotent, so the body's
       // own terminal call is a no-op if we win the race.
       NSLog("[NativeBackupEngine] Background task expiring — cancelling work")
-      self?.backgroundTaskHandle?.cancel()
-      self?.pause()
-      if let self {
-        self.completeBackgroundTaskOnce(task, success: false)
+      guard let self else { return }
+      self.backgroundTaskHandle?.cancel()
+      // Round 13 (review of mobile#182 at a19037f9, item 5): pause only a
+      // run this task owns. When the user's run was going (the task found
+      // the engine running, or the user claimed the run meanwhile), the
+      // expiration that comes as the user picks up the phone used to set
+      // `isPaused`, and the foreground drain loop slept with nothing to
+      // clear it until a network change, "Back up now" or a relaunch.
+      if !self.lifecycle.expireBackgroundRun({ self.pause() }) {
+        RuntimeTrace.event("backup.native.background_task.expired_user_run_kept")
       }
+      self.completeBackgroundTaskOnce(task, success: false)
     }
   }
 
@@ -2738,30 +3110,24 @@ final class NativeBackupEngine: NSObject {
 
   // MARK: - Photo Library Observer
 
+  /// Round 11 (review finding 3): registers the change observer at most
+  /// once (`lifecycle.registerObserverOnce`), then scans.
   private func registerPhotoObserver() {
-    if photoObserverRegistered {
-      Task { [weak self] in
-        guard let self else { return }
-        if await self.scanPhotoLibraryForPendingUploads(reason: "Camera roll scanned") {
-          self.wakeDrainLoop(reason: "photo-scan")
-        }
-      }
-      return
-    }
-
-    photoObserverRegistered = true
-    PHPhotoLibrary.shared().register(self)
-
-    Task { [weak self] in
-      guard let self else { return }
-      if await self.scanPhotoLibraryForPendingUploads(reason: "Camera roll scanned") {
-        self.wakeDrainLoop(reason: "photo-scan")
-      }
-    }
+    lifecycle.registerObserverOnce { PHPhotoLibrary.shared().register(self) }
+    spawnScan(reason: "Camera roll scanned", wakeReason: "photo-scan")
   }
 
+  /// Round 8 (Codex P1 "Fence late photo scans before resetting the
+  /// manifest"): the scan takes its write ticket FIRST, before the PhotoKit
+  /// fetch (which can take seconds on a large library). Its insert runs on
+  /// `dbQueue` behind that ticket, so a sign-out reset that lands while the
+  /// fetch runs drops the insert instead of refilling the emptied manifest
+  /// with the outgoing account's camera roll. `ticket` is the caller's when
+  /// it took one at its own start (the background task); otherwise the scan
+  /// takes one here. No ticket = no scan (signed out, or another account).
   @discardableResult
-  func scanPhotoLibraryForPendingUploads(reason: String) async -> Bool {
+  func scanPhotoLibraryForPendingUploads(reason: String, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async -> Bool {
+    guard let ticket = callerTicket ?? manifestWriteTicket("scan") else { return false }
     let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     guard status == .authorized || status == .limited else {
       NSLog("[NativeBackupEngine] Photo library not authorized (status: \(status.rawValue))")
@@ -2779,18 +3145,67 @@ final class NativeBackupEngine: NSObject {
                                       PHAssetMediaType.image.rawValue)
     }
     let selectedAlbums = selectedPhotoAlbumIds
-    let assets = fetchAssetsForBackup(options: options, selectedAlbumIds: selectedAlbums)
+    // Round 11 (review finding 5): captured BEFORE the fetch; a stop or
+    // sign-out after this line voids the fetch result (`acceptFetchResult`).
+    let fetchGeneration = lifecycle.stopGeneration
+    let assets = fetchAssetsForBackup(
+      options: options, selectedAlbumIds: selectedAlbums, ticket: ticket, stopGeneration: fetchGeneration
+    )
+    // Best effort: `stop()` / sign-out cancel observer-spawned scans. The
+    // ticket check below is what holds when the cancel comes too late.
+    guard !Task.isCancelled else { return false }
+    let scanned = scannedAssets(assets)
+    let selection = FencedManifestWrites.Selection(
+      allowedAssetIds: Set(assets.map(\.localIdentifier)),
+      hasAlbumSelection: !selectedAlbums.isEmpty
+    )
 
-    let hasPending = await withCheckedContinuation { continuation in
+    let scanAccountId = ticket.accountId
+    var hasPending = await withCheckedContinuation { continuation in
       dbQueue.async { [weak self] in
         guard let self else {
           continuation.resume(returning: false)
           return
         }
-        self.insertNewAssets(assets)
-        self.updateAssetSelectionScope(allowedAssetIds: Set(assets.map(\.localIdentifier)), hasAlbumSelection: !selectedAlbums.isEmpty)
+        let written = FencedManifestWrites.scanInsert(
+          self.db, fence: self.manifestHandle.writeFence, ticket: ticket, writer: "scan.insert",
+          assets: scanned, selection: selection, nowMs: self.nowMs()
+        )
+        self.recordScanInsert(written, assets: scanned.count, source: .fullScan)
+        guard written != .fenced else {
+          continuation.resume(returning: false)
+          return
+        }
         continuation.resume(returning: self.hasPendingUploads())
       }
+    }
+
+    // Task 1667: rebuild an emptied manifest from the server BEFORE reporting
+    // pending work (the batch gate in `processBatch` enforces the same), then
+    // catch up on uploads the server's per-device map does not know yet —
+    // including every row uploaded before the client marked anything.
+    // Round 8: both run under the scan's ticket.
+    if !scanAccountId.isEmpty, let authToken = token, let baseURL = apiBaseUrl {
+      // Round 13 (review of mobile#182 at a19037f9, item 10): the rebuild
+      // gate runs only inside the batch slot, like `processBatch`'s (round 12
+      // item 9). Before, a scan and a batch both ran it: both fetched
+      // /identifiers and applied the map, and a scan whose gate deferred
+      // wrote `backoffUntil` and raised `manifestRebuildFailures` for the
+      // drain loop although the batch's own gate had succeeded. While a batch
+      // holds the slot, the scan leaves the gate to it. The mark catch-up
+      // runs after the slot is released: it writes no backoff, and a mark
+      // sent twice is idempotent on the server.
+      var ready = false
+      if beginBatchProcessing() {
+        ready = await ensureManifestReadyForUploads(accountId: scanAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket)
+        finishBatchProcessing()
+      } else {
+        perfLog("scan.rebuild_gate_skip", ["reason": "batch-running"])
+      }
+      if ready {
+        await flushServerMarks(accountId: scanAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket)
+      }
+      hasPending = dbQueue.sync { self.hasPendingUploads() }
     }
 
     DispatchQueue.main.async { [weak self] in
@@ -2799,10 +3214,17 @@ final class NativeBackupEngine: NSObject {
     return hasPending
   }
 
-  private func fetchAssetsForBackup(options: PHFetchOptions, selectedAlbumIds: [String]) -> [PHAsset] {
+  /// Round 11 (review finding 5): the fetch result is stored only through
+  /// `storeFetchResult`, which refuses it after a stop / sign-out or a
+  /// cancel, or when the scan's fence ticket no longer admits writes. Before,
+  /// a fetch still running across `stop()` wrote the pre-sign-out result back
+  /// after `stop()` had cleared it.
+  private func fetchAssetsForBackup(
+    options: PHFetchOptions, selectedAlbumIds: [String], ticket: ManifestWriteFence.Ticket, stopGeneration: UInt64
+  ) -> [PHAsset] {
     guard !selectedAlbumIds.isEmpty else {
       let result = PHAsset.fetchAssets(with: options)
-      currentFetchResult = result
+      storeFetchResult(result, ticket: ticket, stopGeneration: stopGeneration)
       var assets: [PHAsset] = []
       result.enumerateObjects { asset, _, _ in assets.append(asset) }
       return assets
@@ -2812,7 +3234,7 @@ final class NativeBackupEngine: NSObject {
     // there is no single `currentFetchResult` safe for PHChange incremental
     // inserts. Force the change observer to perform a selected-album rescan
     // instead of trusting unvalidated insertedObjects from an all-library fetch.
-    currentFetchResult = nil
+    storeFetchResult(nil, ticket: ticket, stopGeneration: stopGeneration)
     let collections = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: selectedAlbumIds, options: nil)
     var assetsById: [String: PHAsset] = [:]
     collections.enumerateObjects { collection, _, _ in
@@ -2826,31 +3248,51 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
+  /// Round 11 (review finding 5): checks `Task.isCancelled`, the stop
+  /// generation and the fence ticket, then stores, in ONE `lifecycle`
+  /// transition (the lock every stop takes; the fence check is a
+  /// `dbQueue.sync` inside it, the same lock order as `start()`).
+  private func storeFetchResult(
+    _ result: PHFetchResult<PHAsset>?, ticket: ManifestWriteFence.Ticket, stopGeneration: UInt64
+  ) {
+    let stored = lifecycle.acceptFetchResult(
+      result, stopGeneration: stopGeneration, cancelled: Task.isCancelled,
+      stillAdmitted: { self.dbQueue.sync { self.manifestHandle.writeFence.isCurrent(ticket) } }
+    )
+    if !stored {
+      RuntimeTrace.event("backup.native.scan.fetch_result_dropped")
+    }
+  }
+
   // MARK: - Network Monitor
 
+  /// Round 11 (review finding 3): starts a monitor only when none runs
+  /// (`lifecycle.startMonitorIfNeeded`); a running one is never replaced and
+  /// left running unreferenced.
   private func startNetworkMonitor() {
     #if os(iOS)
-    let monitor = NWPathMonitor()
-    monitor.pathUpdateHandler = { [weak self] path in
-      let wasAvailable = self?.isNetworkAvailable ?? false
-      self?.isNetworkAvailable = path.status == .satisfied
+    lifecycle.startMonitorIfNeeded {
+      let monitor = NWPathMonitor()
+      monitor.pathUpdateHandler = { [weak self] path in
+        let wasAvailable = self?.isNetworkAvailable ?? false
+        self?.isNetworkAvailable = path.status == .satisfied
 
-      // Resume drain loop when network comes back
-      if !wasAvailable && path.status == .satisfied {
-        NSLog("[NativeBackupEngine] Network restored — resuming")
-        self?.isPaused = false
-        self?.wakeDrainLoop(reason: "network")
+        // Resume drain loop when network comes back
+        if !wasAvailable && path.status == .satisfied {
+          NSLog("[NativeBackupEngine] Network restored — resuming")
+          self?.isPaused = false
+          self?.wakeDrainLoop(reason: "network")
+        }
       }
+      monitor.start(queue: queue)
+      return monitor
     }
-    monitor.start(queue: queue)
-    networkMonitor = monitor
     #endif
   }
 
   private func stopNetworkMonitor() {
     #if os(iOS)
-    networkMonitor?.cancel()
-    networkMonitor = nil
+    lifecycle.stopMonitor { ($0 as? NWPathMonitor)?.cancel() }
     #endif
   }
 
@@ -2996,6 +3438,8 @@ final class NativeBackupEngine: NSObject {
   }
 
   private func startDrainLoop(reason: String) {
+    // Round 11 (review finding 9): every drain start owes a bulk check.
+    requestBulkServerCheck()
     drainTask?.cancel()
     drainLoopGeneration += 1
     let generation = drainLoopGeneration
@@ -3033,15 +3477,24 @@ final class NativeBackupEngine: NSObject {
 
         do {
           guard self.isRunning, !self.isPaused, !Task.isCancelled else { continue }
-          self.dbQueue.sync { self.recoverStuckUploads() }
+          // Round 8: this iteration's write ticket. None = signed out (or
+          // another account bound) since the loop started: nothing to drain.
+          guard let iterationTicket = self.manifestWriteTicket("drain") else { return }
+          self.dbQueue.sync {
+            guard self.admitsWrite(iterationTicket, "drain.recover_stuck") else { return }
+            self.recoverStuckUploads()
+          }
           guard self.dbQueue.sync(execute: { self.hasPendingUploads() }) else {
             return
           }
 
           let uploaded = try await self.processBatch(limit: mode.batchLimit)
-          if uploaded == 0, !self.dbQueue.sync(execute: { self.hasPendingUploads() }) {
+          // Round 10: rows the server check promoted are progress too; a
+          // batch of photos the server already has must not wait 5 s.
+          let progressed = uploaded + self.takeLastBatchServerPromoted()
+          if progressed == 0, !self.dbQueue.sync(execute: { self.hasPendingUploads() }) {
             return
-          } else if uploaded == 0 {
+          } else if progressed == 0 {
             _ = await self.sleepIfStillRunning(nanoseconds: max(5_000_000_000, mode.delayNanoseconds)) // 5s on retry failures
           } else {
             _ = await self.sleepIfStillRunning(nanoseconds: mode.delayNanoseconds)
@@ -3057,7 +3510,13 @@ final class NativeBackupEngine: NSObject {
   // MARK: - Core Upload Pipeline
 
   /// Process a batch of pending uploads. Returns the number of successfully uploaded assets.
-  func processBatch(limit: Int = 12) async throws -> Int {
+  ///
+  /// Round 8: the batch takes its manifest write ticket here, at its start,
+  /// for `batchAccountId` (or uses the background task's), and every
+  /// manifest write the batch makes, down to each asset's completion
+  /// record, runs behind it. A sign-out reset (or a new account's bind)
+  /// while the batch encrypts or uploads drops those writes.
+  func processBatch(limit: Int = 12, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async throws -> Int {
     guard isRunning, let masterKey = masterKeyHandle else { return 0 }
     guard let authToken = token, let baseURL = apiBaseUrl else {
       throw BackupError.notConfigured
@@ -3081,19 +3540,59 @@ final class NativeBackupEngine: NSObject {
       NSLog("[NativeBackupEngine] processBatch: no current account id — refusing batch")
       return 0
     }
+    guard let ticket = callerTicket ?? manifestWriteTicket("batch", accountId: batchAccountId),
+          ticket.accountId == batchAccountId else {
+      return 0
+    }
 
+    // Round 12 (review item 9): only the caller that runs the batch goes on.
+    // Before, the claim write, the identifiers fetch, the map/kept-marks
+    // transactions and any backoff ran for every concurrent caller (drain
+    // loop, background task, manual trigger), and all but one then returned
+    // at 'already-processing'; a deferral from a caller that never ran a
+    // batch pushed `backoffUntil` onto the one that did.
     if !beginBatchProcessing() {
       perfLog("batch.skip", ["reason": "already-processing", "limit": limit])
       return 0
     }
     defer { finishBatchProcessing() }
 
+    // Task 1667: never upload into a manifest that does not yet know what
+    // this account already backed up from this device (after a sign-out the
+    // manifest is empty; uploading would duplicate every photo).
+    guard await ensureManifestReadyForUploads(accountId: batchAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket) else {
+      return 0
+    }
+
     // Recover stuck uploads on each batch start
-    dbQueue.sync { recoverStuckUploads() }
+    dbQueue.sync {
+      guard admitsWrite(ticket, "batch.recover_stuck") else { return }
+      recoverStuckUploads()
+    }
+
+    // Round 11 (review finding 9): the bulk dedupe, before the selection, at
+    // most once per drain start / background task / scan insert.
+    await bulkServerCheckIfRequested(accountId: batchAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket)
 
     // Get pending assets from database
-    let pending = dbQueue.sync { getPendingUploads(limit: limit) }
-    if pending.isEmpty { return 0 }
+    let selected = dbQueue.sync { getPendingUploads(limit: limit) }
+    if selected.isEmpty { return 0 }
+
+    // Task 1667 round 10 (review finding 1): the dedupe guarantee. No row
+    // starts a new upload before the server confirmed this device has not
+    // backed it up already (a live hit becomes `uploaded` instead). The
+    // rebuild above is only a fast path: it runs once per account, on the
+    // rows present then. Any failure: nothing uploads, backoff.
+    guard let pending = await rowsCheckedAgainstServer(
+      selected, accountId: batchAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket
+    ) else {
+      return 0
+    }
+    if pending.isEmpty {
+      refreshProgress()
+      updateBackupStatusSurfaces()
+      return 0
+    }
     updateBackupStatusSurfaces(reason: "Preparing backup")
 
     perfLog("batch.start", [
@@ -3126,7 +3625,8 @@ final class NativeBackupEngine: NSObject {
               masterKey: masterKey,
               authToken: authToken,
               baseURL: baseURL,
-              batchAccountId: batchAccountId
+              batchAccountId: batchAccountId,
+              ticket: ticket
             )
           }
         }
@@ -3192,7 +3692,7 @@ final class NativeBackupEngine: NSObject {
   /// `staged_upload` (markFailed sets `staged_upload` whenever `staged_file_id`
   /// is set), so the exact rows a manual retry most needs to revive were the
   /// ones it skipped. With retry reset, the drain re-selects them and the
-  /// `.resumable` self-heal re-stages any with evicted `.enc` chunks.
+  /// `.uploading` (resumable) self-heal re-stages any with evicted `.enc` chunks.
   func resetRetryExhaustedUploadsForManualRun() {
     // Task 1669 Issue 2: this was the one `db` accessor in the class NOT
     // wrapped in `dbQueue.sync` — harmless while `init()` opened the
@@ -3236,6 +3736,8 @@ final class NativeBackupEngine: NSObject {
     }
 
     guard isRunning else {
+      // Task 1667 round 6: say why when it was the manifest, not the key.
+      if manifestUnavailableStopReason != nil { throw BackupError.databaseUnavailable }
       throw BackupError.noMasterKey
     }
 
@@ -3262,7 +3764,10 @@ final class NativeBackupEngine: NSObject {
     /// `currentAccountId` here. Used both as the value newly-staged rows get
     /// tagged with, and as the baseline the LIVE `currentAccountId` must
     /// still match at each checkpoint below.
-    batchAccountId: String
+    batchAccountId: String,
+    /// Round 8: the batch's manifest write ticket; every write below checks
+    /// it in its own `dbQueue` block.
+    ticket: ManifestWriteFence.Ticket
   ) async -> Bool {
     guard isRunning && !Task.isCancelled else { return false }
 
@@ -3312,10 +3817,13 @@ final class NativeBackupEngine: NSObject {
             "currentAccount": batchAccountId
           ])
           dbQueue.sync {
+            guard admitsWrite(ticket, "clearStagedStateForRestage") else { return }
             if let stagedDir = staged.stagedDir {
               removeStagedDirectory(stagedDir: stagedDir, fileId: staged.stagedFileId ?? "")
             }
-            clearStagedStateForRestage(
+            // Task 1667 round 16 (finding 2): keeps this row first if it is
+            // in flight for its owner (the restage clears its ids).
+            restageMismatchedStagedRow(
               assetId: asset.localAssetId,
               error: "Re-encrypting: staged ciphertext not verified for this account"
             )
@@ -3331,11 +3839,15 @@ final class NativeBackupEngine: NSObject {
           authToken: authToken,
           baseURL: baseURL,
           masterKey: masterKey,
-          batchAccountId: batchAccountId
+          batchAccountId: batchAccountId,
+          ticket: ticket
         )
       }
 
-      dbQueue.sync { markStaging(assetId: asset.localAssetId) }
+      dbQueue.sync {
+        guard admitsWrite(ticket, "markStaging") else { return }
+        markStaging(assetId: asset.localAssetId)
+      }
       updateBackupStatusSurfaces(reason: "Encrypting backup")
       onFileStatus?(asset.localAssetId, "encrypting", nil, nil)
 
@@ -3371,6 +3883,7 @@ final class NativeBackupEngine: NSObject {
         resolvedOriginalSize = videoSource.sizeBytes
         guard canStageEncryptedAsset(plaintextBytes: Int64(resolvedOriginalSize)) else {
           dbQueue.sync {
+            guard admitsWrite(ticket, "markPending") else { return }
             markPending(assetId: asset.localAssetId, error: "Waiting for free iPhone storage before staging backup")
           }
           updateBackupStatusSurfaces(reason: "Waiting for iPhone storage")
@@ -3403,6 +3916,7 @@ final class NativeBackupEngine: NSObject {
         let (data, uti) = try await fetchAssetData(localId: asset.localAssetId)
         guard canStageEncryptedAsset(plaintextBytes: Int64(data.count)) else {
           dbQueue.sync {
+            guard admitsWrite(ticket, "markPending") else { return }
             markPending(assetId: asset.localAssetId, error: "Waiting for free iPhone storage before staging backup")
           }
           updateBackupStatusSurfaces(reason: "Waiting for iPhone storage")
@@ -3449,7 +3963,8 @@ final class NativeBackupEngine: NSObject {
         mimeType: mimeType,
         originalSize: resolvedOriginalSize,
         chunkPaths: chunkPaths,
-        accountId: batchAccountId
+        accountId: batchAccountId,
+        ticket: ticket
       )
       chunkPaths.removeAll()
       updateBackupStatusSurfaces(reason: "Uploading encrypted backup")
@@ -3459,7 +3974,8 @@ final class NativeBackupEngine: NSObject {
         authToken: authToken,
         baseURL: baseURL,
         masterKey: masterKey,
-        batchAccountId: batchAccountId
+        batchAccountId: batchAccountId,
+        ticket: ticket
       )
 
     } catch BackupError.assetNotFound {
@@ -3468,6 +3984,7 @@ final class NativeBackupEngine: NSObject {
         "retry": asset.retryCount
       ])
       dbQueue.sync {
+        guard admitsWrite(ticket, "markLocalMissing") else { return }
         markLocalMissing(assetId: asset.localAssetId)
       }
       refreshProgress()
@@ -3490,6 +4007,7 @@ final class NativeBackupEngine: NSObject {
         "retry": asset.retryCount
       ])
       dbQueue.sync {
+        guard admitsWrite(ticket, "clearStagedStateForRestage") else { return }
         clearStagedStateForRestage(
           assetId: asset.localAssetId,
           error: "Upload stalled (408); re-encrypting"
@@ -3519,6 +4037,7 @@ final class NativeBackupEngine: NSObject {
         "retry": asset.retryCount
       ])
       dbQueue.sync {
+        guard admitsWrite(ticket, "markPending") else { return }
         markPending(assetId: asset.localAssetId, error: Self.accountRefusalStopReasonMessage(for: code))
       }
       updateBackupStatusSurfaces(reason: "Backup paused")
@@ -3533,6 +4052,7 @@ final class NativeBackupEngine: NSObject {
         "retry": asset.retryCount
       ])
       dbQueue.sync {
+        guard admitsWrite(ticket, "markPending") else { return }
         markPending(assetId: asset.localAssetId, error: capMessage)
       }
       updateBackupStatusSurfaces(reason: "Backup paused")
@@ -3545,6 +4065,7 @@ final class NativeBackupEngine: NSObject {
         "retry": asset.retryCount
       ])
       dbQueue.sync {
+        guard admitsWrite(ticket, "markFailed") else { return }
         markFailed(assetId: asset.localAssetId, error: error.localizedDescription)
       }
       failedAssets += 1
@@ -3578,7 +4099,7 @@ final class NativeBackupEngine: NSObject {
     return values?.isRegularFile == true && (values?.fileSize ?? 0) > 0
   }
 
-  private func resolveStagedChunks(asset: BackupAssetRow, fileId: String) -> [StagedChunkRow]? {
+  private func resolveStagedChunks(asset: BackupAssetRow, fileId: String, ticket: ManifestWriteFence.Ticket) -> [StagedChunkRow]? {
     let currentDir: URL
     do {
       currentDir = try currentStagedDirectory(fileId: fileId)
@@ -3588,6 +4109,7 @@ final class NativeBackupEngine: NSObject {
 
     if asset.stagedDir != currentDir.path {
       dbQueue.sync {
+        guard admitsWrite(ticket, "updateStagedDirectory") else { return }
         updateStagedDirectory(assetId: asset.localAssetId, stagedDir: currentDir.path)
       }
     }
@@ -3609,6 +4131,7 @@ final class NativeBackupEngine: NSObject {
       }
 
       dbQueue.sync {
+        guard admitsWrite(ticket, "updateStagedChunkPath") else { return }
         updateStagedChunkPath(
           assetId: asset.localAssetId,
           chunkIndex: chunk.index,
@@ -3685,7 +4208,8 @@ final class NativeBackupEngine: NSObject {
     mimeType: String?,
     originalSize: Int,
     chunkPaths: [String],
-    accountId: String
+    accountId: String,
+    ticket: ManifestWriteFence.Ticket
   ) throws -> BackupAssetRow {
     guard !accountId.isEmpty, currentAccountId == accountId else {
       RuntimeTrace.event("backup.native.stage.refused_no_account", [
@@ -3711,7 +4235,10 @@ final class NativeBackupEngine: NSObject {
       stagedPaths.append(destination.path)
     }
 
-    dbQueue.sync {
+    // Round 8: a batch that outlived a sign-out (or an account switch) must
+    // not put its staged row back; its ciphertext is removed instead.
+    let recordedStaging: Bool = dbQueue.sync {
+      guard admitsWrite(ticket, "markStaged") else { return false }
       markStaged(
         assetId: asset.localAssetId,
         fileId: fileId,
@@ -3728,6 +4255,11 @@ final class NativeBackupEngine: NSObject {
         fileId: fileId,
         chunkPaths: stagedPaths
       )
+      return true
+    }
+    guard recordedStaging else {
+      try? FileManager.default.removeItem(at: dir)
+      throw BackupError.accountUnknown
     }
 
     return dbQueue.sync {
@@ -3746,12 +4278,17 @@ final class NativeBackupEngine: NSObject {
     /// the LIVE `currentAccountId` right before any network call below, and
     /// again right before the upload is marked complete — the loop that PUTs
     /// chunks can run long enough for the account to change mid-upload.
-    batchAccountId: String
+    batchAccountId: String,
+    /// Round 8: the batch's manifest write ticket.
+    ticket: ManifestWriteFence.Ticket
   ) async throws -> Bool {
     guard let fileId = asset.stagedFileId,
           let nameEncrypted = asset.stagedNameEncrypted,
           let stagedDir = asset.stagedDir else {
-      dbQueue.sync { markPending(assetId: asset.localAssetId, error: "Missing staged backup metadata") }
+      dbQueue.sync {
+        guard admitsWrite(ticket, "markPending") else { return }
+        markPending(assetId: asset.localAssetId, error: "Missing staged backup metadata")
+      }
       return false
     }
     guard currentAccountId == batchAccountId else {
@@ -3764,10 +4301,11 @@ final class NativeBackupEngine: NSObject {
       return false
     }
 
-    // `var` so the `.resumable` self-heal below can re-bind to a freshly
+    // `var` so the `.uploading` (resumable) self-heal below can re-bind to a freshly
     // revalidated set (paths may have been relocated by resolveStagedChunks).
-    guard var chunks = resolveStagedChunks(asset: asset, fileId: fileId) else {
+    guard var chunks = resolveStagedChunks(asset: asset, fileId: fileId, ticket: ticket) else {
       dbQueue.sync {
+        guard admitsWrite(ticket, "clearStagedStateForRestage") else { return }
         clearStagedStateForRestage(
           assetId: asset.localAssetId,
           error: "Encrypted staging files moved or expired; re-encrypting"
@@ -3805,6 +4343,7 @@ final class NativeBackupEngine: NSObject {
     } else if let existing = asset.remoteFileId, !existing.isEmpty {
       // Stale file_id without a session id — drop it and re-init below.
       dbQueue.sync {
+        guard admitsWrite(ticket, "clearStagedStateForRestage") else { return }
         clearStagedStateForRestage(
           assetId: asset.localAssetId,
           error: "Upload session id missing for an existing remote; re-encrypting"
@@ -3820,6 +4359,7 @@ final class NativeBackupEngine: NSObject {
           "assetType": asset.assetType,
         ])
         dbQueue.sync {
+          guard admitsWrite(ticket, "markPending") else { return }
           markPending(assetId: asset.localAssetId, error: "Missing backup destination folder")
         }
         updateBackupStatusSurfaces(reason: "Waiting for backup folder")
@@ -3841,6 +4381,7 @@ final class NativeBackupEngine: NSObject {
       uploadSessionId = session.uploadSessionId
       heartbeatIntervalSecs = session.heartbeatIntervalSecs
       dbQueue.sync {
+        guard admitsWrite(ticket, "markUploading") else { return }
         markUploading(
           assetId: asset.localAssetId,
           remoteFileId: serverFileId,
@@ -3856,14 +4397,35 @@ final class NativeBackupEngine: NSObject {
         authToken: authToken,
         baseURL: baseURL
       ) {
-      case .alreadyCompleted:
-        dbQueue.sync {
-          markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId)
+      // Round 15: the resume path keeps its old reading of a trashed file
+      // (complete); only the resolution and the flush treat it as not
+      // backed up.
+      case .complete, .completeInTrash:
+        let recorded: Bool = dbQueue.sync {
+          guard admitsWrite(ticket, "markUploadComplete") else { return false }
+          guard markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId, accountId: batchAccountId) else {
+            return false
+          }
           deleteStagedChunks(assetId: asset.localAssetId)
+          return true
+        }
+        guard recorded else {
+          RuntimeTrace.event("backup.native.upload.record_failed", ["path": "resume"])
+          throw BackupError.databaseUnavailable
         }
         removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
         updateBackupStatusSurfaces(reason: "Recovered completed backup")
         onFileStatus?(asset.localAssetId, "uploaded", nil, nil)
+        // Task 1667: record it in the server's per-device map so an emptied
+        // manifest (sign-out, reinstall) can be rebuilt instead of re-uploaded.
+        await markOnServer(
+          assetId: asset.localAssetId,
+          fileId: serverFileId,
+          authToken: authToken,
+          baseURL: baseURL,
+          accountId: batchAccountId,
+          ticket: ticket
+        )
         generateAndUploadThumbnail(
           phAssetId: asset.localAssetId,
           serverFileId: serverFileId,
@@ -3876,8 +4438,9 @@ final class NativeBackupEngine: NSObject {
         )
         return true
 
-      case .missingRemote:
+      case .gone:
         dbQueue.sync {
+          guard admitsWrite(ticket, "clearStagedStateForRestage") else { return }
           clearStagedStateForRestage(
             assetId: asset.localAssetId,
             error: "Remote upload session disappeared; re-encrypting"
@@ -3887,20 +4450,21 @@ final class NativeBackupEngine: NSObject {
         updateBackupStatusSurfaces(reason: "Re-encrypting backup")
         return false
 
-      case .resumable:
+      case .uploading:
         // Self-heal a wedged resume. The server still reports this session
         // resumable, but iOS may have evicted the staged `.enc` files (Caches/
         // tmp are reclaimed under storage pressure) since we resolved `chunks`
         // above. Re-verify every non-complete chunk's staged file exists and is
         // non-zero via the same helper used on the initial staging check. If it
         // can no longer be reconciled, route to the re-stage branch (identical
-        // to `.missingRemote`): clear staged state, drop the old file_id, and
+        // to `.gone`): clear staged state, drop the old file_id, and
         // re-encrypt from scratch — instead of `markUploading` on an
         // unreconcilable session and then throwing on the missing-file PUT every
         // drain until the asset dead-letters at retry 10. The orphaned server
         // session is reaped by the server's stale_upload_cleanup worker.
-        guard let revalidated = resolveStagedChunks(asset: asset, fileId: fileId) else {
+        guard let revalidated = resolveStagedChunks(asset: asset, fileId: fileId, ticket: ticket) else {
           dbQueue.sync {
+            guard admitsWrite(ticket, "clearStagedStateForRestage") else { return }
             clearStagedStateForRestage(
               assetId: asset.localAssetId,
               error: "Resumable session lost its staged chunks; re-encrypting"
@@ -3912,6 +4476,7 @@ final class NativeBackupEngine: NSObject {
         }
         chunks = revalidated
         dbQueue.sync {
+          guard admitsWrite(ticket, "markUploading") else { return }
           markUploading(
             assetId: asset.localAssetId,
             remoteFileId: serverFileId,
@@ -3938,6 +4503,7 @@ final class NativeBackupEngine: NSObject {
         authToken: authToken,
         baseURL: baseURL,
         batchAccountId: batchAccountId,
+        ticket: ticket,
         pacer: pacer
       )
     } catch is CancellationError {
@@ -3981,6 +4547,7 @@ final class NativeBackupEngine: NSObject {
       pacer.intervalSecs = heartbeatIntervalSecs
       pacer.lastSentAt = Date()
       dbQueue.sync {
+        guard admitsWrite(ticket, "markUploading") else { return }
         markUploading(
           assetId: asset.localAssetId,
           remoteFileId: serverFileId,
@@ -3996,6 +4563,7 @@ final class NativeBackupEngine: NSObject {
         let url = dir.appendingPathComponent("\(index).enc")
         guard readableRegularFile(url) else {
           dbQueue.sync {
+            guard admitsWrite(ticket, "clearStagedStateForRestage") else { return }
             clearStagedStateForRestage(
               assetId: asset.localAssetId,
               error: "Staged chunk \(index) missing after a session re-init; re-encrypting"
@@ -4008,6 +4576,7 @@ final class NativeBackupEngine: NSObject {
         allStaged.append(StagedChunkRow(index: index, path: url.path))
       }
       dbQueue.sync {
+        guard admitsWrite(ticket, "replaceStagedChunks") else { return }
         replaceStagedChunks(assetId: asset.localAssetId, fileId: fileId, chunkPaths: allStaged.map { $0.path })
       }
 
@@ -4019,6 +4588,7 @@ final class NativeBackupEngine: NSObject {
           authToken: authToken,
           baseURL: baseURL,
           batchAccountId: batchAccountId,
+          ticket: ticket,
           pacer: pacer
         )
       } catch is CancellationError {
@@ -4033,11 +4603,30 @@ final class NativeBackupEngine: NSObject {
       }
     }
 
-    dbQueue.sync {
-      markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId)
+    let recorded: Bool = dbQueue.sync {
+      guard admitsWrite(ticket, "markUploadComplete") else { return false }
+      guard markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId, accountId: batchAccountId) else {
+        return false
+      }
       deleteStagedChunks(assetId: asset.localAssetId)
+      return true
+    }
+    // Round 7 sweep: nothing staged is deleted for an upload the manifest
+    // did not record (see `markUploadComplete`).
+    guard recorded else {
+      RuntimeTrace.event("backup.native.upload.record_failed", ["path": "complete"])
+      throw BackupError.databaseUnavailable
     }
     removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
+    // Task 1667: see the resume branch above.
+    await markOnServer(
+      assetId: asset.localAssetId,
+      fileId: serverFileId,
+      authToken: authToken,
+      baseURL: baseURL,
+      accountId: batchAccountId,
+      ticket: ticket
+    )
 
     updateBackupStatusSurfaces()
     perfLog("asset.finish", [
@@ -4083,6 +4672,7 @@ final class NativeBackupEngine: NSObject {
     authToken: String,
     baseURL: String,
     batchAccountId: String,
+    ticket: ManifestWriteFence.Ticket,
     pacer: HeartbeatPacer
   ) async throws {
     // v2 chunk PUTs are idempotent (INSERT…ON CONFLICT DO UPDATE), so
@@ -4100,7 +4690,8 @@ final class NativeBackupEngine: NSObject {
         fileURL: URL(fileURLWithPath: chunk.path),
         authToken: authToken,
         baseURL: baseURL,
-        accountId: batchAccountId
+        accountId: batchAccountId,
+        ticket: ticket
       )
     }
 
@@ -4171,11 +4762,19 @@ final class NativeBackupEngine: NSObject {
   /// Decide how to resume an upload whose session was opened in a prior pass.
   ///
   /// v2 has no session-status GET (only init/chunks/complete), so we read the
-  /// durable file row via GET /api/v1/files/{file_id} and map `is_uploading`:
-  ///   • 404                  → `.missingRemote`  (file gone — re-stage)
-  ///   • is_uploading == false → `.alreadyCompleted` (complete already landed)
-  ///   • otherwise            → `.resumable`      (re-PUT the non-uploaded tail,
-  ///                             then POST complete — chunk PUTs are idempotent)
+  /// durable file row via GET /api/v1/files/{file_id}
+  /// (`PhotoBackupServerResponses.existingUpload`):
+  ///   • 404 with the API's NotFound body → `.gone`      (file gone — re-stage)
+  ///   • is_uploading == false             → `.complete` / `.completeInTrash`
+  ///   • is_uploading == true              → `.uploading` (re-PUT the
+  ///                             non-uploaded tail, then POST complete — chunk
+  ///                             PUTs are idempotent)
+  ///   • anything else (a non-API 404, a body without the booleans, 5xx, a
+  ///     timeout) THROWS: the caller keeps the row and retries later
+  ///     (task 1667 round 15, review item 2: it used to read any 404 as gone
+  ///     and a 2xx without `is_uploading` as resumable, and the sign-in
+  ///     resolution then dropped a kept row and uploaded the photo again).
+  ///   • 429 → throws after setting `backoffUntil` from `Retry-After`.
   /// The "which chunks to re-send" decision is purely LOCAL: the caller drives
   /// only chunks the local `backup_upload_chunks` table still marks pending.
   /// This is correct without a server status GET because v2 chunk PUTs are
@@ -4186,8 +4785,10 @@ final class NativeBackupEngine: NSObject {
   private func inspectExistingUpload(
     fileId: String,
     authToken: String,
-    baseURL: String
-  ) async throws -> ExistingUploadDisposition {
+    baseURL: String,
+    /// Task 1667 round 14: the sign-out flush hands the budget it has left.
+    requestTimeout: TimeInterval? = nil
+  ) async throws -> PhotoBackupServerResponses.ExistingUpload {
     guard let url = URL(string: "\(baseURL)/api/v1/files/\(fileId)") else {
       throw BackupError.invalidServerURL
     }
@@ -4195,38 +4796,31 @@ final class NativeBackupEngine: NSObject {
     var request = URLRequest(url: url)
     ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "GET"
+    if let requestTimeout { request.timeoutInterval = requestTimeout }
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 
     let (data, response) = try await metadataSession.data(for: request)
-    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-
-    if statusCode == 404 {
-      return .missingRemote
-    }
-
-    if statusCode == 429 {
-      if let retryAfter = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After"),
-         let seconds = Double(retryAfter) {
-        backoffUntil = Date().addingTimeInterval(seconds)
-      } else {
-        backoffUntil = Date().addingTimeInterval(60)
-      }
+    let http = response as? HTTPURLResponse
+    let statusCode = http?.statusCode ?? 0
+    do {
+      return try PhotoBackupServerResponses.existingUpload(
+        statusCode: statusCode,
+        contentType: http?.value(forHTTPHeaderField: "Content-Type"),
+        retryAfter: http?.value(forHTTPHeaderField: "Retry-After"),
+        data: data
+      )
+    } catch let limited as PhotoBackupServerResponses.RateLimited {
+      // Round 15 (review item 2): the server's Retry-After is honoured; the
+      // rebuild gate's deferral never shortens it (`ManifestRebuildGate
+      // .backoffDeadline`).
+      backoffUntil = Date().addingTimeInterval(limited.retryAfter ?? 60)
       throw BackupError.httpStatus(429, "Rate limited")
+    } catch let unexpected as PhotoBackupServerResponses.UnexpectedResponse {
+      RuntimeTrace.event("backup.native.inspect_upload.unexpected", [
+        "status": statusCode, "reason": unexpected.reason,
+      ])
+      throw BackupError.httpStatus(statusCode, unexpected.reason)
     }
-
-    guard (200..<300).contains(statusCode) else {
-      let body = String(data: data, encoding: .utf8) ?? ""
-      throw BackupError.httpStatus(statusCode, body)
-    }
-
-    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    // `is_uploading == false` means complete already ran for this file. Absent
-    // or true ⇒ still in progress ⇒ resumable. Default to resumable on a missing
-    // flag (safe: re-PUT idempotent + complete revalidates).
-    if let isUploading = json?["is_uploading"] as? Bool, isUploading == false {
-      return .alreadyCompleted
-    }
-    return .resumable
   }
 
   private func uploadStagedChunk(
@@ -4242,7 +4836,10 @@ final class NativeBackupEngine: NSObject {
     /// fresh, unchecked read taken here. Refused (not silently sent
     /// header-less) when empty: an upload with no confirmed owner must not
     /// reach the network at all.
-    accountId: String
+    accountId: String,
+    /// Round 8: the batch's manifest write ticket, kept for this chunk's
+    /// completion callback.
+    ticket: ManifestWriteFence.Ticket
   ) async throws {
     guard !accountId.isEmpty else {
       RuntimeTrace.event("backup.native.upload_chunk.refused_no_account")
@@ -4281,8 +4878,10 @@ final class NativeBackupEngine: NSObject {
         task.taskDescription = encoded
       }
       chunkUploadContinuations[task.taskIdentifier] = continuation
+      chunkTaskTickets[task.taskIdentifier] = ticket
       dbQueue.async { [weak self] in
-        self?.markChunkUploading(assetId: localAssetId, chunkIndex: chunkIndex, taskId: task.taskIdentifier)
+        guard let self, self.admitsWrite(ticket, "markChunkUploading") else { return }
+        self.markChunkUploading(assetId: localAssetId, chunkIndex: chunkIndex, taskId: task.taskIdentifier)
       }
       task.resume()
     }
@@ -4666,29 +5265,53 @@ final class NativeBackupEngine: NSObject {
 
   /// Open the same database that React Native reads for backup insights.
   /// expo-sqlite stores databases in <documentDir>/SQLite/<name>.
-  private func openDatabase() {
+  /// `<Documents>/SQLite/beebeeb-backup.db` — expo-sqlite's location for the
+  /// JS layer's `openDatabaseAsync('beebeeb-backup.db')`, so both share it.
+  static func backupDatabaseURL() -> URL {
     let documentDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-    let sqliteDir = documentDir.appendingPathComponent("SQLite", isDirectory: true)
-    try? FileManager.default.createDirectory(at: sqliteDir, withIntermediateDirectories: true)
-    let path = sqliteDir.appendingPathComponent("beebeeb-backup.db").path
-
-    let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-    guard sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK else {
-      NSLog("[NativeBackupEngine] Failed to open database at \(path)")
-      db = nil
-      return
-    }
-
-    // Enable WAL mode for concurrent access with JS layer
-    sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
-
-    // Ensure tables exist (safe to call even if JS already created them)
-    ensureTables()
+    return documentDir
+      .appendingPathComponent("SQLite", isDirectory: true)
+      .appendingPathComponent("beebeeb-backup.db", isDirectory: false)
   }
 
-  private func ensureTables() {
-    guard let db = db else { return }
+  /// The launch open, enqueued once from `init()`. Every later open goes
+  /// through `openManifestIfClosed` (task 1667 round 6): `start()` and the
+  /// background task call it, and so does the recovery after a failed
+  /// sign-out reset. A pending sign-out reset is applied first, and a file
+  /// that cannot be opened, read or emptied leaves no handle open
+  /// (`BackupManifestHandle.openIfClosed`).
+  private func openDatabase() {
+    let failure = manifestHandle.openIfClosed()
+    RuntimeTrace.event("backup.native.manifest.open", [
+      "trigger": "init",
+      "ok": failure == nil,
+      "failure": failure?.rawValue ?? NSNull(),
+      "appliedPendingReset": failure == nil && manifestHandle.lastOpenAppliedPendingReset,
+    ])
+    if let failure {
+      NSLog("[NativeBackupEngine] Backup manifest could not be opened at launch (\(failure.rawValue)); start() retries")
+    }
+  }
 
+  /// Task 1667 round 6: opens the manifest when its handle is closed. MUST
+  /// run on `dbQueue`. nil = a handle is open on return.
+  private func openManifestIfClosed(trigger: String) -> BackupManifestHandle.OpenFailure? {
+    let wasOpen = db != nil
+    let failure = manifestHandle.openIfClosed()
+    if !wasOpen {
+      RuntimeTrace.event("backup.native.manifest.open", [
+        "trigger": trigger,
+        "ok": failure == nil,
+        "failure": failure?.rawValue ?? NSNull(),
+        "appliedPendingReset": failure == nil && manifestHandle.lastOpenAppliedPendingReset,
+      ])
+    }
+    return failure
+  }
+
+  /// The manifest schema. Static and handed the handle (round 6) so
+  /// `BackupManifestHandle` runs it on every open, not just the first.
+  static func ensureTables(_ db: OpaquePointer) {
     let sql = """
     CREATE TABLE IF NOT EXISTS backup_assets (
       local_asset_id TEXT PRIMARY KEY,
@@ -4753,12 +5376,13 @@ final class NativeBackupEngine: NSObject {
     for migration in migrations {
       sqlite3_exec(db, migration, nil, nil, nil)
     }
+    // Task 1667: uploaded_account_id + server_marked_at.
+    BackupManifestStore.migrate(db)
 
-    migratePhotoKitMissingAssetRows()
+    migratePhotoKitMissingAssetRows(db, nowMs: BackupManifestStore.currentMs())
   }
 
-  private func migratePhotoKitMissingAssetRows() {
-    guard let db = db else { return }
+  private static func migratePhotoKitMissingAssetRows(_ db: OpaquePointer, nowMs: Int64) {
     let sql = """
     UPDATE backup_assets
     SET status = 'local_missing',
@@ -4774,7 +5398,7 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_int64(stmt, 1, nowMs())
+    sqlite3_bind_int64(stmt, 1, nowMs)
     sqlite3_step(stmt)
     let changed = sqlite3_changes(db)
     if changed > 0 {
@@ -4782,98 +5406,43 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
-  /// Insert new assets from the photo library that are not already tracked.
-  private func insertNewAssets(_ assets: [PHAsset]) {
-    guard let db = db else { return }
-    let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-
-    let sql = """
-    INSERT INTO backup_assets
-      (local_asset_id, content_hash, file_size, created_at, asset_type, status, queued_at)
-    VALUES (?, '', 0, ?, ?, 'pending_upload', ?)
-    ON CONFLICT(local_asset_id) DO UPDATE SET
-      created_at = excluded.created_at,
-      asset_type = excluded.asset_type,
-      selected_for_backup = 1,
-      status = CASE
-        WHEN backup_assets.status = 'local_missing' THEN 'pending_upload'
-        ELSE backup_assets.status
-      END,
-      retry_count = CASE
-        WHEN backup_assets.status = 'local_missing' THEN 0
-        ELSE COALESCE(backup_assets.retry_count, 0)
-      END,
-      error_message = CASE
-        WHEN backup_assets.status = 'local_missing' THEN NULL
-        ELSE backup_assets.error_message
-      END
-    """
-    var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-
-    sqlite3_exec(db, "BEGIN", nil, nil, nil)
-    for asset in assets {
-      let assetType: String = asset.mediaType == .video ? "video" : "photo"
-      let createdAt = isoString(from: asset.creationDate ?? Date())
-
-      sqlite3_bind_text(stmt, 1, (asset.localIdentifier as NSString).utf8String, -1, transient)
-      sqlite3_bind_text(stmt, 2, (createdAt as NSString).utf8String, -1, transient)
-      sqlite3_bind_text(stmt, 3, (assetType as NSString).utf8String, -1, transient)
-      sqlite3_bind_int64(stmt, 4, nowMs)
-      sqlite3_step(stmt)
-      sqlite3_reset(stmt)
+  /// The manifest rows for scanned PhotoKit assets (the statement lives in
+  /// `BackupManifestStore.insertScannedAssets`, behind the fence in
+  /// `FencedManifestWrites.scanInsert`).
+  private func scannedAssets(_ assets: [PHAsset]) -> [BackupManifestStore.ScannedAsset] {
+    assets.map { asset in
+      BackupManifestStore.ScannedAsset(
+        localAssetId: asset.localIdentifier,
+        createdAt: isoString(from: asset.creationDate ?? Date()),
+        assetType: asset.mediaType == .video ? "video" : "photo"
+      )
     }
-    sqlite3_exec(db, "COMMIT", nil, nil, nil)
   }
 
-  private func updateAssetSelectionScope(allowedAssetIds: Set<String>, hasAlbumSelection: Bool) {
-    guard let db = db else { return }
-
-    guard hasAlbumSelection else {
-      sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 1 WHERE COALESCE(selected_for_backup, 1) != 1", nil, nil, nil)
+  /// Records a scan insert's outcome. MUST run on `dbQueue`, in the block
+  /// that wrote. Round 7 sweep: a failed insert is recorded
+  /// (`scanInsertHealth`) and traced, never read as a complete one.
+  /// Round 10: sticky until a FULL scan inserts successfully.
+  /// Round 8: a fenced insert wrote nothing and changes nothing (the trace
+  /// is the fence's).
+  private func recordScanInsert(
+    _ written: FencedManifestWrites.ScanWrite, assets: Int, source: ScanInsertHealth.Source
+  ) {
+    switch written {
+    case .fenced, .noHandle:
       return
-    }
-
-    let sqlInChunk = 400
-    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { return }
-    var didCommit = false
-    defer {
-      if !didCommit {
-        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    case .written(let inserted, let entered):
+      manifestHandle.scanInsertHealth.record(inserted: inserted, source: source)
+      if !inserted {
+        RuntimeTrace.event("backup.native.scan.insert_failed", ["assets": assets])
+      } else if entered > 0 {
+        // Round 11 (review finding 9): new rows owe a bulk check. Round 12
+        // (review item 10): only rows that ENTERED the queue (new, or back
+        // from local_missing); `assets` is the scanned count, and every full
+        // scan re-upserts the whole library.
+        requestBulkServerCheck()
       }
     }
-
-    guard sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 0", nil, nil, nil) == SQLITE_OK else { return }
-
-    let assetIds = Array(allowedAssetIds)
-    for start in stride(from: 0, to: assetIds.count, by: sqlInChunk) {
-      let end = min(start + sqlInChunk, assetIds.count)
-      let batch = assetIds[start..<end]
-      let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
-      let sql = "UPDATE backup_assets SET selected_for_backup = 1 WHERE local_asset_id IN (\(placeholders))"
-      var stmt: OpaquePointer?
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-      var didBindBatch = true
-      for (index, assetId) in batch.enumerated() {
-        if sqlite3_bind_text(stmt, Int32(index + 1), (assetId as NSString).utf8String, -1, transient) != SQLITE_OK {
-          didBindBatch = false
-          break
-        }
-      }
-      guard didBindBatch else {
-        sqlite3_finalize(stmt)
-        return
-      }
-      let stepResult = sqlite3_step(stmt)
-      sqlite3_finalize(stmt)
-      guard stepResult == SQLITE_DONE else { return }
-    }
-
-    guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else { return }
-    didCommit = true
   }
 
   /// Get pending uploads ordered by creation date (newest first), respecting retry limits.
@@ -4974,7 +5543,7 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (localAssetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, localAssetId)
     guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
     return backupAssetRow(from: stmt)
   }
@@ -5004,7 +5573,7 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int64(stmt, 1, nowMs)
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5023,14 +5592,14 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (remoteFileId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, remoteFileId)
     if let uploadSessionId {
-      sqlite3_bind_text(stmt, 2, (uploadSessionId as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 2, uploadSessionId)
     } else {
       sqlite3_bind_null(stmt, 2)
     }
     sqlite3_bind_int64(stmt, 3, nowMs())
-    sqlite3_bind_text(stmt, 4, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 4, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5041,7 +5610,7 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int64(stmt, 1, nowMs())
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5058,12 +5627,12 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     if let error {
-      sqlite3_bind_text(stmt, 1, (error as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 1, error)
     } else {
       sqlite3_bind_null(stmt, 1)
     }
     sqlite3_bind_int64(stmt, 2, nowMs())
-    sqlite3_bind_text(stmt, 3, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 3, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5098,25 +5667,25 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (fileId as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (nameEncrypted as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, fileId)
+    BackupManifestStore.bindText(stmt, 2, nameEncrypted)
     if let mimeType {
-      sqlite3_bind_text(stmt, 3, (mimeType as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 3, mimeType)
     } else {
       sqlite3_bind_null(stmt, 3)
     }
     sqlite3_bind_int(stmt, 4, isMediaValue ? 1 : 0)
     sqlite3_bind_int64(stmt, 5, originalSize)
     sqlite3_bind_int(stmt, 6, Int32(chunkCount))
-    sqlite3_bind_text(stmt, 7, (stagedDir as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 7, stagedDir)
     sqlite3_bind_int64(stmt, 8, nowMs())
     sqlite3_bind_int64(stmt, 9, originalSize)
     if let stagedAccountId {
-      sqlite3_bind_text(stmt, 10, (stagedAccountId as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 10, stagedAccountId)
     } else {
       sqlite3_bind_null(stmt, 10)
     }
-    sqlite3_bind_text(stmt, 11, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 11, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5126,69 +5695,49 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (stagedDir as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, stagedDir)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_step(stmt)
   }
 
+  /// Round 15: the statement lives in `BackupManifestStore.restageSQL`, which
+  /// the teardown purge (`purgeAllStaged`) also runs, so the swift tests
+  /// drive the shipped statement.
   private func clearStagedStateForRestage(assetId: String, error: String) {
     guard let db = db else { return }
-    let sql = """
-    UPDATE backup_assets
-    SET status = 'pending_reupload',
-        remote_file_id = NULL,
-        upload_session_id = NULL,
-        staged_file_id = NULL,
-        staged_name_encrypted = NULL,
-        staged_mime_type = NULL,
-        staged_is_media = 0,
-        staged_original_size = 0,
-        staged_chunk_count = 0,
-        staged_dir = NULL,
-        staged_at = NULL,
-        error_message = ?,
-        last_attempt_at = ?
-    WHERE local_asset_id = ?
-    """
-    var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (error as NSString).utf8String, -1, nil)
-    sqlite3_bind_int64(stmt, 2, nowMs())
-    sqlite3_bind_text(stmt, 3, (assetId as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
-    deleteStagedChunks(assetId: assetId)
+    BackupManifestStore.clearStagedForRestage(db, assetId: assetId, error: error, nowMs: nowMs())
+  }
+
+  /// Task 1667 round 16 (review of mobile#182 at 083d5f23, finding 2):
+  /// `uploadSingleAsset`'s per-row refusal of a row staged for another
+  /// account. `BackupManifestStore.restageMismatchedRow` keeps the row for
+  /// its owner if it is in flight, then clears it like
+  /// `clearStagedStateForRestage`. MUST run on `dbQueue`.
+  private func restageMismatchedStagedRow(assetId: String, error: String) {
+    guard let db = db else { return }
+    let result = BackupManifestStore.restageMismatchedRow(db, assetId: assetId, error: error, nowMs: nowMs())
+    RuntimeTrace.event("backup.native.staged_account_mismatch.in_flight_kept", ["kept": result.keptInFlight ?? -1])
   }
 
   /// Mark an asset as successfully uploaded.
-  private func markUploadComplete(assetId: String, remoteFileId: String) {
-    guard let db = db else { return }
-    let now = ISO8601DateFormatter().string(from: Date())
-    let sql = """
-    UPDATE backup_assets
-    SET status = 'uploaded',
-        remote_file_id = ?,
-        uploaded_at = ?,
-        error_message = NULL,
-        retry_count = 0,
-        upload_session_id = NULL,
-        staged_file_id = NULL,
-        staged_name_encrypted = NULL,
-        staged_mime_type = NULL,
-        staged_is_media = 0,
-        staged_original_size = 0,
-        staged_chunk_count = 0,
-        staged_dir = NULL,
-        staged_at = NULL
-    WHERE local_asset_id = ?
-    """
-    var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (remoteFileId as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (now as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 3, (assetId as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
+  ///
+  /// Task 1667 round 7 sweep: false when the manifest did not record it (no
+  /// handle, a failed write). The caller then keeps the staged chunks, the
+  /// remote file id and the session id, so the next attempt resumes, finds
+  /// the upload already complete and records it; it used to delete them
+  /// after a failed write, and the photo was uploaded again.
+  private func markUploadComplete(assetId: String, remoteFileId: String, accountId: String) -> Bool {
+    guard let db = db else { return false }
+    // Task 1667: the row records WHICH account owns the remote file
+    // (`uploaded_account_id`) and that the server's per-device map does not
+    // know it yet (`server_marked_at = NULL`, see `markOnServer`).
+    return BackupManifestStore.markUploaded(
+      db,
+      assetId: assetId,
+      remoteFileId: remoteFileId,
+      accountId: accountId,
+      uploadedAtIso: ISO8601DateFormatter().string(from: Date())
+    )
   }
 
   /// Mark an asset as failed, incrementing retry count.
@@ -5207,9 +5756,9 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (error as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, error)
     sqlite3_bind_int64(stmt, 2, nowMs)
-    sqlite3_bind_text(stmt, 3, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 3, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5228,7 +5777,7 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int64(stmt, 1, nowMs())
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5236,7 +5785,7 @@ final class NativeBackupEngine: NSObject {
     guard let db = db else { return }
     var deleteStmt: OpaquePointer?
     if sqlite3_prepare_v2(db, "DELETE FROM backup_upload_chunks WHERE local_asset_id = ?", -1, &deleteStmt, nil) == SQLITE_OK {
-      sqlite3_bind_text(deleteStmt, 1, (assetId as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(deleteStmt, 1, assetId)
       sqlite3_step(deleteStmt)
     }
     sqlite3_finalize(deleteStmt)
@@ -5251,10 +5800,10 @@ final class NativeBackupEngine: NSObject {
     defer { sqlite3_finalize(stmt) }
     sqlite3_exec(db, "BEGIN", nil, nil, nil)
     for (index, path) in chunkPaths.enumerated() {
-      sqlite3_bind_text(stmt, 1, (assetId as NSString).utf8String, -1, nil)
-      sqlite3_bind_text(stmt, 2, (fileId as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 1, assetId)
+      BackupManifestStore.bindText(stmt, 2, fileId)
       sqlite3_bind_int(stmt, 3, Int32(index))
-      sqlite3_bind_text(stmt, 4, (path as NSString).utf8String, -1, nil)
+      BackupManifestStore.bindText(stmt, 4, path)
       sqlite3_step(stmt)
       sqlite3_reset(stmt)
     }
@@ -5273,7 +5822,7 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, assetId)
     var chunks: [StagedChunkRow] = []
     while sqlite3_step(stmt) == SQLITE_ROW {
       chunks.append(StagedChunkRow(
@@ -5294,8 +5843,8 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (path as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, path)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
     sqlite3_step(stmt)
   }
@@ -5311,7 +5860,7 @@ final class NativeBackupEngine: NSObject {
     """
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, assetId)
     return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
   }
 
@@ -5326,41 +5875,68 @@ final class NativeBackupEngine: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int(stmt, 1, Int32(taskId))
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
     sqlite3_step(stmt)
   }
 
-  private func markChunkUploaded(assetId: String, chunkIndex: Int) {
+  /// Round 8: a chunk callback only touches the chunk rows of the upload
+  /// session its PUT was sent for (`uploadSessionId`, from the task
+  /// description). A callback that arrives after a sign-out reset (in this
+  /// process, or in a later one that iOS relaunched for the background
+  /// session) finds no such row: the reset removed it, and the next
+  /// account's rows carry their own session ids. In-process, the batch's
+  /// write ticket is checked too (`admitsChunkCallback`).
+  private static let chunkSessionPredicate = """
+    local_asset_id = ? AND chunk_index = ?
+    AND EXISTS (
+      SELECT 1 FROM backup_assets a
+      WHERE a.local_asset_id = backup_upload_chunks.local_asset_id
+        AND a.upload_session_id = ?
+    )
+    """
+
+  private func markChunkUploaded(assetId: String, chunkIndex: Int, uploadSessionId: String) {
     guard let db = db else { return }
     let sql = """
     UPDATE backup_upload_chunks
     SET status = 'uploaded', uploaded_at = ?, last_error = NULL
-    WHERE local_asset_id = ? AND chunk_index = ?
+    WHERE \(Self.chunkSessionPredicate)
     """
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     sqlite3_bind_int64(stmt, 1, nowMs())
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
+    BackupManifestStore.bindText(stmt, 4, uploadSessionId)
     sqlite3_step(stmt)
   }
 
-  private func markChunkFailed(assetId: String, chunkIndex: Int, error: String) {
+  private func markChunkFailed(assetId: String, chunkIndex: Int, uploadSessionId: String, error: String) {
     guard let db = db else { return }
     let sql = """
     UPDATE backup_upload_chunks
     SET status = 'pending', task_id = NULL, last_error = ?
-    WHERE local_asset_id = ? AND chunk_index = ?
+    WHERE \(Self.chunkSessionPredicate)
     """
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (error as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, error)
+    BackupManifestStore.bindText(stmt, 2, assetId)
     sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
+    BackupManifestStore.bindText(stmt, 4, uploadSessionId)
     sqlite3_step(stmt)
+  }
+
+  /// Round 8: the fence for a chunk-upload callback. MUST run on `dbQueue`,
+  /// in the block that writes. With the batch's ticket (the PUT was sent by
+  /// this process) the ticket must be admitted; without one (a task iOS
+  /// handed back after a relaunch) the session predicate above is the fence.
+  private func admitsChunkCallback(_ ticket: ManifestWriteFence.Ticket?, _ writer: String) -> Bool {
+    guard let ticket else { return true }
+    return manifestHandle.writeFence.admits(ticket, writer: writer)
   }
 
   private func deleteStagedChunks(assetId: String) {
@@ -5369,7 +5945,7 @@ final class NativeBackupEngine: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_text(stmt, 1, (assetId as NSString).utf8String, -1, nil)
+    BackupManifestStore.bindText(stmt, 1, assetId)
     sqlite3_step(stmt)
   }
 
@@ -5466,58 +6042,33 @@ final class NativeBackupEngine: NSObject {
   /// here) — it does not wrap itself, so a caller that is not already on
   /// `dbQueue` must do `dbQueue.sync { purgeMismatchedStagedAssets(...) }`
   /// (see `start()`), not call it directly.
+  ///
+  /// Task 1667 round 16 (review of mobile#182 at 083d5f23, finding 2): the
+  /// select and the restage live in `BackupManifestStore.purgeMismatchedStaged`,
+  /// which first keeps the mismatched account's in-flight uploads (scoped to
+  /// those rows) for resolution at that account's next sign-in. Without it, a
+  /// missed teardown followed by a relaunch as another account cleared the
+  /// ids of an upload that may be complete on the server, and the photo
+  /// uploaded a second time when its account returned.
   @discardableResult
   func purgeMismatchedStagedAssets(currentAccountId accountId: String?) -> Int {
     guard let db = db, let accountId, !accountId.isEmpty else { return 0 }
-
-    let selectSql = """
-    SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
-    FROM backup_assets
-    WHERE staged_file_id IS NOT NULL
-      AND (staged_account_id IS NULL OR staged_account_id != ?)
-    """
-    var selectStmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK else { return 0 }
-    sqlite3_bind_text(selectStmt, 1, (accountId as NSString).utf8String, -1, nil)
-
-    var mismatched: [(assetId: String, stagedDir: String?, fileId: String, otherAccount: String?)] = []
-    while sqlite3_step(selectStmt) == SQLITE_ROW {
-      let assetId = String(cString: sqlite3_column_text(selectStmt, 0))
-      let stagedDir: String? = sqlite3_column_type(selectStmt, 1) != SQLITE_NULL
-        ? String(cString: sqlite3_column_text(selectStmt, 1))
-        : nil
-      let fileId = String(cString: sqlite3_column_text(selectStmt, 2))
-      // Untagged (pre-migration) rows are exactly what this query now also
-      // selects, so `staged_account_id` (column 3) may itself be NULL here —
-      // reading it with `sqlite3_column_text` unconditionally on a NULL
-      // column returns a null pointer, and `String(cString:)` on that is
-      // undefined behavior, so it MUST be NULL-checked like every other
-      // nullable column above.
-      let otherAccount: String? = sqlite3_column_type(selectStmt, 3) != SQLITE_NULL
-        ? String(cString: sqlite3_column_text(selectStmt, 3))
-        : nil
-      mismatched.append((assetId, stagedDir, fileId, otherAccount))
-    }
-    sqlite3_finalize(selectStmt)
-
-    guard !mismatched.isEmpty else { return 0 }
-
-    for row in mismatched {
+    let result = BackupManifestStore.purgeMismatchedStaged(
+      db, currentAccountId: accountId, nowMs: nowMs(),
+      error: "Re-encrypting: staged ciphertext not verified for this account"
+    ) { row in
       if let stagedDir = row.stagedDir {
         removeStagedDirectory(stagedDir: stagedDir, fileId: row.fileId)
       }
-      clearStagedStateForRestage(
-        assetId: row.assetId,
-        error: "Re-encrypting: staged ciphertext not verified for this account"
-      )
       RuntimeTrace.event("backup.native.staged_account_mismatch.purged", [
-        "stagedForAccount": row.otherAccount ?? "(untagged/pre-migration)",
+        "stagedForAccount": row.forAccount ?? "(untagged/pre-migration)",
         "currentAccount": accountId
       ])
     }
-
-    NSLog("[NativeBackupEngine] Purged \(mismatched.count) staged asset(s) encrypted for a different (or unproven) account")
-    return mismatched.count
+    guard result.purged > 0 else { return 0 }
+    RuntimeTrace.event("backup.native.staged_account_mismatch.in_flight_kept", ["kept": result.keptInFlight ?? -1])
+    NSLog("[NativeBackupEngine] Purged \(result.purged) staged asset(s) encrypted for a different (or unproven) account")
+    return result.purged
   }
 
   /// Task 1531 [P0] round 3 (lead review): purge EVERY staged asset,
@@ -5541,46 +6092,27 @@ final class NativeBackupEngine: NSObject {
   @discardableResult
   private func purgeAllStagedAssets() -> Int {
     guard let db = db else { return 0 }
-
-    let selectSql = """
-    SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
-    FROM backup_assets
-    WHERE staged_file_id IS NOT NULL
-    """
-    var selectStmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK else { return 0 }
-
-    var staged: [(assetId: String, stagedDir: String?, fileId: String, forAccount: String?)] = []
-    while sqlite3_step(selectStmt) == SQLITE_ROW {
-      let assetId = String(cString: sqlite3_column_text(selectStmt, 0))
-      let stagedDir: String? = sqlite3_column_type(selectStmt, 1) != SQLITE_NULL
-        ? String(cString: sqlite3_column_text(selectStmt, 1))
-        : nil
-      let fileId = String(cString: sqlite3_column_text(selectStmt, 2))
-      let forAccount: String? = sqlite3_column_type(selectStmt, 3) != SQLITE_NULL
-        ? String(cString: sqlite3_column_text(selectStmt, 3))
-        : nil
-      staged.append((assetId, stagedDir, fileId, forAccount))
-    }
-    sqlite3_finalize(selectStmt)
-
-    guard !staged.isEmpty else { return 0 }
-
-    for row in staged {
+    // Task 1667 round 15 (review of mobile#182 at dd97f2ac, P1 item 1): the
+    // uploads that may be in flight on the server are kept for resolution
+    // BEFORE their ids are cleared, inside the purge itself, so every caller
+    // is covered (the provider unmount's teardownAllBackup runs before the
+    // signed-out purge; the toggle-off and the read-only stop never reach
+    // prepareForStoragePurge at all).
+    let result = BackupManifestStore.purgeAllStaged(
+      db, nowMs: nowMs(), error: "Re-encrypting: account signed out before upload completed"
+    ) { row in
       if let stagedDir = row.stagedDir {
         removeStagedDirectory(stagedDir: stagedDir, fileId: row.fileId)
       }
-      clearStagedStateForRestage(
-        assetId: row.assetId,
-        error: "Re-encrypting: account signed out before upload completed"
-      )
       RuntimeTrace.event("backup.native.sign_out.staged_purged", [
         "stagedForAccount": row.forAccount ?? "(untagged/pre-migration)"
       ])
     }
-
-    NSLog("[NativeBackupEngine] Sign-out: purged \(staged.count) staged asset(s)")
-    return staged.count
+    RuntimeTrace.event("backup.native.sign_out.in_flight_kept", ["kept": result.keptInFlight ?? -1])
+    if result.purged > 0 {
+      NSLog("[NativeBackupEngine] Sign-out: purged \(result.purged) staged asset(s)")
+    }
+    return result.purged
   }
 
   /// Task 1531 [P0] round 3 (lead review): sign-out / account-switch
@@ -5619,11 +6151,1029 @@ final class NativeBackupEngine: NSObject {
     backgroundTaskHandle = nil
   }
 
+  // MARK: - Task 1667 round 8: manifest write fence
+
+  /// The write ticket an async producer takes when it STARTS: before its
+  /// PhotoKit fetch, network call or batch (`ManifestWriteFence`). nil = it
+  /// may not write at all (no account, signed out since, another account
+  /// bound). MUST NOT run on `dbQueue`.
+  private func manifestWriteTicket(_ producer: String, accountId: String? = nil) -> ManifestWriteFence.Ticket? {
+    let account = accountId ?? currentAccountId
+    let ticket: ManifestWriteFence.Ticket? = dbQueue.sync { manifestHandle.writeFence.issue(for: account) }
+    if ticket == nil {
+      RuntimeTrace.event("backup.native.manifest.write_ticket_refused", [
+        "producer": producer, "hasAccount": account?.isEmpty == false,
+      ])
+    }
+    return ticket
+  }
+
+  /// The fence check for one write. MUST run on `dbQueue`, in the SAME
+  /// closure as the write it guards (`native-backup-write-fence.test.ts`
+  /// checks every writer call site). A refused write is traced by the fence.
+  private func admitsWrite(_ ticket: ManifestWriteFence.Ticket?, _ writer: String) -> Bool {
+    manifestHandle.writeFence.admits(ticket, writer: writer)
+  }
+
+  /// `stop()` and sign-out: cancel every observer-spawned scan. Best effort
+  /// (a PhotoKit fetch already running is not interruptible); the fence is
+  /// the guarantee.
+  private func cancelScanTasks() {
+    engineStateLock.lock()
+    let tasks = Array(_scanTasks.values)
+    _scanTasks.removeAll()
+    engineStateLock.unlock()
+    for task in tasks { task.cancel() }
+  }
+
+  /// Spawns a camera-roll scan the engine can cancel (`registerPhotoObserver`,
+  /// `photoLibraryDidChange` with an album selection).
+  private func spawnScan(reason: String, wakeReason: String) {
+    let id = UUID()
+    // Registered under the lock it is created under, so its own removal
+    // (which takes the same lock) can never run before the insert.
+    engineStateLock.lock()
+    _scanTasks[id] = Task { [weak self] in
+      guard let self else { return }
+      defer {
+        self.engineStateLock.lock()
+        self._scanTasks.removeValue(forKey: id)
+        self.engineStateLock.unlock()
+      }
+      if await self.scanPhotoLibraryForPendingUploads(reason: reason) {
+        self.wakeDrainLoop(reason: wakeReason)
+      }
+    }
+    engineStateLock.unlock()
+  }
+
+  // MARK: - Task 1667: account-scoped manifest + server map
+
+  /// Adopt pre-column rows for `accountId` and re-queue another account's
+  /// rows (`BackupManifestStore.claim`). Cheap (two indexed UPDATEs); safe
+  /// to run on every bind.
+  func claimManifest(forAccount accountId: String) {
+    guard !accountId.isEmpty else { return }
+    // Round 8: a write, so it is fenced like every other one.
+    guard let ticket = manifestWriteTicket("claim", accountId: accountId) else { return }
+    // Best-effort here (bind); a claim that could not commit is retried, and
+    // enforced, by `ensureManifestReadyForUploads` before any upload.
+    let claimed: (adopted: Int, requeued: Int)? = dbQueue.sync {
+      guard self.admitsWrite(ticket, "claim") else { return nil }
+      guard let db = self.db else { return nil }
+      return BackupManifestStore.claim(db, accountId: accountId, nowMs: self.nowMs())
+    }
+    guard let result = claimed else {
+      RuntimeTrace.event("backup.native.manifest.claim_failed")
+      return
+    }
+    if result.adopted > 0 || result.requeued > 0 {
+      RuntimeTrace.event("backup.native.manifest.claimed", [
+        "adopted": result.adopted,
+        "requeued": result.requeued,
+      ])
+    }
+  }
+
+  /// True when uploads for `accountId` may start: the manifest holds rows
+  /// this account uploaded, or it was rebuilt from the server's per-device
+  /// map in this process. An EMPTY manifest (after sign-out, or a reinstall)
+  /// is rebuilt first — photos the server already maps to a file of this
+  /// account become `uploaded` — so nothing already backed up from this
+  /// device is uploaded twice. When the server cannot be asked (no device id
+  /// yet, offline, 5xx) this returns false and no upload starts; the next
+  /// batch asks again. Never deletes anything.
+  ///
+  /// Round 4 (Codex P1 "Fail closed when applying the server identifier
+  /// map"): the order and the rule live in `ManifestRebuildGate.run`. EVERY
+  /// step fails closed — the claim, the "needs a rebuild?" read, the fetch,
+  /// the server-map write and the kept-marks write each return nil (or
+  /// throw) on failure, never a count of 0 — and a failure keeps uploads
+  /// paused behind a bounded backoff until the step succeeds. The account is
+  /// marked ready only on `.ready`.
+  ///
+  /// Round 8: every database step runs behind the caller's write `ticket`
+  /// (taken when its scan or batch started). The map is fetched over the
+  /// network between the claim and the write; a sign-out reset in that
+  /// window drops the write (`applyMapFailed`), so the outgoing account's
+  /// PhotoKit ids and file ids never land in the emptied manifest.
+  func ensureManifestReadyForUploads(
+    accountId: String, authToken: String, baseURL: String, ticket: ManifestWriteFence.Ticket
+  ) async -> Bool {
+    guard !accountId.isEmpty, ticket.accountId == accountId else { return false }
+    let steps = ManifestRebuildGate.Steps(
+      needsRebuild: { [weak self] in
+        guard let self else { return nil }
+        return self.dbQueue.sync { () -> Bool? in
+          FencedManifestWrites.needsRebuild(
+            self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId,
+            scanInsertFailed: self.manifestHandle.scanInsertHealth.failed, nowMs: self.nowMs()
+          )
+        }
+      },
+      hasDeviceId: { [weak self] in
+        guard let deviceId = self?.backupDeviceId else { return false }
+        return !deviceId.isEmpty
+      },
+      fetchMap: { [weak self] in
+        guard let self, let deviceId = self.backupDeviceId, !deviceId.isEmpty else {
+          throw BackupError.notConfigured
+        }
+        do {
+          // Round 11 (review finding 2, server task 2036): the identifiers
+          // map only. The server leaves trashed files out of it; native code
+          // no longer reads `GET /files/index` (task 1959). On a server that
+          // answered `/check` without `backed_up` (no task 2036) the map may
+          // still include trashed files: the fetch fails (the gate defers).
+          // Round 12 (review item 2): unless one lightweight `/check` (at most
+          // one per backoff period) finds the server has `backed_up` now.
+          let probeSteps = self.serverCheckSteps(
+            accountId: accountId, authToken: authToken, baseURL: baseURL, ticket: ticket
+          )
+          return try await PendingUploadServerCheck.rebuildFetch(
+            // Round 13 (review item 7): unknown support probes first too.
+            backedUpSupported: { self.serverBackedUpSupported },
+            takeProbeSlot: { self.takeBackedUpProbeSlot() },
+            probe: {
+              RuntimeTrace.event("backup.native.server_check.capability_probe")
+              _ = try await probeSteps.check([PendingUploadServerCheck.capabilityProbeIdentifier])
+            },
+            fetch: {
+              try await self.fetchServerIdentifierMap(
+                authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId
+              )
+            }
+          )
+        } catch {
+          RuntimeTrace.event("backup.native.manifest_rebuild.fetch_error", [
+            "error": String(describing: error).prefix(160).description,
+          ])
+          throw error
+        }
+      },
+      isStillCurrent: { [weak self] in self?.currentAccountId == accountId },
+      applyMap: { [weak self] map in
+        guard let self else { return nil }
+        return self.dbQueue.sync { () -> Int? in
+          FencedManifestWrites.applyServerMap(
+            self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId,
+            map: map, uploadedAtIso: ISO8601DateFormatter().string(from: Date()), nowMs: self.nowMs()
+          )
+        }
+      },
+      applyKept: { [weak self] in self?.applyKeptPendingMarks(accountId: accountId, ticket: ticket) },
+      // Task 1667 round 14 (review of mobile#182 at 18312919, the P1): this
+      // account's uploads that were in flight at its last sign-out, asked
+      // before any upload. Complete -> a kept mark (promoted by applyKept,
+      // marked by the catch-up); not complete -> dropped, uploads as normal.
+      resolveKept: { [weak self] in
+        guard let self else { return .storeFailed }
+        let resolved = await KeptUploadResolution.run(
+          load: {
+            self.dbQueue.sync {
+              FencedManifestWrites.loadKeptInFlight(
+                self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId,
+                nowMs: self.nowMs()
+              )
+            }
+          },
+          // Round 15 (review items 2 and 3): complete ONLY on the API's 2xx
+          // body with is_uploading false and the file not in the Trash; a
+          // trashed file is not backed up, so the row is dropped and the
+          // photo queued. Anything that is not the API's answer throws (defer).
+          ask: { row in
+            try await self.inspectExistingUpload(
+              fileId: row.fileId, authToken: authToken, baseURL: baseURL
+            ) == .complete
+          },
+          record: { row, complete in
+            RuntimeTrace.event("backup.native.pending_marks.in_flight_resolved", ["complete": complete])
+            return self.dbQueue.sync {
+              FencedManifestWrites.resolveKeptInFlight(
+                self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId,
+                row: row, complete: complete
+              )
+            }
+          }
+        )
+        return resolved
+      }
+    )
+    let outcome = await ManifestRebuildGate.run(alreadyReady: manifestReadyForAccount == accountId, steps: steps)
+    switch outcome {
+    case let .ready(rebuilt, promoted, keptApplied):
+      manifestReadyForAccount = accountId
+      manifestRebuildFailures = 0
+      // Round 15 (review item 6): ANY successful pass clears the pause (round
+      // 12 cleared it only when `rebuilt`).
+      recordGatePause(outcome)
+      if rebuilt {
+        RuntimeTrace.event("backup.native.manifest_rebuild.done", [
+          "promoted": promoted,
+          "keptApplied": keptApplied,
+        ])
+      }
+      return true
+    case let .deferred(reason):
+      let failures = manifestRebuildFailures + 1
+      manifestRebuildFailures = failures
+      let wait = ManifestRebuildGate.backoff(for: reason, consecutiveFailures: failures)
+      // Round 15 (review item 2): never shortens a 429's Retry-After.
+      if let wait {
+        backoffUntil = ManifestRebuildGate.backoffDeadline(existing: backoffUntil, now: Date(), wait: wait)
+      }
+      // Round 12 (review item 6): say why (fetch failed, server without
+      // backed_up, no device id). Round 15: not for a local resolution failure.
+      recordGatePause(outcome)
+      RuntimeTrace.event("backup.native.manifest_rebuild.deferred", [
+        "reason": reason.rawValue,
+        "consecutive": failures,
+        "backoffSeconds": wait.map { Int($0) } ?? 0,
+      ])
+      return false
+    }
+  }
+
+  /// Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
+  /// server map"): uploads this account made from this device that were not
+  /// yet in the server's map when it signed out (`backup_pending_marks`)
+  /// become `uploaded` again in the manifest instead of being uploaded a
+  /// second time; the mark catch-up then sends them to the server. Local
+  /// only, scoped to `accountId`; runs before every batch because rows the
+  /// scan has not inserted yet can only be matched later.
+  ///
+  /// Round 4: nil when they could not be applied (no handle, writer lock);
+  /// the gate then keeps uploads paused instead of uploading those photos.
+  /// Round 5 (Codex P2 "Expire pending marks even when the current account
+  /// has none"): the 30-day expiry of `backup_pending_marks`, for EVERY
+  /// account, as its own step. Runs at every sign-in (`confirmMasterKeyHandle`)
+  /// and bind, besides the sign-out reset and every kept-marks step before a
+  /// batch (`BackupManifestStore.applyPendingMarks`, before its account
+  /// count). So an account that never signs in on this device again does not
+  /// leave its user id and PhotoKit/file ids here past 30 days because only
+  /// other accounts use the device. Best-effort: nil (no handle, writer lock)
+  /// is traced, and the next trigger expires the rows.
+  @discardableResult
+  func expireKeptPendingMarks(trigger: String) -> Int? {
+    let expired: Int? = dbQueue.sync {
+      guard let db = self.db else { return nil }
+      return BackupManifestStore.expirePendingMarks(db, nowMs: self.nowMs())
+    }
+    if let expired {
+      if expired > 0 {
+        RuntimeTrace.event("backup.native.pending_marks.expired", ["expired": expired, "trigger": trigger])
+      }
+    } else {
+      RuntimeTrace.event("backup.native.pending_marks.expire_failed", ["trigger": trigger])
+    }
+    return expired
+  }
+
+  func applyKeptPendingMarks(accountId: String, ticket: ManifestWriteFence.Ticket) -> Int? {
+    let promoted: Int? = dbQueue.sync {
+      FencedManifestWrites.applyKept(
+        self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId, nowMs: self.nowMs()
+      )
+    }
+    if let promoted, promoted > 0 {
+      RuntimeTrace.event("backup.native.pending_marks.applied", ["promoted": promoted])
+    }
+    return promoted
+  }
+
+  /// `GET /api/v1/files/photo-backup/identifiers` for this device, as
+  /// local identifier -> file id. Any failure throws, a 404 included (round
+  /// 5, Codex P1 "Fail closed when the identifier route returns 404"): the
+  /// handler never answers 404, so one is a routing or proxy failure, and
+  /// `ManifestRebuildGate` defers on it like on any failed fetch. Only a 2xx
+  /// `{"identifiers": {}}` is an empty map (`PhotoBackupServerResponses`).
+  ///
+  /// Round 10: sent through `PhotoBackupServerClient` (the same requests the
+  /// server-check test answers).
+  private func fetchServerIdentifierMap(
+    authToken: String, baseURL: String, accountId: String, deviceId: String
+  ) async throws -> [String: String] {
+    let client = photoBackupServerClient(authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId)
+    return try await client.identifierMap()
+  }
+
+  /// Task 1667 round 10: the photo-backup server reads, with the engine's
+  /// headers and its 409 account-mismatch handling.
+  private func photoBackupServerClient(
+    authToken: String, baseURL: String, accountId: String, deviceId: String
+  ) -> PhotoBackupServerClient {
+    PhotoBackupServerClient(
+      session: metadataSession,
+      baseURL: baseURL,
+      authToken: authToken,
+      deviceId: deviceId,
+      decorate: { request in
+        ProvenanceHeaders.apply(to: &request)
+        applyExpectedUserHeader(to: &request, accountId: accountId)
+      },
+      inspect: { [weak self] statusCode, data in
+        if statusCode == 409, AccountMismatchDetection.isAccountMismatch(data) {
+          self?.handleConfirmedAccountMismatch()
+          throw BackupError.accountMismatchConfirmed
+        }
+      }
+    )
+  }
+
+  /// Round 13 (review item 7): nil until a `/check` (or the rebuild's probe)
+  /// answered in this process/account.
+  private var serverBackedUpSupported: Bool? {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _backedUpSupport.supported
+  }
+
+  /// Round 12 (review item 2): the rebuild's probe slot (one per backoff
+  /// period while the server lacks `backed_up`).
+  private func takeBackedUpProbeSlot() -> Bool {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _backedUpSupport.takeProbeSlot(now: Date())
+  }
+
+  // MARK: - Server-check pause reason (round 12, review item 6)
+
+  /// The reason Settings shows while uploads are paused on the server check.
+  private var serverCheckPausedReason: String? {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _serverCheckPause.stopReason
+  }
+
+  /// Round 13 (item 6): the pause as the status surfaces show it.
+  private var serverCheckPauseSurface: BackupSurfaceState.State? {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _serverCheckPause.surface
+  }
+
+  private var serverCheckPauseCause: ServerCheckPause.Cause? {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _serverCheckPause.cause
+  }
+
+  /// Records a deferred `/check` and, when the reason changed, publishes it
+  /// to the status surfaces (once per change, not once per deferred batch).
+  private func recordServerCheckPause(_ reason: PendingUploadServerCheck.DeferReason) {
+    engineStateLock.lock()
+    let changed = _serverCheckPause.record(reason)
+    let message = _serverCheckPause.stopReason
+    engineStateLock.unlock()
+    publishServerCheckPause(changed: changed, message: message)
+  }
+
+  /// Round 15 (review item 6): one rebuild-gate pass (`ServerCheckPause
+  /// .recordGate`). A pause it set is published; a pause it cleared refreshes
+  /// the surfaces, so the widget and Live Activity stop saying "paused" even
+  /// when the batch then finds nothing to upload.
+  private func recordGatePause(_ outcome: ManifestRebuildGate.Outcome) {
+    engineStateLock.lock()
+    let changed = _serverCheckPause.recordGate(outcome, lacksBackedUp: _backedUpSupport.lacksBackedUp)
+    let message = _serverCheckPause.stopReason
+    engineStateLock.unlock()
+    if changed, message == nil {
+      RuntimeTrace.event("backup.native.server_check.pause_cleared")
+      updateBackupStatusSurfaces()
+      return
+    }
+    publishServerCheckPause(changed: changed, message: message)
+  }
+
+  private func clearServerCheckPause() {
+    engineStateLock.lock()
+    let changed = _serverCheckPause.clear()
+    engineStateLock.unlock()
+    if changed { RuntimeTrace.event("backup.native.server_check.pause_cleared") }
+  }
+
+  private func publishServerCheckPause(changed: Bool, message: String?) {
+    guard changed, let message else { return }
+    RuntimeTrace.event("backup.native.server_check.paused", [
+      "cause": serverCheckPauseCause?.rawValue ?? NSNull(),
+    ])
+    updateBackupStatusSurfaces(reason: message)
+  }
+
+  /// Round 11: the `/check` steps both passes share. Every answer also tells
+  /// whether the server carries `backed_up` (task 2036).
+  private func serverCheckSteps(
+    accountId: String, authToken: String, baseURL: String, ticket: ManifestWriteFence.Ticket
+  ) -> PendingUploadServerCheck.Steps {
+    let deviceId = backupDeviceId ?? ""
+    let client = photoBackupServerClient(authToken: authToken, baseURL: baseURL, accountId: accountId, deviceId: deviceId)
+    return PendingUploadServerCheck.Steps(
+      hasDeviceId: { !deviceId.isEmpty },
+      check: { [weak self] ids in
+        do {
+          let hits = try await client.check(ids)
+          self?.noteServerBackedUpSupport(true)
+          return hits
+        } catch let error as PhotoBackupServerResponses.ServerLacksBackedUp {
+          self?.noteServerBackedUpSupport(false)
+          throw error
+        }
+      },
+      isStillCurrent: { [weak self] in self?.currentAccountId == accountId },
+      promote: { [weak self] hits in
+        guard let self else { return nil }
+        return self.dbQueue.sync { () -> Set<String>? in
+          FencedManifestWrites.promoteCheckedHits(
+            self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId,
+            hits: hits, uploadedAtIso: ISO8601DateFormatter().string(from: Date()), nowMs: self.nowMs()
+          )
+        }
+      }
+    )
+  }
+
+  /// Round 11 (review finding 2): a server without `backed_up` is logged
+  /// ONCE per process ("server lacks backed_up (task 2036)"); every deferred
+  /// batch is still traced.
+  private func noteServerBackedUpSupport(_ supported: Bool) {
+    engineStateLock.lock()
+    _backedUpSupport.note(supported: supported)
+    engineStateLock.unlock()
+    if !supported, PendingUploadServerCheck.serverLacksBackedUpNotice.shouldFire() {
+      NSLog("[NativeBackupEngine] \(PendingUploadServerCheck.serverLacksBackedUpMessage): camera-roll uploads stay paused")
+      RuntimeTrace.event("backup.native.server_check.server_lacks_backed_up", [
+        "message": PendingUploadServerCheck.serverLacksBackedUpMessage,
+      ])
+    }
+  }
+
+  /// Round 11: the bulk-check state, read and written through these sync
+  /// helpers (`engineStateLock` is not taken in an async context).
+  /// The coverage to filter against when a bulk pass is owed (consumed);
+  /// nil when none is.
+  private func takeBulkServerCheckRequest() -> ServerCheckCoverage? {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    guard _bulkServerCheckRequested else { return nil }
+    _bulkServerCheckRequested = false
+    return _serverCheckCoverage
+  }
+
+  private func recordBulkServerCheck(_ outcome: PendingUploadServerCheck.BulkOutcome, accountId: String, generation: UInt64) {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    _serverCheckCoverage.record(outcome.needsBackup, accountId: accountId, generation: generation, now: Date())
+    _lastBatchServerPromoted += outcome.promoted.count
+  }
+
+  private func noteServerCheckSucceeded(promoted: Int) {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    _serverCheckFailures = 0
+    _lastBatchServerPromoted += promoted
+  }
+
+  /// Consecutive deferred checks, this one included.
+  private func noteServerCheckDeferred() -> Int {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    _serverCheckFailures += 1
+    return _serverCheckFailures
+  }
+
+  /// Round 11 (review finding 9): request a bulk pass before the next batch
+  /// (a drain start, a background task, rows inserted by a scan).
+  private func requestBulkServerCheck() {
+    engineStateLock.lock()
+    _bulkServerCheckRequested = true
+    engineStateLock.unlock()
+  }
+
+  /// Round 11 (review finding 9): the bulk dedupe. When requested, ask
+  /// `/photo-backup/check` about EVERY fresh pending row not covered yet, in
+  /// chunks of 500, before the drain selects a batch: the server's hits are
+  /// promoted in bulk, and the rows it answered "needs backup" are covered,
+  /// so the per-batch guard skips them. Before, each 12-row batch carried its
+  /// own /check, and 5,000 rows the server already had took about 420 batch
+  /// cycles to promote. A failed pass changes nothing it did not finish; the
+  /// per-batch guard still checks every uncovered row (fail closed there).
+  private func bulkServerCheckIfRequested(
+    accountId: String, authToken: String, baseURL: String, ticket: ManifestWriteFence.Ticket
+  ) async {
+    guard let coverage = takeBulkServerCheckRequest() else { return }
+    let all: [String]? = dbQueue.sync {
+      guard let db = self.db else { return nil }
+      return BackupManifestStore.freshPendingIds(db)
+    }
+    guard let all else {
+      RuntimeTrace.event("backup.native.server_check.bulk_load_failed")
+      return
+    }
+    let candidates = coverage.uncovered(all, accountId: accountId, generation: ticket.generation, now: Date())
+    guard !candidates.isEmpty else { return }
+    let steps = serverCheckSteps(
+      accountId: accountId, authToken: authToken, baseURL: baseURL, ticket: ticket
+    )
+    let outcome = await PendingUploadServerCheck.bulk(candidates: candidates, steps: steps) { [weak self] in
+      guard let self else { return false }
+      return self.isRunning && !Task.isCancelled && self.currentAccountId == accountId
+    }
+    recordBulkServerCheck(outcome, accountId: accountId, generation: ticket.generation)
+    if let stopped = outcome.stopped {
+      recordServerCheckPause(stopped)
+    } else if outcome.requests > 0 {
+      clearServerCheckPause()
+    }
+    RuntimeTrace.event("backup.native.server_check.bulk", [
+      "candidates": candidates.count, "requests": outcome.requests, "promoted": outcome.promoted.count,
+      "needsBackup": outcome.needsBackup.count, "stopped": outcome.stopped?.rawValue ?? NSNull(),
+    ])
+  }
+
+  /// Task 1667 round 10 (review finding 1, adopted by the lead): the dedupe
+  /// guarantee. Before any row of this batch starts a NEW upload (no staged
+  /// file yet), the server is asked whether this device already backed it
+  /// up. Round 11 (findings 2 and 9, server task 2036): `/photo-backup/check`
+  /// answers with `backed_up` (file ids, Trash excluded server-side); only
+  /// those rows are promoted, with that file id, and left out of the batch.
+  /// Rows a bulk pass already covered ("needs backup") are not asked again.
+  /// Returns the rows to upload, or nil when the batch must not upload
+  /// anything now (any step failed, or the server lacks `backed_up`: fail
+  /// closed, with a backoff). Rows already staged are resumptions of an
+  /// upload that passed this check before it was staged.
+  private func rowsCheckedAgainstServer(
+    _ pending: [BackupAssetRow], accountId: String, authToken: String, baseURL: String,
+    ticket: ManifestWriteFence.Ticket
+  ) async -> [BackupAssetRow]? {
+    // Round 12 (review item 1, duplicate upload): EVERY fresh row of the
+    // batch is asked, whatever an earlier bulk pass answered for it. In round
+    // 11 a covered row skipped this check for 15 minutes, so a row the JS
+    // reconcile re-queued after it uploaded, or whose file came back out of
+    // the Trash, uploaded a second time.
+    let fresh = PendingUploadServerCheck.batchCandidates(
+      pending.map { (id: $0.localAssetId, staged: $0.stagedFileId != nil) }
+    )
+    guard !fresh.isEmpty else {
+      // Nothing to ask: staged rows resume uploads checked before staging.
+      clearServerCheckPause()
+      return pending
+    }
+    let steps = serverCheckSteps(
+      accountId: accountId, authToken: authToken, baseURL: baseURL, ticket: ticket
+    )
+    let outcome = await PendingUploadServerCheck.run(candidates: fresh, steps: steps)
+    switch outcome {
+    case let .proceed(skip, promoted, _):
+      noteServerCheckSucceeded(promoted: promoted.count)
+      clearServerCheckPause()
+      if !skip.isEmpty {
+        RuntimeTrace.event("backup.native.server_check.applied", [
+          "checked": fresh.count, "promoted": promoted.count, "skipped": skip.count,
+        ])
+      }
+      return pending.filter { !skip.contains($0.localAssetId) }
+    case let .deferred(reason):
+      let failures = noteServerCheckDeferred()
+      let wait = PendingUploadServerCheck.backoff(for: reason, consecutiveFailures: failures)
+      if let wait { backoffUntil = Date().addingTimeInterval(wait) }
+      // Round 12 (review item 6): Settings says backup is paused, and why.
+      recordServerCheckPause(reason)
+      RuntimeTrace.event("backup.native.server_check.deferred", [
+        "reason": reason.rawValue, "checked": fresh.count, "consecutive": failures,
+        "backoffSeconds": wait.map { Int($0) } ?? 0,
+      ])
+      return nil
+    }
+  }
+
+  /// Round 10: rows the last batch's server check promoted, consumed once.
+  private func takeLastBatchServerPromoted() -> Int {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    let n = _lastBatchServerPromoted
+    _lastBatchServerPromoted = 0
+    return n
+  }
+
+  /// `POST /api/v1/files/photo-backup/mark` for one completed upload, then
+  /// `server_marked_at` on success. Best-effort: a failure leaves the row
+  /// unmarked for `flushServerMarks` to retry. Returns false when the caller
+  /// should stop sending more marks now (network, 429, 5xx, account change).
+  ///
+  /// Round 5 (Codex P1 "Fail closed when the identifier route returns 404"):
+  /// a 404 is done ("file gone, nothing to map") ONLY with the API's own
+  /// NotFound body (`PhotoBackupServerResponses.markOutcome`). Any other 404
+  /// is a failure: no `server_marked_at`, so the row stays a pending mark,
+  /// the sign-out reset keeps it and the next sign-in promotes it.
+  @discardableResult
+  ///
+  /// Round 8: the local record runs behind the caller's write `ticket` (the
+  /// batch's, the scan's or the sign-out flush's). A response that arrives
+  /// after a sign-out reset records nothing; the server holds the mark.
+  func markOnServer(
+    assetId: String, fileId: String, authToken: String, baseURL: String, accountId: String,
+    ticket: ManifestWriteFence.Ticket, requestTimeout: TimeInterval? = nil
+  ) async -> Bool {
+    guard !accountId.isEmpty, currentAccountId == accountId else { return false }
+    guard let deviceId = backupDeviceId, !deviceId.isEmpty else { return false }
+    guard let url = URL(string: "\(baseURL)/api/v1/files/photo-backup/mark") else { return false }
+    var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
+    applyExpectedUserHeader(to: &request, accountId: accountId)
+    request.httpMethod = "POST"
+    // Round 3: the sign-out flush hands the budget it has left; a request
+    // never outlives it (metadataSession's own limit is 30 s).
+    if let requestTimeout { request.timeoutInterval = requestTimeout }
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+    request.setValue(deviceId, forHTTPHeaderField: "X-Beebeeb-Device-Id")
+    request.httpBody = try? JSONSerialization.data(withJSONObject: [
+      "local_identifier": assetId,
+      "file_id": fileId,
+    ])
+    do {
+      let (data, response) = try await metadataSession.data(for: request)
+      let http = response as? HTTPURLResponse
+      let statusCode = http?.statusCode ?? 0
+      if statusCode == 409, AccountMismatchDetection.isAccountMismatch(data) {
+        handleConfirmedAccountMismatch()
+        return false
+      }
+      let outcome = PhotoBackupServerResponses.markOutcome(
+        statusCode: statusCode,
+        contentType: http?.value(forHTTPHeaderField: "Content-Type"),
+        data: data
+      )
+      guard outcome.recordsServerMark else {
+        RuntimeTrace.event("backup.native.server_mark.failed", ["status": statusCode])
+        return false
+      }
+      if outcome == .fileGone {
+        RuntimeTrace.event("backup.native.server_mark.file_gone")
+      }
+      dbQueue.sync {
+        _ = FencedManifestWrites.recordServerMarked(
+          self.db, fence: self.manifestHandle.writeFence, ticket: ticket,
+          assetId: assetId, fileId: fileId, nowMs: self.nowMs()
+        )
+      }
+      return true
+    } catch {
+      RuntimeTrace.event("backup.native.server_mark.failed", ["status": 0])
+      return false
+    }
+  }
+
+  /// Catch-up: marks rows uploaded but not yet in the server map (every row
+  /// uploaded before task 1667, plus any mark that failed). Sequential and
+  /// bounded so a large legacy manifest drains over a few scans without
+  /// pressing the server; stops at the first failure.
+  func flushServerMarks(
+    accountId: String, authToken: String, baseURL: String, ticket: ManifestWriteFence.Ticket, limit: Int = 300
+  ) async {
+    guard backupDeviceId?.isEmpty == false else { return }
+    let loaded: [(assetId: String, fileId: String)]? = dbQueue.sync {
+      guard let db = self.db else { return nil }
+      return BackupManifestStore.pendingServerMarks(db, accountId: accountId, limit: limit)
+    }
+    // Round 7 sweep: a read failure is not "all marked"; traced, and the
+    // next scan's catch-up reads again.
+    guard let rows = loaded else {
+      RuntimeTrace.event("backup.native.server_mark.load_failed", ["trigger": "catch_up"])
+      return
+    }
+    guard !rows.isEmpty else { return }
+    let deadline = Date().addingTimeInterval(20)
+    var marked = 0
+    for row in rows {
+      if Task.isCancelled || Date() > deadline { break }
+      guard await markOnServer(
+        assetId: row.assetId, fileId: row.fileId, authToken: authToken, baseURL: baseURL, accountId: accountId,
+        ticket: ticket
+      ) else { break }
+      marked += 1
+    }
+    RuntimeTrace.event("backup.native.server_mark.catch_up", ["candidates": rows.count, "marked": marked])
+  }
+
+  /// Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
+  /// server map"): called by the JS sign-out BEFORE the session is revoked.
+  /// Sends EVERY upload of the signed-in account that the server's map does
+  /// not have yet (no 300-row cap), each with up to `attemptsPerRow`
+  /// attempts. Whatever is still unmarked afterwards is kept by the reset
+  /// (`backup_pending_marks`). Returns (candidates, marked).
+  ///
+  /// Round 3 (Codex P1 "Enforce the eight-second sign-out deadline"): the
+  /// WHOLE flush, row load included, is bounded by `SignOutMarkFlush.run`'s
+  /// hard deadline. A stalled mark request is cancelled when it passes, and
+  /// each request's timeout is the budget left, so a dead endpoint can no
+  /// longer hold sign-out for metadataSession's 30 s / 60 s.
+  func flushServerMarksForSignOut(deadline: TimeInterval = SignOutMarkFlush.defaultDeadline, attemptsPerRow: Int = 2) async -> (candidates: Int, marked: Int) {
+    guard let accountId = currentAccountId, !accountId.isEmpty,
+          let authToken = token, let baseURL = apiBaseUrl,
+          backupDeviceId?.isEmpty == false else { return (0, 0) }
+    // Round 8: the flush takes its write ticket at its start; its adoption
+    // and its `server_marked_at` records run behind it.
+    guard let ticket = manifestWriteTicket("sign_out_mark_flush", accountId: accountId) else { return (0, 0) }
+    let outcome = await SignOutMarkFlush.run(
+      deadline: deadline,
+      attemptsPerRow: attemptsPerRow,
+      loadRows: { [weak self] () -> [SignOutMarkFlush.Row] in
+        guard let self else { return [] }
+        // Rows from before `uploaded_account_id` belong to this account too.
+        // Round 7 sweep: a failed adoption or read is traced, not read as
+        // "nothing to mark". The flush can send nothing it cannot read; the
+        // reset then keeps every unmarked row (and refuses to run when the
+        // adoption fails), so no association is lost either way.
+        return self.dbQueue.sync {
+          let hasHandle = self.db != nil
+          let loaded = FencedManifestWrites.loadSignOutMarks(
+            self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId
+          )
+          if loaded.adoptFailed {
+            RuntimeTrace.event("backup.native.server_mark.load_failed", ["trigger": "sign_out", "step": "adopt"])
+          }
+          guard let rows = loaded.rows else {
+            RuntimeTrace.event("backup.native.server_mark.load_failed", [
+              "trigger": "sign_out", "step": hasHandle ? "read_or_fenced" : "no_handle",
+            ])
+            return []
+          }
+          // Task 1667 round 14 (review of mobile#182 at 18312919, the P1):
+          // uploads in flight may already be complete on the server. Asked
+          // after the unmarked rows; whatever this flush does not settle,
+          // the reset keeps for resolution at the next sign-in.
+          let inFlight = FencedManifestWrites.loadSignOutInFlight(
+            self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId
+          )
+          if inFlight == nil {
+            RuntimeTrace.event("backup.native.server_mark.load_failed", ["trigger": "sign_out", "step": "in_flight"])
+          }
+          return rows.map { SignOutMarkFlush.Row.unmarked(assetId: $0.assetId, fileId: $0.fileId) }
+            + (inFlight ?? []).map { SignOutMarkFlush.Row.inFlight(assetId: $0.assetId, fileId: $0.fileId) }
+        }
+      },
+      shouldStop: { [weak self] in self?.currentAccountId != accountId },
+      mark: { [weak self] row, requestTimeout in
+        guard let self else { return false }
+        switch row {
+        case let .unmarked(assetId, fileId):
+          return await self.markOnServer(
+            assetId: assetId, fileId: fileId, authToken: authToken, baseURL: baseURL,
+            accountId: accountId, ticket: ticket, requestTimeout: requestTimeout
+          )
+        case let .inFlight(assetId, fileId):
+          return await SignOutMarkFlush.settleInFlight(
+            isComplete: {
+              // Round 15: complete only on the API's answer, never trashed.
+              try await self.inspectExistingUpload(
+                fileId: fileId, authToken: authToken, baseURL: baseURL, requestTimeout: requestTimeout
+              ) == .complete
+            },
+            recordUploaded: {
+              self.dbQueue.sync {
+                FencedManifestWrites.recordInFlightComplete(
+                  self.db, fence: self.manifestHandle.writeFence, ticket: ticket, accountId: accountId,
+                  assetId: assetId, fileId: fileId, uploadedAtIso: ISO8601DateFormatter().string(from: Date())
+                )
+              }
+            },
+            mark: {
+              await self.markOnServer(
+                assetId: assetId, fileId: fileId, authToken: authToken, baseURL: baseURL,
+                accountId: accountId, ticket: ticket, requestTimeout: requestTimeout
+              )
+            }
+          )
+        }
+      }
+    )
+    RuntimeTrace.event("backup.native.server_mark.sign_out_flush", [
+      "candidates": outcome.candidates, "marked": outcome.marked, "timedOut": outcome.timedOut,
+    ])
+    return (outcome.candidates, outcome.marked)
+  }
+
+  /// Sign-out (every path reaches the native `purgePlaintextStorage`): stop
+  /// and unbind the engine, empty the manifest THROUGH the open handle, and
+  /// forget the previous account's backup folder. Before task 1667 the purge
+  /// unlinked the file under both handles: the process kept writing a
+  /// deleted inode and the next cold launch re-uploaded every photo into the
+  /// same folder.
+  ///
+  /// `kept` is ALWAYS the database and its sidecars: the JS layer's
+  /// expo-sqlite connection is still open on them, and nothing may be
+  /// unlinked beneath it (round 2, Codex P1 "Reopen the JS database after a
+  /// reset failure"). When the reset fails (`resetFailed`), the engine
+  /// closes its own handle, records `manifestResetPendingKey`, and refuses
+  /// to reopen until the JS side has closed its handle and called
+  /// `finishStoragePurgeAfterFailedReset`, which resets (or, failing that,
+  /// replaces) the file with no connection open and then reopens the
+  /// engine's handle on it (round 6).
+  ///
+  /// Round 9 (Codex P1 "Delete retained marks during permanent account
+  /// deletion"): `mode` comes from JS (`purgeAllPlaintextCaches`). With
+  /// `.accountDeleted` the reset keeps nothing of the outgoing account and of
+  /// `deletedAccountIds`, deletes their kept marks, and every later reset in
+  /// this process does the same (`BackupManifestHandle.resetForSignOut`).
+  /// The in-memory "last unbound account" is forgotten too.
+  func prepareForStoragePurge(
+    mode: ManifestPurgeMode = .signOut,
+    deletedAccountIds: Set<String> = []
+  ) -> (kept: Set<String>, resetFailed: Bool) {
+    // Round 13 (review item 3): bound, or only remembered (`inferred`); a
+    // deletion never counts a remembered account as deleted unless JS names it.
+    let outgoing = outgoingAccountForReset()
+    stop()
+    backupClientSessionId = nil
+    // Task 1667 round 14/15: the staged purge keeps the in-flight uploads for
+    // resolution before it clears their ids (`purgeAllStagedAssets` ->
+    // `BackupManifestStore.purgeAllStaged`, round 15: inside the purge, so
+    // the provider unmount's teardown, which usually runs first, keeps them
+    // too). The reset applies the discard and the expiry to them like to
+    // every kept mark.
+    clearAccountAndPurgeStaged()
+    // 1962 Bug 4: the next account must not inherit this one's Backups folder.
+    parentFolderId = nil
+    manifestReadyForAccount = nil
+    manifestRebuildFailures = 0
+    clearManifestAvailability()
+    // Round 10: the batch check's server state belongs to the outgoing account.
+    // Round 11: the bulk coverage (the file-index and identifier-map caches
+    // are gone with the liveness read).
+    // Round 12 (review items 2 and 6): whether the server lacks `backed_up`
+    // and the pause reason are the outgoing session's; the next account
+    // starts from "not seen" (a probe is never needed to clear it).
+    engineStateLock.lock()
+    _serverCheckCoverage.clear()
+    _bulkServerCheckRequested = true
+    _serverCheckFailures = 0
+    _lastBatchServerPromoted = 0
+    _backedUpSupport.reset()
+    _serverCheckPause.clear()
+    engineStateLock.unlock()
+    let dbPath = Self.backupDatabaseURL().standardizedFileURL.path
+    let kept: Set<String> = [dbPath, dbPath + "-wal", dbPath + "-shm"]
+    // Round 8 (Codex P1 "Fence late photo scans before resetting the
+    // manifest"): `resetForSignOut` advances and seals the write fence FIRST,
+    // in this same `dbQueue` block. Every scan, observer callback, rebuild
+    // step, batch write, mark record and chunk callback still in flight took
+    // its ticket before this block, so whatever it writes after it is
+    // dropped: when this returns, no producer from before the sign-out can
+    // write, and none can start until the next sign-in binds the fence.
+    // (`stop()` above also cancelled the observer-spawned scans; that cancel
+    // is best effort, the fence is the guarantee.)
+    let (resetOK, fenceGeneration, discardAll): (Bool, UInt64, Bool) = dbQueue.sync {
+      let ok = manifestHandle.resetForSignOut(
+        outgoingAccountId: outgoing.accountId, outgoingInferred: outgoing.inferred,
+        mode: mode, deletedAccountIds: deletedAccountIds
+      )
+      return (ok, manifestHandle.writeFence.generation, manifestHandle.activeDiscard.all)
+    }
+    // Round 11 (review finding 5): a scan that started after `stop()` above
+    // but before the reset sealed the fence may have stored its fetch result
+    // in between; drop it now (a later store is refused by the sealed fence).
+    lifecycle.clearFetchResult()
+    if mode == .accountDeleted {
+      forgetUnboundAccount()
+    }
+    RuntimeTrace.event("backup.native.storage_purge.prepared", [
+      "resetInPlace": resetOK, "fenceGeneration": Int(fenceGeneration),
+      "mode": mode.rawValue, "discardAll": discardAll,
+    ])
+    return (kept, !resetOK)
+  }
+
+  /// Task 1667 round 10 (review findings 5 + 7): the gate before EVERY JS
+  /// (expo-sqlite) open of the manifest (`BackupDatabase.openAndMigrate`,
+  /// through the module's `admitBackupManifestJsOpen`). A sign-out reset
+  /// still pending is applied first, on the engine's own connection, while
+  /// JS holds none; JS is admitted only when none is pending on return, so
+  /// it never reads the outgoing account's rows. From then until JS confirms
+  /// its handles closed, the engine never closes or checkpoints a connection
+  /// outside the purge hold (`BackupManifestHandle.peerMayHoldFile`).
+  func admitJsManifestOpen(priorHandlesClosed: Bool) -> BackupManifestHandle.PeerOpenGate {
+    let gate: BackupManifestHandle.PeerOpenGate = dbQueue.sync {
+      manifestHandle.admitPeerOpen(priorPeerHandlesClosed: priorHandlesClosed)
+    }
+    RuntimeTrace.event("backup.native.manifest.js_open_gate", [
+      "admitted": gate.admitted, "priorHandlesClosed": priorHandlesClosed,
+      "failure": gate.failure?.rawValue ?? NSNull(),
+    ])
+    return gate
+  }
+
+  /// Second half of a sign-out whose in-place reset failed; JS calls it once
+  /// its own handle is closed (`allowUnlink` = that close succeeded). With
+  /// no connection open, the reset is retried on a connection of its own; if
+  /// it still fails and `allowUnlink`, the file is replaced, carrying the
+  /// kept pending marks over. No handle in this process points at a deleted
+  /// inode afterwards: JS reopens lazily on the resulting file.
+  ///
+  /// Round 6 (Codex P2 "Reopen the native manifest after successful
+  /// recovery"): the engine's handle is reopened on that file in the SAME
+  /// `dbQueue.sync` block as the recovery, still inside the JS purge hold, so
+  /// a sign-in later in this process finds an open manifest. Before, the
+  /// handle stayed closed until the next launch and `start()` ran without a
+  /// database. When the recovery or the reopen fails, `start()` reopens (or
+  /// reports `manifestUnavailableReason` and retries).
+  func finishStoragePurgeAfterFailedReset(allowUnlink: Bool) -> BackupManifestHandle.FinishResult {
+    let result: BackupManifestHandle.FinishResult = dbQueue.sync {
+      manifestHandle.finishAfterFailedReset(allowUnlink: allowUnlink)
+    }
+    RuntimeTrace.event("backup.native.storage_purge.recovered", [
+      "ok": result.ok, "unlinked": result.unlinked, "allowUnlink": allowUnlink,
+      "reopened": result.reopened, "reopenFailure": result.reopenFailure?.rawValue ?? NSNull(),
+    ])
+    return result
+  }
+
+  // MARK: - Manifest availability (task 1667 round 6)
+
+  /// The reason `start()` refused because the manifest could not be opened.
+  private var manifestUnavailableStopReason: String? {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _manifestAvailability.stopReason
+  }
+
+  /// Records an open attempt. A success clears the reason; a scheduled
+  /// `start()` retry is left alone (it is still owed: only `start()` itself
+  /// proceeding, `stop()` or sign-out cancel it).
+  private func recordManifestOpen(_ failure: BackupManifestHandle.OpenFailure?) -> ManifestAvailability.Decision {
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    return _manifestAvailability.record(failure)
+  }
+
+  private func cancelManifestOpenRetry() {
+    lifecycle.cancelRetries()
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    _manifestOpenRetry?.cancel()
+    _manifestOpenRetry = nil
+  }
+
+  /// Sign-out and `stop()`: no reason, no retry.
+  private func clearManifestAvailability() {
+    lifecycle.cancelRetries()
+    engineStateLock.lock(); defer { engineStateLock.unlock() }
+    _manifestAvailability.clear()
+    _manifestOpenRetry?.cancel()
+    _manifestOpenRetry = nil
+  }
+
+  /// `start()` again after `delay`, for the same account. `stop()`, sign-out
+  /// and a `start()` that proceeds cancel it; an account change makes it a
+  /// no-op. It runs even if a background task set `isRunning` meanwhile:
+  /// `start()` then finishes the foreground setup that path skips.
+  ///
+  /// Round 11 (review finding 3): the retry runs `start()`'s body inside
+  /// `lifecycle.runRetry`, ONE transition with the check: only while the
+  /// user still wants backup running (`stop()` / `disablePhotoBackup` /
+  /// sign-out clear that) and this is still the latest retry. Before, it
+  /// called `start()` from this global queue with no lock, and
+  /// `DispatchWorkItem.cancel()` cannot stop a retry already executing, so a
+  /// retry racing the user's stop set `isRunning = true` after backup was
+  /// turned off.
+  private func scheduleManifestOpenRetry(accountId: String, after delay: TimeInterval) {
+    let token = lifecycle.scheduleRetry()
+    let retry = DispatchWorkItem { [weak self] in
+      guard let self else { return }
+      // Round 12 (review item 8): the key is read outside the lock, like
+      // `start()`'s.
+      let ran = self.lifecycle.runRetry(token, prepare: { self.prepareStartMasterKey() }) { prepared in
+        guard self.currentAccountId == accountId else { return .done }
+        RuntimeTrace.event("backup.native.manifest.open_retry")
+        return self.startLocked(prepared: prepared)
+      }
+      if !ran { RuntimeTrace.event("backup.native.manifest.open_retry_void") }
+    }
+    engineStateLock.lock()
+    _manifestOpenRetry?.cancel()
+    _manifestOpenRetry = retry
+    engineStateLock.unlock()
+    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay, execute: retry)
+  }
+
+  /// `start()`'s manifest check (round 6). Opens the manifest if its handle
+  /// is closed. When that fails, the engine does not run without it: a
+  /// running engine is stopped, the reason is published (progress dict +
+  /// status surfaces) and a retry is scheduled. MUST NOT run on `dbQueue`.
+  private func ensureManifestOpenForStart(accountId: String) -> Bool {
+    let failure = dbQueue.sync { openManifestIfClosed(trigger: "start") }
+    if failure != nil, isRunning {
+      // Round 11: keeps the user's intent, so the retry below may start again.
+      lifecycle.internalStop { stopLocked() }
+    }
+    switch recordManifestOpen(failure) {
+    case .proceed:
+      cancelManifestOpenRetry()
+      return true
+    case .refuse(let reason, let retryAfter):
+      RuntimeTrace.event("backup.native.start.refused_manifest_unavailable", [
+        "failure": failure?.rawValue ?? NSNull(),
+        "retryAfterS": retryAfter,
+      ])
+      NSLog("[NativeBackupEngine] Backup manifest unavailable (\(failure?.rawValue ?? "?")) — not starting; retry in \(Int(retryAfter)) s")
+      scheduleManifestOpenRetry(accountId: accountId, after: retryAfter)
+      updateBackupStatusSurfaces(reason: reason)
+      return false
+    }
+  }
+
   /// Refresh progress counters from the database.
   private func refreshProgress() {
     dbQueue.sync {
       guard let db = db else { return }
-      migratePhotoKitMissingAssetRows()
+      Self.migratePhotoKitMissingAssetRows(db, nowMs: nowMs())
       let selectedCondition = "COALESCE(selected_for_backup, 1) = 1"
       totalAssets = countWhere(db: db, condition: selectedCondition)
       completedAssets = countWhere(db: db, condition: "\(selectedCondition) AND status = 'uploaded'")
@@ -6006,26 +7556,36 @@ final class NativeBackupEngine: NSObject {
 // MARK: - PHPhotoLibraryChangeObserver
 
 extension NativeBackupEngine: PHPhotoLibraryChangeObserver {
+  /// Round 8 (Codex P1 "Fence late photo scans before resetting the
+  /// manifest"): PhotoKit can deliver this callback after `stop()`
+  /// unregistered the observer, and its insert runs later on `dbQueue`. The
+  /// callback takes its write ticket on entry, before the change details are
+  /// computed, and the insert runs behind it: a sign-out reset in between
+  /// drops the insert. No ticket (signed out, another account) = nothing to do.
   func photoLibraryDidChange(_ changeInstance: PHChange) {
     if !selectedPhotoAlbumIds.isEmpty {
-      Task { [weak self] in
-        guard let self else { return }
-        if await self.scanPhotoLibraryForPendingUploads(reason: "Selected albums rescanned") {
-          self.wakeDrainLoop(reason: "photo-library-selected")
-        }
-      }
+      spawnScan(reason: "Selected albums rescanned", wakeReason: "photo-library-selected")
       return
     }
 
+    guard let ticket = manifestWriteTicket("photo_library_change") else { return }
     guard let old = currentFetchResult else { return }
     guard let details = changeInstance.changeDetails(for: old) else { return }
 
-    currentFetchResult = details.fetchResultAfterChanges
-    let inserted = details.insertedObjects
+    // Round 11 (review finding 5): replaced only while `old` is still the
+    // stored result; a stop or sign-out since cleared it, and this change is
+    // then not inserted (the next full scan takes it).
+    guard lifecycle.replaceFetchResult(expected: old, with: details.fetchResultAfterChanges) else { return }
+    let inserted = scannedAssets(details.insertedObjects)
     if !inserted.isEmpty {
       dbQueue.async { [weak self] in
         guard let self else { return }
-        self.insertNewAssets(inserted)
+        let written = FencedManifestWrites.scanInsert(
+          self.db, fence: self.manifestHandle.writeFence, ticket: ticket, writer: "photo_library_change.insert",
+          assets: inserted, selection: nil, nowMs: self.nowMs()
+        )
+        self.recordScanInsert(written, assets: inserted.count, source: .incremental)
+        guard written != .fenced else { return }
         if self.hasPendingUploads() {
           self.wakeDrainLoop(reason: "photo-library")
         }
@@ -6078,12 +7638,15 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
       let statusCode = (task.response as? HTTPURLResponse)?.statusCode ?? 0
       let continuation = chunkUploadContinuations.removeValue(forKey: task.taskIdentifier)
       let responseBody = chunkResponseBodyBuffers.removeValue(forKey: task.taskIdentifier)
+      let ticket = chunkTaskTickets.removeValue(forKey: task.taskIdentifier)
 
       if let error {
         dbQueue.async { [weak self] in
-          self?.markChunkFailed(
+          guard let self, self.admitsChunkCallback(ticket, "markChunkFailed") else { return }
+          self.markChunkFailed(
             assetId: chunk.localAssetId,
             chunkIndex: chunk.chunkIndex,
+            uploadSessionId: chunk.uploadSessionId,
             error: error.localizedDescription
           )
         }
@@ -6091,7 +7654,10 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
       } else if (200..<300).contains(statusCode) {
         dbQueue.async { [weak self] in
           guard let self else { return }
-          self.markChunkUploaded(assetId: chunk.localAssetId, chunkIndex: chunk.chunkIndex)
+          guard self.admitsChunkCallback(ticket, "markChunkUploaded") else { return }
+          self.markChunkUploaded(
+            assetId: chunk.localAssetId, chunkIndex: chunk.chunkIndex, uploadSessionId: chunk.uploadSessionId
+          )
           DispatchQueue.main.async {
             self.updateBackupStatusSurfaces()
             self.wakeDrainLoop(reason: "background-chunk")
@@ -6109,9 +7675,11 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
         let code = AccountRefusalDetection.accountRefusalCode(responseBody)!
         handleConfirmedAccountRefusal(code: code)
         dbQueue.async { [weak self] in
-          self?.markChunkFailed(
+          guard let self, self.admitsChunkCallback(ticket, "markChunkFailed") else { return }
+          self.markChunkFailed(
             assetId: chunk.localAssetId,
             chunkIndex: chunk.chunkIndex,
+            uploadSessionId: chunk.uploadSessionId,
             error: "account refused (409 \(code))"
           )
         }
@@ -6132,9 +7700,11 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
         // until dead-letter, which is worse.
         handleConfirmedAccountMismatch()
         dbQueue.async { [weak self] in
-          self?.markChunkFailed(
+          guard let self, self.admitsChunkCallback(ticket, "markChunkFailed") else { return }
+          self.markChunkFailed(
             assetId: chunk.localAssetId,
             chunkIndex: chunk.chunkIndex,
+            uploadSessionId: chunk.uploadSessionId,
             error: "account mismatch (409)"
           )
         }
@@ -6147,9 +7717,11 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
           ? BackupError.uploadStalled(chunk.chunkIndex)
           : BackupError.httpStatus(statusCode, "Chunk upload failed")
         dbQueue.async { [weak self] in
-          self?.markChunkFailed(
+          guard let self, self.admitsChunkCallback(ticket, "markChunkFailed") else { return }
+          self.markChunkFailed(
             assetId: chunk.localAssetId,
             chunkIndex: chunk.chunkIndex,
+            uploadSessionId: chunk.uploadSessionId,
             error: statusCode == 408 ? "storage.upload_stalled (408)" : "HTTP \(statusCode)"
           )
         }

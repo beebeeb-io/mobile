@@ -20,6 +20,7 @@ import {
   setPhotoBackupIncludeVideos,
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
+import { syncBackupDeviceIdToNative } from './backup-device-id-handoff';
 import { ensureBackupFolders, reconcileDerivedStateAgainstServer, type BackupCategory } from '../services/BackupService';
 import { isVaultKeyMismatchError } from '../services/vault-key-mismatch';
 import { useCrypto } from './crypto-context';
@@ -287,6 +288,22 @@ export interface BackupContextValue {
    * upload for this reason.
    */
   accountRefusalReason: string | null;
+  /**
+   * Task 1667 round 6: set when the NATIVE engine refused to start because it
+   * could not open (or empty) the camera-roll backup manifest. Native retries
+   * on its own and clears it on the first open that works. Sourced from
+   * native's poll (`manifestUnavailableReason` on `NativeBackupProgress`);
+   * null otherwise.
+   */
+  manifestUnavailableReason: string | null;
+  /**
+   * Task 1667 round 12: set while the NATIVE engine holds camera-roll uploads
+   * because the server check cannot answer (a server without `backed_up`, a
+   * failed check, no device id yet). Native retries on its own. Sourced from
+   * native's poll (`serverCheckPausedReason` on `NativeBackupProgress`); null
+   * otherwise.
+   */
+  serverCheckPausedReason: string | null;
   // Legacy alias for components that used the old API
   isBackupEnabled: boolean;
   toggleBackup: () => Promise<void>;
@@ -322,6 +339,8 @@ export const BackupContext = createContext<BackupContextValue>({
   accountMismatchReason: null,
   ownerUnconfirmedReason: null,
   accountRefusalReason: null,
+  manifestUnavailableReason: null,
+  serverCheckPausedReason: null,
   isBackupEnabled: false,
   toggleBackup: async () => {},
 });
@@ -337,8 +356,25 @@ async function getStoredToken(): Promise<string | null> {
   }
 }
 
+// Task 1667 round 13 (review item 1): the handoff lives in its own module and
+// sends only a durable id (read, or minted and persisted).
+export { syncBackupDeviceIdToNative };
+
+/**
+ * Task 1667 round 12 (review item 6): the reason native gives while it holds
+ * camera-roll uploads on the server check, as Settings shows it. Pure and
+ * exported so the poll's mapping is unit-testable.
+ */
+export function nativeServerCheckPausedReason(p: NativeBackupProgress): string | null {
+  const reason = p.serverCheckPausedReason;
+  return typeof reason === 'string' && reason.length > 0 ? reason : null;
+}
+
 async function mirrorBackupSessionForNative(): Promise<void> {
   if (Platform.OS !== 'ios') return;
+  // Task 1667: before enablePhotoBackup / triggerImmediateBackup (both call
+  // this first), so the engine's first batch can rebuild from the server map.
+  await syncBackupDeviceIdToNative();
   try {
     const deviceId = await registerDevice();
     if (!deviceId) return;
@@ -573,7 +609,9 @@ export function nativeProgressEquals(a: NativeBackupProgress, b: NativeBackupPro
     opt(a.accountMismatchReason) === opt(b.accountMismatchReason) &&
     opt(a.accountMismatchGeneration) === opt(b.accountMismatchGeneration) &&
     opt(a.ownerUnconfirmedReason) === opt(b.ownerUnconfirmedReason) &&
-    opt(a.accountRefusalReason) === opt(b.accountRefusalReason)
+    opt(a.accountRefusalReason) === opt(b.accountRefusalReason) &&
+    opt(a.manifestUnavailableReason) === opt(b.manifestUnavailableReason) &&
+    opt(a.serverCheckPausedReason) === opt(b.serverCheckPausedReason)
   );
 }
 
@@ -620,6 +658,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // confirmed but non-session-ending refusal — same single-producer
   // mirroring as the two above (the native poll is the only writer).
   const [accountRefusalReason, setAccountRefusalReason] = useState<string | null>(null);
+  // Task 1667 round 6: native could not open its manifest and is retrying;
+  // same single-producer mirroring as the reasons above.
+  const [manifestUnavailableReason, setManifestUnavailableReason] = useState<string | null>(null);
+  const [serverCheckPausedReason, setServerCheckPausedReason] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Task 1686 (iOS idle heat) — the current RN AppState as a plain ref, read
   // by both polls at tick time (shouldPauseBackupPolls) and written by the
@@ -706,6 +748,8 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     setAccountMismatchReason(nextAccountMismatchReason);
     setOwnerUnconfirmedReason(p.ownerUnconfirmedReason ?? null);
     setAccountRefusalReason(p.accountRefusalReason ?? null);
+    setManifestUnavailableReason(p.manifestUnavailableReason ?? null);
+    setServerCheckPausedReason(nativeServerCheckPausedReason(p));
   }, []);
 
   const refreshNativeProgress = useCallback(async () => {
@@ -807,6 +851,13 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       }
     }
   }, [isUnlocked, userId]);
+
+  // Task 1667 round 12 (review item 7): hand the canonical device id to
+  // native at every launch, not only at enable, so a background task never
+  // runs without it (signed in or not: the id belongs to the device).
+  useEffect(() => {
+    void syncBackupDeviceIdToNative();
+  }, []);
 
   // Load persisted preferences on mount — scoped to the signed-in user
   // (task 1443). No userId means this instance is the signed-out slot
@@ -1210,6 +1261,8 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     accountMismatchReason,
     ownerUnconfirmedReason,
     accountRefusalReason,
+    manifestUnavailableReason,
+    serverCheckPausedReason,
     // Legacy alias
     isBackupEnabled: isPhotoBackupEnabled,
     toggleBackup: togglePhotoBackup,

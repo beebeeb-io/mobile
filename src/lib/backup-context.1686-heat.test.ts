@@ -102,11 +102,14 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   mirrorBackupClientSession: async () => true,
   getPhotoBackupIncludeVideos: async () => true,
   setPhotoBackupIncludeVideos: async () => true,
+  // Task 1667 — backup-context calls this before enable/trigger.
+  setBackupDeviceId: async () => true,
 }));
 
 const {
   nativeProgressEquals,
   shouldPauseBackupPolls,
+  nativeServerCheckPausedReason,
 } = await import('./backup-context');
 
 function progress(overrides: Record<string, unknown> = {}) {
@@ -126,6 +129,8 @@ function progress(overrides: Record<string, unknown> = {}) {
     accountMismatchGeneration: 4,
     ownerUnconfirmedReason: null,
     accountRefusalReason: null,
+    manifestUnavailableReason: null,
+    serverCheckPausedReason: null,
     ...overrides,
   };
 }
@@ -152,6 +157,10 @@ describe('nativeProgressEquals (task 1686 — equality early-return for the 5 s 
       ['accountMismatchGeneration', 5],
       ['ownerUnconfirmedReason', 'no owner'],
       ['accountRefusalReason', 'trial_cap'],
+      ['manifestUnavailableReason', 'Backup paused: list'],
+      // Task 1667 round 12 (review item 6): a pause on the server check must
+      // reach React (an equal poll would skip the setState).
+      ['serverCheckPausedReason', 'Backup paused: server'],
     ];
     for (const [key, value] of fields) {
       const a = progress();
@@ -183,5 +192,18 @@ describe('shouldPauseBackupPolls (task 1686 — pause both polls when background
 
   test("unknown state does NOT pause (fail open — a missed foreground must never freeze live progress)", () => {
     expect(shouldPauseBackupPolls(undefined)).toBe(false);
+  });
+});
+
+describe('nativeServerCheckPausedReason (task 1667 round 12, review item 6)', () => {
+  test('the native reason reaches the context as is', () => {
+    const reason = 'Backup paused: the server cannot yet confirm which photos this iPhone already backed up, so nothing uploads until it can. Retrying automatically.';
+    expect(nativeServerCheckPausedReason(progress({ serverCheckPausedReason: reason }) as never)).toBe(reason);
+  });
+
+  test('null, absent (an older native build) or empty is no reason', () => {
+    expect(nativeServerCheckPausedReason(progress({ serverCheckPausedReason: null }) as never)).toBeNull();
+    expect(nativeServerCheckPausedReason(progress({ serverCheckPausedReason: undefined }) as never)).toBeNull();
+    expect(nativeServerCheckPausedReason(progress({ serverCheckPausedReason: '' }) as never)).toBeNull();
   });
 });

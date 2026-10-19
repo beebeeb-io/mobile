@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
@@ -19,6 +19,7 @@ import { ThemeProvider, useTheme } from './lib/theme-context';
 import type { PerformanceStorageProfile } from './lib/performance-storage-settings';
 import { ToastProvider } from './lib/toast-context';
 import { recordRuntimeTrace } from './lib/runtime-trace';
+import { flushMarksBeforeSignOut } from './lib/sign-out-mark-flush';
 import { BBLogo } from './components/BBLogo';
 import {
   hasToken,
@@ -37,7 +38,8 @@ import { stashAccountDeletedNotice } from './lib/account-deleted-notice';
 import { AuthContext } from './lib/auth';
 import { CryptoProvider, SIMULATOR_MASTER_KEY_FILE, useCrypto, usesSoftwareVaultFallback } from './lib/crypto-context';
 // Task 1594: the vault key is bound to its owner (key-ownership.ts).
-import { clearKeyOwner } from './lib/key-ownership';
+import { clearKeyOwner, readKeyOwner } from './lib/key-ownership';
+import { getMeNamingKeyOwner, retryStartupGetMe } from './lib/cold-start-owner';
 import { markUnlocked, wasRecentlyUnlocked } from './lib/lock-state';
 import { SyncProvider } from './lib/sync-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
@@ -49,7 +51,14 @@ import { populateFileProviderCache } from './lib/file-provider-mount';
 import { ensureFilesMountedByDefault } from './lib/files-mount-default';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
-import { purgeAllPlaintextCaches } from './lib/account-cleanup';
+import {
+  accountDeletionPurgePending,
+  clearAccountDeletionPurge,
+  noteAccountDeleted,
+  accountIdForDeletedElsewhere,
+  purgeAllPlaintextCaches,
+} from './lib/account-cleanup';
+import { singleFlight } from './lib/single-flight';
 import { createSignedOutPurger } from './lib/signed-out-purge';
 import {
   setupNotificationHandler,
@@ -1003,6 +1012,19 @@ export default function App() {
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const backgroundAtRef = useRef<number | null>(null);
   const startupRunIdRef = useRef(0);
+  // Task 1667 round 9: the signed-in account, for the account-deleted handler
+  // (registered once, so it cannot read `user` itself).
+  const currentUserIdRef = useRef<string | null>(null);
+  // Task 1667 round 14 (review of mobile#182 at 18312919): at a cold start
+  // `currentUserIdRef` is still null when refreshAuth's getMe can answer 403
+  // account_deleted. The stored key's owner record is the stored session's
+  // account (a different signed-in account purges it at unlock, and every
+  // sign-out clears it), the same owner native trusts for the signed-in
+  // account (`confirmMasterKeyHandle`). Read before getMe, so the deletion
+  // names that account and native discards only its kept marks. Round 15:
+  // on both paths, refreshAuth and the cold launch's retryGetMe
+  // (src/lib/cold-start-owner.ts).
+  const coldStartOwnerRef = useRef<string | null>(null);
 
   // Phrase verification: false until the user types back their recovery words.
   // Defaults to true so existing (pre-phrase-flow) users are unaffected.
@@ -1021,9 +1043,18 @@ export default function App() {
       // Task 1593 — never let a signed-out purge still running delete the new
       // session's first cache writes.
       await signedOutPurger.settled();
-      const me = await getMe();
+      // Round 15: the same owner-naming call as the cold launch (retryGetMe).
+      const me = await getMeNamingKeyOwner({
+        owner: coldStartOwnerRef,
+        signedInUserId: currentUserIdRef.current,
+        readKeyOwner,
+        getMe,
+      });
       signedOutPurger.sessionStarted(); // task 1593 r3: reopen the plaintext gate
       setUser(me);
+      // Task 1667 round 9: a new session — purges are ordinary sign-outs again
+      // (an account deletion made every purge since run as 'account-deleted').
+      clearAccountDeletionPurge();
       SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
       // Register this device with the clients API first so we can thread
       // the canonical client_devices UUID into the push-token registration.
@@ -1038,6 +1069,8 @@ export default function App() {
         console.warn('[App] initLocalIdentifierMap failed', err),
       );
     } catch (err) {
+      // Round 14: the 403 account_deleted handler already ran (inside getMe);
+      // getMeNamingKeyOwner has cleared the owner.
       // Only a definitive 401 means the session is gone — and request() has
       // already cleared the invalid token in that case. Transient failures
       // (offline/network ApiError(0), 5xx, Secure-Enclave warm-up) must NOT
@@ -1057,9 +1090,21 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
-  const signOut = useCallback(async () => {
+  const runSignOut = useCallback(async () => {
     // Remove the push token before clearing the session.
     void unregisterPushToken();
+    // Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
+    // server map"): mark every completed camera-roll upload the server's
+    // per-device map does not have yet WHILE the session still works (the
+    // purge below runs after logout() revoked it). Bounded natively by a hard
+    // 8 s deadline and here by 8 s + margin even if the native promise never
+    // settles (round 3); what is left is kept for this account's next sign-in
+    // on this device.
+    // Round 9: not after an account deletion. Nothing of a deleted account is
+    // kept for a next sign-in, so there is nothing to mark for it.
+    if (Platform.OS === 'ios' && !accountDeletionPurgePending()) {
+      await flushMarksBeforeSignOut(() => BeebeebCrypto.flushBackupServerMarksForSignOut());
+    }
     try {
       await logout();
     } catch {
@@ -1096,30 +1141,34 @@ export default function App() {
     setPhraseVerified(true);
     setUser(null);
   }, []);
+  // Task 1667 round 4 (Codex P1 "Serialize overlapping database purge
+  // holds"): one sign-out at a time. Sign out tapped twice (two confirmation
+  // alerts), or two screens asking at once, joins the run already in progress
+  // instead of starting a second flush, logout and storage purge.
+  const signOut = useMemo(() => singleFlight(runSignOut), [runSignOut]);
 
   // Retry getMe() on transient startup failures. A 401 is definitive: the
   // API client clears the invalid token, and startup must render signed-out
   // instead of staying in diagnostics. Network/server/timeout failures keep
   // the restoring surface so a valid stored token is not treated as logout.
-  const retryGetMe = useCallback(async (): Promise<User | null> => {
-    const delays = [1000, 3000, 5000];
-    for (const delay of delays) {
-      try {
-        return await Promise.race([
-          getMe(),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('timeout')), 10_000),
-          ),
-        ]);
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 401) {
-          throw err;
-        }
-        await new Promise(r => setTimeout(r, delay));
-      }
-    }
-    return null; // all retries failed with transient failures
-  }, []);
+  // Task 1667 round 15 (review item 4): the cold launch names the stored
+  // key's owner during getMe too (getMeNamingKeyOwner), so a cold-launch 403
+  // account_deleted names the account instead of discarding every account's
+  // kept marks.
+  const retryGetMe = useCallback(
+    (): Promise<User | null> =>
+      retryStartupGetMe(
+        () =>
+          getMeNamingKeyOwner({
+            owner: coldStartOwnerRef,
+            signedInUserId: currentUserIdRef.current,
+            readKeyOwner,
+            getMe,
+          }),
+        (err) => err instanceof ApiError && err.status === 401,
+      ),
+    [],
+  );
 
   // Shared preferences loader — called from runStartup and also when
   // diagnostics are on screen so prefs are ready when the user retries.
@@ -1338,6 +1387,13 @@ export default function App() {
   useEffect(() => {
     registerAccountDeletedHandler((deletedAt, shredAfter) => {
       stashAccountDeletedNotice({ deletedAt, shredAfter });
+      // Task 1667 round 9 (Codex P1): the account is gone, so the signed-out
+      // purge below runs as 'account-deleted' for it and keeps nothing of it
+      // (no pending marks), not as an ordinary sign-out.
+      // Round 14: at a cold start the account is named by the stored key's
+      // owner (read in refreshAuth before getMe). Only when neither is known
+      // does the purge discard every kept mark (fail closed).
+      noteAccountDeleted(accountIdForDeletedElsewhere(currentUserIdRef.current, coldStartOwnerRef.current));
       setUser(null); // plaintext purge: the signed-out effect (task 1593)
     });
   }, []);
@@ -1350,6 +1406,11 @@ export default function App() {
   // registry (round 3: a cold signed-out launch too) — src/lib/signed-out-purge.ts.
   useEffect(() => {
     signedOutPurger.noteUser(user != null);
+  }, [user]);
+  useEffect(() => {
+    // Round 15 (review item 5): cleared at sign-out, so a later session's
+    // refreshAuth reads the key owner instead of naming the previous user.
+    currentUserIdRef.current = user ? user.user_id : null;
   }, [user]);
   const onSignedOutSurface = !checking && !showDiagnostics && !showSecureStorageError && user == null;
   useEffect(() => {

@@ -2325,7 +2325,12 @@ public class BeebeebCryptoModule: Module {
     //      that slips through both of the above (e.g. one already inside
     //      `CacheManager`'s serial queue, past the epoch check, when step 2
     //      ran) is still wiped by this final in-place reset.
-    AsyncFunction("purgePlaintextStorage") { () -> [String: Int] in
+    // Task 1667 round 9 (Codex P1 "Delete retained marks during permanent
+    // account deletion"): `mode` is "sign-out" or "account-deleted"
+    // (`ManifestPurgeMode`; nil = an older JS bundle = sign-out, any other
+    // value fails closed as a deletion). `deletedAccountIds` are the deleted
+    // accounts JS knows, added to the engine's outgoing account.
+    AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in
       var failed = 0
       // Task 1593 f2 (lead design decision: MARKER FIRST) — mark pending
       // BEFORE this purge does ANYTHING else: before the consent reset,
@@ -2406,11 +2411,63 @@ public class BeebeebCryptoModule: Module {
           failed += 1
         }
       }
+      // Task 1667 — the camera-roll backup manifest is emptied THROUGH the
+      // engine's open handle (and the engine stopped + unbound) before the
+      // registry sweep, which then keeps that file instead of unlinking it
+      // under the engine's and the JS layer's live connections. The JS layer
+      // holds (never closes) its handle around this call
+      // (storage-purge-participants.ts). Round 2: the file is kept even when
+      // the reset failed — the JS handle is still open on it — and
+      // `backupManifestResetFailed` tells JS to close that handle and call
+      // `finishBackupManifestPurge`, which resets or replaces it with no
+      // connection open.
+      // Round 9: the mode is read here, not first (marker-first, task 1593 f2).
+      let purgeMode = ManifestPurgeMode.parse(mode)
+      let manifest = NativeBackupEngine.shared.prepareForStoragePurge(
+        mode: purgeMode, deletedAccountIds: Set(deletedAccountIds ?? [])
+      )
       // Task 1593 round 7 (C1) — moved LAST (was first). See the block
       // comment above this AsyncFunction for why.
-      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce)
+      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)
       failed += result.failed
-      return ["removed": result.removed, "failed": failed]
+      return [
+        "removed": result.removed,
+        "failed": failed,
+        "backupManifestResetFailed": manifest.resetFailed ? 1 : 0,
+      ]
+    }
+
+    // Task 1667 round 2 (Codex P1 "Reopen the JS database after a reset
+    // failure"): the second half of a sign-out whose in-place manifest reset
+    // failed. JS calls it after closing its own expo-sqlite handle;
+    // `allowUnlink` is whether that close succeeded. `ok` 1 = the manifest
+    // is empty (reset, or replaced when `unlinked` is 1). Round 6:
+    // `reopened` 1 = the engine's handle is open again on that file (opened
+    // in the same serialized step as the recovery); 0 = `start()` reopens it
+    // or reports `manifestUnavailableReason` and retries.
+    AsyncFunction("finishBackupManifestPurge") { (allowUnlink: Bool) -> [String: Int] in
+      let r = NativeBackupEngine.shared.finishStoragePurgeAfterFailedReset(allowUnlink: allowUnlink)
+      return ["ok": r.ok ? 1 : 0, "unlinked": r.unlinked ? 1 : 0, "reopened": r.reopened ? 1 : 0]
+    }
+
+    // Task 1667 round 10 (review findings 5 + 7): JS calls this before EVERY
+    // expo-sqlite open of the manifest (`BackupDatabase.openAndMigrate`).
+    // `priorHandlesClosed` = JS holds no connection on the file. `ok` 1 = JS
+    // may open: no sign-out reset is pending (one still pending was applied
+    // here first, natively, with no JS connection open). `ok` 0 = JS must not
+    // open now (`reason` says why); it asks again on its next call.
+    AsyncFunction("admitBackupManifestJsOpen") { (priorHandlesClosed: Bool) -> [String: Any] in
+      let gate = NativeBackupEngine.shared.admitJsManifestOpen(priorHandlesClosed: priorHandlesClosed)
+      return ["ok": gate.admitted ? 1 : 0, "reason": gate.failure?.rawValue ?? NSNull()]
+    }
+
+    // Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
+    // server map"): JS sign-out calls this BEFORE revoking the session, so
+    // every upload the server's per-device map does not know yet is marked
+    // while the token still works. Bounded by time, not by a row cap.
+    AsyncFunction("flushBackupServerMarksForSignOut") { () async -> [String: Int] in
+      let r = await NativeBackupEngine.shared.flushServerMarksForSignOut()
+      return ["candidates": r.candidates, "marked": r.marked]
     }
 
     AsyncFunction("generateRandomBytes") { (length: Int) throws -> Data in
@@ -3097,6 +3154,16 @@ public class BeebeebCryptoModule: Module {
       // owner-unconfirmed refusal reason — same genuine-new-authentication
       // choke point.
       NativeBackupEngine.shared.clearOwnerUnconfirmedStopReasonOnNewAuthentication()
+      // Task 1667 round 5 (Codex P2 "Expire pending marks even when the
+      // current account has none"): every sign-in expires kept sign-out marks
+      // of ANY account older than 30 days, also when this account has none
+      // and photo backup is off.
+      NativeBackupEngine.shared.expireKeptPendingMarks(trigger: "sign_in")
+      // Task 1667 round 13 (review item 3): a different signed-in user ends
+      // the engine's memory of the account it last unbound.
+      if let normalizedOwnerId {
+        NativeBackupEngine.shared.noteSignedInAccount(normalizedOwnerId)
+      }
       RuntimeTrace.event("keychain.bridge.confirm_handle", ["handleId": handleId, "hasOwner": normalizedOwnerId != nil])
       return true
     }
@@ -3945,6 +4012,17 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("setPhotoBackupIncludeVideos") { (includeVideos: Bool) -> Bool in
       NativeBackupEngine.shared.includeVideos = includeVideos
       return true
+    }
+
+    // Task 1667: the canonical device id (src/lib/device-identity.ts) for the
+    // photo-backup map calls (`X-Beebeeb-Device-Id`). Set before
+    // `enablePhotoBackup`; persisted for background relaunches.
+    // Round 13 (review item 1): `persisted` is JS saying the id is durable
+    // (read from, or written to, secure storage). Without it (nil: an older
+    // JS bundle) an existing, different id is never replaced. Returns whether
+    // native took the id.
+    AsyncFunction("setBackupDeviceId") { (deviceId: String, persisted: Bool?) -> Bool in
+      NativeBackupEngine.shared.acceptBackupDeviceId(deviceId, persisted: persisted ?? false)
     }
 
     AsyncFunction("enablePhotoBackup") { (authToken: String, userId: String) in

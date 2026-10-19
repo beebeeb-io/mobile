@@ -911,8 +911,18 @@ public enum PlaintextStorageProtection {
   /// requires both of them to report zero failures (see the guard's own
   /// doc comment), so a purge that leaves plaintext behind in either one
   /// cannot report itself finished.
+  ///
+  /// Task 1667 — `preserving`: absolute paths of files an owner has ALREADY
+  /// emptied in place through its own open handle (the camera-roll backup
+  /// manifest, `NativeBackupEngine.prepareForStoragePurge()`). Unlinking a
+  /// SQLite file under a live connection leaves that connection writing to
+  /// the deleted inode for the rest of the process, and the next cold launch
+  /// starts from an empty manifest that re-uploads every photo. A directory
+  /// entry that contains a preserved path has every OTHER child removed (see
+  /// `removeItem(at:preserving:)`); an entry with none is removed whole, as
+  /// before.
   @discardableResult
-  public static func purgeAll(pendingNonce: Data? = nil) -> (removed: Int, failed: Int) {
+  public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = []) -> (removed: Int, failed: Int) {
     var removed = 0
     var failed = 0
     var resetBumpCommitted = false
@@ -945,7 +955,7 @@ public enum PlaintextStorageProtection {
         continue
       }
       do {
-        try FileManager.default.removeItem(at: entry.url)
+        try removeItem(at: entry.url, preserving: preserving)
         removed += 1
       } catch {
         RuntimeTrace.event("storage.purge.failed", ["path": entry.url.lastPathComponent])
@@ -999,6 +1009,32 @@ public enum PlaintextStorageProtection {
       clearPurgePending(nonce: pendingNonce)
     }
     return (removed, failed)
+  }
+
+  /// Task 1667 — removes `url`, except any path in `preserving` (and the
+  /// directories on the way to it), which is left exactly as it is. A plain
+  /// file or a directory holding no preserved path is removed whole, which is
+  /// what `purgeAll` did for every entry before. Paths are compared after
+  /// `standardizedFileURL`, so `/a/./b` and `/a/b` match.
+  static func removeItem(at url: URL, preserving: Set<String>) throws {
+    let fm = FileManager.default
+    let keep = Set(preserving.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+    let path = url.standardizedFileURL.path
+    if keep.contains(path) { return }
+    let prefix = path.hasSuffix("/") ? path : path + "/"
+    guard keep.contains(where: { $0.hasPrefix(prefix) }) else {
+      try fm.removeItem(at: url)
+      return
+    }
+    var firstError: Error?
+    for child in try fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: []) {
+      do {
+        try removeItem(at: child, preserving: keep)
+      } catch {
+        if firstError == nil { firstError = error }
+      }
+    }
+    if let firstError { throw firstError }
   }
 
   /// Task 1593 round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1, fresh

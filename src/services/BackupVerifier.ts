@@ -14,6 +14,7 @@ import {
   recordVerification,
 } from './BackupDatabase';
 import { downloadFile } from '../lib/api';
+import { backupWriteTicket } from '../lib/backup-write-ticket';
 import { handleDecryptChunk } from '../../modules/beebeeb-crypto';
 
 let uploadsSinceLastVerify = 0;
@@ -62,6 +63,9 @@ export interface VerifyDeps {
  * Returns true if verification passed.
  */
 async function verifySingleFile(deps: VerifyDeps): Promise<boolean> {
+  // Task 1667 round 8: taken before the first await; a result that settles
+  // after a sign-out or storage purge is not recorded in the emptied manifest.
+  const writeTicket = backupWriteTicket();
   const asset = await getRandomUploadedAsset();
   if (!asset || !asset.remote_file_id) {
     // No uploaded files to verify
@@ -81,7 +85,7 @@ async function verifySingleFile(deps: VerifyDeps): Promise<boolean> {
     const encryptedData = new Uint8Array(arrayBuffer);
 
     if (encryptedData.length === 0) {
-      await recordVerification(asset.remote_file_id, false, 'Empty download response', 0);
+      await recordVerification(asset.remote_file_id, false, 'Empty download response', 0, writeTicket);
       return false;
     }
 
@@ -90,7 +94,7 @@ async function verifySingleFile(deps: VerifyDeps): Promise<boolean> {
     // The encrypted chunk format is: nonce (12 bytes) || ciphertext
     const NONCE_SIZE = 12;
     if (encryptedData.length <= NONCE_SIZE) {
-      await recordVerification(asset.remote_file_id, false, 'File too small to contain nonce', encryptedData.length);
+      await recordVerification(asset.remote_file_id, false, 'File too small to contain nonce', encryptedData.length, writeTicket);
       return false;
     }
 
@@ -99,23 +103,23 @@ async function verifySingleFile(deps: VerifyDeps): Promise<boolean> {
     const decrypted = await handleDecryptChunk(handleId, asset.remote_file_id, nonce, ciphertext);
 
     if (!decrypted || decrypted.length === 0) {
-      await recordVerification(asset.remote_file_id, false, 'Decryption returned empty data', encryptedData.length);
+      await recordVerification(asset.remote_file_id, false, 'Decryption returned empty data', encryptedData.length, writeTicket);
       return false;
     }
 
     // Validate image header
     const isValid = hasValidImageHeader(decrypted);
     if (isValid) {
-      await recordVerification(asset.remote_file_id, true, undefined, decrypted.length);
+      await recordVerification(asset.remote_file_id, true, undefined, decrypted.length, writeTicket);
     } else {
       // Non-image files (videos, documents) may not match these headers,
       // which is fine — record success if decryption itself worked
-      await recordVerification(asset.remote_file_id, true, undefined, decrypted.length);
+      await recordVerification(asset.remote_file_id, true, undefined, decrypted.length, writeTicket);
     }
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown verification error';
-    await recordVerification(asset.remote_file_id, false, msg, undefined);
+    await recordVerification(asset.remote_file_id, false, msg, undefined, writeTicket);
     return false;
   }
 }

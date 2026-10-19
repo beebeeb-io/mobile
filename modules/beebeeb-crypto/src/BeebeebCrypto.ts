@@ -121,6 +121,12 @@ export async function auditPlaintextStorage(): Promise<PlaintextStorageAuditRow[
 export interface PlaintextStoragePurgeResult {
   removed: number
   failed: number
+  /**
+   * Task 1667 round 2 (iOS): 1 when the camera-roll backup manifest could not
+   * be emptied in place. The file was KEPT (the JS handle is still open on
+   * it); the caller closes that handle and calls `finishBackupManifestPurge`.
+   */
+  backupManifestResetFailed?: number
 }
 
 /**
@@ -140,13 +146,38 @@ export interface PlaintextStoragePurgeResult {
  * `clearPersistedOfflineState`) IS the Android purge surface. The two
  * platforms' counts compose additively in `purgeAllPlaintextCaches`.
  */
-export async function purgePlaintextStorage(): Promise<PlaintextStoragePurgeResult> {
+/**
+ * Task 1667 round 9 (Codex P1 "Delete retained marks during permanent account
+ * deletion"): what the purge is for. `'sign-out'` keeps the outgoing account's
+ * not-yet-marked camera-roll uploads as pending marks for its next sign-in on
+ * this device; `'account-deleted'` keeps nothing of the deleted account and
+ * deletes its pending marks (native `ManifestPurgeMode`).
+ */
+export type StoragePurgeMode = 'sign-out' | 'account-deleted'
+
+export interface PlaintextStoragePurgeOptions {
+  mode?: StoragePurgeMode
+  /** Accounts deleted permanently (added to the native engine's outgoing account). */
+  deletedAccountIds?: string[]
+}
+
+/**
+ * Task 1667 round 11 (review finding 4): a native purge that REJECTS
+ * propagates. This wrapper used to turn any rejection into
+ * `{removed: 0, failed: 0}`, so `account-cleanup.ts`'s failed path (a throwing
+ * native purge counts as `failed: 1`, round 7) never ran in production and a
+ * sign-out whose registry sweep and manifest reset never ran reported a clean
+ * purge. Only a native module WITHOUT the function (Android, see the platform
+ * contract above) answers `{removed: 0, failed: 0}`.
+ */
+export async function purgePlaintextStorage(
+  options: PlaintextStoragePurgeOptions = {},
+): Promise<PlaintextStoragePurgeResult> {
   if (typeof BeebeebCryptoModule.purgePlaintextStorage !== 'function') return { removed: 0, failed: 0 }
-  try {
-    return (await BeebeebCryptoModule.purgePlaintextStorage()) as PlaintextStoragePurgeResult
-  } catch {
-    return { removed: 0, failed: 0 }
-  }
+  return (await BeebeebCryptoModule.purgePlaintextStorage(
+    options.mode ?? 'sign-out',
+    options.deletedAccountIds ?? [],
+  )) as PlaintextStoragePurgeResult
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -1483,6 +1514,23 @@ export interface NativeBackupProgress {
    * `null`/undefined when nothing is refusing to upload for this reason.
    */
   accountRefusalReason?: string | null
+  /**
+   * Task 1667 round 6 — set when the native engine refused to start because
+   * it could not open (or empty) the camera-roll backup manifest; it retries
+   * on its own (2, 4, 8, 16, then every 30 s) and clears this on the first
+   * open that works, on stop and on sign-out. The honest message to show;
+   * `null`/undefined otherwise.
+   */
+  manifestUnavailableReason?: string | null
+  /**
+   * Task 1667 round 12 — set while camera-roll uploads are paused on the
+   * server check: the server cannot say which photos this device already
+   * backed up (no `backed_up`, task 2036), the check failed, or the device id
+   * is not available yet. Native retries on its own and clears it on the next
+   * check that answers, on stop and on sign-out. The honest message to show;
+   * `null`/undefined otherwise.
+   */
+  serverCheckPausedReason?: string | null
 }
 
 export type NativeBackupDiagnostics = Record<string, unknown>
@@ -1558,6 +1606,79 @@ export async function getPhotoBackupIncludeVideos(): Promise<boolean> {
 export async function setPhotoBackupIncludeVideos(includeVideos: boolean): Promise<boolean> {
   if (typeof BeebeebCryptoModule.setPhotoBackupIncludeVideos !== 'function') return false
   return BeebeebCryptoModule.setPhotoBackupIncludeVideos(includeVideos)
+}
+
+/**
+ * Task 1667: hand the canonical device id (`getDeviceId()`) to the native
+ * engine, which sends it as `X-Beebeeb-Device-Id` when it records completed
+ * uploads in the server's per-device photo-backup map and when it rebuilds an
+ * empty manifest from that map. Call before `enablePhotoBackup`. Resolves
+ * false on a native build without it.
+ */
+export async function setBackupDeviceId(
+  deviceId: string,
+  options: { persisted: boolean } = { persisted: false },
+): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.setBackupDeviceId !== 'function') return false
+  // Task 1667 round 13 (review item 1): native replaces an existing,
+  // DIFFERENT id only when this says the id is durable (read from, or
+  // persisted to, secure storage). Resolves native's verdict: false when it
+  // refused (it logs why) or on a build without the function.
+  const accepted = await BeebeebCryptoModule.setBackupDeviceId(deviceId, options.persisted)
+  return accepted !== false
+}
+
+/**
+ * Task 1667 round 2: second half of a sign-out whose native in-place reset of
+ * the backup manifest failed (`purgePlaintextStorage()` reported
+ * `backupManifestResetFailed`). Call only after the JS expo-sqlite handle on
+ * the manifest is closed; `allowUnlink` = that close succeeded. Resolves
+ * `{ ok: 0, unlinked: 0 }` on a native build without it. Round 6: `reopened`
+ * 1 = the native engine's handle is open again on the resulting file.
+ */
+export async function finishBackupManifestPurge(
+  allowUnlink: boolean,
+): Promise<{ ok: number; unlinked: number; reopened?: number }> {
+  if (typeof BeebeebCryptoModule.finishBackupManifestPurge !== 'function') return { ok: 0, unlinked: 0 }
+  return (await BeebeebCryptoModule.finishBackupManifestPurge(allowUnlink)) as {
+    ok: number
+    unlinked: number
+    reopened?: number
+  }
+}
+
+/**
+ * Task 1667 round 10: the native gate before EVERY JS (expo-sqlite) open of
+ * the backup manifest (`BackupDatabase.openAndMigrate`). `priorHandlesClosed`
+ * = JS holds no connection on the file right now. `ok` 1: JS may open (no
+ * sign-out reset is pending; one still pending was applied natively first).
+ * `ok` 0: JS must not open now; `reason` is the native `OpenFailure`.
+ * Resolves `{ ok: 1, reason: 'no_native_manifest' }` on a native build
+ * without it: no native engine owns the file there (Android), so no native
+ * reset can be pending on it.
+ */
+export async function admitBackupManifestJsOpen(
+  priorHandlesClosed: boolean,
+): Promise<{ ok: number; reason: string | null }> {
+  if (typeof BeebeebCryptoModule.admitBackupManifestJsOpen !== 'function') {
+    return { ok: 1, reason: 'no_native_manifest' }
+  }
+  const r = (await BeebeebCryptoModule.admitBackupManifestJsOpen(priorHandlesClosed)) as {
+    ok: number
+    reason?: string | null
+  }
+  return { ok: r.ok, reason: r.reason ?? null }
+}
+
+/**
+ * Task 1667 round 2: mark every completed camera-roll upload the server's
+ * per-device map does not know yet, while the session still works. Call from
+ * sign-out BEFORE the session is revoked. Bounded natively (~8 s); what is
+ * left is kept for that account's next sign-in on this device.
+ */
+export async function flushBackupServerMarksForSignOut(): Promise<{ candidates: number; marked: number }> {
+  if (typeof BeebeebCryptoModule.flushBackupServerMarksForSignOut !== 'function') return { candidates: 0, marked: 0 }
+  return (await BeebeebCryptoModule.flushBackupServerMarksForSignOut()) as { candidates: number; marked: number }
 }
 
 /**

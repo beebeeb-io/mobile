@@ -760,6 +760,210 @@ back up `Library/Caches/`. Any path this app writes outside `Caches/` must be re
 - Verify with `bash scripts/verify-backup-exclusion.sh <sim-udid>`; the full inventory and the
   accepted-plaintext rationale live in `docs/0300-plaintext-lifecycle-audit.md`.
 
+## Camera-roll backup manifest — per account, survives sign-out as a file (task 1667)
+
+`Documents/SQLite/beebeeb-backup.db` is open twice: by `NativeBackupEngine` and by
+`BackupDatabase.ts` (expo-sqlite). Never unlink it under those handles: before task 1667 the
+sign-out purge did, the process kept using the deleted inode, and the next cold launch started from
+an empty manifest and uploaded every photo again into the same folder (sim evidence
+`_qa-evidence/1962/sim-dup/`).
+
+- **Never close the JS handle while the engine's connection is open on the file.** expo-sqlite
+  compiles its own SQLite (`node_modules/expo-sqlite/ios/sqlite3.c`); the engine links the system
+  one. Two SQLite copies in one process cannot see each other's connections: a JS `closeAsync()`
+  concluded it was the last connection and deleted `-wal`/`-shm` under the engine's open handle
+  (simulator, task 1667). So an ordinary sign-out keeps the JS handle OPEN (the reset runs through
+  the engine's handle). JS closes it in exactly two places, both after the engine's handle is
+  closed: (1) the failed-reset path: the native reset failed and the engine closed its own handle,
+  then `account-cleanup.ts` calls `closeHandles()` (`closeHandleForStoragePurge`) still under the
+  purge hold, then `finishBackupManifestPurge(closed)`; (2) `admitJsOpen` closes leftover JS
+  connections (`unclosedHandles`) when the native gate answers `pending_reset_deferred`, i.e. a
+  reset is pending and the engine has no connection open. Removing either close breaks that
+  recovery. (Known gap, round 14 follow-up: on a failed reset the ENGINE closes its system-SQLite
+  connection while the JS one is still open, the reverse of this rule.)
+- **Sign-out** (`purgeAllPlaintextCaches` → native `purgePlaintextStorage`): JS holds its database
+  work, handle open (`storage-purge-participants.ts`); native `prepareForStoragePurge()` stops and
+  unbinds the engine, clears `photoBackupParentFolderId`, empties the manifest IN PLACE through its
+  handle (`BackupManifestStore.resetInPlace`), and `PlaintextStorageProtection.purgeAll(preserving:)`
+  keeps that file while removing the rest of `SQLite/`. If the reset fails, the file is still
+  KEPT, never unlinked under the JS handle (see "A reset counts only if the WAL was truncated"
+  below for what happens instead). The `beebeeb_backup_folders` SecureStore cache is cleared too
+  (`backup-folder-cache.ts`). Round 13: the once-per-DEVICE legacy root-backup migration record
+  lives in its own key `beebeeb_backup_legacy_migration` that NO sign-out or deletion clears, and
+  `migrateLegacyRootBackups` moves only items with a legacy marker (a plaintext `name_encrypted`,
+  or the folder id in `beebeeb_photos_folder_id`), never by decrypted name: a user's own root
+  "Photos" folder or contacts.vcf is never moved.
+- **Ownership:** `backup_assets.uploaded_account_id` names the account a row's remote file belongs
+  to. `bindAccount` / every scan run `BackupManifestStore.claim`: rows from before the column are
+  adopted, another account's rows are re-queued. Never trust `status = 'uploaded'` without it.
+- **Server map:** every completed upload is recorded with `POST /api/v1/files/photo-backup/mark`
+  (`X-Beebeeb-Device-Id` = the canonical `getDeviceId()`, handed to native by
+  `setBackupDeviceId` at every launch (BackupProvider mount) and at enable; round 12: before the
+  first launch of a build, native reads the same id from expo-secure-store's keychain item
+  `bb_sync_device_id`, `BackupDeviceId.swift`, and NEVER mints one; round 13: JS's `getDeviceId()`
+  REJECTS (`DeviceIdUnavailableError`) when the keychain read fails, e.g. device locked, and mints
+  only when both keys READ as absent; the handoff, `backup-device-id-handoff.ts`, sends only a read
+  or durably persisted id, and native's `acceptBackupDeviceId` never replaces an existing,
+  different id unless JS says it is durable, logging the refusal); `server_marked_at` tracks it and scans catch up on unmarked rows. A manifest
+  holding nothing the account uploaded is rebuilt from `GET /api/v1/files/photo-backup/identifiers`
+  BEFORE the first upload (`ensureManifestReadyForUploads`, gated in `processBatch`); if that GET
+  fails, no upload starts. The rebuild is only a FAST PATH (round 10): it runs once per account, on
+  the rows present at that moment, from the identifiers map ONLY (round 11: the server leaves
+  trashed files out of it, task 2036). Photos uploaded before the map existed and lost from the manifest
+  are not in the map: they upload once more (content-hash dedup is task 1667 plan item 6).
+- **The dedupe guarantee is the server check (round 10, reworked round 11; `PendingUploadServerCheck.swift`).**
+  Contract (server task 2036, `photo_backup.rs`): `POST /api/v1/files/photo-backup/check` (<= 500 ids
+  per call, per device) EXCLUDES files in the Trash and returns `backed_up:
+  [{local_identifier, file_id}]` (`already_backed_up` stays for old clients and must name the same
+  ids); `GET .../identifiers`, `list_ids` and `stats` exclude trashed files too. A row becomes
+  `uploaded` ONLY when it is in `backed_up`, with that file id (fenced write); every other row
+  uploads. Two passes: a BULK pass over ALL fresh pending rows (no staged file), chunks of 500,
+  before the drain selects a batch (once per drain start / background task, and again after a scan
+  inserted rows; covered "needs backup" rows are kept per account + fence generation for 15 min,
+  `ServerCheckCoverage`, and only keep the NEXT bulk pass from asking again), and the per-batch
+  guard for EVERY fresh row of the batch (round 12: coverage never lets a row skip it,
+  `PendingUploadServerCheck.batchCandidates`; a row re-queued by the JS reconcile or restored from the
+  Trash after the bulk answer uploaded twice in round 11). Any failed step defers the WHOLE batch
+  with a backoff (30 s for a server read or a missing device id, 2..30 s for a write): nothing
+  uploads on a failure. A deferral shows `serverCheckPausedReason` (progress dict, status surfaces,
+  Settings) until a check answers, a stop, or sign-out (round 12). Round 13: every status update
+  (widget, Live Activity, heartbeat) decides its state with that pause (`BackupSurfaceState`):
+  "paused" (or "waitingForAppOpen" without a device id), never "Preparing backup". The server check
+  and its promotion run ONLY inside the batch slot (`processBatch`, and the scan's rebuild gate,
+  round 13), so a hit on a 'staging' / 'uploading' row without a staged file is promoted (it is stale).
+- **A server without `backed_up` (no task 2036) fails closed (round 11).** Nothing is promoted and
+  nothing of the batch uploads (`serverLacksBackedUp`, 30 s backoff), and once that was seen the
+  rebuild fast path applies no identifiers map either. Round 12: that state (`BackedUpSupport`) is
+  reset at sign-out, and while it is set the rebuild sends ONE capability probe `/check` per backoff
+  period (`PendingUploadServerCheck.rebuildFetch`, a non-PhotoKit id), so a deploy of 2036 is picked
+  up in-process; never gate it on a `/check` that runs after the rebuild. Round 13: support is
+  three-state (unknown / supported / lacking); the rebuild applies a map only when it is KNOWN
+  supported, so "unknown" (every launch and sign-in) probes first too: an old server's map, which
+  includes trashed files, is never applied. Logged ONCE per process:
+  `server lacks backed_up (task 2036)`. Task 2036 must be deployed to prod before a build with this
+  reaches TestFlight. Native code has NO liveness read and never calls `GET /api/v1/files/index`
+  (the rule below; `native-backup-manifest-wiring.test.ts` fails on any native caller).
+- **Route 404s (round 5, `PhotoBackupServerResponses.swift`):** the identifiers handler never
+  answers 404, so an identifiers 404 is a failed fetch (the gate defers and retries), never an empty
+  map. A mark 404 is "file gone, done" ONLY with the API's own `ApiError::NotFound` body
+  (`application/json`, exactly `{"error":"not found"}`, server `error.rs`); any other 404 is a
+  failure and the row stays a pending mark. Do not add a "server without the route" path back.
+- **Kept across sign-out (round 2):** `backup_pending_marks` in the same file holds, per account,
+  (user id, PhotoKit local id, server file id, time) for uploads the server's map did not have yet.
+  The reset moves them there in its own transaction; the next sign-in of THAT account promotes
+  them after the server rebuild (`applyPendingMarks`, scoped by account) and the mark catch-up
+  sends them. 30-day expiry for EVERY account, as its own step (round 5): at every sign-in
+  (`confirmMasterKeyHandle`) and bind, before every batch's kept-marks step (ahead of its account
+  count) and at the sign-out reset, so rows of an account that never comes back still go. No name,
+  content, key or hash. Round 13: the engine remembers the account it last unbound
+  (`UnboundAccountMemory`) only until any account binds or JS confirms a different signed-in user;
+  an account-deleted reset discards the marks of the accounts JS NAMES, never a remembered account
+  on top of them (none named and only a remembered account: every mark goes, fail closed). Round 14:
+  uploads IN FLIGHT at sign-out ('staging'/'staged_upload'/'uploading' with a file id and an upload
+  session id) may be complete on the server unrecorded. The sign-out flush asks `GET /files/{id}`
+  for them and marks the complete ones; whatever it does not settle is kept with
+  `needs_resolution = 1` (`keepInFlightUploads`, BEFORE the staged purge clears the ids). Such a
+  row is never promoted as a mark: the account's next sign-in resolves it in the rebuild gate
+  before any upload (`KeptUploadResolution`: complete -> kept mark, else dropped; unreachable ->
+  defer). At a cold start a 403 account_deleted names the stored key's owner
+  (`accountIdForDeletedElsewhere`). Round 15: the keep runs INSIDE every staged purge
+  (`BackupManifestStore.purgeAllStaged`, via `clearAccountAndPurgeStaged`), because the provider
+  unmount's `teardownAllBackup` runs before the signed-out purge, and the Camera Roll toggle-off and
+  the read-only stop never reach `prepareForStoragePurge`; for those the same account's re-enable
+  resolves the row. Only the API's own answer resolves a row
+  (`PhotoBackupServerResponses.existingUpload`): complete = 2xx with `is_uploading` false and not
+  trashed (a trashed file is NOT backed up: dropped and queued); dropped = the API's NotFound 404 or
+  `is_uploading` true; anything else (a non-API 404, an unreadable 2xx, 5xx, 429) defers, and a 429's
+  Retry-After is honoured. Both getMe paths (refreshAuth and the cold launch's `retryGetMe`) name
+  the key owner through `getMeNamingKeyOwner` (`src/lib/cold-start-owner.ts`). JS sign-out first calls
+  `flushBackupServerMarksForSignOut` (before `logout()` revokes the token, ~8 s, no row cap).
+  Round 16: the keep waits up to 2 s for another connection's write lock (temporary busy timeout,
+  restored on return). The mismatch purges keep too, scoped to the rows they clear:
+  `purgeMismatchedStagedAssets` (bindAccount, start, the BG task) through
+  `BackupManifestStore.purgeMismatchedStaged`, and `uploadSingleAsset`'s per-row refusal through
+  `restageMismatchedRow`. `claim` keeps another account's unmarked uploads as marks before it
+  re-queues them. These matter only when the previous account's teardown never ran.
+- **A reset counts only if the WAL was truncated** (`sqlite3_wal_checkpoint_v2` TRUNCATE rc, retried).
+  Round 13: it runs on the engine's long-lived connection and restores that connection's busy
+  timeout and `secure_delete` on every return (`BackupManifestStore.connectionSettings`).
+  JS drains calls already running before the reset (`inFlight` in `BackupDatabase.ts`). On a
+  failed reset the file is still KEPT (never unlinked under the JS handle): native closes its
+  handle and sets `io.beebeeb.backupManifestResetPending`, JS closes its handle, then
+  `finishBackupManifestPurge` resets (or replaces, carrying the kept marks) with no connection
+  open; JS reopens lazily. The flag makes every later open apply the reset first. A replacement file
+  carries `PRAGMA user_version` = `BackupManifestStore.jsSchemaVersion` (round 12; = JS
+  `LEGACY_STATUS_ENUM_MIGRATION_VERSION`), or JS's one-time legacy migration turns live
+  'uploading' rows into 'uploaded' with no file id.
+- **JS opens the manifest only through the native gate (round 10).** `BackupDatabase.openAndMigrate`
+  asks `admitBackupManifestJsOpen(priorHandlesClosed)` (`src/lib/backup-manifest-js-open-gate.ts`,
+  registered by `account-cleanup.ts`; no gate = refuse) before EVERY open. Native applies a reset
+  still pending first, on its own connection with no JS connection open, and admits JS only when none
+  is pending: after `finishBackupManifestPurge` answered `ok: 0`, the next account never reads the
+  previous account's rows. A refusal opens nothing and the next call asks again.
+- **Native never closes or checkpoints while JS may hold the file, outside the purge hold (round 10).**
+  `BackupManifestHandle.peerMayHoldFile` is set when JS is admitted and cleared only when JS confirms
+  every handle closed (the gate with `priorHandlesClosed`, or `finishAfterFailedReset(allowUnlink:
+  true)` under the hold). `finishAfterFailedReset(allowUnlink: false)` (JS's close failed) opens,
+  resets and closes NOTHING (round 12): the reset stays pending until JS confirms its close at the
+  gate. While set, `openIfClosed` does not apply a pending reset
+  (`pending_reset_deferred`, nothing opened) and PARKS a connection it cannot use instead of closing
+  it (a retry reuses it; JS's confirmed close closes it). The two copies are the root cause (task
+  1667 finding 12); until one owner exists, every new close/checkpoint path needs this rule.
+- **The engine's handle lives in `BackupManifestHandle.swift` (round 6).** It is the only code that
+  opens, resets, closes or reopens the native connection; the engine's `db` is a read-only view of it
+  and `swift-db-queue-audit.ts` holds `manifestHandle` to the same dbQueue rule as `db`.
+  `finishBackupManifestPurge` reopens the handle in the same `dbQueue.sync` step as a successful
+  recovery (still inside the JS purge hold), and no open happens between the two halves of a failed
+  sign-out (`purge_in_flight`). An open that cannot open, read, or apply a pending reset keeps NO
+  handle. `start()` and the BG task never run without a handle: `start()` reopens, or stops, publishes
+  `manifestUnavailableReason` (progress dict, status `needsAttention`, Settings) and retries 2, 4, 8,
+  16, then every 30 s; `stop()` and sign-out cancel the retry. Never add a path that leaves `db` nil
+  silently.
+- **Engine lifecycle (rounds 11-12, `BackupEngineLifecycle.swift`).** start/stop/retry/observer/monitor
+  run as ONE transition. Never hold that lock across a keychain or Face ID read: `start()` loads the
+  key in `prepareStartMasterKey()` (outside, `loadMasterKeyUncached`) and `startLocked(prepared:)`
+  re-validates it inside. A background task that set `isRunning` owns the run only until a user
+  start claims it (`claimUserRun`); its exit idles only its own run (`endBackgroundRun`). `stop()`
+  removes the observer and monitor whatever `isRunning` says. `processBatch` takes the batch slot
+  (`beginBatchProcessing`) before the rebuild gate.
+- **Every manifest write is fenced (round 8, `ManifestWriteFence.swift`).** An async producer (scan,
+  photo-library callback, background task, batch, rebuild step, mark record, sign-out flush, chunk
+  PUT) takes a write ticket with `manifestWriteTicket(...)` BEFORE its slow step (PhotoKit fetch,
+  network, encrypt), and each write checks it with `admitsWrite(ticket, ...)` (or a
+  `FencedManifestWrites` function) as the first statement of the SAME `dbQueue` block.
+  `resetForSignOut` advances and seals the fence first, so a late write from before a sign-out is
+  dropped (traced `backup.native.manifest.write_fenced`); only `bindAccount` (a JS-confirmed sign-in)
+  binds it again. Chunk callbacks also match the row's `upload_session_id`. On the JS side every
+  `BackupDatabase` writer takes a `BackupWriteTicket` (`src/lib/backup-write-ticket.ts`: account epoch
+  + storage-purge generation) taken where the caller's work starts. A new writer without a ticket
+  check fails `src/lib/native-backup-write-fence.test.ts` (`swift-write-fence-audit.ts`); an
+  exemption needs a reason in its `EXEMPT` table.
+- **Start, stop and the manifest-open retry are ONE transition (round 11, `BackupEngineLifecycle.swift`).**
+  `start()` = `lifecycle.userStart { startLocked() }`, `stop()` = `lifecycle.userStop { stopLocked() }`;
+  the retry runs `startLocked()` inside `lifecycle.runRetry(token)`, only while the user still wants
+  backup running (`stop()` / `disablePhotoBackup` / sign-out clear it) and no newer retry exists. The
+  photo observer registers through `registerObserverOnce`, the network monitor starts only when none
+  runs (`startMonitorIfNeeded`). The PhotoKit fetch result is stored only through
+  `acceptFetchResult` (stop generation + `Task.isCancelled` + the scan's fence ticket, in the lock
+  every stop takes) and cleared again after the sign-out reset. Never call `startLocked()` /
+  `stopLocked()` outside a transition, and never assign the fetch result directly.
+- **Account-scoped state goes with the sign-out reset.** The scan-insert health lives on
+  `BackupManifestHandle` and `resetForSignOut` clears it (round 11): account A's failed insert must
+  not defer account B's first rebuild. A deletion left pending by an EARLIER process forces "discard
+  every kept mark" even after this process records its own deletions (`activeDiscard`, round 11).
+- **SQLite text/blob binds copy their bytes** (round 11): `BackupManifestStore.bindText`
+  (SQLITE_TRANSIENT), never `(s as NSString).utf8String` with a nil destructor (SQLITE_STATIC keeps a
+  pointer into a temporary). `src/lib/native-sqlite-bind-transient.guard.test.ts` fails on any nil
+  destructor in `modules/beebeeb-crypto/ios`.
+- Tests: `scripts/swift-tests/backup-manifest-store-test.swift` (real SQLite, two connections,
+  lsof), `scripts/swift-tests/{manifest-rebuild-gate,sign-out-mark-flush,photo-backup-route-responses,manifest-reopen,manifest-write-fence,manifest-js-peer,pending-upload-server-check,manifest-account-deletion,backup-engine-lifecycle}-test.swift`,
+  `src/lib/account-cleanup.1667-backup-manifest.test.ts`,
+  `src/lib/native-backup-manifest-wiring.test.ts`, `src/lib/native-backup-write-fence.test.ts`,
+  `src/services/BackupDatabase.1667-write-fence.test.ts`, `src/services/BackupDatabase.1667-js-open-gate.test.ts`,
+  `src/lib/account-cleanup.1667-real-purge-wrapper.test.ts` (round 11: the REAL `purgePlaintextStorage`
+  wrapper propagates a native rejection, so a failed native purge counts as failed),
+  `src/lib/native-sqlite-bind-transient.guard.test.ts`.
+
 
 ## Files (File Provider extension) — testing it (task 1722)
 
@@ -855,7 +1059,9 @@ back up `Library/Caches/`. Any path this app writes outside `Caches/` must be re
 ## GET /files/index — only through `file-index-loader.ts` (task 1959)
 
 `src/lib/file-index-loader.ts` is the only caller of `getFileIndex()`; the source guard
-`src/lib/file-index-loader.guard.test.ts` fails on any other caller. The server walks the whole
+`src/lib/file-index-loader.guard.test.ts` fails on any other caller. Native code (Swift) never
+calls `GET /api/v1/files/index` at all (task 1667 round 11 removed the camera-roll engine's
+liveness read; `native-backup-manifest-wiring.test.ts` fails on a native caller). The server walks the whole
 vault on every call (~2.4 s for a 40k-file vault, hash or not), so the loader coalesces: callers
 that arrive while a request runs share it; for 5 minutes (`FILE_INDEX_REVALIDATE_MS`) after a
 server check, plain callers get the on-disk cache (the sync client writes create / trash / move /
