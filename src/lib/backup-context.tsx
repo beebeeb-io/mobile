@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { AppState, Platform } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
@@ -615,6 +615,44 @@ export function nativeProgressEquals(a: NativeBackupProgress, b: NativeBackupPro
   );
 }
 
+/** The BackupProgress the screens read for one native payload. */
+export function projectNativeProgress(p: NativeBackupProgress): BackupProgress {
+  const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
+  const nativeState = p.state ?? (p.inProgress > 0 ? 'uploading' : pending > 0 ? 'idle' : 'complete');
+  return {
+    total: p.total,
+    completed: p.completed,
+    inProgress: p.inProgress,
+    pending,
+    waitingToEncrypt: p.waitingToEncrypt,
+    encryptedPendingUpload: p.encryptedPendingUpload,
+    uploading: p.uploading,
+    failed: p.failed ?? 0,
+    state: nativeState,
+    reason: p.reason ?? '',
+  };
+}
+
+/**
+ * Task 1667 (sim rung 5b) + task 1686 (idle heat): the state update for one
+ * native read. The provider keeps only the native payload it shows (null =
+ * nothing shown) and projects it for the screens, so the "same as last time"
+ * check always compares against what is shown. Returns `prev` itself for an
+ * equal payload, so React bails out and an idle 5 s tick re-renders nothing
+ * (task 1686). From null any payload is shown.
+ *
+ * On main 9f997265 the payload lived in a separate ref while the disable
+ * path wrote EMPTY_PROGRESS into the shown state: after re-enable native
+ * reported the identical 25/25, the check matched the stale ref, and Photos
+ * read "0 backed up" (Settings "25 of 0 items") until a cold relaunch.
+ */
+export function nextShownNativeProgress(
+  prev: NativeBackupProgress | null,
+  p: NativeBackupProgress,
+): NativeBackupProgress | null {
+  return prev && nativeProgressEquals(prev, p) ? prev : p;
+}
+
 /**
  * Task 1686 (iOS idle heat) — whether the backup-progress poll (5 s) and the
  * account-refusal poll (15 s) should pause for this AppState. 'inactive'
@@ -640,7 +678,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const [includeVideos, setIncludeVideosState] = useState(true);
   const [wifiOnly, setWifiOnlyState] = useState(false);
   const [backgroundUpload, setBackgroundUploadState] = useState(true);
-  const [backupProgress, setBackupProgress] = useState<BackupProgress>(EMPTY_PROGRESS);
+  // Task 1667 (sim rung 5b): the native payload on screen; null = nothing
+  // shown. Written only by native reads (`applyNativeProgress`) and cleared
+  // when camera backup is turned on (`togglePhotoBackup`).
+  const [shownNativeProgress, setShownNativeProgress] = useState<NativeBackupProgress | null>(null);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const [backupBlockedReason, setBackupBlockedReason] = useState<string | null>(null);
   // Task 1599 followup 2: mirrors native's `accountMismatchReason` every
@@ -675,11 +716,6 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // every fresh `BackupProvider` instance, which is exactly the per-mount
   // scoping the sign-in lockout fix needs (see that function's doc comment).
   const accountMismatchPollStateRef = useRef<AccountMismatchPollState>(INITIAL_ACCOUNT_MISMATCH_POLL_STATE);
-  // Task 1686 (iOS idle heat) — the last RAW native progress payload
-  // applyNativeProgress saw, for the equality early-return (an unchanged 5 s
-  // poll tick must not re-render the tree). Ref, not state: it is a
-  // comparison cache, never rendered directly.
-  const lastRawProgressRef = useRef<NativeBackupProgress | null>(null);
   // Task 1037: a needs_plan / lapsed account is refused every upload (409
   // plan_required / account_lapsed). Keep the native engines OFF while that
   // holds: they run on their own (including BGTask runs), and would otherwise
@@ -694,27 +730,12 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   accountBlockedRef.current = accountBlockedMessage;
 
   const applyNativeProgress = useCallback((p: NativeBackupProgress) => {
-    // Task 1686 (iOS idle heat) — equality early-return. The 5 s poll used
-    // to setState unconditionally: an idle app re-rendered the whole tree
-    // ~12×/minute with byte-identical progress. A tick that read the same
-    // raw native payload as the last one (the overwhelmingly common case
-    // while idle/foregrounded) now does nothing at all.
-    if (lastRawProgressRef.current && nativeProgressEquals(lastRawProgressRef.current, p)) return;
-    lastRawProgressRef.current = p;
-    const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
-    const nativeState = p.state ?? (p.inProgress > 0 ? 'uploading' : pending > 0 ? 'idle' : 'complete');
-    setBackupProgress({
-      total: p.total,
-      completed: p.completed,
-      inProgress: p.inProgress,
-      pending,
-      waitingToEncrypt: p.waitingToEncrypt,
-      encryptedPendingUpload: p.encryptedPendingUpload,
-      uploading: p.uploading,
-      failed: p.failed ?? 0,
-      state: nativeState,
-      reason: p.reason ?? '',
-    });
+    // Task 1686 (iOS idle heat): an unchanged tick must not re-render the
+    // tree. `nextShownNativeProgress` returns the previous payload for an
+    // equal payload (React bails out), and every setter below receives an
+    // unchanged primitive (bails out too). Task 1667 (sim rung 5b): the
+    // comparison is against what is SHOWN, never a separate cache.
+    setShownNativeProgress((prev) => nextShownNativeProgress(prev, p));
     if (p.lastBackupAt) setLastBackupAt(p.lastBackupAt);
     const nextAccountMismatchReason = p.accountMismatchReason ?? null;
     const nextAccountMismatchGeneration = p.accountMismatchGeneration ?? 0;
@@ -1099,6 +1120,11 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     if (!userId) return; // signed-out instance — nothing to persist against
     const next = !isPhotoBackupEnabled;
     setIsPhotoBackupEnabled(next);
+    // Task 1667 (sim rung 5b): turning backup on shows nothing until native
+    // answers (the poll reads at once), never the progress kept from before
+    // it was turned off, and the empty state lets that answer through even
+    // when it is identical.
+    if (next) setShownNativeProgress(null);
     try {
       await setScopedBackupPref(BACKUP_PHOTO_KEY, userId, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
@@ -1109,7 +1135,6 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
           await disablePhotoBackup();
           await clearMobileIosBackupClientSession().catch(() => {});
           await configureBackupFolder('camera_roll', null);
-          setBackupProgress(EMPTY_PROGRESS);
         }
       }
     } catch {
@@ -1240,6 +1265,21 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       console.warn('[backup] triggerBackupNow failed:', err);
     }
   }, [applyNativeProgress, refreshNativeProgress, wifiOnly, userId]);
+
+  // Task 1667 (sim rung 5b): camera backup off shows the empty state, derived
+  // here instead of written into the shown state (writing EMPTY_PROGRESS
+  // there is what desynced the task-1686 dedupe on main 9f997265). This also
+  // covers native reads that land while backup is off ("Back up now", a
+  // foreground refresh or a refusal-poll resume already in flight): they
+  // still run the account-mismatch / reason mirroring, but nothing is shown,
+  // and turning backup on clears them. Account changes and sign-out need
+  // nothing here: App.tsx remounts this provider per account (the
+  // user-keyed CryptoProvider), so a new account starts with nothing shown.
+  const projectedProgress = useMemo(
+    () => (shownNativeProgress ? projectNativeProgress(shownNativeProgress) : EMPTY_PROGRESS),
+    [shownNativeProgress],
+  );
+  const backupProgress = isPhotoBackupEnabled ? projectedProgress : EMPTY_PROGRESS;
 
   const value: BackupContextValue = {
     isPhotoBackupEnabled,
