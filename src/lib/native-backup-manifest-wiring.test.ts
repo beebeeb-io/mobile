@@ -395,7 +395,8 @@ describe('3. an empty manifest is rebuilt before any upload; uploads are marked 
     expect(ready.slice(deferredCase)).toMatch(/return false\s*\}\s*$/);
     // A deferral pauses uploads behind the gate's bounded backoff.
     expect(ready.slice(deferredCase)).toMatch(/ManifestRebuildGate\.backoff\(for: reason, consecutiveFailures: failures\)/);
-    expect(ready.slice(deferredCase)).toMatch(/backoffUntil = Date\(\)\.addingTimeInterval\(wait\)/);
+    // Round 15 (review item 2): the deferral never shortens a 429's Retry-After.
+    expect(ready.slice(deferredCase)).toMatch(/backoffUntil = ManifestRebuildGate\.backoffDeadline\(existing: backoffUntil, now: Date\(\), wait: wait\)/);
 
     // The steps report failure as nil, never as 0 / "nothing there".
     // Round 8: the step bodies moved behind the fence (FencedManifestWrites).
@@ -983,7 +984,11 @@ describe('round 12 (review of mobile#182 at e9a93077)', () => {
   test('item 6: the pause reason reaches the progress dict, cleared at stop and sign-out', () => {
     expect(lazyBody(engine, 'func currentProgress() -> [String: Any] {')).toMatch(/"serverCheckPausedReason": serverCheckPausedReason \?\? NSNull\(\)/);
     expect(lazyBody(engine, 'private func rowsCheckedAgainstServer(')).toMatch(/recordServerCheckPause\(reason\)/);
-    expect(lazyBody(engine, READY_SIG)).toMatch(/recordRebuildPause\(reason\)/);
+    // Round 15 (review item 6): one call per gate pass, ready or deferred;
+    // on ready unconditionally (not only when rebuilt).
+    const readySrc = lazyBody(engine, READY_SIG);
+    expect((readySrc.match(/recordGatePause\(outcome\)/g) ?? []).length).toBe(2);
+    expect(readySrc).toMatch(/manifestRebuildFailures = 0\n(?:\s*\/\/[^\n]*\n)*\s*recordGatePause\(outcome\)\n/);
     expect(lazyBody(engine, 'private func bulkServerCheckIfRequested(')).toMatch(/recordServerCheckPause\(stopped\)/);
     expect(stopLocked).toMatch(/clearServerCheckPause\(\)/);
     expect(lazyBody(engine, 'func prepareForStoragePurge(')).toMatch(/_serverCheckPause\.clear\(\)/);
@@ -1197,23 +1202,47 @@ describe('round 14 (review of mobile#182 at 18312919)', () => {
   );
   const ready = lazyBody(engine, READY_SIG);
 
-  test('item 1: the in-flight uploads are kept BEFORE the staged purge clears their ids, and before the reset', () => {
-    const [keep, staged, reset] = order(
-      code(purge),
-      'BackupManifestStore.keepInFlightUploads(db, nowMs: self.nowMs())',
-      'clearAccountAndPurgeStaged()',
-      'manifestHandle.resetForSignOut(',
+  // Round 15 (review of mobile#182 at dd97f2ac, P1 item 1): the keep moved
+  // INTO the staged purge (BackupManifestStore.purgeAllStaged, driven on real
+  // SQLite by kept-in-flight-upload-test), so every caller of
+  // clearAccountAndPurgeStaged keeps first: teardownAllBackup (the provider
+  // unmount, which runs before the signed-out purge), disablePhotoBackup, the
+  // read-only stop, and prepareForStoragePurge.
+  test('item 1 (round 15): every staged purge keeps the in-flight uploads first; the sign-out purge runs it before the reset', () => {
+    const clear = code(lazyBody(engine, 'func clearAccountAndPurgeStaged() {'));
+    expect(clear).toMatch(/dbQueue\.sync \{ purgeAllStagedAssets\(\) \}/);
+    const purgeAll = code(lazyBody(engine, 'private func purgeAllStagedAssets() -> Int {'));
+    expect(purgeAll).toMatch(/BackupManifestStore\.purgeAllStaged\(/);
+    // The engine no longer clears staged rows itself here (the store does, after its keep).
+    expect(purgeAll).not.toMatch(/clearStagedStateForRestage\(/);
+    const storeSwift = readFileSync(join(IOS, 'BackupManifestStore.swift'), 'utf8');
+    const purgeStore = code(lazyBody(storeSwift, 'static func purgeAllStaged('));
+    const [keep, select, clearRow] = order(
+      purgeStore,
+      'let kept = keepInFlightUploads(db, nowMs: nowMs)',
+      'WHERE staged_file_id IS NOT NULL',
+      'clearStagedForRestage(db, assetId: row.assetId',
     );
     expect(keep).toBeGreaterThan(-1);
-    expect(staged).toBeGreaterThan(keep);
+    expect(select).toBeGreaterThan(keep);
+    expect(clearRow).toBeGreaterThan(select);
+    const [staged, reset] = order(code(purge), 'clearAccountAndPurgeStaged()', 'manifestHandle.resetForSignOut(');
+    expect(staged).toBeGreaterThan(-1);
     expect(reset).toBeGreaterThan(staged);
+    // No second, unfenced keep is left in prepareForStoragePurge (review item 7).
+    expect(code(purge)).not.toMatch(/keepInFlightUploads\(/);
+    // Both native entry points of the provider unmount and the toggle-off reach it.
+    const module = readFileSync(join(IOS, 'BeebeebCryptoModule.swift'), 'utf8');
+    expect(code(lazyBody(module, 'AsyncFunction("teardownAllBackup") { () in'))).toMatch(/engine\.clearAccountAndPurgeStaged\(\)/);
+    expect((module.match(/engine\.clearAccountAndPurgeStaged\(\)/g) ?? []).length).toBe(2);
   });
 
   test('item 1: the sign-out flush loads the in-flight rows and settles them with GET /files/{id} + the mark', () => {
     const f = code(flush);
     expect(f).toMatch(/FencedManifestWrites\.loadSignOutInFlight\(/);
     expect(f).toMatch(/case let \.inFlight\(assetId, fileId\):\s*\n\s*return await SignOutMarkFlush\.settleInFlight\(/);
-    expect(f).toMatch(/try await self\.inspectExistingUpload\(\s*fileId: fileId, authToken: authToken, baseURL: baseURL, requestTimeout: requestTimeout\s*\) == \.alreadyCompleted/);
+    // Round 15 (items 2 and 3): complete only on the API's answer, never trashed.
+    expect(f).toMatch(/try await self\.inspectExistingUpload\(\s*fileId: fileId, authToken: authToken, baseURL: baseURL, requestTimeout: requestTimeout\s*\) == \.complete\b/);
     expect(f).toMatch(/FencedManifestWrites\.recordInFlightComplete\(/);
     // The in-flight row is marked like an uploaded row (same markOnServer call).
     expect((f.match(/await self\.markOnServer\(/g) ?? []).length).toBe(2);
@@ -1225,10 +1254,12 @@ describe('round 14 (review of mobile#182 at 18312919)', () => {
     expect(r).toMatch(/await KeptUploadResolution\.run\(/);
     expect(r).toMatch(/FencedManifestWrites\.loadKeptInFlight\(/);
     expect(r).toMatch(/FencedManifestWrites\.resolveKeptInFlight\(/);
-    expect(r).toMatch(/try await self\.inspectExistingUpload\(\s*fileId: row\.fileId, authToken: authToken, baseURL: baseURL\s*\) == \.alreadyCompleted/);
+    // Round 15 (items 2 and 3): complete only on the API's answer, never trashed.
+    expect(r).toMatch(/try await self\.inspectExistingUpload\(\s*fileId: row\.fileId, authToken: authToken, baseURL: baseURL\s*\) == \.complete\b/);
     const run = code(lazyBody(gateSwift, 'static func run(alreadyReady: Bool, steps: Steps) async -> Outcome {'));
-    // Both branches: resolve, then apply the kept marks.
-    expect((run.match(/guard await steps\.resolveKept\(\) else \{ return \.deferred\(\.resolveKeptFailed\) \}\s*\n(?:\s*\/\/[^\n]*\n)*\s*guard let kept = steps\.applyKept\(\)/g) ?? []).length).toBe(2);
+    // Both branches: resolve, then apply the kept marks. Round 15 (item 6):
+    // the deferral reason comes from the result (server vs local failure).
+    expect((run.match(/if let reason = deferReason\(await steps\.resolveKept\(\)\) \{ return \.deferred\(reason\) \}\s*\n(?:\s*\/\/[^\n]*\n)*\s*guard let kept = steps\.applyKept\(\)/g) ?? []).length).toBe(2);
   });
 
   test('item 3: the bridge maps every surface state explicitly (paused is a pause)', () => {
@@ -1239,10 +1270,10 @@ describe('round 14 (review of mobile#182 at 18312919)', () => {
   test('item 2: a cold-start account deletion names the stored key owner', () => {
     const app = readFileSync(join(import.meta.dir, '../App.tsx'), 'utf8');
     const refresh = app.slice(app.indexOf('const refreshAuth = useCallback(async () => {'));
-    const [owner, me] = order(refresh, 'await readKeyOwner().catch(() => null);', 'const me = await getMe();');
-    expect(owner).toBeGreaterThan(-1);
-    expect(me).toBeGreaterThan(owner);
-    expect(refresh).toMatch(/coldStartOwnerRef\.current = currentUserIdRef\.current\s*\n\s*\? null\s*\n\s*: await readKeyOwner\(\)\.catch\(\(\) => null\);/);
+    // Round 15 (item 4): the owner read is inside getMeNamingKeyOwner
+    // (src/lib/cold-start-owner.ts, cold-start-owner.1667-r15.test.ts), which
+    // refreshAuth and the cold launch's retryGetMe both call.
+    expect(refresh).toMatch(/const me = await getMeNamingKeyOwner\(\{\s*owner: coldStartOwnerRef,\s*signedInUserId: currentUserIdRef\.current,\s*readKeyOwner,\s*getMe,\s*\}\);/);
     const handler = app.slice(app.indexOf('registerAccountDeletedHandler(('), app.indexOf('registerAccountDeletedHandler((') + 900);
     expect(handler).toMatch(/noteAccountDeleted\(accountIdForDeletedElsewhere\(currentUserIdRef\.current, coldStartOwnerRef\.current\)\);\s*\n\s*setUser\(null\)/);
   });

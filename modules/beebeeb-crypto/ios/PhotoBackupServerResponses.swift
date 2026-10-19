@@ -122,6 +122,72 @@ enum PhotoBackupServerResponses {
     return .failed(statusCode: statusCode)
   }
 
+  /// Task 1667 round 15 (review of mobile#182 at dd97f2ac, P1 item 2 and P2
+  /// item 3): the answer of `GET /api/v1/files/{id}` for an upload this
+  /// device opened (server `routes/files.rs` `get_file`: a JSON object with
+  /// boolean `is_uploading` and `is_trashed`; `ApiError::NotFound` for an
+  /// unknown id or another account's file). Only the API's own answer counts.
+  /// The sign-in resolution and the sign-out flush read it through
+  /// `NativeBackupEngine.inspectExistingUpload`, and so does the upload
+  /// resume path.
+  enum ExistingUpload: Equatable {
+    /// 2xx, `is_uploading` false, not in the Trash: the upload is complete.
+    case complete
+    /// 2xx, `is_uploading` false, `is_trashed` true: complete, but the file
+    /// is in the Trash, so the photo is NOT backed up (server 2036, round 13
+    /// m4). The resolution and the flush neither promote nor mark it.
+    case completeInTrash
+    /// 2xx, `is_uploading` true: the upload never completed.
+    case uploading
+    /// 404 with the API's NotFound body: no such file for this account.
+    case gone
+  }
+
+  /// A 429. `retryAfter` is the server's `Retry-After` in seconds, when it
+  /// sent a number.
+  struct RateLimited: Error, Equatable {
+    let retryAfter: TimeInterval?
+  }
+
+  /// Fails closed: throws `RateLimited` for a 429 and `UnexpectedResponse`
+  /// for anything that is not the API's own answer: a 404 without the API's
+  /// NotFound body (an HTML or empty page from a proxy or the edge), a 2xx
+  /// whose body is not a JSON object with boolean `is_uploading` and
+  /// `is_trashed`, any other status (5xx included). The caller then keeps
+  /// the row and defers; it never reads "not complete" from such an answer
+  /// (that would upload the photo a second time).
+  static func existingUpload(
+    statusCode: Int, contentType: String?, retryAfter: String?, data: Data
+  ) throws -> ExistingUpload {
+    if statusCode == 429 {
+      let seconds = retryAfter.flatMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+      throw RateLimited(retryAfter: seconds.flatMap { $0 >= 0 && $0.isFinite ? $0 : nil })
+    }
+    if statusCode == 404 {
+      guard isApiNotFoundBody(contentType: contentType, data: data) else {
+        throw UnexpectedResponse(statusCode: statusCode, reason: "files/{id} 404 without the API's NotFound body")
+      }
+      return .gone
+    }
+    guard (200..<300).contains(statusCode) else {
+      throw UnexpectedResponse(statusCode: statusCode, reason: "files/{id} status")
+    }
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let isUploading = jsonBool(object["is_uploading"]),
+          let isTrashed = jsonBool(object["is_trashed"]) else {
+      throw UnexpectedResponse(statusCode: statusCode, reason: "unexpected files/{id} body")
+    }
+    if isUploading { return .uploading }
+    return isTrashed ? .completeInTrash : .complete
+  }
+
+  /// A JSON `true` / `false` only (JSONSerialization also bridges the numbers
+  /// 0 and 1 to Bool).
+  private static func jsonBool(_ value: Any?) -> Bool? {
+    guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+    return number.boolValue
+  }
+
   /// `ApiError::NotFound` exactly as the API renders it (server
   /// `beebeeb-api/src/error.rs`, the generic arm of `into_response`:
   /// `ApiError::NotFound => (StatusCode::NOT_FOUND, "not found")`, sent as

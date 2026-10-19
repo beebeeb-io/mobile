@@ -28,11 +28,18 @@
 
 import { stripSwift } from './swift-db-queue-audit';
 
-/** `BackupManifestStore` functions that write. */
+/**
+ * `BackupManifestStore` functions that write. Round 15 (review of mobile#182 at
+ * dd97f2ac, item 7): the round-14 writers `keepInFlightUploads`,
+ * `recordInFlightComplete` and `resolveKeptInFlight`, and the round-15 staged
+ * purge (`purgeAllStaged`, `clearStagedForRestage`). A direct call of any of
+ * them in an unfenced, non-exempt dbQueue block is a violation.
+ */
 export const STORE_WRITES = [
   'insertScannedAssets', 'insertScannedAssetsCounting', 'updateSelectionScope', 'markUploaded', 'claim', 'applyServerMap',
   'applyPendingMarks', 'expirePendingMarks', 'adoptUnowned', 'recordServerMarked', 'insertPendingMarks',
   'resetInPlace', 'migrate',
+  'keepInFlightUploads', 'recordInFlightComplete', 'resolveKeptInFlight', 'purgeAllStaged', 'clearStagedForRestage',
 ];
 
 /** The handle's reset / recovery / open: these ADVANCE the fence (or open the file). */
@@ -59,7 +66,8 @@ export const EXEMPT: Record<string, string> = {
     'UPDATE of retry counters on rows already in the manifest; no await between triggerManualBackup\'s start() and it; cannot add a row or an association',
   refreshProgress:
     'migratePhotoKitMissingAssetRows: account-agnostic status migration (UPDATE) of rows already in the manifest; cannot add a row or an association',
-  clearAccountAndPurgeStaged: 'purgeAllStagedAssets: the sign-out purge itself (removes every staged upload)',
+  clearAccountAndPurgeStaged:
+    'purgeAllStagedAssets: the teardown purge itself. It removes every staged upload and (round 15) first copies the in-flight uploads into kept rows for resolution. It runs from the teardown, the toggle-off, the read-only stop and the sign-out purge, never from a producer that holds a ticket, so it cannot put a pre-reset producer\'s data back',
   expireKeptPendingMarks: 'DELETE of kept marks older than 30 days, any account: only removes data',
   'urlSession:markFailed':
     'the uploadTaskMap completion branch: uploadTaskMap has no insert site in the engine (asserted by the test), so this branch never runs; chunk PUT callbacks take the fenced branch above it',

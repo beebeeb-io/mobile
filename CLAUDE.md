@@ -866,7 +866,16 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   row is never promoted as a mark: the account's next sign-in resolves it in the rebuild gate
   before any upload (`KeptUploadResolution`: complete -> kept mark, else dropped; unreachable ->
   defer). At a cold start a 403 account_deleted names the stored key's owner
-  (`accountIdForDeletedElsewhere`). JS sign-out first calls
+  (`accountIdForDeletedElsewhere`). Round 15: the keep runs INSIDE every staged purge
+  (`BackupManifestStore.purgeAllStaged`, via `clearAccountAndPurgeStaged`), because the provider
+  unmount's `teardownAllBackup` runs before the signed-out purge, and the Camera Roll toggle-off and
+  the read-only stop never reach `prepareForStoragePurge`; for those the same account's re-enable
+  resolves the row. Only the API's own answer resolves a row
+  (`PhotoBackupServerResponses.existingUpload`): complete = 2xx with `is_uploading` false and not
+  trashed (a trashed file is NOT backed up: dropped and queued); dropped = the API's NotFound 404 or
+  `is_uploading` true; anything else (a non-API 404, an unreadable 2xx, 5xx, 429) defers, and a 429's
+  Retry-After is honoured. Both getMe paths (refreshAuth and the cold launch's `retryGetMe`) name
+  the key owner through `getMeNamingKeyOwner` (`src/lib/cold-start-owner.ts`). JS sign-out first calls
   `flushBackupServerMarksForSignOut` (before `logout()` revokes the token, ~8 s, no row cap).
 - **A reset counts only if the WAL was truncated** (`sqlite3_wal_checkpoint_v2` TRUNCATE rc, retried).
   Round 13: it runs on the engine's long-lived connection and restores that connection's busy

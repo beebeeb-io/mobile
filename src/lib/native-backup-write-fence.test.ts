@@ -330,6 +330,30 @@ describe('each guard goes RED on a named mutation (guard red-proof)', () => {
     expect(statements(hold).startsWith('advanceBackupPurgeGeneration();')).toBe(false);
   });
 
+  // Round 15 (review of mobile#182 at dd97f2ac, item 7): the round-14 writers
+  // are STORE_WRITES, so a direct call in an unfenced dbQueue block is seen.
+  // Before round 15 none of these three mutations was reported.
+  test('M11 — a round-14 writer called directly in an unfenced dbQueue block (each of the three)', () => {
+    for (const writer of ['keepInFlightUploads', 'recordInFlightComplete', 'resolveKeptInFlight']) {
+      const bad = mutate(
+        engine,
+        '  // MARK: - Task 1667 round 8: manifest write fence\n',
+        `  private func lateR14Writer() { dbQueue.sync { guard let db = self.db else { return }; _ = BackupManifestStore.${writer}(db, nowMs: 0) } }\n  // MARK: - Task 1667 round 8: manifest write fence\n`,
+      );
+      const v = auditWriteFence(bad).violations;
+      expect(v.some((x) => x.includes('lateR14Writer') && x.includes(`BackupManifestStore.${writer}`))).toBe(true);
+    }
+  });
+
+  test('M12 — the dd97f2ac shape: prepareForStoragePurge keeps the in-flight rows in its own unfenced block', () => {
+    const bad = mutate(
+      engine,
+      '    clearAccountAndPurgeStaged()\n    // 1962 Bug 4',
+      '    let keptInFlight: Int? = dbQueue.sync {\n      guard let db = self.db else { return 0 }\n      return BackupManifestStore.keepInFlightUploads(db, nowMs: self.nowMs())\n    }\n    clearAccountAndPurgeStaged()\n    // 1962 Bug 4',
+    );
+    expect(auditWriteFence(bad).violations.some((v) => v.includes('prepareForStoragePurge') && v.includes('keepInFlightUploads'))).toBe(true);
+  });
+
   test('CONTROL — the real files stay green under the same checks', () => {
     expect(auditWriteFence(engine).violations).toEqual([]);
     expect(producerOrder(engine)).toEqual([]);

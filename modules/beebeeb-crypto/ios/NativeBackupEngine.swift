@@ -408,12 +408,6 @@ private struct UploadSessionInit {
   let heartbeatIntervalSecs: Double
 }
 
-private enum ExistingUploadDisposition {
-  case resumable
-  case alreadyCompleted
-  case missingRemote
-}
-
 private enum BackupPacingMode: String {
   case foregroundActive
   case foregroundIdle
@@ -3698,7 +3692,7 @@ final class NativeBackupEngine: NSObject {
   /// `staged_upload` (markFailed sets `staged_upload` whenever `staged_file_id`
   /// is set), so the exact rows a manual retry most needs to revive were the
   /// ones it skipped. With retry reset, the drain re-selects them and the
-  /// `.resumable` self-heal re-stages any with evicted `.enc` chunks.
+  /// `.uploading` (resumable) self-heal re-stages any with evicted `.enc` chunks.
   func resetRetryExhaustedUploadsForManualRun() {
     // Task 1669 Issue 2: this was the one `db` accessor in the class NOT
     // wrapped in `dbQueue.sync` — harmless while `init()` opened the
@@ -4305,7 +4299,7 @@ final class NativeBackupEngine: NSObject {
       return false
     }
 
-    // `var` so the `.resumable` self-heal below can re-bind to a freshly
+    // `var` so the `.uploading` (resumable) self-heal below can re-bind to a freshly
     // revalidated set (paths may have been relocated by resolveStagedChunks).
     guard var chunks = resolveStagedChunks(asset: asset, fileId: fileId, ticket: ticket) else {
       dbQueue.sync {
@@ -4401,7 +4395,10 @@ final class NativeBackupEngine: NSObject {
         authToken: authToken,
         baseURL: baseURL
       ) {
-      case .alreadyCompleted:
+      // Round 15: the resume path keeps its old reading of a trashed file
+      // (complete); only the resolution and the flush treat it as not
+      // backed up.
+      case .complete, .completeInTrash:
         let recorded: Bool = dbQueue.sync {
           guard admitsWrite(ticket, "markUploadComplete") else { return false }
           guard markUploadComplete(assetId: asset.localAssetId, remoteFileId: serverFileId, accountId: batchAccountId) else {
@@ -4439,7 +4436,7 @@ final class NativeBackupEngine: NSObject {
         )
         return true
 
-      case .missingRemote:
+      case .gone:
         dbQueue.sync {
           guard admitsWrite(ticket, "clearStagedStateForRestage") else { return }
           clearStagedStateForRestage(
@@ -4451,14 +4448,14 @@ final class NativeBackupEngine: NSObject {
         updateBackupStatusSurfaces(reason: "Re-encrypting backup")
         return false
 
-      case .resumable:
+      case .uploading:
         // Self-heal a wedged resume. The server still reports this session
         // resumable, but iOS may have evicted the staged `.enc` files (Caches/
         // tmp are reclaimed under storage pressure) since we resolved `chunks`
         // above. Re-verify every non-complete chunk's staged file exists and is
         // non-zero via the same helper used on the initial staging check. If it
         // can no longer be reconciled, route to the re-stage branch (identical
-        // to `.missingRemote`): clear staged state, drop the old file_id, and
+        // to `.gone`): clear staged state, drop the old file_id, and
         // re-encrypt from scratch — instead of `markUploading` on an
         // unreconcilable session and then throwing on the missing-file PUT every
         // drain until the asset dead-letters at retry 10. The orphaned server
@@ -4763,11 +4760,19 @@ final class NativeBackupEngine: NSObject {
   /// Decide how to resume an upload whose session was opened in a prior pass.
   ///
   /// v2 has no session-status GET (only init/chunks/complete), so we read the
-  /// durable file row via GET /api/v1/files/{file_id} and map `is_uploading`:
-  ///   • 404                  → `.missingRemote`  (file gone — re-stage)
-  ///   • is_uploading == false → `.alreadyCompleted` (complete already landed)
-  ///   • otherwise            → `.resumable`      (re-PUT the non-uploaded tail,
-  ///                             then POST complete — chunk PUTs are idempotent)
+  /// durable file row via GET /api/v1/files/{file_id}
+  /// (`PhotoBackupServerResponses.existingUpload`):
+  ///   • 404 with the API's NotFound body → `.gone`      (file gone — re-stage)
+  ///   • is_uploading == false             → `.complete` / `.completeInTrash`
+  ///   • is_uploading == true              → `.uploading` (re-PUT the
+  ///                             non-uploaded tail, then POST complete — chunk
+  ///                             PUTs are idempotent)
+  ///   • anything else (a non-API 404, a body without the booleans, 5xx, a
+  ///     timeout) THROWS: the caller keeps the row and retries later
+  ///     (task 1667 round 15, review item 2: it used to read any 404 as gone
+  ///     and a 2xx without `is_uploading` as resumable, and the sign-in
+  ///     resolution then dropped a kept row and uploaded the photo again).
+  ///   • 429 → throws after setting `backoffUntil` from `Retry-After`.
   /// The "which chunks to re-send" decision is purely LOCAL: the caller drives
   /// only chunks the local `backup_upload_chunks` table still marks pending.
   /// This is correct without a server status GET because v2 chunk PUTs are
@@ -4781,7 +4786,7 @@ final class NativeBackupEngine: NSObject {
     baseURL: String,
     /// Task 1667 round 14: the sign-out flush hands the budget it has left.
     requestTimeout: TimeInterval? = nil
-  ) async throws -> ExistingUploadDisposition {
+  ) async throws -> PhotoBackupServerResponses.ExistingUpload {
     guard let url = URL(string: "\(baseURL)/api/v1/files/\(fileId)") else {
       throw BackupError.invalidServerURL
     }
@@ -4793,35 +4798,27 @@ final class NativeBackupEngine: NSObject {
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 
     let (data, response) = try await metadataSession.data(for: request)
-    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-
-    if statusCode == 404 {
-      return .missingRemote
-    }
-
-    if statusCode == 429 {
-      if let retryAfter = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After"),
-         let seconds = Double(retryAfter) {
-        backoffUntil = Date().addingTimeInterval(seconds)
-      } else {
-        backoffUntil = Date().addingTimeInterval(60)
-      }
+    let http = response as? HTTPURLResponse
+    let statusCode = http?.statusCode ?? 0
+    do {
+      return try PhotoBackupServerResponses.existingUpload(
+        statusCode: statusCode,
+        contentType: http?.value(forHTTPHeaderField: "Content-Type"),
+        retryAfter: http?.value(forHTTPHeaderField: "Retry-After"),
+        data: data
+      )
+    } catch let limited as PhotoBackupServerResponses.RateLimited {
+      // Round 15 (review item 2): the server's Retry-After is honoured; the
+      // rebuild gate's deferral never shortens it (`ManifestRebuildGate
+      // .backoffDeadline`).
+      backoffUntil = Date().addingTimeInterval(limited.retryAfter ?? 60)
       throw BackupError.httpStatus(429, "Rate limited")
+    } catch let unexpected as PhotoBackupServerResponses.UnexpectedResponse {
+      RuntimeTrace.event("backup.native.inspect_upload.unexpected", [
+        "status": statusCode, "reason": unexpected.reason,
+      ])
+      throw BackupError.httpStatus(statusCode, unexpected.reason)
     }
-
-    guard (200..<300).contains(statusCode) else {
-      let body = String(data: data, encoding: .utf8) ?? ""
-      throw BackupError.httpStatus(statusCode, body)
-    }
-
-    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    // `is_uploading == false` means complete already ran for this file. Absent
-    // or true ⇒ still in progress ⇒ resumable. Default to resumable on a missing
-    // flag (safe: re-PUT idempotent + complete revalidates).
-    if let isUploading = json?["is_uploading"] as? Bool, isUploading == false {
-      return .alreadyCompleted
-    }
-    return .resumable
   }
 
   private func uploadStagedChunk(
@@ -5701,33 +5698,12 @@ final class NativeBackupEngine: NSObject {
     sqlite3_step(stmt)
   }
 
+  /// Round 15: the statement lives in `BackupManifestStore.restageSQL`, which
+  /// the teardown purge (`purgeAllStaged`) also runs, so the swift tests
+  /// drive the shipped statement.
   private func clearStagedStateForRestage(assetId: String, error: String) {
     guard let db = db else { return }
-    let sql = """
-    UPDATE backup_assets
-    SET status = 'pending_reupload',
-        remote_file_id = NULL,
-        upload_session_id = NULL,
-        staged_file_id = NULL,
-        staged_name_encrypted = NULL,
-        staged_mime_type = NULL,
-        staged_is_media = 0,
-        staged_original_size = 0,
-        staged_chunk_count = 0,
-        staged_dir = NULL,
-        staged_at = NULL,
-        error_message = ?,
-        last_attempt_at = ?
-    WHERE local_asset_id = ?
-    """
-    var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    BackupManifestStore.bindText(stmt, 1, error)
-    sqlite3_bind_int64(stmt, 2, nowMs())
-    BackupManifestStore.bindText(stmt, 3, assetId)
-    sqlite3_step(stmt)
-    deleteStagedChunks(assetId: assetId)
+    BackupManifestStore.clearStagedForRestage(db, assetId: assetId, error: error, nowMs: nowMs())
   }
 
   /// Mark an asset as successfully uploaded.
@@ -6128,46 +6104,27 @@ final class NativeBackupEngine: NSObject {
   @discardableResult
   private func purgeAllStagedAssets() -> Int {
     guard let db = db else { return 0 }
-
-    let selectSql = """
-    SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
-    FROM backup_assets
-    WHERE staged_file_id IS NOT NULL
-    """
-    var selectStmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK else { return 0 }
-
-    var staged: [(assetId: String, stagedDir: String?, fileId: String, forAccount: String?)] = []
-    while sqlite3_step(selectStmt) == SQLITE_ROW {
-      let assetId = String(cString: sqlite3_column_text(selectStmt, 0))
-      let stagedDir: String? = sqlite3_column_type(selectStmt, 1) != SQLITE_NULL
-        ? String(cString: sqlite3_column_text(selectStmt, 1))
-        : nil
-      let fileId = String(cString: sqlite3_column_text(selectStmt, 2))
-      let forAccount: String? = sqlite3_column_type(selectStmt, 3) != SQLITE_NULL
-        ? String(cString: sqlite3_column_text(selectStmt, 3))
-        : nil
-      staged.append((assetId, stagedDir, fileId, forAccount))
-    }
-    sqlite3_finalize(selectStmt)
-
-    guard !staged.isEmpty else { return 0 }
-
-    for row in staged {
+    // Task 1667 round 15 (review of mobile#182 at dd97f2ac, P1 item 1): the
+    // uploads that may be in flight on the server are kept for resolution
+    // BEFORE their ids are cleared, inside the purge itself, so every caller
+    // is covered (the provider unmount's teardownAllBackup runs before the
+    // signed-out purge; the toggle-off and the read-only stop never reach
+    // prepareForStoragePurge at all).
+    let result = BackupManifestStore.purgeAllStaged(
+      db, nowMs: nowMs(), error: "Re-encrypting: account signed out before upload completed"
+    ) { row in
       if let stagedDir = row.stagedDir {
         removeStagedDirectory(stagedDir: stagedDir, fileId: row.fileId)
       }
-      clearStagedStateForRestage(
-        assetId: row.assetId,
-        error: "Re-encrypting: account signed out before upload completed"
-      )
       RuntimeTrace.event("backup.native.sign_out.staged_purged", [
         "stagedForAccount": row.forAccount ?? "(untagged/pre-migration)"
       ])
     }
-
-    NSLog("[NativeBackupEngine] Sign-out: purged \(staged.count) staged asset(s)")
-    return staged.count
+    RuntimeTrace.event("backup.native.sign_out.in_flight_kept", ["kept": result.keptInFlight ?? -1])
+    if result.purged > 0 {
+      NSLog("[NativeBackupEngine] Sign-out: purged \(result.purged) staged asset(s)")
+    }
+    return result.purged
   }
 
   /// Task 1531 [P0] round 3 (lead review): sign-out / account-switch
@@ -6382,7 +6339,7 @@ final class NativeBackupEngine: NSObject {
       // before any upload. Complete -> a kept mark (promoted by applyKept,
       // marked by the catch-up); not complete -> dropped, uploads as normal.
       resolveKept: { [weak self] in
-        guard let self else { return false }
+        guard let self else { return .storeFailed }
         let resolved = await KeptUploadResolution.run(
           load: {
             self.dbQueue.sync {
@@ -6392,10 +6349,14 @@ final class NativeBackupEngine: NSObject {
               )
             }
           },
+          // Round 15 (review items 2 and 3): complete ONLY on the API's 2xx
+          // body with is_uploading false and the file not in the Trash; a
+          // trashed file is not backed up, so the row is dropped and the
+          // photo queued. Anything that is not the API's answer throws (defer).
           ask: { row in
             try await self.inspectExistingUpload(
               fileId: row.fileId, authToken: authToken, baseURL: baseURL
-            ) == .alreadyCompleted
+            ) == .complete
           },
           record: { row, complete in
             RuntimeTrace.event("backup.native.pending_marks.in_flight_resolved", ["complete": complete])
@@ -6415,8 +6376,9 @@ final class NativeBackupEngine: NSObject {
     case let .ready(rebuilt, promoted, keptApplied):
       manifestReadyForAccount = accountId
       manifestRebuildFailures = 0
-      // Round 12 (review item 6): the map fetch reached the server.
-      if rebuilt { clearServerCheckPause() }
+      // Round 15 (review item 6): ANY successful pass clears the pause (round
+      // 12 cleared it only when `rebuilt`).
+      recordGatePause(outcome)
       if rebuilt {
         RuntimeTrace.event("backup.native.manifest_rebuild.done", [
           "promoted": promoted,
@@ -6428,10 +6390,13 @@ final class NativeBackupEngine: NSObject {
       let failures = manifestRebuildFailures + 1
       manifestRebuildFailures = failures
       let wait = ManifestRebuildGate.backoff(for: reason, consecutiveFailures: failures)
-      if let wait { backoffUntil = Date().addingTimeInterval(wait) }
+      // Round 15 (review item 2): never shortens a 429's Retry-After.
+      if let wait {
+        backoffUntil = ManifestRebuildGate.backoffDeadline(existing: backoffUntil, now: Date(), wait: wait)
+      }
       // Round 12 (review item 6): say why (fetch failed, server without
-      // backed_up, no device id).
-      recordRebuildPause(reason)
+      // backed_up, no device id). Round 15: not for a local resolution failure.
+      recordGatePause(outcome)
       RuntimeTrace.event("backup.native.manifest_rebuild.deferred", [
         "reason": reason.rawValue,
         "consecutive": failures,
@@ -6570,11 +6535,20 @@ final class NativeBackupEngine: NSObject {
     publishServerCheckPause(changed: changed, message: message)
   }
 
-  private func recordRebuildPause(_ reason: ManifestRebuildGate.DeferReason) {
+  /// Round 15 (review item 6): one rebuild-gate pass (`ServerCheckPause
+  /// .recordGate`). A pause it set is published; a pause it cleared refreshes
+  /// the surfaces, so the widget and Live Activity stop saying "paused" even
+  /// when the batch then finds nothing to upload.
+  private func recordGatePause(_ outcome: ManifestRebuildGate.Outcome) {
     engineStateLock.lock()
-    let changed = _serverCheckPause.recordRebuild(reason, lacksBackedUp: _backedUpSupport.lacksBackedUp)
+    let changed = _serverCheckPause.recordGate(outcome, lacksBackedUp: _backedUpSupport.lacksBackedUp)
     let message = _serverCheckPause.stopReason
     engineStateLock.unlock()
+    if changed, message == nil {
+      RuntimeTrace.event("backup.native.server_check.pause_cleared")
+      updateBackupStatusSurfaces()
+      return
+    }
     publishServerCheckPause(changed: changed, message: message)
   }
 
@@ -6953,9 +6927,10 @@ final class NativeBackupEngine: NSObject {
         case let .inFlight(assetId, fileId):
           return await SignOutMarkFlush.settleInFlight(
             isComplete: {
+              // Round 15: complete only on the API's answer, never trashed.
               try await self.inspectExistingUpload(
                 fileId: fileId, authToken: authToken, baseURL: baseURL, requestTimeout: requestTimeout
-              ) == .alreadyCompleted
+              ) == .complete
             },
             recordUploaded: {
               self.dbQueue.sync {
@@ -7013,17 +6988,12 @@ final class NativeBackupEngine: NSObject {
     let outgoing = outgoingAccountForReset()
     stop()
     backupClientSessionId = nil
-    // Task 1667 round 14 (review of mobile#182 at 18312919, the P1): the
-    // staged purge below clears the server file id and session id of every
-    // staged row, and an upload whose `complete` reached the server unrecorded
-    // would then be uploaded again at the next sign-in. Kept first, for
-    // resolution at that account's next sign-in (the reset applies the
-    // discard and the expiry to them like to every kept mark).
-    let keptInFlight: Int? = dbQueue.sync {
-      guard let db = self.db else { return 0 }
-      return BackupManifestStore.keepInFlightUploads(db, nowMs: self.nowMs())
-    }
-    RuntimeTrace.event("backup.native.sign_out.in_flight_kept", ["kept": keptInFlight ?? -1])
+    // Task 1667 round 14/15: the staged purge keeps the in-flight uploads for
+    // resolution before it clears their ids (`purgeAllStagedAssets` ->
+    // `BackupManifestStore.purgeAllStaged`, round 15: inside the purge, so
+    // the provider unmount's teardown, which usually runs first, keeps them
+    // too). The reset applies the discard and the expiry to them like to
+    // every kept mark.
     clearAccountAndPurgeStaged()
     // 1962 Bug 4: the next account must not inherit this one's Backups folder.
     parentFolderId = nil

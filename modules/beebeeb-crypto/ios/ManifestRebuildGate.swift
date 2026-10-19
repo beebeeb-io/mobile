@@ -35,9 +35,15 @@ enum ManifestRebuildGate {
     case applyMapFailed = "apply_map_failed"
     /// The kept sign-out marks could not be read or written.
     case applyKeptFailed = "apply_kept_failed"
-    /// Round 14: a kept in-flight upload could not be resolved (the server
-    /// could not be asked, or the answer not written).
+    /// Round 14: a kept in-flight upload could not be resolved because the
+    /// server could not be asked (offline, 5xx, 429, an answer that is not
+    /// the API's own). Round 15: server failures only.
     case resolveKeptFailed = "resolve_kept_failed"
+    /// Round 15 (review item 6): a LOCAL failure of the resolution: the kept
+    /// rows could not be read (a fenced load from a stale ticket, no handle)
+    /// or the answer could not be written (busy). No request was made, so it
+    /// takes the database backoff and shows no server pause.
+    case resolveKeptStoreFailed = "resolve_kept_store_failed"
   }
 
   enum Outcome: Equatable {
@@ -66,7 +72,19 @@ enum ManifestRebuildGate {
     /// photo whose upload completed unrecorded is promoted instead of
     /// uploaded again. false = defer (no upload starts). The engine always
     /// passes it (wiring guard); the default serves tests of other steps.
-    var resolveKept: () async -> Bool = { true }
+    /// Round 15 (review item 6): a server failure and a local failure defer
+    /// with different reasons (`KeptUploadResolution.Result`).
+    var resolveKept: () async -> KeptUploadResolution.Result = { .resolved }
+  }
+
+  /// Round 15 (review item 6): the deferral reason for a resolution result;
+  /// nil when it resolved.
+  static func deferReason(_ result: KeptUploadResolution.Result) -> DeferReason? {
+    switch result {
+    case .resolved: return nil
+    case .serverFailed: return .resolveKeptFailed
+    case .storeFailed: return .resolveKeptStoreFailed
+    }
   }
 
   /// `alreadyReady`: the account's manifest was checked against (or rebuilt
@@ -86,14 +104,14 @@ enum ManifestRebuildGate {
         guard steps.isStillCurrent() else { return .deferred(.accountChanged) }
         guard let promoted = steps.applyMap(map) else { return .deferred(.applyMapFailed) }
         // Round 14: in-flight uploads kept at sign-out are resolved first.
-        guard await steps.resolveKept() else { return .deferred(.resolveKeptFailed) }
+        if let reason = deferReason(await steps.resolveKept()) { return .deferred(reason) }
         // AFTER the server map (the rebuild is decided on "nothing uploaded
         // yet"): uploads the server's map did not have at the last sign-out.
         guard let kept = steps.applyKept() else { return .deferred(.applyKeptFailed) }
         return .ready(rebuilt: true, promoted: promoted, keptApplied: kept)
       }
     }
-    guard await steps.resolveKept() else { return .deferred(.resolveKeptFailed) }
+    if let reason = deferReason(await steps.resolveKept()) { return .deferred(reason) }
     guard let kept = steps.applyKept() else { return .deferred(.applyKeptFailed) }
     return .ready(rebuilt: false, promoted: 0, keptApplied: kept)
   }
@@ -122,9 +140,18 @@ enum ManifestRebuildGate {
       return nil
     case .noDeviceId, .fetchFailed, .resolveKeptFailed:
       return fetchFailureBackoff
-    case .checkFailed, .applyMapFailed, .applyKeptFailed:
+    case .checkFailed, .applyMapFailed, .applyKeptFailed, .resolveKeptStoreFailed:
       return databaseFailureBackoff(consecutiveFailures: consecutiveFailures)
     }
+  }
+
+  /// Round 15 (review item 2): the backoff deadline after a deferral. A
+  /// later deadline already set in this pass (a 429's `Retry-After`, set by
+  /// `inspectExistingUpload`) is kept; the gate's own wait never shortens it.
+  static func backoffDeadline(existing: Date?, now: Date, wait: TimeInterval) -> Date {
+    let own = now.addingTimeInterval(wait)
+    guard let existing, existing > own else { return own }
+    return existing
   }
 }
 
@@ -136,26 +163,41 @@ enum ManifestRebuildGate {
 /// mark, so `applyPendingMarks` promotes the photo to `uploaded` and the mark
 /// catch-up records it on the server. Not complete (still uploading, or 404)
 /// -> the row is dropped and the photo uploads as normal. A failed read, a
-/// failed ask (offline, 5xx, 429) or a failed write returns false and the
-/// gate defers: no upload starts while one of these may be complete. Only
-/// `accountId`'s rows are ever read (the engine's `load`).
+/// failed ask (offline, 5xx, 429, an answer that is not the API's own) or a
+/// failed write defers the gate: no upload starts while one of these may be
+/// complete. Only `accountId`'s rows are ever read (the engine's `load`).
+///
+/// Round 15 (review items 2, 3, 6): `ask` is true ONLY for the API's 2xx
+/// with `is_uploading` false and the file not in the Trash
+/// (`PhotoBackupServerResponses.existingUpload`); it throws for anything that
+/// is not the API's answer. A failed ask is `serverFailed` (fetch backoff,
+/// the "could not check" pause); a failed load or write is `storeFailed`
+/// (database backoff, no pause).
 enum KeptUploadResolution {
+  enum Result: Equatable {
+    case resolved
+    /// The server could not be asked, or its answer was not the API's.
+    case serverFailed
+    /// The rows could not be read or the answer not written (no request).
+    case storeFailed
+  }
+
   static func run(
     load: () -> [BackupManifestStore.KeptInFlight]?,
     ask: (BackupManifestStore.KeptInFlight) async throws -> Bool,
     record: (BackupManifestStore.KeptInFlight, Bool) -> Bool
-  ) async -> Bool {
-    guard let rows = load() else { return false }
+  ) async -> Result {
+    guard let rows = load() else { return .storeFailed }
     for row in rows {
       let complete: Bool
       do {
         complete = try await ask(row)
       } catch {
-        return false
+        return .serverFailed
       }
-      guard record(row, complete) else { return false }
+      guard record(row, complete) else { return .storeFailed }
     }
-    return true
+    return .resolved
   }
 }
 

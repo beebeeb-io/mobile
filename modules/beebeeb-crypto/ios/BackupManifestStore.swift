@@ -80,6 +80,19 @@ enum BackupManifestStore {
   /// Round 14: the statuses of an upload that may be in flight on the server.
   static let inFlightStatuses = "'staging', 'staged_upload', 'uploading'"
 
+  /// Round 15 (review of mobile#182 at dd97f2ac, item 8): THE in-flight
+  /// predicate on `backup_assets` (no table alias): an upload that may be in
+  /// flight on the server, with its owner, its server file id and its upload
+  /// session. The reset's keep (`keepInFlightSQL`), the failed-reset snapshot
+  /// (`pendingMarksSnapshot`) and the flush's load (`inFlightUploads`) all
+  /// read it, so they can never select different rows.
+  static let inFlightPredicate = """
+  status IN (\(inFlightStatuses))
+         AND staged_account_id IS NOT NULL AND staged_account_id != ''
+         AND remote_file_id IS NOT NULL AND remote_file_id != ''
+         AND upload_session_id IS NOT NULL AND upload_session_id != ''
+  """
+
   /// 30 days. An account that does not sign in again on this device within
   /// that window uploads those photos once more; nothing older is kept.
   static let pendingMarksRetentionMs: Int64 = 30 * 24 * 60 * 60 * 1000
@@ -146,10 +159,7 @@ enum BackupManifestStore {
     INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms, needs_resolution)
     SELECT staged_account_id, local_asset_id, remote_file_id, ?, 1
       FROM backup_assets
-     WHERE status IN (\(inFlightStatuses))
-       AND staged_account_id IS NOT NULL AND staged_account_id != ''
-       AND remote_file_id IS NOT NULL AND remote_file_id != ''
-       AND upload_session_id IS NOT NULL AND upload_session_id != ''
+     WHERE \(inFlightPredicate)
     """ + excluded + """
 
     ON CONFLICT(account_id, local_asset_id) DO UPDATE
@@ -173,6 +183,102 @@ enum BackupManifestStore {
       sqlite3_bind_int64(stmt, 1, nowMs)
     }
     return kept >= 0 ? kept : nil
+  }
+
+  // MARK: - Round 15: the staged purge every teardown runs
+
+  /// One staged upload the teardown purge removes.
+  struct StagedRow: Equatable {
+    let assetId: String
+    let stagedDir: String?
+    let fileId: String
+    let forAccount: String?
+  }
+
+  /// The engine's `clearStagedStateForRestage` statement: the row goes back to
+  /// 'pending_reupload' with no server file, no session and no staged state.
+  static let restageSQL = """
+  UPDATE backup_assets
+  SET status = 'pending_reupload',
+      remote_file_id = NULL,
+      upload_session_id = NULL,
+      staged_file_id = NULL,
+      staged_name_encrypted = NULL,
+      staged_mime_type = NULL,
+      staged_is_media = 0,
+      staged_original_size = 0,
+      staged_chunk_count = 0,
+      staged_dir = NULL,
+      staged_at = NULL,
+      error_message = ?,
+      last_attempt_at = ?
+  WHERE local_asset_id = ?
+  """
+
+  /// Clears one row's staged state (`restageSQL`) and its chunk rows. False
+  /// when either statement did not run.
+  @discardableResult
+  static func clearStagedForRestage(_ db: OpaquePointer, assetId: String, error: String, nowMs: Int64) -> Bool {
+    let updated = run(db, restageSQL) { stmt in
+      bindText(stmt, 1, error)
+      sqlite3_bind_int64(stmt, 2, nowMs)
+      bindText(stmt, 3, assetId)
+    }
+    let chunks = run(db, "DELETE FROM backup_upload_chunks WHERE local_asset_id = ?") { stmt in
+      bindText(stmt, 1, assetId)
+    }
+    return updated >= 0 && chunks >= 0
+  }
+
+  /// Round 15 (review of mobile#182 at dd97f2ac, P1 item 1): the staged purge
+  /// of EVERY teardown (`NativeBackupEngine.clearAccountAndPurgeStaged`):
+  /// the provider unmount's `teardownAllBackup` (sign-out, a forced 401
+  /// sign-out, an account switch), the Camera Roll toggle-off
+  /// (`disablePhotoBackup`), the read-only stop, and the sign-out purge
+  /// (`prepareForStoragePurge`). It keeps the uploads that may be in flight
+  /// on the server (`keepInFlightUploads`) BEFORE `restageSQL` clears their
+  /// server file id and session id. Round 14 kept them only inside
+  /// `prepareForStoragePurge`; the provider unmount runs `teardownAllBackup`
+  /// first, so on a forced sign-out (and on a toggle-off or read-only stop)
+  /// the ids were already gone and the photo uploaded a second time.
+  ///
+  /// A kept row is resolved against the server before any upload of its
+  /// account (`KeptUploadResolution`): at the next sign-in, or for the
+  /// toggle-off and the read-only stop (same account) at the re-enable.
+  /// `removeFiles` deletes the row's staged directory (the engine's file
+  /// work). Returns the rows kept (nil when the keep did not run) and the
+  /// rows purged.
+  @discardableResult
+  static func purgeAllStaged(
+    _ db: OpaquePointer,
+    nowMs: Int64,
+    error: String,
+    removeFiles: (StagedRow) -> Void
+  ) -> (keptInFlight: Int?, purged: Int) {
+    // FIRST: the purge below clears the ids that identify the upload.
+    let kept = keepInFlightUploads(db, nowMs: nowMs)
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, """
+    SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
+    FROM backup_assets
+    WHERE staged_file_id IS NOT NULL
+    """, -1, &stmt, nil) == SQLITE_OK else { return (kept, 0) }
+    var staged: [StagedRow] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      guard let a = sqlite3_column_text(stmt, 0), let f = sqlite3_column_text(stmt, 2) else { continue }
+      staged.append(StagedRow(
+        assetId: String(cString: a),
+        stagedDir: sqlite3_column_text(stmt, 1).map { String(cString: $0) },
+        fileId: String(cString: f),
+        forAccount: sqlite3_column_text(stmt, 3).map { String(cString: $0) }
+      ))
+    }
+    sqlite3_finalize(stmt)
+    for row in staged {
+      removeFiles(row)
+      clearStagedForRestage(db, assetId: row.assetId, error: error, nowMs: nowMs)
+    }
+    return (kept, staged.count)
   }
 
   static func currentMs() -> Int64 {
@@ -559,10 +665,7 @@ enum BackupManifestStore {
       guard let inFlight = select(db, """
       SELECT staged_account_id, local_asset_id, remote_file_id, ?, 1
         FROM backup_assets
-       WHERE status IN (\(inFlightStatuses))
-         AND staged_account_id IS NOT NULL AND staged_account_id != ''
-         AND remote_file_id IS NOT NULL AND remote_file_id != ''
-         AND upload_session_id IS NOT NULL AND upload_session_id != ''
+       WHERE \(inFlightPredicate)
       """, bindMs: nowMs) else { return nil }
       let confirmed = Set(out.filter { !$0.needsResolution }.map { "\($0.accountId)\u{1F}\($0.assetId)" })
       out += inFlight.filter { !confirmed.contains("\($0.accountId)\u{1F}\($0.assetId)") }
@@ -746,6 +849,14 @@ enum BackupManifestStore {
     defer { sqlite3_finalize(stmt) }
     bindText(stmt, 1, accountId)
     sqlite3_bind_int64(stmt, 2, nowMs - pendingMarksRetentionMs)
+    return readInFlightRows(stmt)
+  }
+
+  /// Round 15 (review item 8): the one reader of `(local_asset_id,
+  /// remote_file_id)` rows, for `keptInFlight` and `inFlightUploads`. nil on
+  /// a step that is not ROW/DONE or a NULL column (a read error is not
+  /// "none").
+  private static func readInFlightRows(_ stmt: OpaquePointer?) -> [KeptInFlight]? {
     var rows: [KeptInFlight] = []
     while true {
       let rc = sqlite3_step(stmt)
@@ -789,22 +900,13 @@ enum BackupManifestStore {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, """
     SELECT local_asset_id, remote_file_id FROM backup_assets
-     WHERE status IN (\(inFlightStatuses))
+     WHERE \(inFlightPredicate)
        AND staged_account_id = ?
-       AND remote_file_id IS NOT NULL AND remote_file_id != ''
-       AND upload_session_id IS NOT NULL AND upload_session_id != ''
      ORDER BY local_asset_id
     """, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
     bindText(stmt, 1, accountId)
-    var rows: [KeptInFlight] = []
-    while true {
-      let rc = sqlite3_step(stmt)
-      if rc == SQLITE_DONE { return rows }
-      guard rc == SQLITE_ROW,
-            let a = sqlite3_column_text(stmt, 0), let f = sqlite3_column_text(stmt, 1) else { return nil }
-      rows.append(KeptInFlight(assetId: String(cString: a), fileId: String(cString: f)))
-    }
+    return readInFlightRows(stmt)
   }
 
   /// The sign-out flush found an in-flight upload complete on the server:

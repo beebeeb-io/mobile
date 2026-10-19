@@ -18,9 +18,12 @@ import SQLite3
 // The engine cannot compile standalone. Its calls are modelled here exactly
 // as NativeBackupEngine makes them (each model names the engine function):
 //   flushServerMarksForSignOut -> SignOutMarkFlush.run + settleInFlight
-//   prepareForStoragePurge     -> keepInFlightUploads, purgeAllStagedAssets
-//                                 (clearStagedStateForRestage's UPDATE), the
+//   prepareForStoragePurge     -> purgeAllStagedAssets (round 15: the shipped
+//                                 BackupManifestStore.purgeAllStaged, which
+//                                 keeps the in-flight uploads first), the
 //                                 fence advance, resetInPlace
+//   teardownAllBackup / disablePhotoBackup / the read-only stop (round 15)
+//                              -> clearAccountAndPurgeStaged -> purgeAllStaged
 //   ensureManifestReadyForUploads -> ManifestRebuildGate.run with resolveKept
 //                                 = KeptUploadResolution.run
 //   inspectExistingUpload      -> FakeServer.inspect (GET /files/{id}:
@@ -33,6 +36,12 @@ import SQLite3
 // (c) NOT complete on the server: uploaded again, exactly once.
 // (d) another account never sees (or asks about) A's kept entries.
 // plus: discard / expiry / failed-reset carry / upgrade / budget.
+// Round 15 (review of mobile#182 at dd97f2ac): (l) a forced 401 sign-out
+// (teardown before the signed-out purge), (m) Camera Roll toggle-off, (n) the
+// read-only stop, (o) only the API's own GET /files answer resolves a kept
+// row (the shipped PhotoBackupServerResponses.existingUpload), (p) a trashed
+// file is not backed up, (q) local vs server resolution failures and the
+// pause, (r) one in-flight predicate.
 
 var failures: [String] = []
 var total = 0
@@ -168,6 +177,26 @@ final class FakeServer {
     return f.complete
   }
 
+  /// Round 15: files in the Trash (`is_trashed` true; still complete).
+  var trashed: Set<String> = []
+  /// Round 15: when set, GET /files/{id} answers exactly this (an edge page,
+  /// an empty body, a 429, ...) instead of the API's answer.
+  var httpOverride: (status: Int, contentType: String?, retryAfter: String?, body: String)?
+
+  /// Round 15: GET /api/v1/files/{id} as HTTP: the API's own answer
+  /// (server `get_file`: JSON with boolean is_uploading and is_trashed, or
+  /// `ApiError::NotFound` = 404 {"error":"not found"}), unless overridden.
+  func http(account: String, fileId: String) throws -> (status: Int, contentType: String?, retryAfter: String?, body: String) {
+    inspects.append(fileId)
+    guard filesOnline else { throw Unreachable() }
+    if let httpOverride { return httpOverride }
+    guard let f = files[fileId], f.owner == account else {
+      return (404, "application/json", nil, #"{"error":"not found"}"#)
+    }
+    return (200, "application/json", nil,
+            #"{"id":"\#(fileId)","is_uploading":\#(!f.complete),"is_trashed":\#(trashed.contains(fileId)),"is_folder":false}"#)
+  }
+
   func mark(account: String, assetId: String, fileId: String) -> Bool {
     guard marksOnline else { return false }
     marks[account, default: [:]][assetId] = fileId
@@ -275,19 +304,42 @@ func signOutFlush(_ d: Device, _ server: FakeServer, account: String, deadline: 
   }
 }
 
-/// NativeBackupEngine.prepareForStoragePurge, in its order: keep the
-/// in-flight uploads, the staged purge (clearStagedStateForRestage's UPDATE
-/// on every staged row), the fence advance + reset (resetForSignOut).
+/// Round 15: NativeBackupEngine.clearAccountAndPurgeStaged ->
+/// purgeAllStagedAssets, which is the SHIPPED `BackupManifestStore
+/// .purgeAllStaged` (keep the in-flight uploads, then clear every staged
+/// row). Every teardown runs it: teardownAllBackup (the provider unmount,
+/// sign-out and forced 401 sign-out alike), disablePhotoBackup (the Camera
+/// Roll toggle-off), the read-only stop, and prepareForStoragePurge.
 @discardableResult
-func signOutPurge(_ d: Device, discard: BackupManifestStore.MarkDiscard = .none, keepInFlight: Bool = true) -> Bool {
+func stagedPurge(_ d: Device) -> (keptInFlight: Int?, purged: Int) {
   d.queue.sync {
-    if keepInFlight { _ = BackupManifestStore.keepInFlightUploads(d.db, nowMs: now) }
+    BackupManifestStore.purgeAllStaged(
+      d.db, nowMs: now, error: "Re-encrypting: account signed out before upload completed", removeFiles: { _ in }
+    )
+  }
+}
+
+/// CONTROL ONLY: dd97f2ac's purgeAllStagedAssets (clearStagedStateForRestage
+/// on every staged row, no keep), for the red/control runs.
+func stagedPurgeDd97f2a(_ d: Device) {
+  d.queue.sync {
     exec(d.db, """
     UPDATE backup_assets
        SET status = 'pending_reupload', remote_file_id = NULL, upload_session_id = NULL,
            staged_file_id = NULL, staged_dir = NULL, staged_at = NULL
      WHERE staged_file_id IS NOT NULL
     """)
+  }
+}
+
+/// NativeBackupEngine.prepareForStoragePurge, in its order: the staged purge
+/// (round 15: the shipped `purgeAllStaged`, which keeps the in-flight uploads
+/// first), the fence advance + reset (resetForSignOut). `keepInFlight: false`
+/// is the round-13 control (dd97f2ac's staged purge, no keep).
+@discardableResult
+func signOutPurge(_ d: Device, discard: BackupManifestStore.MarkDiscard = .none, keepInFlight: Bool = true) -> Bool {
+  if keepInFlight { stagedPurge(d) } else { stagedPurgeDd97f2a(d) }
+  return d.queue.sync {
     d.fence.advanceForSignOut()
     return BackupManifestStore.resetInPlace(d.db, nowMs: now, discard: discard)
   }
@@ -307,7 +359,8 @@ func signIn(_ d: Device, account: String) -> ManifestWriteFence.Ticket {
 
 /// NativeBackupEngine.ensureManifestReadyForUploads, as wired in round 14.
 func gate(_ d: Device, _ server: FakeServer, account: String, ticket: ManifestWriteFence.Ticket,
-          alreadyReady: Bool = false, resolve: Bool = true) -> ManifestRebuildGate.Outcome? {
+          alreadyReady: Bool = false, resolve: Bool = true,
+          ask: ((BackupManifestStore.KeptInFlight) throws -> Bool)? = nil) -> ManifestRebuildGate.Outcome? {
   var steps = ManifestRebuildGate.Steps(
     needsRebuild: {
       d.queue.sync {
@@ -329,7 +382,7 @@ func gate(_ d: Device, _ server: FakeServer, account: String, ticket: ManifestWr
     steps.resolveKept = {
       await KeptUploadResolution.run(
         load: { d.queue.sync { FencedManifestWrites.loadKeptInFlight(d.db, fence: d.fence, ticket: ticket, accountId: account, nowMs: now) } },
-        ask: { row in try server.inspect(account: account, fileId: row.fileId) },
+        ask: { row in try ask?(row) ?? server.inspect(account: account, fileId: row.fileId) },
         record: { row, complete in
           d.queue.sync {
             FencedManifestWrites.resolveKeptInFlight(d.db, fence: d.fence, ticket: ticket, accountId: account, row: row, complete: complete)
@@ -689,6 +742,360 @@ do {
   _ = batch(d, server, account: A)
   expect(server.uploadCount(A, "x1") == 1,
          "k.1 control: without the keep, x1 (complete on the server) uploads a SECOND time (got \(server.uploadCount(A, "x1")))")
+}
+
+// MARK: - Round 15 (review of mobile#182 at dd97f2ac)
+
+/// The engine's `backoffUntil` for one device.
+final class EngineBackoff { var until: Date? }
+
+/// NativeBackupEngine.inspectExistingUpload (round 15) + the resolution's
+/// `== .complete`: the shipped classifier reads the HTTP answer; a 429 sets
+/// the backoff from Retry-After (60 s without one) and throws.
+func engineAsk(_ server: FakeServer, account: String, backoff: EngineBackoff, clock: Date)
+  -> (BackupManifestStore.KeptInFlight) throws -> Bool {
+  return { row in
+    let r = try server.http(account: account, fileId: row.fileId)
+    do {
+      return try PhotoBackupServerResponses.existingUpload(
+        statusCode: r.status, contentType: r.contentType, retryAfter: r.retryAfter, data: Data(r.body.utf8)
+      ) == .complete
+    } catch let limited as PhotoBackupServerResponses.RateLimited {
+      backoff.until = clock.addingTimeInterval(limited.retryAfter ?? 60)
+      throw limited
+    }
+  }
+}
+
+/// NativeBackupEngine.ensureManifestReadyForUploads' deferred branch (round 15).
+func engineDefer(_ outcome: ManifestRebuildGate.Outcome?, backoff: EngineBackoff, clock: Date, failures: Int = 1) {
+  guard case let .deferred(reason)? = outcome,
+        let wait = ManifestRebuildGate.backoff(for: reason, consecutiveFailures: failures) else { return }
+  backoff.until = ManifestRebuildGate.backoffDeadline(existing: backoff.until, now: clock, wait: wait)
+}
+
+/// The in-flight x1 of A, its upload complete on the server, the response
+/// lost (round 14's seed), signed-in A bound.
+func deviceWithInFlightX1(_ name: String, x1Complete: Bool = true) -> (Device, FakeServer) {
+  let d = Device(name)
+  let server = FakeServer()
+  _ = d.queue.sync { d.fence.bind(accountId: A) }
+  seedA(d, server: server, x1Complete: x1Complete)
+  return (d, server)
+}
+
+// MARK: - (l) P1 item 1: a forced 401 sign-out (teardown BEFORE the signed-out purge)
+
+// Real call order on a forced sign-out (App.tsx registerSessionExpiredHandler
+// -> setUser(null)): the CryptoProvider key changes, BackupProvider unmounts,
+// its cleanup sends teardownAllBackup (stopBackupEngines) -> the engine's
+// clearAccountAndPurgeStaged -> purgeAllStaged. THEN the signed-out effect's
+// purge runs: no mark flush (the token is gone), prepareForStoragePurge ->
+// clearAccountAndPurgeStaged again -> the fence advance + resetInPlace.
+do {
+  let (d, server) = deviceWithInFlightX1("l.db")
+  // 1. The provider unmount's teardown.
+  let teardown = stagedPurge(d)
+  expect(teardown.keptInFlight == 1 && teardown.purged == 1,
+         "l.1 the unmount teardown keeps x1 before clearing its ids (got kept \(String(describing: teardown.keptInFlight)), purged \(teardown.purged))")
+  expect(text(d.db, "SELECT remote_file_id FROM backup_pending_marks WHERE local_asset_id = 'x1' AND needs_resolution = 1") == "f-x1",
+         "l.2 kept with its server file id f-x1")
+  expect(status(d, "x1") == "pending_reupload::", "l.3 the teardown cleared x1's ids (got \(status(d, "x1")))")
+  // 2. The signed-out purge (no flush: the 401 already cleared the token).
+  expect(signOutPurge(d), "l.4 the signed-out purge's reset succeeds")
+  expect(kept(d, A, resolution: 1) == 1, "l.5 x1 survives the signed-out purge for resolution (got \(kept(d, A, resolution: 1)))")
+  // 3. A signs in again: x1 is resolved complete, promoted, marked; 0 second uploads.
+  let t = signIn(d, account: A)
+  let g = gate(d, server, account: A, ticket: t)
+  expect(g == .ready(rebuilt: true, promoted: 0, keptApplied: 2), "l.6 the gate resolves x1 and applies x1 + u1 (got \(String(describing: g)))")
+  let up = batch(d, server, account: A)
+  catchUp(d, server, account: A, ticket: t)
+  expect(up == ["p2"], "l.7 only p2 uploads (got \(up))")
+  expect(server.uploadCount(A, "x1") == 0, "l.8 x1 is NOT uploaded a second time (got \(server.uploadCount(A, "x1")))")
+  expect(server.marks[A]?["x1"] == "f-x1", "l.9 x1 is marked on the server with f-x1")
+}
+
+// (l-control) dd97f2ac's order: the teardown's staged purge kept nothing, the
+// signed-out purge's own keep (prepareForStoragePurge) then saw 0 rows with
+// ids: x1 uploads a second time.
+do {
+  let (d, server) = deviceWithInFlightX1("l-control.db")
+  stagedPurgeDd97f2a(d) // the unmount teardown at dd97f2ac
+  _ = d.queue.sync { BackupManifestStore.keepInFlightUploads(d.db, nowMs: now) } // prepareForStoragePurge's keep at dd97f2ac
+  stagedPurgeDd97f2a(d)
+  _ = d.queue.sync { () -> Bool in d.fence.advanceForSignOut(); return BackupManifestStore.resetInPlace(d.db, nowMs: now) }
+  let t = signIn(d, account: A)
+  _ = gate(d, server, account: A, ticket: t)
+  _ = batch(d, server, account: A)
+  expect(server.uploadCount(A, "x1") == 1,
+         "l.c control: dd97f2ac's teardown-first order uploads x1 a SECOND time (got \(server.uploadCount(A, "x1")))")
+}
+
+// MARK: - (m) P1 item 1: Camera Roll toggled off mid-complete, then re-enabled
+
+// disablePhotoBackup -> stop() -> clearAccountAndPurgeStaged (Contacts and
+// Calendar not bound). No sign-out: the manifest stays, the account stays.
+// The re-enable binds the same account; the gate resolves the kept row before
+// any upload (`alreadyReady` both ways: the engine keeps manifestReadyForAccount).
+for alreadyReady in [true, false] {
+  let label = "m(\(alreadyReady ? "ready" : "not-ready"))"
+  let (d, server) = deviceWithInFlightX1("m-\(alreadyReady).db")
+  stagedPurge(d)
+  expect(kept(d, A, resolution: 1) == 1, "\(label).1 the toggle-off keeps x1 for resolution")
+  expect(status(d, "x1") == "pending_reupload::", "\(label).2 x1 is queued again in the manifest (got \(status(d, "x1")))")
+  // Re-enable: the engine binds A again (same fence generation: no sign-out).
+  let t = d.queue.sync { d.fence.issue(for: A) }!
+  let g = gate(d, server, account: A, ticket: t, alreadyReady: alreadyReady)
+  if case .ready? = g {} else { expect(false, "\(label).3 the gate is ready (got \(String(describing: g)))") }
+  expect(status(d, "x1") == "uploaded:f-x1:\(A)", "\(label).4 x1 is promoted with f-x1 before any upload (got \(status(d, "x1")))")
+  let up = batch(d, server, account: A)
+  expect(up == ["p2"], "\(label).5 only p2 uploads (got \(up))")
+  expect(server.uploadCount(A, "x1") == 0, "\(label).6 x1 is NOT uploaded a second time")
+}
+do {
+  let (d, server) = deviceWithInFlightX1("m-control.db")
+  stagedPurgeDd97f2a(d)
+  let t = d.queue.sync { d.fence.issue(for: A) }!
+  _ = gate(d, server, account: A, ticket: t, alreadyReady: true)
+  _ = batch(d, server, account: A)
+  expect(server.uploadCount(A, "x1") == 1,
+         "m.c control: dd97f2ac's toggle-off purge uploads x1 a SECOND time (got \(server.uploadCount(A, "x1")))")
+}
+
+// MARK: - (n) P1 item 1: the read-only stop, then writable again
+
+// The account turns read-only: backup-context stops the engines
+// (teardownAllBackup -> clearAccountAndPurgeStaged). Later it is writable
+// again and backup starts for the same account; the first gate pass is
+// OFFLINE (deferred, nothing uploads), the next one resolves.
+do {
+  let (d, server) = deviceWithInFlightX1("n.db")
+  stagedPurge(d)
+  expect(kept(d, A, resolution: 1) == 1, "n.1 the read-only stop keeps x1 for resolution")
+  let t = d.queue.sync { d.fence.issue(for: A) }!
+  server.filesOnline = false
+  let g1 = gate(d, server, account: A, ticket: t, alreadyReady: true)
+  expect(g1 == .deferred(.resolveKeptFailed), "n.2 offline: the gate defers (got \(String(describing: g1)))")
+  expect(kept(d, A, resolution: 1) == 1, "n.3 x1 is still kept")
+  server.filesOnline = true
+  let g2 = gate(d, server, account: A, ticket: t, alreadyReady: true)
+  if case .ready? = g2 {} else { expect(false, "n.4 online: ready (got \(String(describing: g2)))") }
+  let up = batch(d, server, account: A)
+  expect(up == ["p2"] && server.uploadCount(A, "x1") == 0, "n.5 x1 is not uploaded again (uploads \(up))")
+}
+
+// MARK: - (o) P1 item 2: only the API's own answer resolves a kept row
+
+/// A kept x1 after an offline sign-out, then A's sign-in with GET /files
+/// answering `answer`. Returns the gate outcome, whether x1 is still kept,
+/// the backoff and x1's upload count after the batch (when ready).
+func resolveWith(_ name: String, answer: (status: Int, contentType: String?, retryAfter: String?, body: String)?,
+                 trashed: Bool = false, x1Complete: Bool = true)
+  -> (gate: ManifestRebuildGate.Outcome?, stillKept: Bool, backoffSeconds: TimeInterval?, x1Uploads: Int, x1: String) {
+  let (d, server) = deviceWithInFlightX1(name, x1Complete: x1Complete)
+  server.filesOnline = false
+  server.marksOnline = false
+  _ = signOutFlush(d, server, account: A)
+  signOutPurge(d)
+  server.filesOnline = true
+  server.marksOnline = true
+  if trashed { server.trashed.insert("f-x1") }
+  server.httpOverride = answer
+  let clock = Date(timeIntervalSince1970: 1_800_000_000)
+  let backoff = EngineBackoff()
+  let t = signIn(d, account: A)
+  let g = gate(d, server, account: A, ticket: t, ask: engineAsk(server, account: A, backoff: backoff, clock: clock))
+  engineDefer(g, backoff: backoff, clock: clock)
+  let stillKept = kept(d, A, resolution: 1) == 1
+  if case .ready? = g { _ = batch(d, server, account: A) }
+  return (g, stillKept, backoff.until.map { $0.timeIntervalSince(clock) }, server.uploadCount(A, "x1"), status(d, "x1"))
+}
+
+do {
+  let html = resolveWith("o-html.db", answer: (404, "text/html", nil, "<html><body>404 Not Found</body></html>"))
+  expect(html.gate == .deferred(.resolveKeptFailed), "o.1 HTML 404: the gate defers (got \(String(describing: html.gate)))")
+  expect(html.stillKept, "o.2 HTML 404: x1 stays kept")
+  expect(html.x1Uploads == 0, "o.3 HTML 404: x1 is not uploaded")
+
+  let empty = resolveWith("o-empty.db", answer: (404, nil, nil, ""))
+  expect(empty.gate == .deferred(.resolveKeptFailed), "o.4 empty 404: the gate defers (got \(String(describing: empty.gate)))")
+  expect(empty.stillKept && empty.x1Uploads == 0, "o.5 empty 404: x1 stays kept, not uploaded")
+
+  let jsonOther = resolveWith("o-json404.db", answer: (404, "application/json", nil, #"{"error":"not found","message":"route"}"#))
+  expect(jsonOther.gate == .deferred(.resolveKeptFailed), "o.6 a 404 with another JSON shape defers")
+
+  // The API's own 404 (x1 is not this account's file / gone): dropped, uploads once.
+  let api404 = resolveWith("o-api404.db", answer: (404, "application/json; charset=utf-8", nil, #"{"error":"not found"}"#))
+  if case .ready? = api404.gate {} else { expect(false, "o.7 API 404: ready (got \(String(describing: api404.gate)))") }
+  expect(!api404.stillKept, "o.8 API 404: the kept row is dropped")
+  expect(api404.x1Uploads == 1, "o.9 API 404: x1 uploads exactly once (got \(api404.x1Uploads))")
+
+  let noFlag = resolveWith("o-noflag.db", answer: (200, "application/json", nil, #"{"id":"f-x1","is_trashed":false}"#))
+  expect(noFlag.gate == .deferred(.resolveKeptFailed), "o.10 2xx without is_uploading: defers (got \(String(describing: noFlag.gate)))")
+  expect(noFlag.stillKept && noFlag.x1Uploads == 0, "o.11 2xx without is_uploading: x1 stays kept, not uploaded")
+
+  let numeric = resolveWith("o-numeric.db", answer: (200, "application/json", nil, #"{"is_uploading":0,"is_trashed":0}"#))
+  expect(numeric.gate == .deferred(.resolveKeptFailed), "o.12 2xx with 0/1 instead of booleans: defers")
+
+  let htmlOk = resolveWith("o-html200.db", answer: (200, "text/html", nil, "<html>captive portal</html>"))
+  expect(htmlOk.gate == .deferred(.resolveKeptFailed), "o.13 an HTML 2xx: defers")
+
+  let server5xx = resolveWith("o-503.db", answer: (503, "text/html", nil, "busy"))
+  expect(server5xx.gate == .deferred(.resolveKeptFailed) && server5xx.backoffSeconds == 30,
+         "o.14 503: defers with the 30 s fetch backoff (got \(String(describing: server5xx.backoffSeconds)))")
+
+  let limited = resolveWith("o-429.db", answer: (429, "application/json", "120", #"{"error":"rate limited"}"#))
+  expect(limited.gate == .deferred(.resolveKeptFailed), "o.15 429: defers")
+  expect(limited.backoffSeconds == 120, "o.16 429 Retry-After: 120 is honoured, not overwritten with 30 s (got \(String(describing: limited.backoffSeconds)))")
+  expect(limited.stillKept && limited.x1Uploads == 0, "o.17 429: x1 stays kept, not uploaded")
+
+  let limitedNoHeader = resolveWith("o-429b.db", answer: (429, nil, nil, ""))
+  expect(limitedNoHeader.backoffSeconds == 60, "o.18 429 without Retry-After: 60 s (got \(String(describing: limitedNoHeader.backoffSeconds)))")
+
+  // The API's own answers still resolve.
+  let complete = resolveWith("o-complete.db", answer: nil)
+  if case .ready? = complete.gate {} else { expect(false, "o.19 API complete: ready") }
+  expect(complete.x1Uploads == 0 && complete.x1 == "uploaded:f-x1:\(A)", "o.20 API complete: x1 promoted, 0 uploads (got \(complete.x1))")
+  let uploading = resolveWith("o-uploading.db", answer: nil, x1Complete: false)
+  expect(!uploading.stillKept && uploading.x1Uploads == 1, "o.21 API is_uploading true: dropped, x1 uploads once")
+}
+
+// The shipped classifier, one answer at a time.
+do {
+  func classify(_ status: Int, _ ct: String?, _ ra: String?, _ body: String) -> String {
+    do {
+      return "\(try PhotoBackupServerResponses.existingUpload(statusCode: status, contentType: ct, retryAfter: ra, data: Data(body.utf8)))"
+    } catch let r as PhotoBackupServerResponses.RateLimited {
+      return "rateLimited(\(r.retryAfter.map { "\($0)" } ?? "nil"))"
+    } catch {
+      return "throws"
+    }
+  }
+  expect(classify(404, "text/html", nil, "<html/>") == "throws", "o.c1 HTML 404 throws")
+  expect(classify(404, nil, nil, "") == "throws", "o.c2 empty 404 throws")
+  expect(classify(404, "application/json", nil, #"{"error":"not found"}"#) == "gone", "o.c3 API 404 is gone")
+  expect(classify(200, "application/json", nil, #"{"is_trashed":false}"#) == "throws", "o.c4 2xx without is_uploading throws")
+  expect(classify(429, nil, "120", "") == "rateLimited(120.0)", "o.c5 429 Retry-After 120 (got \(classify(429, nil, "120", "")))")
+  expect(classify(200, "application/json", nil, #"{"is_uploading":false,"is_trashed":false}"#) == "complete", "o.c6 complete")
+  expect(classify(200, "application/json", nil, #"{"is_uploading":false,"is_trashed":true}"#) == "completeInTrash", "o.c7 complete in the Trash")
+  expect(classify(200, "application/json", nil, #"{"is_uploading":true,"is_trashed":false}"#) == "uploading", "o.c8 uploading")
+  expect(classify(500, "application/json", nil, #"{"error":"internal"}"#) == "throws", "o.c9 500 throws")
+  expect(classify(200, "application/json", nil, #"[]"#) == "throws", "o.c10 a JSON array throws")
+}
+
+// MARK: - (p) P2 item 3: a trashed file is not backed up
+
+do {
+  let r = resolveWith("p.db", answer: nil, trashed: true)
+  if case .ready? = r.gate {} else { expect(false, "p.1 ready (got \(String(describing: r.gate)))") }
+  expect(!r.stillKept, "p.2 the kept row is dropped (not promoted as a mark)")
+  expect(r.x1Uploads == 1, "p.3 x1 is queued and uploads once (got \(r.x1Uploads))")
+  // The flush never marks a trashed in-flight upload either.
+  let (d, server) = deviceWithInFlightX1("p-flush.db")
+  server.trashed.insert("f-x1")
+  let outcome = runBounded {
+    await SignOutMarkFlush.settleInFlight(
+      isComplete: {
+        let h = try server.http(account: A, fileId: "f-x1")
+        return try PhotoBackupServerResponses.existingUpload(
+          statusCode: h.status, contentType: h.contentType, retryAfter: h.retryAfter, data: Data(h.body.utf8)
+        ) == .complete
+      },
+      recordUploaded: { expect(false, "p.4 a trashed upload is not recorded as uploaded"); return true },
+      mark: { expect(false, "p.5 a trashed upload is not marked"); return true }
+    )
+  }
+  expect(outcome == true, "p.6 the flush settles it (nothing to mark)")
+  expect(server.marks[A]?["x1"] == nil, "p.7 no mark for x1")
+  expect(status(d, "x1").hasPrefix("staged_upload"), "p.8 x1 stays in flight, so the reset keeps it for resolution")
+}
+
+// MARK: - (q) P2 item 6: local failures vs server failures, and the pause
+
+do {
+  // A local failure: the load is fenced (the ticket is from before a sign-out).
+  let (d, server) = deviceWithInFlightX1("q.db")
+  server.filesOnline = false
+  server.marksOnline = false
+  _ = signOutFlush(d, server, account: A)
+  signOutPurge(d)
+  server.filesOnline = true
+  server.marksOnline = true
+  let t = signIn(d, account: A)
+  // A stale ticket: another sign-out advanced the fence since it was issued.
+  let stale = t
+  _ = d.queue.sync { d.fence.advanceForSignOut() }
+  _ = d.queue.sync { d.fence.bind(accountId: A) }
+  server.inspects = []
+  let gLocal = gate(d, server, account: A, ticket: stale, alreadyReady: true)
+  expect(gLocal == .deferred(.resolveKeptStoreFailed), "q.1 a fenced load defers as a LOCAL failure (got \(String(describing: gLocal)))")
+  expect(server.inspects.isEmpty, "q.2 no request was made (got \(server.inspects))")
+  expect(ManifestRebuildGate.backoff(for: .resolveKeptStoreFailed, consecutiveFailures: 1) == 2,
+         "q.3 the database backoff (2 s), not the 30 s fetch backoff")
+  var pause = ServerCheckPause()
+  expect(pause.recordGate(.deferred(.resolveKeptStoreFailed), lacksBackedUp: false) == false && pause.cause == nil,
+         "q.4 a local failure shows NO server pause")
+  // A server failure pauses; ANY later successful pass clears it.
+  expect(pause.recordGate(.deferred(.resolveKeptFailed), lacksBackedUp: false) && pause.cause == .checkFailed,
+         "q.5 a server failure shows the 'could not check' pause")
+  expect(pause.recordGate(.ready(rebuilt: false, promoted: 0, keptApplied: 0), lacksBackedUp: false) && pause.cause == nil,
+         "q.6 a successful pass that did not rebuild clears the pause")
+  _ = pause.recordGate(.deferred(.fetchFailed), lacksBackedUp: false)
+  expect(pause.recordGate(.ready(rebuilt: true, promoted: 1, keptApplied: 0), lacksBackedUp: false) && pause.cause == nil,
+         "q.7 a rebuilding pass clears it too")
+  // The record step failing (busy writer) is local as well.
+  let rLocal = runBounded {
+    await KeptUploadResolution.run(
+      load: { [BackupManifestStore.KeptInFlight(assetId: "x1", fileId: "f-x1")] },
+      ask: { _ in true },
+      record: { _, _ in false }
+    )
+  }
+  expect(rLocal == .storeFailed, "q.8 a failed write is a local failure")
+  let rServer = runBounded {
+    await KeptUploadResolution.run(
+      load: { [BackupManifestStore.KeptInFlight(assetId: "x1", fileId: "f-x1")] },
+      ask: { _ in throw Unreachable() },
+      record: { _, _ in true }
+    )
+  }
+  expect(rServer == .serverFailed, "q.9 a failed ask is a server failure")
+}
+
+// MARK: - (r) P2 item 8: one in-flight predicate for the keep, the snapshot and the flush load
+
+do {
+  let d = Device("r.db")
+  // Every edge of the predicate: status, owner, file id, session id.
+  let shapes: [(id: String, status: String, owner: String?, file: String?, session: String?)] = [
+    ("k1", "staging", A, "f1", "s1"), ("k2", "staged_upload", A, "f2", "s2"), ("k3", "uploading", B, "f3", "s3"),
+    ("n1", "pending_upload", A, "f4", "s4"), ("n2", "uploading", nil, "f5", "s5"), ("n3", "uploading", "", "f6", "s6"),
+    ("n4", "uploading", A, nil, "s7"), ("n5", "uploading", A, "", "s8"), ("n6", "uploading", A, "f9", nil),
+    ("n7", "uploading", A, "f10", ""), ("n8", "uploaded", A, "f11", "s11"), ("n9", "failed", A, "f12", "s12"),
+  ]
+  func q(_ v: String?) -> String { v.map { "'\($0)'" } ?? "NULL" }
+  for sh in shapes {
+    exec(d.db, """
+    INSERT INTO backup_assets (local_asset_id, remote_file_id, created_at, asset_type, status, upload_session_id, staged_account_id)
+    VALUES ('\(sh.id)', \(q(sh.file)), '2026-10-18T00:00:00Z', 'photo', '\(sh.status)', \(q(sh.session)), \(q(sh.owner)))
+    """)
+  }
+  let snapshot = Set(d.queue.sync { BackupManifestStore.pendingMarksSnapshot(d.db, nowMs: now) }!
+    .filter { $0.needsResolution }.map { "\($0.accountId)/\($0.assetId)" })
+  let flushA = d.queue.sync { BackupManifestStore.inFlightUploads(d.db, accountId: A) }!.map { "\(A)/\($0.assetId)" }
+  let flushB = d.queue.sync { BackupManifestStore.inFlightUploads(d.db, accountId: B) }!.map { "\(B)/\($0.assetId)" }
+  _ = d.queue.sync { BackupManifestStore.keepInFlightUploads(d.db, nowMs: now) }
+  var keptRows: Set<String> = []
+  var stmt: OpaquePointer?
+  sqlite3_prepare_v2(d.db, "SELECT account_id || '/' || local_asset_id FROM backup_pending_marks WHERE needs_resolution = 1", -1, &stmt, nil)
+  while sqlite3_step(stmt) == SQLITE_ROW { keptRows.insert(String(cString: sqlite3_column_text(stmt, 0))) }
+  sqlite3_finalize(stmt)
+  let expected: Set<String> = ["\(A)/k1", "\(A)/k2", "\(B)/k3"]
+  expect(keptRows == expected, "r.1 the keep selects exactly k1, k2, k3 (got \(keptRows.sorted()))")
+  expect(snapshot == expected, "r.2 the failed-reset snapshot selects the same rows (got \(snapshot.sorted()))")
+  expect(Set(flushA + flushB) == expected, "r.3 the flush load selects the same rows (got \((flushA + flushB).sorted()))")
+  let kia = d.queue.sync { BackupManifestStore.keptInFlight(d.db, accountId: A, nowMs: now) }!.map { $0.assetId }
+  expect(kia == ["k1", "k2"], "r.4 the kept reader reads A's rows through the same reader (got \(kia))")
 }
 
 // MARK: - Report

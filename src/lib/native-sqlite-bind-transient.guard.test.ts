@@ -74,7 +74,9 @@ describe('round 11 finding 6: no SQLITE_STATIC text/blob bind in the native modu
   test('the engine and the legacy manager bind text through BackupManifestStore.bindText', () => {
     const engine = readFileSync(join(IOS, 'NativeBackupEngine.swift'), 'utf8');
     const legacy = readFileSync(join(IOS, 'PhotoBackupManager.swift'), 'utf8');
-    expect((engine.match(/BackupManifestStore\.bindText\(/g) ?? []).length).toBeGreaterThanOrEqual(38);
+    // Round 15: clearStagedStateForRestage's binds moved into
+    // BackupManifestStore.clearStagedForRestage (38 -> 36 in the engine).
+    expect((engine.match(/BackupManifestStore\.bindText\(/g) ?? []).length).toBeGreaterThanOrEqual(36);
     expect((legacy.match(/BackupManifestStore\.bindText\(/g) ?? []).length).toBeGreaterThanOrEqual(8);
     expect(engine).not.toMatch(/\.utf8String, -1, nil\)/);
     expect(legacy).not.toMatch(/\.utf8String, -1, nil\)/);

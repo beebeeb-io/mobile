@@ -139,7 +139,8 @@ describe('(c) wiring guards: every account-deletion purge passes mode account-de
     const handler = src.slice(src.indexOf('registerAccountDeletedHandler(('), src.indexOf('registerAccountDeletedHandler((') + 1000);
     // Round 14 (item 2): at a cold start the stored key's owner names the account.
     expect(handler).toMatch(/noteAccountDeleted\(accountIdForDeletedElsewhere\(currentUserIdRef\.current, coldStartOwnerRef\.current\)\);\s*\n\s*setUser\(null\)/);
-    expect(src).toMatch(/if \(user\) currentUserIdRef\.current = user\.user_id;/);
+    // Round 15 (item 5): cleared when the user becomes null.
+    expect(src).toMatch(/currentUserIdRef\.current = user \? user\.user_id : null;/);
     expect(src).toMatch(/signedOutPurger\.sessionStarted\(\);[^\n]*\n\s*setUser\(me\);\n(?:\s*\/\/[^\n]*\n)*\s*clearAccountDeletionPurge\(\);/);
     expect(src).toMatch(/if \(Platform\.OS === 'ios' && !accountDeletionPurgePending\(\)\) \{\s*\n\s*await flushMarksBeforeSignOut/);
   });

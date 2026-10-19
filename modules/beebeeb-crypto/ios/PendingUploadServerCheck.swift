@@ -371,7 +371,22 @@ struct ServerCheckPause: Equatable {
     // Round 14: a kept in-flight upload could not be checked with the server.
     case .resolveKeptFailed: return set(.checkFailed)
     case .noDeviceId: return set(.noDeviceId)
-    case .checkFailed, .accountChanged, .applyMapFailed, .applyKeptFailed: return false
+    // Round 15 (review item 6): a local resolution failure made no request.
+    case .checkFailed, .accountChanged, .applyMapFailed, .applyKeptFailed, .resolveKeptStoreFailed: return false
+    }
+  }
+
+  /// Round 15 (review item 6): one rebuild-gate pass. Ready (either branch,
+  /// rebuilt or not) clears the pause: the gate got through, and a stale
+  /// "could not check" must not outlive it (round 14 cleared it only when
+  /// `rebuilt`, so a later successful pass with nothing to upload left it
+  /// shown). Deferred records it like `recordRebuild`. Returns whether it
+  /// changed.
+  @discardableResult
+  mutating func recordGate(_ outcome: ManifestRebuildGate.Outcome, lacksBackedUp: Bool) -> Bool {
+    switch outcome {
+    case .ready: return clear()
+    case let .deferred(reason): return recordRebuild(reason, lacksBackedUp: lacksBackedUp)
     }
   }
 
