@@ -600,6 +600,7 @@ Guus, 2026-10-19 (canon `docs/canon/data-residency.md`): the app names countries
   <country>" is `region_strict` on GET/PUT `/me/region` (PUT replaces the whole choice, so strict is
   passed again when the country changes). An OLDER server's `kind: "datacenter"` entries are folded
   into countries by `country_code`; their city is dropped.
+- **Strict is HIDDEN on iOS and Android (Guus 2026-10-19, workspace task 2054).** `STRICT_PLACEMENT_ON_MOBILE` in `src/lib/regions.ts` is the single flag; native `NativeBackupEngine` dead-letters assets on the strict 409. Stored strict=true (from web/desktop) is carried unchanged on a country change and shown as the line "Only store in <country> is on. Change it on the web or desktop app." (`strictNoticeFor`). Do not touch the Swift side here; 2054 does, then flips the flag.
 - Per-file location is `storage_location.country` (`fileStorageCountry`), "Europe" when absent. The
   deprecated `city` a transition-release server still sends is never read.
 - The 409 `region_unavailable_strict` refusal is worded by country in `friendlyError`

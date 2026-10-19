@@ -15,8 +15,11 @@ describe('Settings > Data residency (task 2050)', () => {
     expect(source).toContain('REGION_NOTE');
   });
 
-  test('the strict switch is wired to the saved choice, carried across countries and persisted', () => {
-    expect(source).toContain('strictSwitchFor(regionRows, storageRegion)');
+  test('the strict switch is gated per platform (hidden on iOS/Android, task 2054), strict still carried and shown as a line', () => {
+    expect(source).toContain('strictSwitchOnPlatform(regionRows, storageRegion, Platform.OS)');
+    expect(source).toContain('strictNoticeFor(regionRows, storageRegion, regionStrict, Platform.OS)');
+    expect(source).toContain('testID="region-strict-notice"');
+    expect(source).not.toContain('strictSwitchFor(regionRows, storageRegion)');
     expect(source).toContain('testID="region-strict-switch"');
     expect(source).toContain('await selectRegion(row, regionStrict);');
     expect(source).toContain('await setStrict(row, next);');

@@ -83,7 +83,8 @@ import {
   loadRegionsData,
   selectRegion,
   setStrict,
-  strictSwitchFor,
+  strictSwitchOnPlatform,
+  strictNoticeFor,
   REGION_COMING_SOON,
   REGION_COUNTRY_HEADER,
   REGION_NOTE,
@@ -1728,7 +1729,8 @@ export default function SettingsScreen() {
   // subscription row (billing-status.ts, which guards a stale `trialing`).
   const chip = accountChip({ doc: accountDocument, subscription, fallbackPlanSlug: usage?.plan_name ?? null });
   const serverRegionLabel = serverRegion?.region ? regionDisplayName(serverRegion.region) : null;
-  const strictSwitch = strictSwitchFor(regionRows, storageRegion);
+  const strictSwitch = strictSwitchOnPlatform(regionRows, storageRegion, Platform.OS);
+  const strictNotice = strictNoticeFor(regionRows, storageRegion, regionStrict, Platform.OS);
   const cameraBackupActive =
     ['preparing', 'encrypting', 'uploading'].includes(backupProgress.state) ||
     backupProgress.inProgress > 0;
@@ -2607,6 +2609,14 @@ export default function SettingsScreen() {
                 testID="region-strict-switch"
               />
             </View>
+          )}
+          {strictNotice && (
+            <Text
+              testID="region-strict-notice"
+              style={{ fontSize: 12, color: c.ink3, marginTop: 10, paddingHorizontal: 4 }}
+            >
+              {strictNotice}
+            </Text>
           )}
           <SectionNote text={REGION_NOTE} c={c} />
           {regionPreferredUnavailable && (

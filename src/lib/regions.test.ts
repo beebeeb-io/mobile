@@ -64,7 +64,7 @@ mock.module('./api', () => ({
   },
 }));
 
-const { buildRegionRows, loadRegionsData, selectRegion, setStrict, effectiveSelection, strictSwitchFor } =
+const { buildRegionRows, loadRegionsData, selectRegion, setStrict, effectiveSelection, strictSwitchFor, strictSwitchOnPlatform, strictNoticeFor, STRICT_PLACEMENT_ON_MOBILE } =
   await import('./regions');
 const { parseChoices } = await import('./storage-regions');
 
@@ -295,5 +295,39 @@ describe('"Only store in <country>"', () => {
     expect(await setStrict(rows.find((r) => r.id === 'europe'), true)).toBeNull();
     expect(await setStrict(rows.find((r) => r.id === 'nl'), true)).toBeNull();
     expect(setUserRegionCalls).toEqual([]);
+  });
+});
+
+describe('task 2050 round 2: strict is hidden on mobile until native backup handles the refusal (task 2054)', () => {
+  test('the one flag is off on iOS and on Android', () => {
+    expect(STRICT_PLACEMENT_ON_MOBILE).toEqual({ ios: false, android: false });
+  });
+
+  test('no switch on iOS or Android, even with a country selected', () => {
+    const rows = rowsOf(NEW_LIST);
+    expect(strictSwitchOnPlatform(rows, 'de', 'ios')).toBeNull();
+    expect(strictSwitchOnPlatform(rows, 'de', 'android')).toBeNull();
+  });
+
+  test('an unknown platform (web) keeps the old switch rule', () => {
+    expect(strictSwitchOnPlatform(rowsOf(NEW_LIST), 'de', 'web')?.row.id).toBe('de');
+  });
+
+  test('a stored strict=true shows one honest line naming the API country', () => {
+    expect(strictNoticeFor(rowsOf(NEW_LIST), 'de', true, 'ios')).toBe(
+      'Only store in Germany is on. Change it on the web or desktop app.',
+    );
+  });
+
+  test('no line when strict is off, on Europe, or when the switch is shown', () => {
+    const rows = rowsOf(NEW_LIST);
+    expect(strictNoticeFor(rows, 'de', false, 'ios')).toBeNull();
+    expect(strictNoticeFor(rows, 'europe', true, 'ios')).toBeNull();
+    expect(strictNoticeFor(rows, 'de', true, 'web')).toBeNull();
+  });
+
+  test('a stored strict=true is carried (never reset to false) through a country change', async () => {
+    await selectRegion(rowsOf(NEW_LIST).find((r) => r.id === 'fi'), true);
+    expect(setUserRegionCalls).toEqual([['fi', true]]);
   });
 });

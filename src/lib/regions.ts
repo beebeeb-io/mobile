@@ -165,6 +165,43 @@ export function strictSwitchFor(rows: readonly RegionRow[], selectedId: string |
   return { row, label: strictLabel(row.label), explanation: strictExplanation(row.label) };
 }
 
+/**
+ * Whether the "Only store in <country>" switch may be shown, per platform.
+ *
+ * HIDDEN on iOS (Guus, 2026-10-19, workspace task 2054): with strict on and the
+ * chosen country unable to take files, native Camera Backup
+ * (`NativeBackupEngine.initUploadSession`) gets the 409 `region_unavailable_strict`,
+ * treats it as a plain HTTP failure and dead-letters each asset after 10
+ * attempts, silently stranding automatic backups. Android: the app has no native
+ * backup path in this repo (the Android crypto module is a stub, Android is
+ * post-launch) so its refusal handling cannot be shown to be safe; hidden too.
+ * Task 2054 teaches native backup the refusal, then flips these in ONE place.
+ */
+export const STRICT_PLACEMENT_ON_MOBILE: Record<'ios' | 'android', boolean> = {
+  ios: false,
+  android: false,
+};
+
+function strictAllowedOn(os: string): boolean {
+  return os === 'ios' || os === 'android' ? STRICT_PLACEMENT_ON_MOBILE[os] : true;
+}
+
+/** `strictSwitchFor`, but null on a platform where strict is hidden. */
+export function strictSwitchOnPlatform(rows: readonly RegionRow[], selectedId: string | null, os: string): StrictSwitch | null {
+  return strictAllowedOn(os) ? strictSwitchFor(rows, selectedId) : null;
+}
+
+/**
+ * Where the switch is hidden but the person already has strict on (set on the
+ * web or desktop app): one honest, non-interactive line. The app never turns
+ * strict off by itself; a country change carries the stored value unchanged.
+ */
+export function strictNoticeFor(rows: readonly RegionRow[], selectedId: string | null, strict: boolean, os: string): string | null {
+  if (!strict || strictAllowedOn(os)) return null;
+  const sw = strictSwitchFor(rows, selectedId);
+  return sw ? `${sw.label} is on. Change it on the web or desktop app.` : null;
+}
+
 /** Copy under the list. */
 export const REGION_NOTE =
   'Europe is the default: your files can be stored in any of our European data centers, and we choose. Pick a country to keep new uploads there. Existing files stay where they are. Need to move them? Contact us.';

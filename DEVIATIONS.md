@@ -19,6 +19,7 @@ Finland now, the Netherlands coming soon. Replace any city names (like Falkenste
   data centers. We place your files."), then under "Or choose a country" the live countries, then
   coming-soon countries (a "Coming soon" chip, not selectable). PUT carries the item id (`europe`,
   `de`, `fi`).
+- **Round 2 (Guus, 2026-10-19, workspace task 2054): the "Only store in <country>" switch is HIDDEN on iOS and Android** (`STRICT_PLACEMENT_ON_MOBILE` in `src/lib/regions.ts`). Native Camera Backup would dead-letter assets after 10 tries on the 409 `region_unavailable_strict`. A person who already has strict on (from web or desktop) is never switched off by the app: a country change PUTs their stored value unchanged, and Settings shows one non-interactive line ("Only store in Germany is on. Change it on the web or desktop app."). Task 2054 flips the flag after native backup handles the refusal. The paragraph below describes the switch as built; it is not shown on mobile until then.
 - New: an off-by-default **"Only store in <country>"** switch under the list while a country is
   selected (copy as web: "Off by default. If Germany cannot take a new file, the upload stops
   instead of going to another EU country."). It uses the server's `region_strict` on GET/PUT
