@@ -4,6 +4,47 @@ Per the workspace `CLAUDE.md` → "How we work" → "Design before code": where 
 design artefact and the shipped code disagree, the deviation is recorded HERE,
 in the same commit as the code, with the ruling that caused it.
 
+## Task 2050 — Storage location by COUNTRY, never city (supersedes the 1919 datacenter rows)
+
+**Design:** no `design/ios26-canvas/` artboard covers Settings > Data residency, the per-file
+"Stored in" rows or the upload data line. The web app's finished version (web PR #175) is the
+copy reference.
+
+**Ruling (Guus, 2026-10-19, `docs/specs/2026-10-19-storage-location-by-country.md`, canon
+`docs/canon/data-residency.md`):** "Describe data locations by country, not city: Germany and
+Finland now, the Netherlands coming soon. Replace any city names (like Falkenstein) with this."
+
+**What shipped (mobile):**
+- Settings > Data residency lists, from the API only: **Europe** (Default chip, "Any of our European
+  data centers. We place your files."), then under "Or choose a country" the live countries, then
+  coming-soon countries (a "Coming soon" chip, not selectable). PUT carries the item id (`europe`,
+  `de`, `fi`).
+- New: an off-by-default **"Only store in <country>"** switch under the list while a country is
+  selected (copy as web: "Off by default. If Germany cannot take a new file, the upload stops
+  instead of going to another EU country."). It uses the server's `region_strict` on GET/PUT
+  `/me/region`. The app had no strict UI before. Strict carries to another country and ends when the
+  person goes back to Europe (PUT replaces the whole choice).
+- The 409 `region_unavailable_strict` upload refusal is worded by country ("Germany can't take new
+  files right now, so this upload stopped. Your choice is set to only Germany. Try again later, or
+  allow other EU countries in Settings."). The native uploader's error envelope has no `country`
+  field, so for that path the name is read back from the server's own sentence.
+- Per-file "Stored in" (Info sheet, Encryption details, Prove it, the row subtitle, Details alert)
+  shows `storage_location.country`; a file with no country reads "Europe". The default pool's city
+  fallback (`GET /api/v1/region`) is gone. List rows built from the sync tree carry no per-file
+  location and read "Europe"; the sheets read the country from `GET /files/:id`.
+- Upload activity card: "-> Europe" while uploading until the server names the file's country,
+  then "Stored in Germany . key stayed here"; toasts say "stored in Germany".
+- An older server (task 1919 shape, `kind: "datacenter"` with a city) is folded into one row per
+  country by `country_code`; its city is never rendered, and an entry with no country is dropped.
+- No flag emojis (supersedes the 2026-05-30 picker exception).
+
+**Guard:** `src/lib/no-city-in-copy.guard.test.ts` fails when Falkenstein / Helsinki / Nuremberg /
+Nuernberg / Ede appears in non-test source in `src/` or in native UI sources.
+
+**Correction to the entries below (left visible on purpose):** the 1919 section and the Info-sheet
+"Stored in" line of task 1583 describe city copy ("Falkenstein, Germany"). That is superseded by this
+entry; the app no longer reads or shows a city anywhere.
+
 ## Task 1919 — Data residency: Europe (default) + datacenters from the API, "Force region" removed
 
 **Design:** no canvas artboard covers Settings > Data residency; the 1422 rows (one live region

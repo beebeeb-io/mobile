@@ -18,7 +18,7 @@ export interface InfoRow {
 /**
  * Detail rows the Info sheet never shows, and why:
  * - Name / Kind / Size: the sheet's own title and subline already say them.
- * - Storage: replaced by the sheet's own "Stored in" row (a named city).
+ * - Storage: replaced by the sheet's own "Stored in" row (the file's country).
  * - Chunks: an upload implementation detail, not something a person needs.
  * - Encryption: the amber card states it in words; "Decrypted on this device"
  *   under "Encrypted on your device" read as a contradiction.
@@ -59,48 +59,8 @@ export function buildInfoSheetRows(detailRows: readonly InfoRow[]): InfoRow[] {
   return out;
 }
 
-/** Country for each LIVE storage city (docs/canon/data-residency.md: one
- * live region today). Copy form: "Falkenstein, Germany". A future city
- * reads as the city alone until it is added here. */
-const CITY_COUNTRY: Record<string, string> = {
-  falkenstein: 'Germany',
-};
-
-/** Placeholder city strings that name no place and must never be shown. */
-const NOT_A_CITY = new Set(['', 'eu region', 'unknown', 'local']);
-
-/**
- * The "Stored in" value. `region` is `GET /api/v1/region` (the default
- * pool's location — the server documents it as the source for "stored in
- * {city}"); `null` while loading or when the call failed.
- *
- * A known city reads "Falkenstein, Germany"; an unknown real city reads as
- * the city alone; no city at all reads "Europe" — never a filler like
- * "EU region".
- */
-export function storageLocationLabel(region: { city?: string | null } | null | undefined): string {
-  const city = region?.city?.trim() ?? '';
-  if (NOT_A_CITY.has(city.toLowerCase())) return 'Europe';
-  const country = CITY_COUNTRY[city.toLowerCase()];
-  return country ? `${city}, ${country}` : city;
-}
-
-/**
- * Task 1919: the city a file is actually stored in. The server returns a
- * per-file `storage_location` (the city of the pool the file landed in), which
- * can differ from the default pool now that people choose where new uploads
- * go. A missing or placeless value falls back to `fallbackCity` (the default
- * pool's city from `GET /api/v1/region`), never to a filler.
- */
-export function fileStorageCity(
-  file: { storage_location?: { city?: string | null } | null } | null | undefined,
-  fallbackCity: string | null | undefined,
-): string | null {
-  const own = file?.storage_location?.city?.trim() ?? '';
-  if (!NOT_A_CITY.has(own.toLowerCase())) return own;
-  const fb = fallbackCity?.trim() ?? '';
-  return fb === '' ? null : fb;
-}
+// Task 2050: the "Stored in" label is a COUNTRY (or "Europe"), never a city.
+// `fileStorageCountry` / `storageLocationLabel` live in storage-regions.ts.
 
 /** Where the Info sheet opens: the top, or scrolled to the Versions section
  * (the bottom bar's "Versions" button and the ⋯ menu's "Version history"). */

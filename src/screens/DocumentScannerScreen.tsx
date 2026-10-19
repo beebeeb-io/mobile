@@ -363,9 +363,9 @@ function DocumentScannerCameraScreen({ camera }: { camera: CameraModule }) {
         masterKeyHandleId: getMasterKeyHandleId(),
         encryptMetadataFn: encryptMetadata,
       });
-      const loc = trustLocation(uploaded.storage_pool_id);
+      const loc = trustLocation(uploaded.storage_pool_id, uploaded);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      showToast({ type: 'success', message: `"${fileName}" stored in ${loc.city}` });
+      showToast({ type: 'success', message: `"${fileName}" stored in ${loc.place}` });
       navigation.goBack();
     } catch (err) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);

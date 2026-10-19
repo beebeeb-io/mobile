@@ -12,8 +12,8 @@ import { RateMeter, etaSeconds, formatEta, formatRate, ringRotations } from '../
  * One compact glass card: amber `b` mark, filename, a slim progress bar, one
  * mono data line with the MEASURED on-device encryption rate + network rate +
  * ETA, and a progress ring. Replaces the 3-stage trust banner; the trust story
- * survives in the data line ("→ Falkenstein") and the done state
- * ("Stored in Falkenstein · key stayed here").
+ * survives in the data line ("→ Germany", or "→ Europe" until the server names
+ * the file's country) and the done state ("Stored in Germany · key stayed here").
  *
  * Perf note: this card re-renders once per uploaded CHUNK (~4 MB, so every
  * 0.3–3 s) via FilesScreen's existing `upload` state — the same cadence the
@@ -31,7 +31,8 @@ export interface UploadActivityState {
   fileName: string;
   stage: UploadStage;
   percent: number;
-  city: string;
+  /** "Europe" or the file's COUNTRY (task 2050). Never a city. */
+  place: string;
   region: string;
   chunksUploaded?: number;
   chunksTotal?: number;
@@ -187,16 +188,16 @@ export const UploadActivityCard = React.memo(function UploadActivityCard({ uploa
       : Math.max(0, Math.min(1, upload.percent / 100));
 
   const line = useMemo(() => {
-    if (done) return `Stored in ${upload.city} · key stayed here`;
-    if (upload.stage === 3) return `Storing in ${upload.city}…`;
+    if (done) return `Stored in ${upload.place} · key stayed here`;
+    if (upload.stage === 3) return `Storing in ${upload.place}…`;
     if (upload.stage === 1) return 'Preparing on your device…';
     const parts: string[] = [];
     const crypto = formatRate(upload.cryptoBytesPerSec);
     if (crypto) parts.push(`AES ${crypto}`);
     const net = formatRate(netRate);
-    parts.push(net ? `${net} → ${upload.city}` : `→ ${upload.city}`);
+    parts.push(net ? `${net} → ${upload.place}` : `→ ${upload.place}`);
     return parts.join(' · ');
-  }, [done, upload.stage, upload.city, upload.cryptoBytesPerSec, upload.bytesTotal, upload.bytesUploaded, netRate]);
+  }, [done, upload.stage, upload.place, upload.cryptoBytesPerSec, upload.bytesTotal, upload.bytesUploaded, netRate]);
 
   const pct = Math.round(progress * 100);
   // Countdown for the ring center — compact ("23s", "4m"), no "~" in the tight hole.
@@ -313,7 +314,7 @@ const styles = StyleSheet.create({
   },
   dataLine: {
     fontFamily: fonts.mono,
-    // 10 (not 10.5): "AES 412 MB/s · 11.8 MB/s → Falkenstein" must fit the
+    // 10 (not 10.5): "AES 412 MB/s · 11.8 MB/s → Germany" must fit the
     // middle column on a 390pt device without truncating.
     fontSize: 10,
   },

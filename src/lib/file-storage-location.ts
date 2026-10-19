@@ -1,17 +1,17 @@
 /**
- * Task 1919 review (mobile#178, P1) — the location of ONE file's ciphertext.
+ * Task 1919 review (mobile#178, P1), by COUNTRY since task 2050 — the location
+ * of ONE file's ciphertext.
  *
  * Rows built from the CRDT tree (`FilesScreen.syncNodeToFileEntry`) carry no
- * per-file `storage_location`, and with several live datacenters the default
- * pool's city is withheld (storage-region.ts), so a sheet fed only the row
- * said "Europe" for a file that sits in another datacenter. The server's
- * `GET /api/v1/files/:id` returns the city of the pool the file landed in;
- * this completes the row from there. A failed fetch, or a server that names
- * no place, yields `null` and the caller falls back as before.
+ * per-file `storage_location`, so a sheet fed only the row could not say which
+ * country the file is in. The server's `GET /api/v1/files/:id` returns it
+ * (`{ country, country_code }`); this completes the row from there. A failed
+ * fetch, or a server that names no country, yields `null` and the caller
+ * shows "Europe". A city is never read.
  */
 import { useEffect, useState } from 'react';
 import { getFile, type FileEntry } from './api';
-import { fileStorageCity } from './preview-info';
+import { fileStorageCountry } from './storage-regions';
 
 export type FileStorageLocation = NonNullable<FileEntry['storage_location']>;
 type FileFetcher = (id: string) => Promise<Pick<FileEntry, 'storage_location'>>;
@@ -21,10 +21,10 @@ export async function loadFileStorageLocation(
   file: FileLike,
   fetchFile: FileFetcher = getFile,
 ): Promise<FileStorageLocation | null> {
-  if (fileStorageCity(file, null) !== null) return file.storage_location ?? null;
+  if (fileStorageCountry(file) !== null) return file.storage_location ?? null;
   try {
     const full = await fetchFile(file.id);
-    return fileStorageCity(full, null) !== null ? (full.storage_location ?? null) : null;
+    return fileStorageCountry(full) !== null ? (full.storage_location ?? null) : null;
   } catch {
     return null;
   }

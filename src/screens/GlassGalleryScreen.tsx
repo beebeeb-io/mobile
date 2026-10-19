@@ -386,7 +386,7 @@ function UploadCardDemo({ scheme }: { scheme: GlassScheme }) {
     fileName: 'Quarterly-Report-2026.pdf',
     stage: 2,
     percent: Math.round((bytesUploaded / TOTAL_BYTES) * 100),
-    city: 'Falkenstein',
+    place: 'Germany',
     region: 'eu-de',
     bytesUploaded,
     bytesTotal: TOTAL_BYTES,
@@ -396,7 +396,7 @@ function UploadCardDemo({ scheme }: { scheme: GlassScheme }) {
     fileName: 'Quarterly-Report-2026.pdf',
     stage: 'done',
     percent: 100,
-    city: 'Falkenstein',
+    place: 'Germany',
     region: 'eu-de',
   };
 

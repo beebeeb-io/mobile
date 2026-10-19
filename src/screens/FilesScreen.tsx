@@ -85,8 +85,8 @@ import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-rep
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
-import { loadRegionCity } from '../lib/storage-region';
-import { storageLocationLabel, fileStorageCity } from '../lib/preview-info';
+import { storageLocationLabel, fileStorageCountry } from '../lib/storage-regions';
+import { loadFileStorageLocation } from '../lib/file-storage-location';
 import { rowNameDisplay } from '../lib/row-name';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
@@ -668,10 +668,6 @@ interface FileRowItemProps {
   // 1338b — the trimmed search query while showing search results; undefined
   // during normal browsing, so the name renders exactly as before then.
   highlightQuery?: string;
-  /** Task 1592 item 12 — the "Stored in" city (GET /api/v1/region), fetched
-   *  ONCE by the screen and passed down; `null` while loading, unknown, or on
-   *  a failed fetch (never the "EU region" filler). */
-  regionCity: string | null;
 }
 
 const FileRowItem = React.memo(function FileRowItem({
@@ -694,7 +690,6 @@ const FileRowItem = React.memo(function FileRowItem({
   lockStateReady,
   testID,
   highlightQuery,
-  regionCity,
 }: FileRowItemProps) {
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
@@ -841,7 +836,7 @@ const FileRowItem = React.memo(function FileRowItem({
           <Text style={[styles.cryptoMeta, { color: c.ink4 }]} numberOfLines={1}>
             {isPendingUpload
               ? 'Waiting for encrypted chunks'
-              : `AES-256-GCM · ${storageLocationLabel({ city: fileStorageCity(item, regionCity) })}`}
+              : `AES-256-GCM · ${storageLocationLabel(fileStorageCountry(item))}`}
           </Text>
         )}
       </View>
@@ -925,10 +920,6 @@ interface FileGridItemProps {
   // 1338b — the trimmed search query while showing search results; undefined
   // during normal browsing, so the name renders exactly as before then.
   highlightQuery?: string;
-  /** Task 1592 item 12 — the "Stored in" city (GET /api/v1/region), fetched
-   *  ONCE by the screen and passed down; `null` while loading, unknown, or on
-   *  a failed fetch (never the "EU region" filler). */
-  regionCity: string | null;
 }
 
 const FileGridItem = React.memo(function FileGridItem({
@@ -950,7 +941,6 @@ const FileGridItem = React.memo(function FileGridItem({
   lockStateReady,
   testID,
   highlightQuery,
-  regionCity,
 }: FileGridItemProps) {
   const { colors: c } = useTheme();
   const category = fileCategory(item);
@@ -1056,7 +1046,7 @@ const FileGridItem = React.memo(function FileGridItem({
         </Text>
         {!isFolder && (
           <Text style={[styles.cryptoMetaGrid, { color: c.ink4 }]} numberOfLines={1}>
-            {isPendingUpload ? 'Waiting for chunks' : `AES-256-GCM · ${storageLocationLabel({ city: fileStorageCity(item, regionCity) })}`}
+            {isPendingUpload ? 'Waiting for chunks' : `AES-256-GCM · ${storageLocationLabel(fileStorageCountry(item))}`}
           </Text>
         )}
       </View>
@@ -1364,26 +1354,6 @@ export default function FilesScreen() {
     return true;
   }, [accountGate]);
   const { backupProgress, includeVideos, isPhotoBackupEnabled } = useBackup();
-
-  // Task 1592 item 12 — the row/grid subtitle's "Stored in" city, from the
-  // same cached source (GET /api/v1/region) as the Info sheet, Encryption
-  // details sheet and this screen's own Details alert. ONE call for the
-  // whole screen (the module-level cache in lib/storage-region.ts also
-  // shares it with those other surfaces) — never a per-row fetch.
-  const [regionCity, setRegionCity] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    loadRegionCity()
-      .then((city) => {
-        if (!cancelled) setRegionCity(city);
-      })
-      .catch(() => {
-        if (!cancelled) setRegionCity(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // Navigation state: stack of folders
   const [folderStack, setFolderStack] = useState<BreadcrumbEntry[]>([
@@ -2431,7 +2401,7 @@ export default function FilesScreen() {
     const runResume = async (): Promise<void> => {
       const loc = trustLocation(undefined);
       const display = info.name || displayName(file) || 'file';
-      setUpload({ fileName: display, stage: 2, percent: 0, city: loc.city, region: loc.region });
+      setUpload({ fileName: display, stage: 2, percent: 0, place: loc.place, region: loc.region });
       const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
       activeUploadFileIdRef.current = file.id;
       try {
@@ -2450,7 +2420,7 @@ export default function FilesScreen() {
               ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
               : 0;
             setUpload((prev) => {
-              const base = prev ?? { fileName: display, stage: 2 as UploadStage, percent: 0, city: loc.city, region: loc.region };
+              const base = prev ?? { fileName: display, stage: 2 as UploadStage, percent: 0, place: loc.place, region: loc.region };
               const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
               return {
                 ...base,
@@ -2466,14 +2436,14 @@ export default function FilesScreen() {
             });
           },
         });
-        const finalLoc = trustLocation(uploaded.storage_pool_id);
-        setUpload({ fileName: display, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
+        const finalLoc = trustLocation(uploaded.storage_pool_id, uploaded);
+        setUpload({ fileName: display, stage: 'done', percent: 100, place: finalLoc.place, region: finalLoc.region });
         const copyUri = info.sourceUri;
         const seedPreview = queueRawUploadedPreview(uploaded.id, info.name, info.mimeType, copyUri, uploaded.size_bytes);
         setFiles((prev) => upsertFileEntry(prev, uploaded));
         indexFile(uploaded.id, toSearchIndexEntry(uploaded, info.name, currentFolder.id));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        showToast({ type: 'success', message: `"${display}" stored in ${finalLoc.city}` });
+        showToast({ type: 'success', message: `"${display}" stored in ${finalLoc.place}` });
         fetchFiles(currentFolder.id, true);
         setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
         // Resume pointer is spent — the upload completed.
@@ -2678,7 +2648,7 @@ export default function FilesScreen() {
     // picker and the conflict prompt stay immediate, the bytes wait their turn.
     const runSingleFile = async (): Promise<void> => {
       const loc = trustLocation(undefined);
-      setUpload({ fileName: uploadFileName, stage: 1, percent: 0, city: loc.city, region: loc.region });
+      setUpload({ fileName: uploadFileName, stage: 1, percent: 0, place: loc.place, region: loc.region });
       // Task 1685 fix 5 — surface progress at ≈4 Hz, not per native poll tick:
       // setUpload re-renders this 5,400-line screen + its FlatList per call.
       const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
@@ -2700,7 +2670,7 @@ export default function FilesScreen() {
               ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
               : 0;
             setUpload((prev) => {
-              const base = prev ?? { fileName: asset.name, stage: 1 as UploadStage, percent: 0, city: loc.city, region: loc.region };
+              const base = prev ?? { fileName: asset.name, stage: 1 as UploadStage, percent: 0, place: loc.place, region: loc.region };
               const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
               return {
                 ...base,
@@ -2716,8 +2686,8 @@ export default function FilesScreen() {
             });
           },
         });
-        const finalLoc = trustLocation(uploaded.storage_pool_id);
-        setUpload({ fileName: uploadFileName, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
+        const finalLoc = trustLocation(uploaded.storage_pool_id, uploaded);
+        setUpload({ fileName: uploadFileName, stage: 'done', percent: 100, place: finalLoc.place, region: finalLoc.region });
         const seedPreview = queueRawUploadedPreview(uploaded.id, uploadFileName, asset.mimeType, asset.uri, uploaded.size_bytes);
         setFiles((prev) => upsertFileEntry(prev, uploaded));
         // Add to the encrypted search index so the new file is searchable
@@ -2734,7 +2704,7 @@ export default function FilesScreen() {
         ]);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         donateSiriShortcut('upload');
-        showToast({ type: 'success', message: `"${uploadFileName}" stored in ${finalLoc.city}` });
+        showToast({ type: 'success', message: `"${uploadFileName}" stored in ${finalLoc.place}` });
         fetchFiles(currentFolder.id, true);
         // Hold the "Stored · Key stayed here" flash briefly before clearing.
         setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
@@ -2922,7 +2892,7 @@ export default function FilesScreen() {
   
         const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
         lastName = display;
-        setUpload({ fileName: display, stage: 1, percent: 0, city: lastLoc.city, region: lastLoc.region });
+        setUpload({ fileName: display, stage: 1, percent: 0, place: lastLoc.place, region: lastLoc.region });
         // Task 1685 fix 5 — ≈4 Hz progress state, not per poll tick.
         const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
         activeUploadFileIdRef.current = fileId;
@@ -2950,7 +2920,7 @@ export default function FilesScreen() {
                 ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
                 : 0;
               setUpload((prev) => {
-                const base = prev ?? { fileName: display, stage: 1 as UploadStage, percent: 0, city: lastLoc.city, region: lastLoc.region };
+                const base = prev ?? { fileName: display, stage: 1 as UploadStage, percent: 0, place: lastLoc.place, region: lastLoc.region };
                 const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
                 return {
                   ...base,
@@ -2970,7 +2940,7 @@ export default function FilesScreen() {
           // immediately must not download the same 50–100 MB we just uploaded.
           const copyUri = uploadUri;
           const seedPreview = queueRawUploadedPreview(uploaded.id, name, asset.mimeType, copyUri, uploaded.size_bytes);
-          lastLoc = trustLocation(uploaded.storage_pool_id);
+          lastLoc = trustLocation(uploaded.storage_pool_id, uploaded);
           setFiles((prev) => upsertFileEntry(prev, uploaded));
           indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
           // Fire-and-forget: image picker only returns images, so always thumbnail (medium + large).
@@ -2996,14 +2966,14 @@ export default function FilesScreen() {
         }
       }
       if (successCount > 0) {
-        setUpload({ fileName: lastName, stage: 'done', percent: 100, city: lastLoc.city, region: lastLoc.region });
+        setUpload({ fileName: lastName, stage: 'done', percent: 100, place: lastLoc.place, region: lastLoc.region });
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         donateSiriShortcut('upload');
         showToast({
           type: 'success',
           message: successCount === 1
-            ? `Item stored in ${lastLoc.city}`
-            : `${successCount} items stored in ${lastLoc.city}`,
+            ? `Item stored in ${lastLoc.place}`
+            : `${successCount} items stored in ${lastLoc.place}`,
         });
         fetchFiles(currentFolder.id, true);
         setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
@@ -4079,10 +4049,11 @@ export default function FilesScreen() {
     };
 
     const showDetails = async () => {
-      // Task 1592 — the same "Stored in" source as the Info and Encryption
-      // details sheets (GET /api/v1/region); "Europe" if it cannot be read.
-      const city = await loadRegionCity().catch(() => null);
-      const storedIn = storageLocationLabel({ city: fileStorageCity(item, city) });
+      // Task 1592 / 2050 — the same "Stored in" source as the Info and Encryption
+      // details sheets: the file's own COUNTRY (GET /files/:id when the row
+      // carries none); "Europe" if it cannot be read, and for a folder.
+      const fileLocation = item.is_folder ? null : await loadFileStorageLocation(item);
+      const storedIn = storageLocationLabel(fileStorageCountry({ storage_location: fileLocation }));
       const lines = item.is_folder
         ? [
             `Name:      ${name}`,
@@ -4582,9 +4553,8 @@ export default function FilesScreen() {
       lockStateReady={lockStateReady}
       testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
-      regionCity={regionCity}
     />
-  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId, regionCity]);
+  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -4615,9 +4585,8 @@ export default function FilesScreen() {
       lockStateReady={lockStateReady}
       testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
-      regionCity={regionCity}
     />
-  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId, regionCity]);
+  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
 
   const renderEmpty = () => {
     if (loading) return null;

@@ -112,7 +112,7 @@ defineMock('../lib/crypto-context', () => ({ useCrypto: () => cryptoValue }));
 defineMock('../lib/api', () => ({
   getToken: async () => 'token',
   friendlyError: (e: any) => String(e?.message ?? e),
-  trustLocation: () => ({ region: 'the EU', city: 'Falkenstein' }),
+  trustLocation: () => ({ region: 'the EU', place: 'Europe' }),
 }));
 defineMock('../lib/preview-load-error', () => ({ STILL_UPLOADING_MESSAGE: 'still uploading', previewLoadErrorMessage: (e: any) => String(e?.message ?? e) }));
 defineMock('../lib/preview-lock-gate', () => ({ checkLockedFileIds: async () => new Set(), isPagerPageGated: () => false }));
