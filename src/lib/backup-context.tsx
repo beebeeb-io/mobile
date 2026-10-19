@@ -679,6 +679,14 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // applyNativeProgress saw, for the equality early-return (an unchanged 5 s
   // poll tick must not re-render the tree). Ref, not state: it is a
   // comparison cache, never rendered directly.
+  //
+  // Task 1667 (sim rung 5b): the invariant is "non-null only while the
+  // DISPLAYED progress is this payload's projection". Anything that puts
+  // something else on screen must go through `resetDisplayedProgress`, which
+  // forgets the payload too. Before, the disable path reset the display alone:
+  // after re-enable native returned the identical 25/25 payload, every poll
+  // returned early, and Photos read "0 backed up" (Settings "25 of 0 items")
+  // until a cold relaunch.
   const lastRawProgressRef = useRef<NativeBackupProgress | null>(null);
   // Task 1037: a needs_plan / lapsed account is refused every upload (409
   // plan_required / account_lapsed). Keep the native engines OFF while that
@@ -751,6 +759,27 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     setManifestUnavailableReason(p.manifestUnavailableReason ?? null);
     setServerCheckPausedReason(nativeServerCheckPausedReason(p));
   }, []);
+
+  // Task 1667 (sim rung 5b): the ONLY way to show the empty state. Forgets
+  // the last native payload with it, so the next read always reaches the
+  // screen even when native reports exactly what it reported before.
+  const resetDisplayedProgress = useCallback(() => {
+    lastRawProgressRef.current = null;
+    setBackupProgress(EMPTY_PROGRESS);
+  }, []);
+
+  // Task 1667 (sim rung 5b): a different account (or none) on the same
+  // provider instance must never see the previous account's count or
+  // last-backup time. App.tsx remounts this provider per account today (the
+  // user-keyed CryptoProvider), which already starts empty; this keeps the
+  // provider correct on its own if that keying ever changes.
+  const progressOwnerRef = useRef(userId);
+  useEffect(() => {
+    if (progressOwnerRef.current === userId) return;
+    progressOwnerRef.current = userId;
+    resetDisplayedProgress();
+    setLastBackupAt(null);
+  }, [userId, resetDisplayedProgress]);
 
   const refreshNativeProgress = useCallback(async () => {
     if (Platform.OS === 'web') return;
@@ -1109,13 +1138,13 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
           await disablePhotoBackup();
           await clearMobileIosBackupClientSession().catch(() => {});
           await configureBackupFolder('camera_roll', null);
-          setBackupProgress(EMPTY_PROGRESS);
+          resetDisplayedProgress();
         }
       }
     } catch {
       // Native module not linked yet
     }
-  }, [enableNativeBackup, isPhotoBackupEnabled, refreshNativeProgress, userId]);
+  }, [enableNativeBackup, isPhotoBackupEnabled, refreshNativeProgress, resetDisplayedProgress, userId]);
 
   const toggleContactsBackup = useCallback(async () => {
     if (!userId) return;

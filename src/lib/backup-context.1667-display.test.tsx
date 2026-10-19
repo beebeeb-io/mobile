@@ -1,0 +1,297 @@
+// @ts-nocheck — bun runs this; `bun:test` types aren't in the Expo tsconfig
+// (matches every other *.test.ts(x) file in this repo).
+//
+// Task 1667, simulator rung on main 9f997265, step 5b (FAIL, display only):
+// after camera backup was turned OFF and back ON, Photos showed
+// "23 photos, 2 videos on device · 0 backed up" and Settings "25 of 0 items"
+// until a cold relaunch, while the server and the native manifest both had
+// all 25 (`.claude/tasks/_qa-evidence/1667/sim-rung/main-9f997265/43-…45-`).
+//
+// Root cause: `togglePhotoBackup` (off) reset the DISPLAYED progress to
+// EMPTY_PROGRESS, but the task-1686 equality early-return in
+// `applyNativeProgress` kept its last-RECEIVED payload. After re-enable,
+// native returned the identical 25/25 payload, every poll returned early,
+// and the display stayed at 0 until the process restarted.
+//
+// These tests render the REAL BackupProvider with react-test-renderer (every
+// dependency mocked, same convention as ConfirmActionPrompt.test.tsx) and
+// read what a screen would read through `useBackup()`:
+//   1. off -> on: the count is 25/25 again after the re-enable's own read
+//      (one native read, no 5 s poll tick needed);
+//   2. account switch in place: B never sees A's count or last-backup time;
+//   3. account switch the way App.tsx does it (keyed remount): B starts empty;
+//   4. launch path (question B of the same rung): with the preference ON, a
+//      mount enables the native engine as soon as the vault is unlocked, and
+//      the display shows the native count without any user action.
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import React from 'react';
+import TestRenderer, { act } from 'react-test-renderer';
+
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const store = new Map<string, string>();
+const USER_A = '11111111-1111-4111-8111-111111111111';
+const USER_B = '22222222-2222-4222-8222-222222222222';
+
+// Mutable inputs the mocks read at call time.
+let currentUser: { user_id: string } | null = { user_id: USER_A };
+let unlocked = true;
+let nativeProgressFor: () => Record<string, unknown> = () => full25();
+const calls = { getBackupProgress: 0, enablePhotoBackup: [] as Array<[string, string]>, disablePhotoBackup: 0 };
+
+function full25() {
+  // A FRESH object with identical fields on every read, like the native bridge.
+  return {
+    total: 25,
+    completed: 25,
+    inProgress: 0,
+    pending: 0,
+    waitingToEncrypt: 0,
+    encryptedPendingUpload: 0,
+    uploading: 0,
+    failed: 0,
+    state: 'complete',
+    reason: 'All items backed up',
+    lastBackupAt: '2026-10-19T02:41:30.000Z',
+    accountMismatchReason: null,
+    accountMismatchGeneration: 0,
+    ownerUnconfirmedReason: null,
+    accountRefusalReason: null,
+    manifestUnavailableReason: null,
+    serverCheckPausedReason: null,
+  };
+}
+
+mock.module('@react-native-async-storage/async-storage', () => ({
+  default: {
+    getItem: async () => null,
+    setItem: async () => {},
+    removeItem: async () => {},
+    multiRemove: async () => {},
+    getAllKeys: async () => [],
+  },
+}));
+
+mock.module('expo-secure-store', () => ({
+  getItemAsync: async (key: string) => store.get(key) ?? null,
+  setItemAsync: async (key: string, value: string) => { store.set(key, value); },
+  deleteItemAsync: async (key: string) => { store.delete(key); },
+}));
+
+mock.module('react-native', () => ({
+  Platform: { OS: 'ios' },
+  AppState: { currentState: 'active', addEventListener: () => ({ remove: () => {} }) },
+}));
+
+mock.module('@react-native-community/netinfo', () => ({
+  default: { fetch: async () => ({ type: 'wifi', isConnected: true }) },
+}));
+
+mock.module('./crypto-context', () => ({ useCrypto: () => ({ isUnlocked: unlocked }) }));
+mock.module('./auth', () => ({ useAuth: () => ({ user: currentUser }) }));
+mock.module('./runtime-trace', () => ({ recordRuntimeTrace: () => {} }));
+mock.module('./device-registration', () => ({ registerDevice: async () => 'device-1' }));
+mock.module('./backup-device-id-handoff', () => ({ syncBackupDeviceIdToNative: async () => true }));
+mock.module('./account-state-context', () => ({
+  useAccountState: () => ({ ready: true, gate: { kind: 'ok' }, subscription: null, refresh: async () => ({ kind: 'ok' }) }),
+}));
+mock.module('./api', () => ({
+  clearMobileIosBackupClientSession: async () => {},
+  ensureMobileIosBackupClientSession: async () => 'session-1',
+  captureRequestAuthSnapshot: async () => ({ generation: 0, token: null }),
+  endSessionForAccountMismatch: async () => {},
+  getSubscription: async () => null,
+}));
+mock.module('../services/BackupService', () => ({
+  ensureBackupFolders: async () => ({ categoryFolderId: 'folder-1' }),
+  reconcileDerivedStateAgainstServer: async () => {},
+}));
+mock.module('../../modules/beebeeb-crypto', () => ({
+  configureBackupFolder: async () => {},
+  disablePhotoBackup: async () => { calls.disablePhotoBackup += 1; },
+  disableContactsBackup: async () => {},
+  disableCalendarBackup: async () => {},
+  teardownAllBackup: async () => {},
+  enablePhotoBackup: async (token: string, userId: string) => { calls.enablePhotoBackup.push([token, userId]); },
+  enableContactsBackup: async () => {},
+  enableCalendarBackup: async () => {},
+  resumeContactsBackup: async () => {},
+  resumeCalendarBackup: async () => {},
+  getBackupProgress: async () => { calls.getBackupProgress += 1; return nativeProgressFor(); },
+  triggerImmediateBackup: async () => nativeProgressFor(),
+  mirrorBackupClientSession: async () => true,
+  getPhotoBackupIncludeVideos: async () => true,
+  setPhotoBackupIncludeVideos: async () => true,
+  setBackupDeviceId: async () => true,
+}));
+
+const { BackupProvider, useBackup, backupPrefKey } = await import('./backup-context');
+
+let latest: ReturnType<typeof useBackup> | null = null;
+function Probe() {
+  latest = useBackup();
+  return null;
+}
+
+/** Let every queued promise chain (SecureStore reads, enable, refresh) settle. */
+async function settle() {
+  for (let i = 0; i < 20; i += 1) {
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+}
+
+let renderer: TestRenderer.ReactTestRenderer | null = null;
+async function mount(key = 'root') {
+  await act(async () => {
+    renderer = TestRenderer.create(
+      React.createElement(BackupProvider, { key }, React.createElement(Probe)),
+    );
+  });
+  await settle();
+}
+async function rerender(key = 'root') {
+  await act(async () => {
+    renderer!.update(React.createElement(BackupProvider, { key }, React.createElement(Probe)));
+  });
+  await settle();
+}
+
+const shown = () => ({ completed: latest!.backupProgress.completed, total: latest!.backupProgress.total });
+
+beforeEach(() => {
+  store.clear();
+  store.set('beebeeb_session_token', 'token-1');
+  currentUser = { user_id: USER_A };
+  unlocked = true;
+  nativeProgressFor = () => full25();
+  calls.getBackupProgress = 0;
+  calls.enablePhotoBackup = [];
+  calls.disablePhotoBackup = 0;
+  latest = null;
+});
+
+afterEach(async () => {
+  if (renderer) {
+    await act(async () => { renderer!.unmount(); });
+    renderer = null;
+  }
+});
+
+describe('task 1667 5b — backed-up count after camera backup off -> on', () => {
+  test('re-enabling shows 25 of 25 again after its own native read (was: 0 backed up, "25 of 0")', async () => {
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    await mount();
+    expect(latest!.isPhotoBackupEnabled).toBe(true);
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+
+    await act(async () => { await latest!.togglePhotoBackup(); });
+    await settle();
+    expect(latest!.isPhotoBackupEnabled).toBe(false);
+    expect(calls.disablePhotoBackup).toBe(1);
+    expect(shown()).toEqual({ completed: 0, total: 0 });
+
+    const readsBefore = calls.getBackupProgress;
+    await act(async () => { await latest!.togglePhotoBackup(); });
+    await settle();
+    expect(latest!.isPhotoBackupEnabled).toBe(true);
+    // Native was read again (no 5 s tick has elapsed: setTimeout(0) only) ...
+    expect(calls.getBackupProgress).toBeGreaterThan(readsBefore);
+    // ... and that identical 25/25 payload reached the screen.
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+    expect(latest!.backupProgress.state).toBe('complete');
+  });
+
+  test('off -> on twice in a row still lands on 25 of 25 each time', async () => {
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    await mount();
+    for (let round = 0; round < 2; round += 1) {
+      await act(async () => { await latest!.togglePhotoBackup(); });
+      await settle();
+      expect(shown()).toEqual({ completed: 0, total: 0 });
+      await act(async () => { await latest!.togglePhotoBackup(); });
+      await settle();
+      expect(shown()).toEqual({ completed: 25, total: 25 });
+    }
+  });
+});
+
+describe('task 1667 5b — account switch never shows the previous account\'s count', () => {
+  test('in place (same provider instance): B, backup off, sees 0 and no last-backup time from A', async () => {
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    await mount();
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+    expect(latest!.lastBackupAt).toBe('2026-10-19T02:41:30.000Z');
+
+    currentUser = { user_id: USER_B };
+    await rerender();
+    expect(latest!.isPhotoBackupEnabled).toBe(false);
+    expect(shown()).toEqual({ completed: 0, total: 0 });
+    expect(latest!.lastBackupAt).toBeNull();
+  });
+
+  test('in place: A -> B -> A with the identical native payload shows 25 of 25 again for A', async () => {
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    await mount();
+    currentUser = { user_id: USER_B };
+    await rerender();
+    expect(shown()).toEqual({ completed: 0, total: 0 });
+
+    currentUser = { user_id: USER_A };
+    await rerender();
+    expect(latest!.isPhotoBackupEnabled).toBe(true);
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+  });
+
+  test('keyed remount (how App.tsx switches accounts): B starts empty', async () => {
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    await mount(USER_A);
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+    currentUser = { user_id: USER_B };
+    await rerender(USER_B);
+    expect(shown()).toEqual({ completed: 0, total: 0 });
+    expect(latest!.lastBackupAt).toBeNull();
+  });
+});
+
+describe('task 1667 question B — the launch path restarts camera backup on its own', () => {
+  test('preference ON + vault unlocked at mount: native engine enabled and the count shown, no user action', async () => {
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    await mount();
+    expect(calls.enablePhotoBackup).toEqual([['token-1', USER_A]]);
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+  });
+
+  test('preference ON + vault still locked at mount (the cold-launch order in the sim trace): enabled right after unlock', async () => {
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    unlocked = false;
+    await mount();
+    // backup.native.enable.deferred reason=vault_locked
+    expect(calls.enablePhotoBackup).toEqual([]);
+    unlocked = true;
+    await rerender();
+    // backup.native.folder_configured runNow=false -> [NativeBackupEngine] Started
+    expect(calls.enablePhotoBackup).toEqual([['token-1', USER_A]]);
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+  });
+
+  test('preference OFF: nothing is enabled at launch', async () => {
+    await mount();
+    expect(calls.enablePhotoBackup).toEqual([]);
+    expect(shown()).toEqual({ completed: 0, total: 0 });
+  });
+});
+
+describe('task 1667 5b — sweep: every reset of the displayed progress forgets the last payload', () => {
+  test('setBackupProgress(EMPTY_PROGRESS) appears exactly once, inside resetDisplayedProgress, next to the ref reset', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./backup-context.tsx', import.meta.url), 'utf8');
+    const resets = src.match(/setBackupProgress\(EMPTY_PROGRESS\)/g) ?? [];
+    expect(resets.length).toBe(1);
+    const body = src.match(/const resetDisplayedProgress = useCallback\(\(\) => \{([\s\S]*?)\}, \[\]\);/);
+    expect(body).not.toBeNull();
+    expect(body![1]).toContain('lastRawProgressRef.current = null;');
+    expect(body![1]).toContain('setBackupProgress(EMPTY_PROGRESS);');
+    // Every other setBackupProgress call is the native projection in applyNativeProgress.
+    expect((src.match(/setBackupProgress\(/g) ?? []).length).toBe(2);
+  });
+});
