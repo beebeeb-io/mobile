@@ -7,7 +7,7 @@
 // until a cold relaunch, while the server and the native manifest both had
 // all 25 (`.claude/tasks/_qa-evidence/1667/sim-rung/main-9f997265/43-…45-`).
 //
-// Root cause: `togglePhotoBackup` (off) reset the DISPLAYED progress to
+// Root cause (main 9f997265): `togglePhotoBackup` (off) reset the DISPLAYED progress to
 // EMPTY_PROGRESS, but the task-1686 equality early-return in
 // `applyNativeProgress` kept its last-RECEIVED payload. After re-enable,
 // native returned the identical 25/25 payload, every poll returned early,
@@ -18,8 +18,10 @@
 // read what a screen would read through `useBackup()`:
 //   1. off -> on: the count is 25/25 again after the re-enable's own read
 //      (one native read, no 5 s poll tick needed);
-//   2. account switch in place: B never sees A's count or last-backup time;
-//   3. account switch the way App.tsx does it (keyed remount): B starts empty;
+//   2. a native read still in flight when backup is turned off cannot paint
+//      the count back, and a native disable that throws still clears it;
+//   3. account switch and sign-out the way App.tsx does them (the provider
+//      remounts under the user-keyed CryptoProvider): nothing carries over;
 //   4. launch path (question B of the same rung): with the preference ON, a
 //      mount enables the native engine as soon as the vault is unlocked, and
 //      the display shows the native count without any user action.
@@ -37,6 +39,8 @@ const USER_B = '22222222-2222-4222-8222-222222222222';
 let currentUser: { user_id: string } | null = { user_id: USER_A };
 let unlocked = true;
 let nativeProgressFor: () => Record<string, unknown> = () => full25();
+let heldTrigger: { promise: Promise<unknown>; resolve: (v: unknown) => void } | null = null;
+let disableThrows = false;
 const calls = { getBackupProgress: 0, enablePhotoBackup: [] as Array<[string, string]>, disablePhotoBackup: 0 };
 
 function full25() {
@@ -108,7 +112,10 @@ mock.module('../services/BackupService', () => ({
 }));
 mock.module('../../modules/beebeeb-crypto', () => ({
   configureBackupFolder: async () => {},
-  disablePhotoBackup: async () => { calls.disablePhotoBackup += 1; },
+  disablePhotoBackup: async () => {
+    calls.disablePhotoBackup += 1;
+    if (disableThrows) throw new Error('native disable failed');
+  },
   disableContactsBackup: async () => {},
   disableCalendarBackup: async () => {},
   teardownAllBackup: async () => {},
@@ -118,14 +125,20 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   resumeContactsBackup: async () => {},
   resumeCalendarBackup: async () => {},
   getBackupProgress: async () => { calls.getBackupProgress += 1; return nativeProgressFor(); },
-  triggerImmediateBackup: async () => nativeProgressFor(),
+  triggerImmediateBackup: async () => (heldTrigger ? heldTrigger.promise : nativeProgressFor()),
   mirrorBackupClientSession: async () => true,
   getPhotoBackupIncludeVideos: async () => true,
   setPhotoBackupIncludeVideos: async () => true,
   setBackupDeviceId: async () => true,
 }));
 
-const { BackupProvider, useBackup, backupPrefKey } = await import('./backup-context');
+const {
+  BackupProvider,
+  useBackup,
+  backupPrefKey,
+  nextShownProgress,
+  EMPTY_SHOWN_PROGRESS,
+} = await import('./backup-context');
 
 let latest: ReturnType<typeof useBackup> | null = null;
 function Probe() {
@@ -167,6 +180,8 @@ beforeEach(() => {
   calls.getBackupProgress = 0;
   calls.enablePhotoBackup = [];
   calls.disablePhotoBackup = 0;
+  heldTrigger = null;
+  disableThrows = false;
   latest = null;
 });
 
@@ -215,41 +230,102 @@ describe('task 1667 5b — backed-up count after camera backup off -> on', () =>
   });
 });
 
-describe('task 1667 5b — account switch never shows the previous account\'s count', () => {
-  test('in place (same provider instance): B, backup off, sees 0 and no last-backup time from A', async () => {
+describe('task 1667 5b — turning backup off always clears the count', () => {
+  test('a native read in flight when backup is turned off does not paint the count back', async () => {
     store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
     await mount();
     expect(shown()).toEqual({ completed: 25, total: 25 });
-    expect(latest!.lastBackupAt).toBe('2026-10-19T02:41:30.000Z');
 
+    // "Back up now" is waiting on native when the user turns backup off.
+    let resolve!: (v: unknown) => void;
+    heldTrigger = { promise: new Promise((r) => { resolve = r; }), resolve: (v) => resolve(v) };
+    let pending!: Promise<void>;
+    await act(async () => { pending = latest!.triggerBackupNow(); });
+    await settle();
+
+    await act(async () => { await latest!.togglePhotoBackup(); });
+    await settle();
+    expect(shown()).toEqual({ completed: 0, total: 0 });
+
+    // Native answers after the reset.
+    await act(async () => { heldTrigger!.resolve(full25()); await pending; });
+    await settle();
+    expect(latest!.isPhotoBackupEnabled).toBe(false);
+    expect(shown()).toEqual({ completed: 0, total: 0 });
+  });
+
+  test('a native disable that throws still clears the count', async () => {
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    await mount();
+    disableThrows = true;
+    await act(async () => { await latest!.togglePhotoBackup(); });
+    await settle();
+    expect(calls.disablePhotoBackup).toBe(1);
+    expect(latest!.isPhotoBackupEnabled).toBe(false);
+    expect(shown()).toEqual({ completed: 0, total: 0 });
+  });
+});
+
+describe('task 1667 5b — account switch and sign-out never show the previous account\'s count', () => {
+  test('App.tsx remounts BackupProvider per account: it sits inside the user-keyed CryptoProvider', async () => {
+    const { readFileSync } = await import('node:fs');
+    const app = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+    const keyed = app.indexOf("<CryptoProvider key={user?.user_id ?? 'signed-out'}");
+    const open = app.indexOf('<BackupProvider>');
+    const close = app.indexOf('</BackupProvider>');
+    const keyedClose = app.indexOf('</CryptoProvider>', close);
+    expect(keyed).toBeGreaterThan(-1);
+    expect(open).toBeGreaterThan(keyed);
+    expect(close).toBeGreaterThan(open);
+    expect(keyedClose).toBeGreaterThan(close);
+  });
+
+  test('A -> B (keyed remount): B, backup off, starts at 0 with no last-backup time', async () => {
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    await mount(USER_A);
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+    expect(latest!.lastBackupAt).toBe('2026-10-19T02:41:30.000Z');
     currentUser = { user_id: USER_B };
-    await rerender();
+    await rerender(USER_B);
     expect(latest!.isPhotoBackupEnabled).toBe(false);
     expect(shown()).toEqual({ completed: 0, total: 0 });
     expect(latest!.lastBackupAt).toBeNull();
   });
 
-  test('in place: A -> B -> A with the identical native payload shows 25 of 25 again for A', async () => {
-    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
-    await mount();
-    currentUser = { user_id: USER_B };
-    await rerender();
-    expect(shown()).toEqual({ completed: 0, total: 0 });
-
-    currentUser = { user_id: USER_A };
-    await rerender();
-    expect(latest!.isPhotoBackupEnabled).toBe(true);
-    expect(shown()).toEqual({ completed: 25, total: 25 });
-  });
-
-  test('keyed remount (how App.tsx switches accounts): B starts empty', async () => {
+  test('A -> signed out -> A (keyed remounts, identical native payload): 0 while signed out, 25 of 25 again for A', async () => {
     store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
     await mount(USER_A);
-    expect(shown()).toEqual({ completed: 25, total: 25 });
-    currentUser = { user_id: USER_B };
-    await rerender(USER_B);
+    currentUser = null;
+    await rerender('signed-out');
     expect(shown()).toEqual({ completed: 0, total: 0 });
     expect(latest!.lastBackupAt).toBeNull();
+    currentUser = { user_id: USER_A };
+    await rerender(USER_A);
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+  });
+});
+
+describe('task 1667 5b + task 1686 — nextShownProgress compares against what is shown', () => {
+  test('an equal payload returns the SAME state object (React bails out: no idle re-render)', () => {
+    const first = nextShownProgress(EMPTY_SHOWN_PROGRESS, full25());
+    expect(first).not.toBe(EMPTY_SHOWN_PROGRESS);
+    expect(first.progress.completed).toBe(25);
+    expect(nextShownProgress(first, full25())).toBe(first);
+  });
+
+  test('after a reset the identical payload is shown again', () => {
+    const shownBefore = nextShownProgress(EMPTY_SHOWN_PROGRESS, full25());
+    const afterReset = EMPTY_SHOWN_PROGRESS;
+    const again = nextShownProgress(afterReset, full25());
+    expect(again).not.toBe(afterReset);
+    expect(again.progress).toEqual(shownBefore.progress);
+  });
+
+  test('a changed payload replaces the shown one', () => {
+    const a = nextShownProgress(EMPTY_SHOWN_PROGRESS, full25());
+    const b = nextShownProgress(a, { ...full25(), completed: 24, pending: 1, state: 'idle' });
+    expect(b).not.toBe(a);
+    expect(b.progress.completed).toBe(24);
   });
 });
 
@@ -281,17 +357,3 @@ describe('task 1667 question B — the launch path restarts camera backup on its
   });
 });
 
-describe('task 1667 5b — sweep: every reset of the displayed progress forgets the last payload', () => {
-  test('setBackupProgress(EMPTY_PROGRESS) appears exactly once, inside resetDisplayedProgress, next to the ref reset', async () => {
-    const { readFileSync } = await import('node:fs');
-    const src = readFileSync(new URL('./backup-context.tsx', import.meta.url), 'utf8');
-    const resets = src.match(/setBackupProgress\(EMPTY_PROGRESS\)/g) ?? [];
-    expect(resets.length).toBe(1);
-    const body = src.match(/const resetDisplayedProgress = useCallback\(\(\) => \{([\s\S]*?)\}, \[\]\);/);
-    expect(body).not.toBeNull();
-    expect(body![1]).toContain('lastRawProgressRef.current = null;');
-    expect(body![1]).toContain('setBackupProgress(EMPTY_PROGRESS);');
-    // Every other setBackupProgress call is the native projection in applyNativeProgress.
-    expect((src.match(/setBackupProgress\(/g) ?? []).length).toBe(2);
-  });
-});

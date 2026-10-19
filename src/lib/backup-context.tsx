@@ -616,6 +616,53 @@ export function nativeProgressEquals(a: NativeBackupProgress, b: NativeBackupPro
 }
 
 /**
+ * Task 1667 (sim rung 5b): what the screens show, together with the native
+ * payload it was projected from. ONE state value, so the "same as last time"
+ * check always compares against what is on screen. Before, the payload lived
+ * in a separate ref that the disable path never cleared: the display went to
+ * EMPTY_PROGRESS, native then reported the identical 25/25 after re-enable,
+ * the check matched the stale ref, and Photos read "0 backed up" (Settings
+ * "25 of 0 items") until a cold relaunch.
+ */
+export interface ShownBackupProgress {
+  /** The native payload `progress` was projected from; null for the empty state. */
+  source: NativeBackupProgress | null;
+  progress: BackupProgress;
+}
+
+export const EMPTY_SHOWN_PROGRESS: ShownBackupProgress = { source: null, progress: EMPTY_PROGRESS };
+
+/** The BackupProgress the screens read for one native payload. */
+export function projectNativeProgress(p: NativeBackupProgress): BackupProgress {
+  const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
+  const nativeState = p.state ?? (p.inProgress > 0 ? 'uploading' : pending > 0 ? 'idle' : 'complete');
+  return {
+    total: p.total,
+    completed: p.completed,
+    inProgress: p.inProgress,
+    pending,
+    waitingToEncrypt: p.waitingToEncrypt,
+    encryptedPendingUpload: p.encryptedPendingUpload,
+    uploading: p.uploading,
+    failed: p.failed ?? 0,
+    state: nativeState,
+    reason: p.reason ?? '',
+  };
+}
+
+/**
+ * Task 1667 (sim rung 5b) + task 1686 (idle heat): the state update for one
+ * native read. Returns `prev` itself when the shown progress already came
+ * from an equal payload, so React bails out and an idle 5 s tick re-renders
+ * nothing (task 1686). After a reset, `prev.source` is null and any payload,
+ * the identical one included, is shown.
+ */
+export function nextShownProgress(prev: ShownBackupProgress, p: NativeBackupProgress): ShownBackupProgress {
+  if (prev.source && nativeProgressEquals(prev.source, p)) return prev;
+  return { source: p, progress: projectNativeProgress(p) };
+}
+
+/**
  * Task 1686 (iOS idle heat) — whether the backup-progress poll (5 s) and the
  * account-refusal poll (15 s) should pause for this AppState. 'inactive'
  * (iOS app switcher / lock screen / call banner) counts as backgrounded:
@@ -640,7 +687,8 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const [includeVideos, setIncludeVideosState] = useState(true);
   const [wifiOnly, setWifiOnlyState] = useState(false);
   const [backgroundUpload, setBackgroundUploadState] = useState(true);
-  const [backupProgress, setBackupProgress] = useState<BackupProgress>(EMPTY_PROGRESS);
+  const [shownProgress, setShownProgress] = useState<ShownBackupProgress>(EMPTY_SHOWN_PROGRESS);
+  const backupProgress = shownProgress.progress;
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const [backupBlockedReason, setBackupBlockedReason] = useState<string | null>(null);
   // Task 1599 followup 2: mirrors native's `accountMismatchReason` every
@@ -675,19 +723,11 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // every fresh `BackupProvider` instance, which is exactly the per-mount
   // scoping the sign-in lockout fix needs (see that function's doc comment).
   const accountMismatchPollStateRef = useRef<AccountMismatchPollState>(INITIAL_ACCOUNT_MISMATCH_POLL_STATE);
-  // Task 1686 (iOS idle heat) — the last RAW native progress payload
-  // applyNativeProgress saw, for the equality early-return (an unchanged 5 s
-  // poll tick must not re-render the tree). Ref, not state: it is a
-  // comparison cache, never rendered directly.
-  //
-  // Task 1667 (sim rung 5b): the invariant is "non-null only while the
-  // DISPLAYED progress is this payload's projection". Anything that puts
-  // something else on screen must go through `resetDisplayedProgress`, which
-  // forgets the payload too. Before, the disable path reset the display alone:
-  // after re-enable native returned the identical 25/25 payload, every poll
-  // returned early, and Photos read "0 backed up" (Settings "25 of 0 items")
-  // until a cold relaunch.
-  const lastRawProgressRef = useRef<NativeBackupProgress | null>(null);
+  // Task 1667 (sim rung 5b): bumped by every reset of the shown progress. A
+  // native read that started before a reset is dropped when it lands after
+  // it, so a read already in flight when backup is turned off cannot paint
+  // the count back on screen.
+  const shownGenerationRef = useRef(0);
   // Task 1037: a needs_plan / lapsed account is refused every upload (409
   // plan_required / account_lapsed). Keep the native engines OFF while that
   // holds: they run on their own (including BGTask runs), and would otherwise
@@ -702,27 +742,12 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   accountBlockedRef.current = accountBlockedMessage;
 
   const applyNativeProgress = useCallback((p: NativeBackupProgress) => {
-    // Task 1686 (iOS idle heat) — equality early-return. The 5 s poll used
-    // to setState unconditionally: an idle app re-rendered the whole tree
-    // ~12×/minute with byte-identical progress. A tick that read the same
-    // raw native payload as the last one (the overwhelmingly common case
-    // while idle/foregrounded) now does nothing at all.
-    if (lastRawProgressRef.current && nativeProgressEquals(lastRawProgressRef.current, p)) return;
-    lastRawProgressRef.current = p;
-    const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
-    const nativeState = p.state ?? (p.inProgress > 0 ? 'uploading' : pending > 0 ? 'idle' : 'complete');
-    setBackupProgress({
-      total: p.total,
-      completed: p.completed,
-      inProgress: p.inProgress,
-      pending,
-      waitingToEncrypt: p.waitingToEncrypt,
-      encryptedPendingUpload: p.encryptedPendingUpload,
-      uploading: p.uploading,
-      failed: p.failed ?? 0,
-      state: nativeState,
-      reason: p.reason ?? '',
-    });
+    // Task 1686 (iOS idle heat): an unchanged tick must not re-render the
+    // tree. `nextShownProgress` returns the previous state object for an
+    // equal payload (React bails out), and every setter below receives an
+    // unchanged primitive (bails out too). Task 1667 (sim rung 5b): the
+    // comparison is against what is SHOWN, never a separate cache.
+    setShownProgress((prev) => nextShownProgress(prev, p));
     if (p.lastBackupAt) setLastBackupAt(p.lastBackupAt);
     const nextAccountMismatchReason = p.accountMismatchReason ?? null;
     const nextAccountMismatchGeneration = p.accountMismatchGeneration ?? 0;
@@ -760,30 +785,20 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     setServerCheckPausedReason(nativeServerCheckPausedReason(p));
   }, []);
 
-  // Task 1667 (sim rung 5b): the ONLY way to show the empty state. Forgets
-  // the last native payload with it, so the next read always reaches the
-  // screen even when native reports exactly what it reported before.
+  // Task 1667 (sim rung 5b): show the empty state, and drop every native
+  // read still in flight. Account changes and sign-out need no call here:
+  // App.tsx remounts this provider per account (the user-keyed
+  // CryptoProvider), so a new account starts from EMPTY_SHOWN_PROGRESS.
   const resetDisplayedProgress = useCallback(() => {
-    lastRawProgressRef.current = null;
-    setBackupProgress(EMPTY_PROGRESS);
+    shownGenerationRef.current += 1;
+    setShownProgress(EMPTY_SHOWN_PROGRESS);
   }, []);
-
-  // Task 1667 (sim rung 5b): a different account (or none) on the same
-  // provider instance must never see the previous account's count or
-  // last-backup time. App.tsx remounts this provider per account today (the
-  // user-keyed CryptoProvider), which already starts empty; this keeps the
-  // provider correct on its own if that keying ever changes.
-  const progressOwnerRef = useRef(userId);
-  useEffect(() => {
-    if (progressOwnerRef.current === userId) return;
-    progressOwnerRef.current = userId;
-    resetDisplayedProgress();
-    setLastBackupAt(null);
-  }, [userId, resetDisplayedProgress]);
 
   const refreshNativeProgress = useCallback(async () => {
     if (Platform.OS === 'web') return;
+    const generation = shownGenerationRef.current;
     const p: NativeBackupProgress = await getBackupProgress();
+    if (generation !== shownGenerationRef.current) return; // reset while reading (task 1667)
     applyNativeProgress(p);
   }, [applyNativeProgress]);
 
@@ -1128,6 +1143,9 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     if (!userId) return; // signed-out instance — nothing to persist against
     const next = !isPhotoBackupEnabled;
     setIsPhotoBackupEnabled(next);
+    // Task 1667 (sim rung 5b): clear the count the moment backup is off, not
+    // after the native calls below (one of which may throw).
+    if (!next) resetDisplayedProgress();
     try {
       await setScopedBackupPref(BACKUP_PHOTO_KEY, userId, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
@@ -1138,7 +1156,6 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
           await disablePhotoBackup();
           await clearMobileIosBackupClientSession().catch(() => {});
           await configureBackupFolder('camera_roll', null);
-          resetDisplayedProgress();
         }
       }
     } catch {
@@ -1249,8 +1266,9 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         await configureBackupFolder('camera_roll', categoryFolderId);
         await setPhotoBackupIncludeVideos(includeVideosRef.current).catch(() => false);
         await mirrorBackupSessionForNative();
+        const generation = shownGenerationRef.current;
         const progress = await triggerImmediateBackup(token, userId);
-        applyNativeProgress(progress);
+        if (generation === shownGenerationRef.current) applyNativeProgress(progress);
       } catch (err) {
         if (isVaultKeyMismatchError(err)) {
           // Task 1594: never fall back to starting the engine over a tree this
