@@ -1,7 +1,7 @@
 // @ts-nocheck — bun runs this; `bun:test` types are not in the Expo tsconfig
-// Task 1583 — Info sheet rows + "Stored in" label.
+// Task 1583 — Info sheet rows. (The "Stored in" country label is tested in storage-regions.test.ts, task 2050.)
 import { describe, expect, test } from 'bun:test';
-import { buildInfoSheetRows, countActiveShareLinks, resolveInfoShareCount, storageLocationLabel, fileStorageCity } from './preview-info';
+import { buildInfoSheetRows, countActiveShareLinks, resolveInfoShareCount } from './preview-info';
 import { formatShareStatus } from './preview-chrome';
 
 // The detail rows PreviewScreen builds for Guus's screenshot file
@@ -61,29 +61,6 @@ describe('buildInfoSheetRows', () => {
   });
 });
 
-describe('storageLocationLabel', () => {
-  test('names the city and country from GET /api/v1/region', () => {
-    expect(storageLocationLabel({ city: 'Falkenstein' })).toBe('Falkenstein, Germany');
-  });
-
-  test('is case-insensitive on the city lookup but keeps the server spelling', () => {
-    expect(storageLocationLabel({ city: 'FALKENSTEIN' })).toBe('FALKENSTEIN, Germany');
-  });
-
-  test('an unknown real city is shown as the city alone', () => {
-    expect(storageLocationLabel({ city: 'Springfield' })).toBe('Springfield');
-  });
-
-  test('never shows a filler like "EU region" — no city reads "Europe"', () => {
-    expect(storageLocationLabel(null)).toBe('Europe');
-    expect(storageLocationLabel(undefined)).toBe('Europe');
-    expect(storageLocationLabel({})).toBe('Europe');
-    expect(storageLocationLabel({ city: 'EU region' })).toBe('Europe');
-    expect(storageLocationLabel({ city: 'Unknown' })).toBe('Europe');
-    expect(storageLocationLabel({ city: ' ' })).toBe('Europe');
-  });
-});
-
 describe('resolveInfoShareCount — the Info sheet "Shared" row (task 1592 item 2)', () => {
   const NOW = Date.parse('2026-09-27T22:00:00Z');
   const never = async () => {
@@ -121,25 +98,5 @@ describe('resolveInfoShareCount — the Info sheet "Shared" row (task 1592 item 
     expect(countActiveShareLinks([], NOW)).toBe(0);
     expect(countActiveShareLinks([{ expires_at: '2026-09-27T22:00:00Z' }], NOW)).toBe(0);
     expect(countActiveShareLinks([{ expires_at: '2026-09-27T22:00:01Z' }, {}], NOW)).toBe(2);
-  });
-});
-
-// Task 1919: a person can now choose where new uploads are stored, so "Stored
-// in" must name the city of THAT file's pool (the server's per-file
-// `storage_location`), not the default pool's city.
-describe('fileStorageCity', () => {
-  test('the file\'s own city wins over the default pool city', () => {
-    const file = { storage_location: { region: 'hel1', city: 'Helsinki', provider: 'x' } };
-    expect(fileStorageCity(file, 'Falkenstein')).toBe('Helsinki');
-    expect(storageLocationLabel({ city: fileStorageCity(file, 'Falkenstein') })).toBe('Helsinki');
-  });
-  test('no per-file location falls back to the default city', () => {
-    expect(fileStorageCity({}, 'Falkenstein')).toBe('Falkenstein');
-    expect(fileStorageCity(null, 'Falkenstein')).toBe('Falkenstein');
-    expect(fileStorageCity({ storage_location: null }, null)).toBeNull();
-  });
-  test('a per-file value that names no place falls back instead of showing a filler', () => {
-    expect(fileStorageCity({ storage_location: { city: 'Unknown' } }, 'Falkenstein')).toBe('Falkenstein');
-    expect(fileStorageCity({ storage_location: { city: '  ' } }, null)).toBeNull();
   });
 });

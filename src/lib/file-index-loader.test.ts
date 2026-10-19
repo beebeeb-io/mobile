@@ -171,7 +171,7 @@ describe('createFileIndexLoader', () => {
           blurhash: 'LKO2?U%2Tw=w',
           is_media: true,
           is_uploading: true,
-          storage_location: { city: 'Falkenstein' },
+          storage_location: { country: 'Germany', country_code: 'DE' },
         }),
         row('b'),
       ],
@@ -194,7 +194,7 @@ describe('createFileIndexLoader', () => {
     expect(req.wrapped_content_key).toBe('wck');
     expect(req.blurhash).toBe('LKO2?U%2Tw=w');
     expect(req.is_media).toBe(true);
-    expect(req.storage_location).toEqual({ city: 'Falkenstein' });
+    expect(req.storage_location).toEqual({ country: 'Germany', country_code: 'DE' });
     expect(req.is_uploading).toBeUndefined();
   });
 });

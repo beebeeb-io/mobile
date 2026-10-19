@@ -3042,7 +3042,9 @@ export default function PreviewScreen() {
       label: 'Encryption',
       value: isUnlocked ? 'Decrypted on this device' : 'Client-side encrypted',
     });
-    rows.push({ label: 'Storage', value: `${storage.region} · ${storage.city}` });
+    // Task 2050: a region or a country, never a city. This pager entry carries no
+    // per-file country, so it says "Europe"; the Info sheet's "Stored in" row names the country.
+    rows.push({ label: 'Storage', value: storage.place });
     return rows;
   }, [
     category,

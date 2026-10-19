@@ -591,6 +591,25 @@ Spec rev 3 does not say so; it is a server finding, not an app choice.
 
 React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.
 
+## Storage location is a COUNTRY, never a city (task 2050)
+
+Guus, 2026-10-19 (canon `docs/canon/data-residency.md`): the app names countries ("Germany",
+"Finland", "Netherlands (coming soon)") and "Europe", never a city and never the provider.
+- The choice list comes ONLY from the API (`src/lib/regions.ts` over `src/lib/storage-regions.ts`):
+  Europe (default) · live countries · coming-soon countries. PUT carries the item id; "Only store in
+  <country>" is `region_strict` on GET/PUT `/me/region` (PUT replaces the whole choice, so strict is
+  passed again when the country changes). An OLDER server's `kind: "datacenter"` entries are folded
+  into countries by `country_code`; their city is dropped.
+- **Strict is HIDDEN on iOS and Android (Guus 2026-10-19, workspace task 2054).** `STRICT_PLACEMENT_ON_MOBILE` in `src/lib/regions.ts` is the single flag; native `NativeBackupEngine` dead-letters assets on the strict 409. Stored strict=true (from web/desktop) is carried unchanged on a country change and shown as the line "Only store in <country> is on. Change it on the web or desktop app." (`strictNoticeFor`). Do not touch the Swift side here; 2054 does, then flips the flag.
+- Per-file location is `storage_location.country` (`fileStorageCountry`), "Europe" when absent. The
+  deprecated `city` a transition-release server still sends is never read.
+- The 409 `region_unavailable_strict` refusal is worded by country in `friendlyError`
+  (`ApiError.details.country`; the native uploader envelope has no country, so it is read back from
+  the server sentence).
+- `src/lib/no-city-in-copy.guard.test.ts` fails on Falkenstein / Helsinki / Nuremberg / Nuernberg /
+  Ede in non-test source in `src/` and in native UI sources. Test files are excluded on purpose (the
+  old-server contract tests feed a city to prove it is never rendered).
+
 ## Tests — run `bun run test`, NOT `bun test` (task 0877)
 
 ```sh

@@ -5,7 +5,7 @@
  * device, where it is stored. Bottom-actions launch the "Prove it"
  * verification view and the raw-ciphertext download.
  *
- * Brand voice: honest, name the city, don't reassure. Never name the storage
+ * Brand voice: honest, name the country, don't reassure. Never name the storage
  * provider (task 1947, docs/canon/data-residency.md).
  */
 
@@ -24,8 +24,7 @@ import { BottomSheet, BottomSheetScrollView } from './sheet/BottomSheet';
 import { useTheme } from '../lib/theme-context';
 import type { FileEntry } from '../lib/api';
 import { formatBytes as formatSize } from '../lib/format';
-import { useRegionCity } from '../lib/storage-region';
-import { storageLocationLabel, fileStorageCity } from '../lib/preview-info';
+import { storageLocationLabel, fileStorageCountry } from '../lib/storage-regions';
 import { useFileStorageLocation } from '../lib/file-storage-location';
 import EncryptionProof from './EncryptionProof';
 import {
@@ -105,23 +104,20 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
     if (!fileProp) setProofOpen(false);
   }, [fileProp]);
 
-  // Task 1592 — "Stored in" from the one shared source (GET /api/v1/region),
-  // so this sheet and the Info sheet name the same place.
-  const regionCity = useRegionCity(!!fileProp);
-  // Task 1919 review — the row this sheet is opened from (CRDT-backed) has no
-  // per-file location; read the file's own pool city from GET /files/:id so a
-  // file in a non-default datacenter does not read "Europe" when several
-  // datacenters are live.
-  // Keyed on `shown` (kept through the close animation) so the city does not
-  // flip back to the fallback while the sheet slides down.
+  // Task 1919 review / task 2050 — the row this sheet is opened from
+  // (CRDT-backed) has no per-file location; read the file's own COUNTRY from
+  // GET /files/:id. A file whose country is unknown reads "Europe", never a
+  // guess and never a city.
+  // Keyed on `shown` (kept through the close animation) so the country does
+  // not flip back to the fallback while the sheet slides down.
   const fetchedLocation = useFileStorageLocation(shown?.file);
 
   if (!shown) return null;
   const { file, fileName, mimeType } = shown;
   // The row, completed with its own location once known (also handed to the
-  // nested "Prove it" pane, which names the same city).
+  // nested "Prove it" pane, which names the same country).
   const detailFile: FileEntry =
-    fetchedLocation && fileStorageCity(file, null) === null
+    fetchedLocation && fileStorageCountry(file) === null
       ? { ...file, storage_location: fetchedLocation }
       : file;
 
@@ -202,7 +198,7 @@ export default function TrustDetailsSheet({ file: fileProp, fileName: fileNamePr
               />
               <DetailRow
                 label="Stored in"
-                value={storageLocationLabel({ city: fileStorageCity(detailFile, regionCity ?? null) })}
+                value={storageLocationLabel(fileStorageCountry(detailFile))}
                 inkLabel={c.ink3}
                 inkValue={c.ink}
                 border={c.line}

@@ -54,14 +54,9 @@ mock.module('../lib/theme-context', () => ({
 // A sentinel, not a real provider name (the claims guard rightly refuses those in source).
 const LEAK = 'StorageCo-1947-sentinel';
 mock.module('../lib/api', () => ({
-  trustLocation: () => ({ region: 'Europe', city: 'EU region', provider: `${LEAK} trust filler` }),
+  trustLocation: () => ({ region: 'Europe', place: 'Europe', provider: `${LEAK} trust filler` }),
 }));
-mock.module('../lib/storage-region', () => ({ useRegionCity: () => 'Falkenstein' }));
-mock.module('../lib/preview-info', () => ({
-  storageLocationLabel: (r: { city?: string | null }) => (r?.city ? `${r.city}, Germany` : 'Europe'),
-  fileStorageCity: (f: { storage_location?: { city?: string | null } | null }, fallback: string | null) =>
-    f?.storage_location?.city ?? fallback,
-}));
+// storage-regions is NOT mocked: the real country helpers run (task 2050).
 mock.module('../lib/file-storage-location', () => ({ useFileStorageLocation: () => null }));
 mock.module('../lib/format', () => ({ formatBytes: (n: number) => `${n} B` }));
 mock.module('../lib/trust-details', () => ({
@@ -79,7 +74,8 @@ const file = {
   size_bytes: 1947,
   created_at: '2026-10-17T19:35:00Z',
   storage_pool_id: 'pool-fsn1',
-  storage_location: { region: 'fsn1', city: 'Falkenstein', provider: `${LEAK} server field` },
+  // A transition-release server also sends the deprecated `city`: it must never reach the screen.
+  storage_location: { country: 'Germany', country_code: 'DE', city: 'Falkenstein', provider: `${LEAK} server field` },
 };
 
 let renderer: TestRenderer.ReactTestRenderer | null = null;
@@ -107,7 +103,9 @@ describe('Encryption details sheet names no storage provider (task 1947)', () =>
     const texts = renderedTexts();
     expect(texts).toContain('Algorithm');
     expect(texts).toContain('Stored in');
-    expect(texts).toContain('Falkenstein, Germany');
+    expect(texts).toContain('Germany');
+    // The deprecated city next to the country is never rendered (task 2050).
+    expect(texts.filter((t) => /Falkenstein/.test(t))).toEqual([]);
   });
 
   test('there is no "Provider" row', () => {

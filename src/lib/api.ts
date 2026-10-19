@@ -23,6 +23,7 @@ import { getDeviceId } from './sync-client';
 import { deviceIdHeader } from './upload-device-header';
 import { setAnnouncement, clearAnnouncement } from './announcement-context';
 import { isTrialRefusalCode, trialCapMessage, trialRefusalMessage } from './trial-refusals';
+import { fileStorageCountry, storageLocationLabel, strictCountryFromMessage, strictRefusalMessage } from './storage-regions';
 import { ACCOUNT_LAPSED_ERROR, PLAN_REQUIRED_ERROR, TRIAL_CANCELLED_READ_ONLY_ERROR, TRIAL_ENDED_ERROR, gateForRefusalCode, getCurrentAccountGate, readOnlyUploadMessage } from './account-state';
 import { resolveWebAppUrl } from './web-links';
 import { ONBOARDING_SCHEMA_HEADER, isOnboardingErrorCode, sameOriginPath } from './onboarding/wire';
@@ -266,6 +267,15 @@ async function setSessionCredentials(token: string, deviceConfirmationSecret?: s
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
+/** Task 1952 / 2050: the 409 a strict "only store in <country>" upload gets when that country cannot take it. */
+export const STRICT_REGION_REFUSAL = 'region_unavailable_strict';
+
+/** The `{ country }` of a strict-placement refusal body (the COUNTRY, never the deprecated `city` alias). */
+function strictRefusalDetails(status: number, body: { error?: string; country?: unknown } | null | undefined): { country?: string } | undefined {
+  if (status !== 409 || body?.error !== STRICT_REGION_REFUSAL) return undefined;
+  return typeof body.country === 'string' && body.country.trim() !== '' ? { country: body.country.trim() } : {};
+}
+
 export class ApiError extends Error {
   /**
    * Machine-readable error code from the server response body's `error` field
@@ -296,6 +306,12 @@ export class ApiError extends Error {
      * a no-card trial, 25 GB for the older mandated one.
      */
     public limitBytes?: number,
+    /**
+     * Task 2050 — the 409 `region_unavailable_strict` refusal's `{ country }`,
+     * so the message can name the country the person chose. Undefined for every
+     * other error.
+     */
+    public details?: { country?: string },
   ) {
     super(message);
     this.name = 'ApiError';
@@ -447,6 +463,10 @@ export function friendlyError(err: unknown): string {
     // Task 1820 (server 1755): the no-card trial's typed refusals. Mapped by code to
     // sentences that offer nothing to buy; the server's own wording for several of
     // them says "choose a plan" / "Subscribe" and must never reach this binary.
+    // Task 2050 — strict placement: the chosen COUNTRY cannot take the write and
+    // the person said never to go anywhere else. Names the country, not a city.
+    const strictRefusal = strictRefusalMessage(err);
+    if (strictRefusal) return strictRefusal;
     const trialRefusal = trialRefusalMessage(err.code) ?? trialRefusalMessage(err.message);
     if (trialRefusal) return trialRefusal;
     const refusal = gateForRefusalCode(err.code, getCurrentAccountGate());
@@ -588,7 +608,7 @@ export async function endSessionForAccountMismatch(snapshot: RequestAuthSnapshot
  */
 async function throwUploadError(
   status: number,
-  err: { error?: string; message?: string; is_trial_cap?: boolean; limit_bytes?: number },
+  err: { error?: string; message?: string; is_trial_cap?: boolean; limit_bytes?: number; country?: string },
   fallbackMessage: string,
   authSnapshot: RequestAuthSnapshot,
   retryAfterSeconds?: number,
@@ -597,7 +617,7 @@ async function throwUploadError(
     await endSessionForAccountMismatch(authSnapshot);
     throw new ApiError(409, err.message ?? 'This session does not match the account of the vault key on this device.', 'account_mismatch');
   }
-  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error, retryAfterSeconds, err.is_trial_cap, typeof err.limit_bytes === 'number' ? err.limit_bytes : undefined);
+  throw new ApiError(status, err.message ?? err.error ?? fallbackMessage, err.error, retryAfterSeconds, err.is_trial_cap, typeof err.limit_bytes === 'number' ? err.limit_bytes : undefined, strictRefusalDetails(status, err));
 }
 
 async function headers(auth = true, extra?: Record<string, string>): Promise<RequestHeaders> {
@@ -738,10 +758,14 @@ async function request<T>(
         err.error === TRIAL_CANCELLED_READ_ONLY_ERROR ||
         err.error === TRIAL_ENDED_ERROR ||
         isTrialRefusalCode(err.error) ||
-        isOnboardingErrorCode(err.error)
+        isOnboardingErrorCode(err.error) ||
+        err.error === STRICT_REGION_REFUSAL
         ? err.error
         : undefined,
       res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,
+      undefined,
+      undefined,
+      strictRefusalDetails(res.status, err),
     );
   }
 
@@ -1164,10 +1188,11 @@ export interface FileEntry {
   updated_at: string;
   version_number?: number;
   storage_pool_id?: string | null;
-  /** Task 1919: where THIS file is stored (the city of its pool). Present on
-   * file entries (not folders). Never carries more than region/city/provider
-   * from the server; the app shows the city only. */
-  storage_location?: { region?: string | null; city?: string | null; provider?: string | null } | null;
+  /** Task 2050: where THIS file is stored, by COUNTRY (`{ country: "Germany",
+   * country_code: "DE" }`). Present on file entries (not folders). A server
+   * still in its transition release also sends a deprecated `city`; the app
+   * never reads it (`fileStorageCountry`, src/lib/storage-regions.ts). */
+  storage_location?: { country?: string | null; country_code?: string | null } | null;
   /** Parent folder ID — null when the entry lives at the root. Populated by
    * /api/v1/files/all-images so the Photos screen can tag iOS-backup origin. */
   parent_id?: string | null;
@@ -1223,17 +1248,21 @@ export function storageLocation(poolId: string | null | undefined): StorageLocat
 }
 
 /**
- * Trust-display location (upload toasts, preview details). Names a place, never the
- * storage provider (task 1947 — brand/legal rule).
+ * Trust-display location (upload activity, toasts, preview details). Names a
+ * region or a COUNTRY, never a city and never the storage provider (task 1947,
+ * task 2050 — brand/legal rule). `place` is "Europe" until the server names the
+ * file's country (`fileStorageCountry` on the upload response).
  */
 export interface TrustLocation {
   region: string; // "Europe"
-  city: string;
+  place: string; // "Europe" or the file's country, e.g. "Germany"
 }
 
-export function trustLocation(poolId: string | null | undefined): TrustLocation {
-  if (!poolId) return { region: 'Europe', city: 'EU region' };
-  return { region: 'Europe', city: 'EU region' };
+export function trustLocation(
+  _poolId: string | null | undefined,
+  file?: { storage_location?: FileEntry['storage_location'] } | null,
+): TrustLocation {
+  return { region: 'Europe', place: storageLocationLabel(fileStorageCountry(file)) };
 }
 
 export interface ListFilesResponse {
@@ -2239,7 +2268,9 @@ function nativeUploadErrorToApiError(err: unknown): unknown {
   if (err instanceof ApiError) return err
   const envelope = parseNativeUploadError(err instanceof Error ? err.message : String(err))
   if (!envelope) return err
-  return new ApiError(envelope.status, envelope.message, envelope.code)
+  // Task 2050: the envelope has no `country`; the strict refusal names it in its sentence.
+  const country = envelope.code === STRICT_REGION_REFUSAL ? strictCountryFromMessage(envelope.message) : null
+  return new ApiError(envelope.status, envelope.message, envelope.code, undefined, undefined, undefined, envelope.code === STRICT_REGION_REFUSAL ? (country ? { country } : {}) : undefined)
 }
 
 async function patchCompletedUploadNameEncrypted(serverFileId: string, finalNameEncrypted: string): Promise<boolean> {
@@ -3425,9 +3456,9 @@ export interface Region {
   region: string;
   operator: string;
   jurisdiction: string;
-  /** The default pool's city ("Falkenstein") — the server's documented
-   * source for "stored in {city}" (server routes/health.rs `region`). */
-  city?: string | null;
+  /** The default pool's COUNTRY (task 2050; a transition-release server also
+   * sends a deprecated `city`, which the app never reads). */
+  country?: string | null;
 }
 
 export async function getRegion(): Promise<Region> {
@@ -4138,16 +4169,17 @@ export async function getPlans(): Promise<Plan[]> {
 
 // ─── Data residency (tasks 0051, 1919) ────────────────────────────────────────
 
-/** One entry of the storage-region list (server `GET /api/v1/storage-regions`).
- * `kind: "region"` is the default "Europe" entry (any datacenter, the server
- * places the data); `kind: "datacenter"` is one specific city. The payload
- * never carries a provider. Render from `status` + `selectable`; keep no
- * client-side list of ids, cities or countries. */
+/** One entry of the storage-region list, as the server sends it
+ * (`GET /api/v1/storage-regions`). `kind: "region"` is the default "Europe"
+ * entry (any data center, the server places the data); `kind: "country"` is one
+ * specific country (task 2050). An OLDER server sends `kind: "datacenter"`
+ * entries that name a city: `parseChoices` (src/lib/storage-regions.ts) folds
+ * those into countries and drops the city, so render from the PARSED list,
+ * never from this raw shape. The payload never carries a provider. */
 export interface StorageChoice {
   id: string;
-  kind: 'region' | 'datacenter';
+  kind: 'region' | 'country' | 'datacenter';
   name: string;
-  city: string | null;
   country: string | null;
   country_code: string | null;
   status: 'live' | 'coming_soon';
@@ -4160,23 +4192,31 @@ export async function getStorageRegions(): Promise<StorageChoice[]> {
   return request<StorageChoice[]>('GET', '/api/v1/storage-regions', undefined, false);
 }
 
-/** GET /api/v1/me/region: the stored preference (null, "europe" or a
- * datacenter id) plus the same list as `choices`. `available_regions` is the
- * legacy continent list and is not used by the app. */
+/** GET /api/v1/me/region: the stored preference (null, "europe" or a country
+ * code; an older server may still answer a datacenter id), whether it is
+ * strict (task 1952), plus the same list as `choices`. `available_regions` is
+ * the legacy continent list and is not used by the app. */
 export async function getUserRegion(): Promise<{
   preferred_region: string | null;
+  region_strict?: boolean;
   choices?: StorageChoice[];
 }> {
-  return request<{ preferred_region: string | null; choices?: StorageChoice[] }>(
+  return request<{ preferred_region: string | null; region_strict?: boolean; choices?: StorageChoice[] }>(
     'GET', '/api/v1/me/region',
   );
 }
 
-/** PUT /api/v1/me/region: `"europe"` or a live datacenter id, verbatim from
- * the list. `null` clears the choice. A coming-soon or unknown id is a 400. */
-export async function setUserRegion(id: string | null): Promise<{ preferred_region: string | null }> {
-  return request<{ preferred_region: string | null }>(
-    'PUT', '/api/v1/me/region', { preferred_region: id },
+/** PUT /api/v1/me/region: `"europe"` or a live country id, verbatim from the
+ * list. `null` clears the choice. A coming-soon or unknown id is a 400.
+ * PUT REPLACES the whole choice: an omitted `region_strict` means false, so a
+ * caller that changes the country while "only store in" is on must pass it
+ * again. Strict needs a country (400 `region_strict_requires_datacenter`). */
+export async function setUserRegion(
+  id: string | null,
+  strict = false,
+): Promise<{ preferred_region: string | null; region_strict?: boolean }> {
+  return request<{ preferred_region: string | null; region_strict?: boolean }>(
+    'PUT', '/api/v1/me/region', { preferred_region: id, region_strict: strict },
   );
 }
 

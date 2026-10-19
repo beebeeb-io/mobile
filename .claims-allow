@@ -92,3 +92,24 @@ src/lib/storage-region.test.ts|'Ede'|Guus 2026-10-17 ruling (task 1919): Falkens
 src/lib/storage-region.test.ts|Helsinki|Guus 2026-10-17 ruling (task 1919): Falkenstein, Helsinki and Nuremberg are live and choosable, Ede is coming soon; unit-test fixture mirroring the GET /api/v1/storage-regions payload, no copy shown to users
 src/lib/storage-region.test.ts|Nuremberg|Guus 2026-10-17 ruling (task 1919): Falkenstein, Helsinki and Nuremberg are live and choosable, Ede is coming soon; unit-test fixture mirroring the GET /api/v1/storage-regions payload, no copy shown to users
 src/lib/file-storage-location.test.ts|Helsinki|Guus 2026-10-17 ruling (task 1919): Falkenstein, Helsinki and Nuremberg are live and choosable, Ede is coming soon; unit-test fixture mirroring the GET /api/v1/files/:id storage_location payload, no copy shown to users
+
+# ── Task 2050 (storage location by COUNTRY, Guus 2026-10-19) ─────────────────
+# The app shows countries, never a city. Three TEST files must still NAME the
+# cities, to prove they are never rendered: an older server (task 1919) sends
+# `kind: "datacenter"` entries with a city, and the guard test scans for the
+# names. Test files are not shipped in the app bundle and are not user-facing;
+# every hit below is a fixture input or the guard's own pattern, asserted
+# ABSENT from every rendered string (src/lib/no-city-in-copy.guard.test.ts).
+src/lib/api.2050-region-country.test.ts|Helsinki|Task 2050 test fixture: a transition-release server sends a deprecated city next to the country; the test asserts trustLocation never returns it
+src/lib/storage-regions.test.ts|Helsinki|Task 2050 test fixture: an older server's datacenter entry carries a city; the test asserts parseChoices folds it into the country and drops the city
+src/lib/storage-regions.test.ts|Nuremberg|Task 2050 test fixture: an older server's datacenter entry carries a city; asserted absent from the parsed rows
+src/lib/storage-regions.test.ts|'Ede'|Task 2050 test fixture: an older server's coming-soon datacenter entry carries a city; asserted absent from the parsed rows
+src/lib/storage-regions.test.ts|'ede'|Task 2050 test fixture: the same older-server datacenter id, asserted to fold into the Netherlands row
+src/lib/no-city-in-copy.guard.test.ts|Helsinki|Task 2050 guard: the forbidden-name pattern and its self-test inputs (a city in a string, an IANA timezone id); not shipped copy
+src/lib/no-city-in-copy.guard.test.ts|helsinki|Task 2050 guard: the forbidden-name pattern; not shipped copy
+src/lib/no-city-in-copy.guard.test.ts|Nuremberg|Task 2050 guard: the forbidden-name pattern's self-test inputs; not shipped copy
+src/lib/no-city-in-copy.guard.test.ts|nuremberg|Task 2050 guard: the forbidden-name pattern; not shipped copy
+src/lib/no-city-in-copy.guard.test.ts|'Ede'|Task 2050 guard: self-test input proving the capitalised place name is flagged; not shipped copy
+src/lib/no-city-in-copy.guard.test.ts|'ede'|Task 2050 guard: the lower-case word is only a hit through the capitalised-place rule; not shipped copy
+src/lib/no-city-in-copy.guard.test.ts|"Ede"|Task 2050 guard: doc comment describing the capitalised-place rule; not shipped copy
+src/lib/no-city-in-copy.guard.test.ts|"ede"|Task 2050 guard: doc comment and test title describing words that merely contain ede; not shipped copy

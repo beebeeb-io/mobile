@@ -34,12 +34,12 @@ import type { Colors } from '../../theme';
 import { useTheme } from '../../lib/theme-context';
 import { useCrypto } from '../../lib/crypto-context';
 import { getFile, listFileShareLinks, listFileVersions, type FileVersionEntry } from '../../lib/api';
-import { useRegionCity } from '../../lib/storage-region';
+import { fileStorageCountry, storageLocationLabel } from '../../lib/storage-regions';
 import { encryptedMetadataPayloadToBytes } from '../../lib/encrypted-metadata';
 import { BottomSheet, BottomSheetScrollView } from '../sheet/BottomSheet';
 import { formatBytes as formatSize } from '../../lib/format';
 import { buildInfoSubline, formatShareStatus, resolveFolderLabel } from '../../lib/preview-chrome';
-import { resolveInfoShareCount, storageLocationLabel, fileStorageCity, type InfoSheetFocus } from '../../lib/preview-info';
+import { resolveInfoShareCount, type InfoSheetFocus } from '../../lib/preview-info';
 
 /**
  * Task 1583 — the stacking slot of the whole sheet layer (scrim + sheet)
@@ -140,12 +140,10 @@ export function InfoSheet({
   const scrollRef = useRef<React.ElementRef<typeof BottomSheetScrollView>>(null);
   const [versionsY, setVersionsY] = useState<number | null>(null);
 
-  // Task 1583 — "Stored in" names the city (brand rule), from the server's
-  // own "stored in {city}" source. A failure leaves `null` → "Europe".
-  // Task 1592 — the same shared source as the Encryption details sheet.
-  const regionCity = useRegionCity(visible);
-  // Task 1919: this file's own pool city (from GET /files/:id), when known.
-  const [fileCity, setFileCity] = useState<string | null>(null);
+  // Task 1583 / 2050 — "Stored in" names the file's COUNTRY (brand rule), from
+  // its own `storage_location` (GET /files/:id). Unknown or a failed fetch
+  // leaves `null` → "Europe". Never a city.
+  const [fileCountry, setFileCountry] = useState<string | null>(null);
 
   // Task 1583 — "Versions" lands on the Versions section, "Info" on the top.
   useEffect(() => {
@@ -179,13 +177,13 @@ export function InfoSheet({
     setParentId(undefined);
     setFolderName(null);
     setShareCount(undefined);
-    setFileCity(null);
+    setFileCountry(null);
     (async () => {
       try {
         const file = await getFile(fileId);
         if (cancelled) return;
         setParentId(file.parent_id ?? null);
-        setFileCity(fileStorageCity(file, null));
+        setFileCountry(fileStorageCountry(file));
         setModifiedLabel(formatModified(file.updated_at));
         // Task 1592 — never "Not shared" by default (see resolveInfoShareCount).
         void resolveInfoShareCount(file, () => listFileShareLinks(fileId)).then((count) => {
@@ -251,7 +249,7 @@ export function InfoSheet({
   const shareLabel = shareCount === undefined ? '…' : shareCount === null ? null : formatShareStatus(shareCount);
 
   const styles = useMemo(() => infoSheetStyles(c), [c]);
-  const locationLabel = storageLocationLabel({ city: fileCity ?? regionCity ?? null });
+  const locationLabel = storageLocationLabel(fileCountry);
 
   return (
     <BottomSheet

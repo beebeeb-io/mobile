@@ -32,9 +32,8 @@ export const WELCOME_FILENAME = 'welcome.md';
 
 // Voice rules in `repos/core/brand/README.md`: honest over reassuring, no flag
 // emojis, no unmeasurable security-marketing adjectives. Static copy says
-// "Europe", not a city (Guus, 2026-09-29): storage starts in Falkenstein but
-// more EU locations are coming. The per-file "Stored in" displays still name
-// the real city of the pool a file is in.
+// "Europe", not a place (Guus, 2026-09-29): more EU locations are coming. The
+// per-file "Stored in" displays name the file's COUNTRY (task 2050), never a city.
 export const WELCOME_MARKDOWN = `# Welcome to Beebeeb
 
 This is your vault. Every file you upload is encrypted on this device with a key only you control — Beebeeb's servers never see plaintext, ever.

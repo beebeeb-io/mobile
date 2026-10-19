@@ -56,8 +56,7 @@ import {
   proofSeePane,
   type PlaintextPrefixState,
 } from '../lib/encryption-proof';
-import { useRegionCity } from '../lib/storage-region';
-import { storageLocationLabel, fileStorageCity } from '../lib/preview-info';
+import { storageLocationLabel, fileStorageCountry } from '../lib/storage-regions';
 
 interface Props {
   file: FileEntry;
@@ -171,12 +170,10 @@ export default function EncryptionProof({ file, fileName, mimeType, visible, onC
   const hex = bytes ? bytesToHex(bytes) : '';
   const seePane = proofSeePane(plain);
   const totalBytes = file.size_bytes;
-  // Task 1592 item 11 — "Stored in" from the one shared source
-  // (GET /api/v1/region), so this pane names the same place as the Info and
-  // Encryption details sheets; "Europe" while loading, unknown, or on a
-  // failed fetch — never the "EU region" filler.
-  const regionCity = useRegionCity(visible);
-  const storedInCity = storageLocationLabel({ city: fileStorageCity(file, regionCity ?? null) });
+  // Task 1592 item 11 / task 2050 — "Stored in" is the file's own COUNTRY, so
+  // this pane names the same place as the Info and Encryption details sheets;
+  // "Europe" when the file has none — never a city, never the "EU region" filler.
+  const storedInPlace = storageLocationLabel(fileStorageCountry(file));
 
   return (
     <Modal
@@ -251,7 +248,7 @@ export default function EncryptionProof({ file, fileName, mimeType, visible, onC
                   <Text style={[styles.paneLabel, { color: c.amberDeep }]}>What our server stores</Text>
                 </View>
                 <Text style={[styles.paneNote, { color: c.ink3 }]}>
-                  Hex dump as it lives on disk in {storedInCity}. Without your key, this is noise.
+                  Hex dump as it lives on disk in {storedInPlace}. Without your key, this is noise.
                 </Text>
                 <Text style={[styles.monoBlock, { color: c.ink, borderColor: c.amberDeep }]} selectable>
                   {hex}
