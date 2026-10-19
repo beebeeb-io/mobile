@@ -36,6 +36,7 @@ MANIFEST=(
   "backup-device-id-test.swift|modules/beebeeb-crypto/ios/BackupDeviceId.swift modules/beebeeb-crypto/ios/PendingUploadServerCheck.swift modules/beebeeb-crypto/ios/PhotoBackupServerResponses.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift"
   "backup-surface-state-test.swift|modules/beebeeb-crypto/ios/BackupSurfaceState.swift modules/beebeeb-crypto/ios/PendingUploadServerCheck.swift modules/beebeeb-crypto/ios/PhotoBackupServerResponses.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift"
   "kept-in-flight-upload-test.swift|modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/SignOutMarkFlush.swift modules/beebeeb-crypto/ios/ManifestWriteFence.swift modules/beebeeb-crypto/ios/BackupManifestHandle.swift modules/beebeeb-crypto/ios/PendingUploadServerCheck.swift modules/beebeeb-crypto/ios/PhotoBackupServerClient.swift modules/beebeeb-crypto/ios/PhotoBackupServerResponses.swift"
+  "manifest-shm-two-copies-test.swift|modules/beebeeb-crypto/ios/BackupManifestHandle.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/ManifestWriteFence.swift"
   "pending-upload-server-check-test.swift|modules/beebeeb-crypto/ios/PendingUploadServerCheck.swift modules/beebeeb-crypto/ios/PhotoBackupServerClient.swift modules/beebeeb-crypto/ios/PhotoBackupServerResponses.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/ManifestWriteFence.swift modules/beebeeb-crypto/ios/BackupManifestHandle.swift"
 )
 
@@ -67,11 +68,45 @@ for entry in "${MANIFEST[@]}"; do
   cp "$driver" "$tmp/main.swift"
   echo "== $base  (sources: $srcs)"
   flags=(-swift-version 5 -O)
+  extra_objs=()
   case "$base" in
     native-video-streamer-harness.swift|native-preview-working-storage-test.swift) flags+=(-DDEBUG) ;;
+    manifest-shm-two-copies-test.swift)
+      # Task 2033: two SQLite copies, as in the app. expo-sqlite's own copy is
+      # built from the exact vendored amalgamation with ExpoSQLite.podspec's
+      # flags (loaded by the test with dlopen). The engine's copy is a vanilla
+      # SQLite linked INTO the test binary, as the Rust core's bundled one is
+      # in the app; by default expo's amalgamation with its exsqlite3 rename
+      # reversed, or BB_ENGINE_SQLITE_SRC (e.g. libsqlite3-sys 0.30.1's
+      # sqlite3.c, the app's exact 3.46.0). Never the macOS system library:
+      # Apple's copy hides the bug (see the test's header).
+      expo_src=node_modules/expo-sqlite/vendor/sqlite3/sqlite3.c
+      if [ ! -f "$expo_src" ]; then
+        echo "MISSING $expo_src (run bun install first): $base cannot run"
+        rc=1
+        continue
+      fi
+      expo_cflags=(-DHAVE_USLEEP=1 -DSQLITE_ENABLE_LOCKING_STYLE=0 -DSQLITE_ENABLE_BYTECODE_VTAB=1 -DSQLITE_TEMP_STORE=2
+        -DSQLITE_ENABLE_SESSION=1 -DSQLITE_ENABLE_PREUPDATE_HOOK=1 -DSQLITE_ENABLE_MATH_FUNCTIONS=1
+        -DSQLITE_ENABLE_FTS4=1 -DSQLITE_ENABLE_FTS3_PARENTHESIS=1 -DSQLITE_ENABLE_FTS5=1)
+      engine_src="${BB_ENGINE_SQLITE_SRC:-}"
+      if [ -z "$engine_src" ]; then
+        engine_src="$tmp/engine-sqlite3.c"
+        sed 's/exsqlite3/sqlite3/g' "$expo_src" >"$engine_src"
+      fi
+      if ! xcrun clang -dynamiclib -O1 -w "${expo_cflags[@]}" "$expo_src" -o "$tmp/libexpo-sqlite3.dylib" >"$LOG_DIR/$base.expo-sqlite.log" 2>&1 \
+        || ! xcrun clang -c -O1 -w -DSQLITE_THREADSAFE=1 "$engine_src" -o "$tmp/engine-sqlite3.o" >"$LOG_DIR/$base.engine-sqlite.log" 2>&1; then
+        cat "$LOG_DIR/$base.expo-sqlite.log" "$LOG_DIR/$base.engine-sqlite.log" 2>/dev/null
+        echo "COMPILE FAILED: $base (SQLite copies)"
+        rc=1
+        continue
+      fi
+      extra_objs+=("$tmp/engine-sqlite3.o")
+      export BB_EXPO_SQLITE_DYLIB="$tmp/libexpo-sqlite3.dylib"
+      ;;
   esac
   # shellcheck disable=SC2086
-  if ! xcrun swiftc "${flags[@]}" $srcs "$tmp/main.swift" -o "$tmp/t" >"$LOG_DIR/$base.build.log" 2>&1; then
+  if ! xcrun swiftc "${flags[@]}" $srcs "$tmp/main.swift" ${extra_objs[@]+"${extra_objs[@]}"} -o "$tmp/t" >"$LOG_DIR/$base.build.log" 2>&1; then
     cat "$LOG_DIR/$base.build.log"
     echo "COMPILE FAILED: $base"
     rc=1

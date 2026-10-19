@@ -768,9 +768,23 @@ sign-out purge did, the process kept using the deleted inode, and the next cold 
 an empty manifest and uploaded every photo again into the same folder (sim evidence
 `_qa-evidence/1962/sim-dup/`).
 
-- **Never close the JS handle while the engine's connection is open on the file.** expo-sqlite
-  compiles its own SQLite (`node_modules/expo-sqlite/ios/sqlite3.c`); the engine links the system
-  one. Two SQLite copies in one process cannot see each other's connections: a JS `closeAsync()`
+- **The two copies (corrected 2026-10-19, task 2033).** expo-sqlite compiles its own SQLite
+  (`node_modules/expo-sqlite/vendor/sqlite3/sqlite3.c`, 3.50.3, symbols renamed `exsqlite3_*`).
+  The engine's `import SQLite3` does NOT reach the system libsqlite3, as this file used to say:
+  `ios/BeebeebCore.xcframework`'s `libbeebeeb_uniffi.a` exports a vanilla `sqlite3_*` (SQLite
+  3.46.0, libsqlite3-sys bundled; `nm -gU ... | grep _sqlite3_step`), and the linker binds the
+  engine to it (TestFlight 240 crash: `sqlite3_step` frame inside the Beebeeb image). So
+  "build expo-sqlite against the system SQLite" would NOT give one copy.
+- **The first open of either copy truncates `-shm` under the other (task 2033, TestFlight 240
+  launch crash).** A copy's first connection asks F_GETLK about the `-shm` DMS byte; F_GETLK never
+  reports same-process locks, so it truncates `-shm` to 3 bytes and re-extends it. Since round 10
+  the JS open gate opens the engine's handle first, so JS's first `migrate` statement truncates the
+  `-shm` the engine has mmapped; an engine read in that window that touches the WAL-index hash
+  (any WAL frames) dies with `SIGBUS / cluster_pagein past EOF`. Reproduced deterministically by
+  `scripts/swift-tests/manifest-shm-two-copies-test.swift` (the runner builds both copies). The
+  same pair also lets both copies hold `BEGIN IMMEDIATE` at once (no writer exclusion).
+- **Never close the JS handle while the engine's connection is open on the file.** Two SQLite
+  copies in one process cannot see each other's connections: a JS `closeAsync()`
   concluded it was the last connection and deleted `-wal`/`-shm` under the engine's open handle
   (simulator, task 1667). So an ordinary sign-out keeps the JS handle OPEN (the reset runs through
   the engine's handle). JS closes it in exactly two places, both after the engine's handle is
