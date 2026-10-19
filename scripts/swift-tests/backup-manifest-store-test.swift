@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 1667 — standalone swiftc test for the account-scoped camera-roll backup
 // manifest. Compiled with the REAL shipped sources
@@ -84,33 +84,33 @@ CREATE TABLE IF NOT EXISTS backup_upload_chunks (
 func open(_ path: String) -> OpaquePointer {
   var db: OpaquePointer?
   let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-  precondition(sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
-  sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+  precondition(exsqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
+  exsqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
   return db!
 }
 
 func exec(_ db: OpaquePointer, _ sql: String) {
   var err: UnsafeMutablePointer<CChar>?
-  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+  if exsqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
     let msg = err.map { String(cString: $0) } ?? "?"
-    sqlite3_free(err)
+    exsqlite3_free(err)
     fatalError("SQL failed: \(msg)\n\(sql)")
   }
 }
 
 func scalar(_ db: OpaquePointer, _ sql: String) -> Int {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
-  return Int(sqlite3_column_int64(stmt, 0))
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+  return Int(exsqlite3_column_int64(stmt, 0))
 }
 
 func text(_ db: OpaquePointer, _ sql: String) -> String? {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW, let c = sqlite3_column_text(stmt, 0) else { return nil }
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW, let c = exsqlite3_column_text(stmt, 0) else { return nil }
   return String(cString: c)
 }
 
@@ -198,8 +198,8 @@ do {
   // Same process, after sign-out: both handles keep working on the SAME file.
   // Non-fatal on purpose: under the old purge these writes hit a deleted
   // inode and fail or vanish; the assertions below must report that.
-  sqlite3_exec(a, "INSERT INTO backup_assets (local_asset_id, created_at, asset_type, status) VALUES ('after-a','x','photo','pending_upload')", nil, nil, nil)
-  sqlite3_exec(b, "INSERT INTO backup_verification (remote_file_id, success) VALUES ('f-after', 1)", nil, nil, nil)
+  exsqlite3_exec(a, "INSERT INTO backup_assets (local_asset_id, created_at, asset_type, status) VALUES ('after-a','x','photo','pending_upload')", nil, nil, nil)
+  exsqlite3_exec(b, "INSERT INTO backup_verification (remote_file_id, success) VALUES ('f-after', 1)", nil, nil, nil)
   try? fm.createDirectory(at: sqliteDir, withIntermediateDirectories: true)
   let fresh = open(dbPath)
   expect(scalar(fresh, "SELECT COUNT(*) FROM backup_assets WHERE local_asset_id = 'after-a'") == 1,
@@ -209,9 +209,9 @@ do {
   let check = orphanedFds(containing: "beebeeb-backup.db")
   expect(check.checked > 0, "lsof found this process's fds on beebeeb-backup.db (the check is not blind)")
   expect(check.orphaned.isEmpty, "no fd points at a deleted backup database: \(check.orphaned)")
-  sqlite3_close_v2(fresh)
-  sqlite3_close_v2(b)
-  sqlite3_close_v2(a)
+  exsqlite3_close_v2(fresh)
+  exsqlite3_close_v2(b)
+  exsqlite3_close_v2(a)
 } catch {
   expect(false, "section 1 threw: \(error)")
 }
@@ -231,7 +231,7 @@ do {
   // On macOS this write fails (SQLITE_IOERR: the -shm/-wal went with the
   // directory); on the simulator lsof showed the app still writing its open
   // fds. Either way nothing reaches the file the next launch opens.
-  sqlite3_exec(a, "INSERT INTO backup_assets (local_asset_id, created_at, asset_type, status) VALUES ('orphan-write','x','photo','pending_upload')", nil, nil, nil)
+  exsqlite3_exec(a, "INSERT INTO backup_assets (local_asset_id, created_at, asset_type, status) VALUES ('orphan-write','x','photo','pending_upload')", nil, nil, nil)
   try! fm.createDirectory(at: dir, withIntermediateDirectories: true)
   let fresh = open(path)
   exec(fresh, schema)
@@ -239,8 +239,8 @@ do {
          "control: the next launch starts from an EMPTY manifest (the duplicate-upload trigger)")
   let check = orphanedFds(containing: "control/SQLite/beebeeb-backup.db")
   expect(!check.orphaned.isEmpty, "control: the lsof check flags the engine's fd on the deleted inode")
-  sqlite3_close_v2(fresh)
-  sqlite3_close_v2(a)
+  exsqlite3_close_v2(fresh)
+  exsqlite3_close_v2(a)
 } catch {
   expect(false, "section 1b threw: \(error)")
 }
@@ -251,7 +251,7 @@ do {
   let path = root.appendingPathComponent("empty.db").path
   let db = open(path)
   expect(!BackupManifestStore.resetInPlace(db), "no backup_assets table -> false (caller closes + unlinks)")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 2. Account ownership
@@ -295,7 +295,7 @@ do {
 
   let again: (adopted: Int, requeued: Int)? = BackupManifestStore.claim(db, accountId: "acct-A", nowMs: 2_000)
   expect(again?.adopted == 0 && again?.requeued == 0, "claim is idempotent")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 2b. Upload completion + server marks
@@ -319,7 +319,7 @@ do {
   BackupManifestStore.markUploaded(db, assetId: "p1", remoteFileId: "f1b", accountId: "acct-A", uploadedAtIso: "2026-10-18T02:00:00Z")
   expect((BackupManifestStore.pendingServerMarks(db, accountId: "acct-A", limit: 10) ?? []).first?.fileId == "f1b",
          "a re-upload needs a new mark")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 3. Rebuild from the server map
@@ -351,7 +351,7 @@ do {
   expect(text(db, "SELECT remote_file_id FROM backup_assets WHERE local_asset_id='up'") == "f-mine", "an uploaded row keeps its file")
   expect(scalar(db, "SELECT COUNT(*) FROM backup_assets") == 6, "nothing deleted")
   expect(BackupManifestStore.needsServerRebuild(db, accountId: "acct-A") == false, "after the rebuild the manifest is ready")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - Helpers for round 2
@@ -438,7 +438,7 @@ do {
   insert(db, "not-scanned-yet", status: "pending_upload")
   expect(BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now) == 1, "promoted once the scan inserted it")
   expect(BackupManifestStore.pendingMarkCount(db, accountId: "acct-A") == 0, "and consumed")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 5. Round 2 (Codex P1): a busy WAL checkpoint is a failed reset
@@ -460,13 +460,13 @@ do {
   let r = BackupManifestStore.truncateWal(a, attempts: 1, retryDelayUs: 0)
   expect(!r.ok && r.walBytes > 0, "the checkpoint result shows the WAL still holds frames (rc \(r.rc), wal \(r.walBytes) bytes)")
   exec(reader, "COMMIT")
-  sqlite3_close_v2(reader)
+  exsqlite3_close_v2(reader)
   expect(BackupManifestStore.resetInPlace(a, nowMs: now, checkpointAttempts: 2, busyTimeoutMs: 50, retryDelayUs: 1_000),
          "with the reader gone the retried reset succeeds")
   expect(walBytes(path) == 0, "and the WAL is 0 bytes")
   expect(!fileBytesContain(path, "BUSY-WAL-MARKER") && !fileBytesContain(path + "-wal", "BUSY-WAL-MARKER"),
          "the outgoing row's bytes are gone from database and WAL")
-  sqlite3_close_v2(a)
+  exsqlite3_close_v2(a)
 }
 
 // MARK: - 6. Round 2 (Codex P1): recovery after a failed reset
@@ -478,7 +478,7 @@ do {
   exec(a, schema)
   BackupManifestStore.migrate(a)
   insert(a, "p1", status: "uploaded", remote: "f1", owner: "acct-A")
-  sqlite3_close_v2(a)
+  exsqlite3_close_v2(a)
   let before = inode(path)
   let r = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now, allowUnlink: true)
   expect(r.ok && !r.unlinked, "recovery resets in place when it can (ok \(r.ok), unlinked \(r.unlinked))")
@@ -486,7 +486,7 @@ do {
   let check = open(path)
   expect(scalar(check, "SELECT COUNT(*) FROM backup_assets") == 0, "recovered manifest is empty")
   expect(BackupManifestStore.pendingMarkCount(check, accountId: "acct-A") == 1, "and kept acct-A's unmarked upload")
-  sqlite3_close_v2(check)
+  exsqlite3_close_v2(check)
 }
 
 do {
@@ -499,7 +499,7 @@ do {
   BackupManifestStore.migrate(a)
   insert(a, "p1", status: "uploaded", remote: "f1", owner: "acct-A")
   exec(a, "INSERT INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms) VALUES ('acct-B', 'pb', 'f-b', \(now))")
-  sqlite3_close_v2(a)
+  exsqlite3_close_v2(a)
   let locker = open(path)
   exec(locker, "BEGIN IMMEDIATE")
   let before = inode(path)
@@ -514,9 +514,9 @@ do {
   expect(BackupManifestStore.pendingMarkCount(fresh, accountId: "acct-B") == 1, "acct-B's kept row carried under acct-B")
   expect(scalar(fresh, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'backup_assets'") == 0,
          "the new file holds no manifest rows at all (the engine recreates its tables on open)")
-  sqlite3_close_v2(fresh)
+  exsqlite3_close_v2(fresh)
   exec(locker, "ROLLBACK")
-  sqlite3_close_v2(locker)
+  exsqlite3_close_v2(locker)
 }
 
 // MARK: - 7. Round 4 (Codex P1 "Fail closed when applying the server identifier map")
@@ -579,8 +579,8 @@ do {
   expect(empty == 0, "an empty server map is a SUCCESS with 0 promoted, not a failure")
   let noneKept: Int? = BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now)
   expect(noneKept == 0, "nothing kept is a success with 0, not a failure")
-  sqlite3_close_v2(locker)
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(locker)
+  exsqlite3_close_v2(db)
 }
 
 do {
@@ -591,7 +591,7 @@ do {
   expect(needs == nil, "needsServerRebuild on an unreadable manifest is nil, not true (got \(String(describing: needs)))")
   let count: Int? = BackupManifestStore.uploadedCount(db, accountId: "acct-A")
   expect(count == nil, "uploadedCount on an unreadable manifest is nil, not 0 (got \(String(describing: count)))")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 do {
@@ -613,8 +613,8 @@ do {
   expect(applied == nil, "a failing update makes applyServerMap report failure (got \(String(describing: applied)))")
   expect(scalar(db, "SELECT COUNT(*) FROM backup_assets WHERE status = 'pending_upload'") == 3,
          "and nothing of the map is kept: all 3 still pending (rolled back)")
-  expect(sqlite3_get_autocommit(db) != 0, "no transaction left open on the engine's handle")
-  sqlite3_close_v2(db)
+  expect(exsqlite3_get_autocommit(db) != 0, "no transaction left open on the engine's handle")
+  exsqlite3_close_v2(db)
 }
 
 do {
@@ -624,7 +624,7 @@ do {
   exec(db, "CREATE TABLE backup_pending_marks (unexpected TEXT)")
   let kept: Int? = BackupManifestStore.applyPendingMarks(db, accountId: "acct-A", nowMs: now)
   expect(kept == nil, "unreadable kept marks: applyPendingMarks reports failure, not 0 (got \(String(describing: kept)))")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 8. Round 5 (Codex P2 "Expire pending marks even when the current account has none")
@@ -673,7 +673,7 @@ do {
   expect(BackupManifestStore.applyPendingMarks(db, accountId: "acct-C", nowMs: now + 26 * day) == 0, "acct-C 26 days on: 0 promoted")
   expect(scalar(db, "SELECT COUNT(*) FROM backup_pending_marks") == 0,
          "after 30 days nothing of acct-A remains, though acct-A never signed in again")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 do {
@@ -682,7 +682,7 @@ do {
   let db = deviceUsedByA("expiry-empty-account.db")
   _ = BackupManifestStore.applyPendingMarks(db, accountId: "", nowMs: now)
   expect(countA(db, "old-") == 0 && countA(db, "fresh-") == 3, "applyPendingMarks with no account still expires the old rows")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 do {
@@ -706,7 +706,7 @@ do {
   expect(promoted == 3, "only the 3 marks inside 30 days are promoted (got \(String(describing: promoted)))")
   expect(scalar(db, "SELECT COUNT(*) FROM backup_assets WHERE local_asset_id LIKE 'old-%' AND status = 'pending_upload'") == 2,
          "the 2 expired photos upload again instead of reviving a 33-day-old association")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 #if !RED_HEAD
@@ -731,9 +731,9 @@ do {
   exec(locker, "BEGIN IMMEDIATE")
   expect(BackupManifestStore.expirePendingMarks(db, nowMs: now + 400 * day) == nil, "under a writer lock the expiry reports failure (nil)")
   exec(locker, "ROLLBACK")
-  sqlite3_close_v2(locker)
+  exsqlite3_close_v2(locker)
   expect(BackupManifestStore.expirePendingMarks(db, nowMs: now + 400 * day) == 1, "after the lock is released the next trigger expires it")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 do {
@@ -741,7 +741,7 @@ do {
   let db = open(root.appendingPathComponent("expiry-no-table.db").path)
   exec(db, schema)
   expect(BackupManifestStore.expirePendingMarks(db, nowMs: now) == 0, "no backup_pending_marks table: 0, not a failure")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 #endif
 
@@ -770,12 +770,12 @@ do {
   exec(a, schema)
   BackupManifestStore.migrate(a)
   insert(a, "p1", status: "uploaded", remote: "f1", owner: "acct-A")
-  sqlite3_close_v2(a)
+  exsqlite3_close_v2(a)
   let locker = open(path)
   exec(locker, "BEGIN IMMEDIATE")
   let replaced = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now, allowUnlink: true)
   exec(locker, "ROLLBACK")
-  sqlite3_close_v2(locker)
+  exsqlite3_close_v2(locker)
   expect(replaced.ok && replaced.unlinked, "r12-5.0: the file was replaced")
   // The next account's engine opens it first (its schema) and starts an upload.
   let engine = open(path)
@@ -790,8 +790,8 @@ do {
   expect(text(js, "SELECT status FROM backup_assets WHERE local_asset_id = 'b-live'") == "uploading",
          "r12-5.2: the engine's live 'uploading' row is untouched by JS's open (got \(text(js, "SELECT status FROM backup_assets WHERE local_asset_id = 'b-live'") ?? "nil"))")
   expect(BackupManifestStore.pendingMarkCount(js, accountId: "acct-A") == 1, "r12-5.3: the carried mark is still there")
-  sqlite3_close_v2(js)
-  sqlite3_close_v2(engine)
+  exsqlite3_close_v2(js)
+  exsqlite3_close_v2(engine)
 
   // Control: a file at user_version 0 (the round 11 replacement) is migrated.
   let control = root.appendingPathComponent("replaced-version-control.db").path
@@ -802,7 +802,7 @@ do {
   jsOpenAndMigrate(c)
   expect(text(c, "SELECT status FROM backup_assets WHERE local_asset_id = 'b-live'") == "uploaded",
          "r12-5.4: control: at user_version 0 JS flips 'uploading' to 'uploaded' (the bug the version prevents)")
-  sqlite3_close_v2(c)
+  exsqlite3_close_v2(c)
 }
 
 // MARK: - 10. Round 12 (review item 10): rows that ENTERED the queue
@@ -824,11 +824,11 @@ do {
   expect(BackupManifestStore.insertScannedAssets(db, scanned(["c5"]), nowMs: now), "r12-10.4: the Bool form still reports success")
   let locker = open(root.appendingPathComponent("insert-count.db").path)
   exec(locker, "BEGIN IMMEDIATE")
-  sqlite3_busy_timeout(db, 0)
+  exsqlite3_busy_timeout(db, 0)
   expect(BackupManifestStore.insertScannedAssetsCounting(db, scanned(["c9"]), nowMs: now) == nil, "r12-10.5: a failed insert is nil, never 0")
   exec(locker, "ROLLBACK")
-  sqlite3_close_v2(locker)
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(locker)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 11. Round 13 (review item 8): the reset restores the connection's settings
@@ -840,7 +840,7 @@ do {
   BackupManifestStore.migrate(db)
   insert(db, "s-1", status: "uploaded", remote: "f-s1", owner: "acct-A")
   // The engine's long-lived connection: no busy timeout, secure_delete off.
-  sqlite3_busy_timeout(db, 0)
+  exsqlite3_busy_timeout(db, 0)
   exec(db, "PRAGMA secure_delete = 0")
   let before = BackupManifestStore.connectionSettings(db)
   expect(before == BackupManifestStore.ConnectionSettings(busyTimeoutMs: 0, secureDelete: 0), "r13-8.0: read the settings (got \(String(describing: before)))")
@@ -853,11 +853,11 @@ do {
   exec(locker, "BEGIN IMMEDIATE")
   expect(!BackupManifestStore.resetInPlace(db, nowMs: now, busyTimeoutMs: 50), "r13-8.3: the reset fails under another writer")
   exec(locker, "ROLLBACK")
-  sqlite3_close_v2(locker)
+  exsqlite3_close_v2(locker)
   expect(BackupManifestStore.connectionSettings(db) == before, "r13-8.4: and the settings are restored on that path too")
   // Other values round-trip (secure_delete FAST, a 750 ms timeout).
   insert(db, "scrub-me-r13", status: "pending_upload")
-  sqlite3_busy_timeout(db, 750)
+  exsqlite3_busy_timeout(db, 750)
   exec(db, "PRAGMA secure_delete = FAST")
   let fast = BackupManifestStore.connectionSettings(db)
   expect(BackupManifestStore.resetInPlace(db, nowMs: now) && BackupManifestStore.connectionSettings(db) == fast,
@@ -865,7 +865,7 @@ do {
   // The reset itself still overwrote the freed pages (secure_delete was on during it).
   let data = fm.contents(atPath: path) ?? Data()
   expect(data.range(of: Data("scrub-me-r13".utf8)) == nil, "r13-8.6: the reset still scrubbed a deleted row's bytes")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 12. Round 13 (review item 11): no SELECT per scanned row
@@ -886,14 +886,14 @@ do {
   exec(db, "UPDATE backup_assets SET status = 'failed', retry_count = 4, error_message = 'net' WHERE local_asset_id = 'k3'")
   exec(db, "UPDATE backup_assets SET status = 'local_missing', retry_count = 9, error_message = 'gone' WHERE local_asset_id = 'k4'")
   exec(db, "UPDATE backup_assets SET selected_for_backup = 0 WHERE local_asset_id = 'k5'")
-  sqlite3_trace_v2(db, UInt32(SQLITE_TRACE_STMT), { _, _, _, x in
+  exsqlite3_trace_v2(db, UInt32(SQLITE_TRACE_STMT), { _, _, _, x in
     tracedStatements += 1
     if let x, String(cString: x.assumingMemoryBound(to: CChar.self)).uppercased().hasPrefix("SELECT") { tracedSelects += 1 }
     return 0
   }, nil)
   // The full scan again (the common case: the whole library re-upserted).
   let entered = BackupManifestStore.insertScannedAssetsCounting(db, assets, nowMs: now)
-  sqlite3_trace_v2(db, 0, nil, nil)
+  exsqlite3_trace_v2(db, 0, nil, nil)
   expect(entered == 1, "r13-11.2: only the local_missing row entered (got \(String(describing: entered)))")
   expect(tracedSelects == 0, "r13-11.3: no SELECT per row (got \(tracedSelects))")
   // BEGIN + COMMIT + one upsert per row + one revive for k4.
@@ -908,7 +908,7 @@ do {
   let dup = [BackupManifestStore.ScannedAsset(localAssetId: "new-1", createdAt: "2026-10-18T10:00:00Z", assetType: "photo"),
              BackupManifestStore.ScannedAsset(localAssetId: "new-1", createdAt: "2026-10-18T10:00:00Z", assetType: "photo")]
   expect(BackupManifestStore.insertScannedAssetsCounting(db, dup, nowMs: now) == 1, "r13-11.9: a duplicate in one scan counts once")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - Report

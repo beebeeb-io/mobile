@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 1667 round 3 (Codex P1 "Enforce the eight-second sign-out deadline") —
 // standalone swiftc test for the sign-out mark flush. Compiled with the REAL
@@ -247,26 +247,26 @@ defer { try? fm.removeItem(at: root) }
 func open(_ path: String) -> OpaquePointer {
   var db: OpaquePointer?
   let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-  precondition(sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
-  sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+  precondition(exsqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
+  exsqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
   return db!
 }
 
 func exec(_ db: OpaquePointer, _ sql: String) {
   var err: UnsafeMutablePointer<CChar>?
-  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+  if exsqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
     let msg = err.map { String(cString: $0) } ?? "?"
-    sqlite3_free(err)
+    exsqlite3_free(err)
     fatalError("SQL failed: \(msg)\n\(sql)")
   }
 }
 
 func scalar(_ db: OpaquePointer, _ sql: String) -> Int {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
-  return Int(sqlite3_column_int64(stmt, 0))
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+  return Int(exsqlite3_column_int64(stmt, 0))
 }
 
 do {
@@ -319,7 +319,7 @@ do {
   expect(scalar(db, "SELECT COUNT(*) FROM backup_pending_marks WHERE local_asset_id = 'a1'") == 0,
          "5. the marked upload is not kept (the server has it)")
   expect(scalar(db, "SELECT COUNT(*) FROM backup_assets") == 0, "5. the manifest itself is empty")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
   session.invalidateAndCancel()
 }
 

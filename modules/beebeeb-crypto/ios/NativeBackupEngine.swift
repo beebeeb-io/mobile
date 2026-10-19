@@ -5,7 +5,7 @@ import Foundation
 import Photos
 import SDWebImage
 import SDWebImageWebPCoder
-import SQLite3
+import ManifestSQLite
 import UIKit
 import UniformTypeIdentifiers
 import UserNotifications
@@ -1407,12 +1407,12 @@ final class NativeBackupEngine: NSObject {
       guard let db = db else { return }
       var stmt: OpaquePointer?
       let sql = "SELECT status, COUNT(*) FROM backup_assets WHERE COALESCE(selected_for_backup, 1) = 1 GROUP BY status"
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-      defer { sqlite3_finalize(stmt) }
-      while sqlite3_step(stmt) == SQLITE_ROW {
-        guard let statusPointer = sqlite3_column_text(stmt, 0) else { continue }
+      guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+      defer { exsqlite3_finalize(stmt) }
+      while exsqlite3_step(stmt) == SQLITE_ROW {
+        guard let statusPointer = exsqlite3_column_text(stmt, 0) else { continue }
         let status = String(cString: statusPointer)
-        counts[status] = Int(sqlite3_column_int(stmt, 1))
+        counts[status] = Int(exsqlite3_column_int(stmt, 1))
       }
       counts["failed_retryable"] = countWhere(db: db, condition: "COALESCE(selected_for_backup, 1) = 1 AND status = 'failed' AND COALESCE(retry_count, 0) < 10")
       counts["failed_terminal"] = countWhere(db: db, condition: "COALESCE(selected_for_backup, 1) = 1 AND COALESCE(retry_count, 0) >= 10")
@@ -1433,12 +1433,12 @@ final class NativeBackupEngine: NSObject {
       guard let db = db else { return }
       var stmt: OpaquePointer?
       let sql = "SELECT status, COUNT(*) FROM backup_upload_chunks GROUP BY status"
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-      defer { sqlite3_finalize(stmt) }
-      while sqlite3_step(stmt) == SQLITE_ROW {
-        guard let statusPointer = sqlite3_column_text(stmt, 0) else { continue }
+      guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+      defer { exsqlite3_finalize(stmt) }
+      while exsqlite3_step(stmt) == SQLITE_ROW {
+        guard let statusPointer = exsqlite3_column_text(stmt, 0) else { continue }
         let status = String(cString: statusPointer)
-        counts[status] = Int(sqlite3_column_int(stmt, 1))
+        counts[status] = Int(exsqlite3_column_int(stmt, 1))
       }
     }
 
@@ -1579,12 +1579,12 @@ final class NativeBackupEngine: NSObject {
       guard let db = db else { return nil }
       var stmt: OpaquePointer?
       let sql = "SELECT uploaded_at FROM backup_assets WHERE uploaded_at IS NOT NULL ORDER BY uploaded_at DESC LIMIT 1"
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-      defer { sqlite3_finalize(stmt) }
-      guard sqlite3_step(stmt) == SQLITE_ROW, sqlite3_column_type(stmt, 0) != SQLITE_NULL else {
+      guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+      defer { exsqlite3_finalize(stmt) }
+      guard exsqlite3_step(stmt) == SQLITE_ROW, exsqlite3_column_type(stmt, 0) != SQLITE_NULL else {
         return nil
       }
-      return String(cString: sqlite3_column_text(stmt, 0))
+      return String(cString: exsqlite3_column_text(stmt, 0))
     }
   }
 
@@ -2685,13 +2685,13 @@ final class NativeBackupEngine: NSObject {
     return dbQueue.sync {
       guard let db = self.db else { return nil }
       var stmt: OpaquePointer?
-      defer { sqlite3_finalize(stmt) }
+      defer { exsqlite3_finalize(stmt) }
       let sql = "SELECT status FROM backup_assets WHERE local_asset_id = ? LIMIT 1"
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+      guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
       BackupManifestStore.bindText(stmt, 1, localId)
-      guard sqlite3_step(stmt) == SQLITE_ROW,
-            sqlite3_column_type(stmt, 0) != SQLITE_NULL else { return nil }
-      let raw = String(cString: sqlite3_column_text(stmt, 0))
+      guard exsqlite3_step(stmt) == SQLITE_ROW,
+            exsqlite3_column_type(stmt, 0) != SQLITE_NULL else { return nil }
+      let raw = String(cString: exsqlite3_column_text(stmt, 0))
       return Self.mapBridgeAssetStatus(raw)
     }
   }
@@ -2722,17 +2722,17 @@ final class NativeBackupEngine: NSObject {
     return dbQueue.sync {
       guard let db = self.db else { return nil }
       var stmt: OpaquePointer?
-      defer { sqlite3_finalize(stmt) }
+      defer { exsqlite3_finalize(stmt) }
       let sql = """
       SELECT error_message FROM backup_assets
       WHERE status IN ('failed', 'local_missing') AND error_message IS NOT NULL AND error_message != ''
       ORDER BY COALESCE(last_attempt_at, 0) DESC
       LIMIT 1
       """
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-      guard sqlite3_step(stmt) == SQLITE_ROW,
-            sqlite3_column_type(stmt, 0) != SQLITE_NULL else { return nil }
-      return String(cString: sqlite3_column_text(stmt, 0))
+      guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+      guard exsqlite3_step(stmt) == SQLITE_ROW,
+            exsqlite3_column_type(stmt, 0) != SQLITE_NULL else { return nil }
+      return String(cString: exsqlite3_column_text(stmt, 0))
     }
   }
 
@@ -3712,10 +3712,10 @@ final class NativeBackupEngine: NSObject {
         AND COALESCE(retry_count, 0) >= 10
       """
       var stmt: OpaquePointer?
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-      defer { sqlite3_finalize(stmt) }
-      sqlite3_step(stmt)
-      let resetCount = sqlite3_changes(db)
+      guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+      defer { exsqlite3_finalize(stmt) }
+      exsqlite3_step(stmt)
+      let resetCount = exsqlite3_changes(db)
       if resetCount > 0 {
         NSLog("[NativeBackupEngine] Reset \(resetCount) retry-exhausted uploads for manual backup")
       }
@@ -5356,7 +5356,7 @@ final class NativeBackupEngine: NSObject {
     CREATE INDEX IF NOT EXISTS idx_backup_upload_chunks_asset_status
       ON backup_upload_chunks(local_asset_id, status);
     """
-    sqlite3_exec(db, sql, nil, nil, nil)
+    exsqlite3_exec(db, sql, nil, nil, nil)
 
     let migrations = [
       "ALTER TABLE backup_assets ADD COLUMN staged_file_id TEXT",
@@ -5374,7 +5374,7 @@ final class NativeBackupEngine: NSObject {
       "ALTER TABLE backup_assets ADD COLUMN staged_account_id TEXT",
     ]
     for migration in migrations {
-      sqlite3_exec(db, migration, nil, nil, nil)
+      exsqlite3_exec(db, migration, nil, nil, nil)
     }
     // Task 1667: uploaded_account_id + server_marked_at.
     BackupManifestStore.migrate(db)
@@ -5396,11 +5396,11 @@ final class NativeBackupEngine: NSObject {
       )
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_int64(stmt, 1, nowMs)
-    sqlite3_step(stmt)
-    let changed = sqlite3_changes(db)
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
+    exsqlite3_bind_int64(stmt, 1, nowMs)
+    exsqlite3_step(stmt)
+    let changed = exsqlite3_changes(db)
     if changed > 0 {
       NSLog("[NativeBackupEngine] Moved \(changed) missing PhotoKit asset rows to local_missing")
     }
@@ -5464,11 +5464,11 @@ final class NativeBackupEngine: NSObject {
     LIMIT ?
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_int(stmt, 1, Int32(limit))
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { exsqlite3_finalize(stmt) }
+    exsqlite3_bind_int(stmt, 1, Int32(limit))
 
-    while sqlite3_step(stmt) == SQLITE_ROW {
+    while exsqlite3_step(stmt) == SQLITE_ROW {
       results.append(backupAssetRow(from: stmt))
     }
 
@@ -5476,26 +5476,26 @@ final class NativeBackupEngine: NSObject {
   }
 
   private func backupAssetRow(from stmt: OpaquePointer?) -> BackupAssetRow {
-    let localAssetId = String(cString: sqlite3_column_text(stmt, 0))
-    let remoteFileId: String? = sqlite3_column_type(stmt, 1) != SQLITE_NULL
-      ? String(cString: sqlite3_column_text(stmt, 1))
+    let localAssetId = String(cString: exsqlite3_column_text(stmt, 0))
+    let remoteFileId: String? = exsqlite3_column_type(stmt, 1) != SQLITE_NULL
+      ? String(cString: exsqlite3_column_text(stmt, 1))
       : nil
-    let assetType = String(cString: sqlite3_column_text(stmt, 2))
-    let contentHash = String(cString: sqlite3_column_text(stmt, 3))
-    let fileSize = sqlite3_column_int64(stmt, 4)
-    let createdAt = String(cString: sqlite3_column_text(stmt, 5))
-    let retryCount = Int(sqlite3_column_int(stmt, 6))
-    let errorMsg: String? = sqlite3_column_type(stmt, 7) != SQLITE_NULL
-      ? String(cString: sqlite3_column_text(stmt, 7))
+    let assetType = String(cString: exsqlite3_column_text(stmt, 2))
+    let contentHash = String(cString: exsqlite3_column_text(stmt, 3))
+    let fileSize = exsqlite3_column_int64(stmt, 4)
+    let createdAt = String(cString: exsqlite3_column_text(stmt, 5))
+    let retryCount = Int(exsqlite3_column_int(stmt, 6))
+    let errorMsg: String? = exsqlite3_column_type(stmt, 7) != SQLITE_NULL
+      ? String(cString: exsqlite3_column_text(stmt, 7))
       : nil
-    let stagedFileId: String? = sqlite3_column_type(stmt, 8) != SQLITE_NULL
-      ? String(cString: sqlite3_column_text(stmt, 8))
+    let stagedFileId: String? = exsqlite3_column_type(stmt, 8) != SQLITE_NULL
+      ? String(cString: exsqlite3_column_text(stmt, 8))
       : nil
-    let stagedNameEncrypted: String? = sqlite3_column_type(stmt, 9) != SQLITE_NULL
-      ? String(cString: sqlite3_column_text(stmt, 9))
+    let stagedNameEncrypted: String? = exsqlite3_column_type(stmt, 9) != SQLITE_NULL
+      ? String(cString: exsqlite3_column_text(stmt, 9))
       : nil
-    let stagedMimeType: String? = sqlite3_column_type(stmt, 10) != SQLITE_NULL
-      ? String(cString: sqlite3_column_text(stmt, 10))
+    let stagedMimeType: String? = exsqlite3_column_type(stmt, 10) != SQLITE_NULL
+      ? String(cString: exsqlite3_column_text(stmt, 10))
       : nil
 
     return BackupAssetRow(
@@ -5511,17 +5511,17 @@ final class NativeBackupEngine: NSObject {
       stagedFileId: stagedFileId,
       stagedNameEncrypted: stagedNameEncrypted,
       stagedMimeType: stagedMimeType,
-      stagedIsMedia: sqlite3_column_int(stmt, 11) != 0,
-      stagedOriginalSize: sqlite3_column_int64(stmt, 12),
-      stagedChunkCount: Int(sqlite3_column_int(stmt, 13)),
-      stagedDir: sqlite3_column_type(stmt, 14) != SQLITE_NULL
-        ? String(cString: sqlite3_column_text(stmt, 14))
+      stagedIsMedia: exsqlite3_column_int(stmt, 11) != 0,
+      stagedOriginalSize: exsqlite3_column_int64(stmt, 12),
+      stagedChunkCount: Int(exsqlite3_column_int(stmt, 13)),
+      stagedDir: exsqlite3_column_type(stmt, 14) != SQLITE_NULL
+        ? String(cString: exsqlite3_column_text(stmt, 14))
         : nil,
-      stagedUploadSessionId: sqlite3_column_type(stmt, 15) != SQLITE_NULL
-        ? String(cString: sqlite3_column_text(stmt, 15))
+      stagedUploadSessionId: exsqlite3_column_type(stmt, 15) != SQLITE_NULL
+        ? String(cString: exsqlite3_column_text(stmt, 15))
         : nil,
-      stagedAccountId: sqlite3_column_type(stmt, 16) != SQLITE_NULL
-        ? String(cString: sqlite3_column_text(stmt, 16))
+      stagedAccountId: exsqlite3_column_type(stmt, 16) != SQLITE_NULL
+        ? String(cString: exsqlite3_column_text(stmt, 16))
         : nil
     )
   }
@@ -5541,10 +5541,10 @@ final class NativeBackupEngine: NSObject {
     LIMIT 1
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { exsqlite3_finalize(stmt) }
     BackupManifestStore.bindText(stmt, 1, localAssetId)
-    guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+    guard exsqlite3_step(stmt) == SQLITE_ROW else { return nil }
     return backupAssetRow(from: stmt)
   }
 
@@ -5559,9 +5559,9 @@ final class NativeBackupEngine: NSObject {
     LIMIT 1
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
-    defer { sqlite3_finalize(stmt) }
-    return sqlite3_step(stmt) == SQLITE_ROW
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+    defer { exsqlite3_finalize(stmt) }
+    return exsqlite3_step(stmt) == SQLITE_ROW
   }
 
   /// Mark an asset as currently uploading.
@@ -5570,11 +5570,11 @@ final class NativeBackupEngine: NSObject {
     let nowMs = nowMs()
     let sql = "UPDATE backup_assets SET status = 'uploading', last_attempt_at = ? WHERE local_asset_id = ?"
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_int64(stmt, 1, nowMs)
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
+    exsqlite3_bind_int64(stmt, 1, nowMs)
     BackupManifestStore.bindText(stmt, 2, assetId)
-    sqlite3_step(stmt)
+    exsqlite3_step(stmt)
   }
 
   private func markUploading(assetId: String, remoteFileId: String, uploadSessionId: String?) {
@@ -5590,28 +5590,28 @@ final class NativeBackupEngine: NSObject {
     WHERE local_asset_id = ?
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
     BackupManifestStore.bindText(stmt, 1, remoteFileId)
     if let uploadSessionId {
       BackupManifestStore.bindText(stmt, 2, uploadSessionId)
     } else {
-      sqlite3_bind_null(stmt, 2)
+      exsqlite3_bind_null(stmt, 2)
     }
-    sqlite3_bind_int64(stmt, 3, nowMs())
+    exsqlite3_bind_int64(stmt, 3, nowMs())
     BackupManifestStore.bindText(stmt, 4, assetId)
-    sqlite3_step(stmt)
+    exsqlite3_step(stmt)
   }
 
   private func markStaging(assetId: String) {
     guard let db = db else { return }
     let sql = "UPDATE backup_assets SET status = 'staging', last_attempt_at = ? WHERE local_asset_id = ?"
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_int64(stmt, 1, nowMs())
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
+    exsqlite3_bind_int64(stmt, 1, nowMs())
     BackupManifestStore.bindText(stmt, 2, assetId)
-    sqlite3_step(stmt)
+    exsqlite3_step(stmt)
   }
 
   private func markPending(assetId: String, error: String?) {
@@ -5624,16 +5624,16 @@ final class NativeBackupEngine: NSObject {
     WHERE local_asset_id = ?
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
     if let error {
       BackupManifestStore.bindText(stmt, 1, error)
     } else {
-      sqlite3_bind_null(stmt, 1)
+      exsqlite3_bind_null(stmt, 1)
     }
-    sqlite3_bind_int64(stmt, 2, nowMs())
+    exsqlite3_bind_int64(stmt, 2, nowMs())
     BackupManifestStore.bindText(stmt, 3, assetId)
-    sqlite3_step(stmt)
+    exsqlite3_step(stmt)
   }
 
   private func markStaged(
@@ -5665,39 +5665,39 @@ final class NativeBackupEngine: NSObject {
     WHERE local_asset_id = ?
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
     BackupManifestStore.bindText(stmt, 1, fileId)
     BackupManifestStore.bindText(stmt, 2, nameEncrypted)
     if let mimeType {
       BackupManifestStore.bindText(stmt, 3, mimeType)
     } else {
-      sqlite3_bind_null(stmt, 3)
+      exsqlite3_bind_null(stmt, 3)
     }
-    sqlite3_bind_int(stmt, 4, isMediaValue ? 1 : 0)
-    sqlite3_bind_int64(stmt, 5, originalSize)
-    sqlite3_bind_int(stmt, 6, Int32(chunkCount))
+    exsqlite3_bind_int(stmt, 4, isMediaValue ? 1 : 0)
+    exsqlite3_bind_int64(stmt, 5, originalSize)
+    exsqlite3_bind_int(stmt, 6, Int32(chunkCount))
     BackupManifestStore.bindText(stmt, 7, stagedDir)
-    sqlite3_bind_int64(stmt, 8, nowMs())
-    sqlite3_bind_int64(stmt, 9, originalSize)
+    exsqlite3_bind_int64(stmt, 8, nowMs())
+    exsqlite3_bind_int64(stmt, 9, originalSize)
     if let stagedAccountId {
       BackupManifestStore.bindText(stmt, 10, stagedAccountId)
     } else {
-      sqlite3_bind_null(stmt, 10)
+      exsqlite3_bind_null(stmt, 10)
     }
     BackupManifestStore.bindText(stmt, 11, assetId)
-    sqlite3_step(stmt)
+    exsqlite3_step(stmt)
   }
 
   private func updateStagedDirectory(assetId: String, stagedDir: String) {
     guard let db = db else { return }
     let sql = "UPDATE backup_assets SET staged_dir = ? WHERE local_asset_id = ?"
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
     BackupManifestStore.bindText(stmt, 1, stagedDir)
     BackupManifestStore.bindText(stmt, 2, assetId)
-    sqlite3_step(stmt)
+    exsqlite3_step(stmt)
   }
 
   /// Round 15: the statement lives in `BackupManifestStore.restageSQL`, which
@@ -5754,12 +5754,12 @@ final class NativeBackupEngine: NSObject {
     WHERE local_asset_id = ?
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
     BackupManifestStore.bindText(stmt, 1, error)
-    sqlite3_bind_int64(stmt, 2, nowMs)
+    exsqlite3_bind_int64(stmt, 2, nowMs)
     BackupManifestStore.bindText(stmt, 3, assetId)
-    sqlite3_step(stmt)
+    exsqlite3_step(stmt)
   }
 
   private func markLocalMissing(assetId: String) {
@@ -5774,21 +5774,21 @@ final class NativeBackupEngine: NSObject {
       AND status != 'uploaded'
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_int64(stmt, 1, nowMs())
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
+    exsqlite3_bind_int64(stmt, 1, nowMs())
     BackupManifestStore.bindText(stmt, 2, assetId)
-    sqlite3_step(stmt)
+    exsqlite3_step(stmt)
   }
 
   private func replaceStagedChunks(assetId: String, fileId: String, chunkPaths: [String]) {
     guard let db = db else { return }
     var deleteStmt: OpaquePointer?
-    if sqlite3_prepare_v2(db, "DELETE FROM backup_upload_chunks WHERE local_asset_id = ?", -1, &deleteStmt, nil) == SQLITE_OK {
+    if exsqlite3_prepare_v2(db, "DELETE FROM backup_upload_chunks WHERE local_asset_id = ?", -1, &deleteStmt, nil) == SQLITE_OK {
       BackupManifestStore.bindText(deleteStmt, 1, assetId)
-      sqlite3_step(deleteStmt)
+      exsqlite3_step(deleteStmt)
     }
-    sqlite3_finalize(deleteStmt)
+    exsqlite3_finalize(deleteStmt)
 
     let sql = """
     INSERT INTO backup_upload_chunks
@@ -5796,18 +5796,18 @@ final class NativeBackupEngine: NSObject {
     VALUES (?, ?, ?, ?, 'pending')
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_exec(db, "BEGIN", nil, nil, nil)
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
+    exsqlite3_exec(db, "BEGIN", nil, nil, nil)
     for (index, path) in chunkPaths.enumerated() {
       BackupManifestStore.bindText(stmt, 1, assetId)
       BackupManifestStore.bindText(stmt, 2, fileId)
-      sqlite3_bind_int(stmt, 3, Int32(index))
+      exsqlite3_bind_int(stmt, 3, Int32(index))
       BackupManifestStore.bindText(stmt, 4, path)
-      sqlite3_step(stmt)
-      sqlite3_reset(stmt)
+      exsqlite3_step(stmt)
+      exsqlite3_reset(stmt)
     }
-    sqlite3_exec(db, "COMMIT", nil, nil, nil)
+    exsqlite3_exec(db, "COMMIT", nil, nil, nil)
   }
 
   private func getPendingStagedChunks(assetId: String) -> [StagedChunkRow] {
@@ -5820,14 +5820,14 @@ final class NativeBackupEngine: NSObject {
     ORDER BY chunk_index ASC
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    defer { exsqlite3_finalize(stmt) }
     BackupManifestStore.bindText(stmt, 1, assetId)
     var chunks: [StagedChunkRow] = []
-    while sqlite3_step(stmt) == SQLITE_ROW {
+    while exsqlite3_step(stmt) == SQLITE_ROW {
       chunks.append(StagedChunkRow(
-        index: Int(sqlite3_column_int(stmt, 0)),
-        path: String(cString: sqlite3_column_text(stmt, 1))
+        index: Int(exsqlite3_column_int(stmt, 0)),
+        path: String(cString: exsqlite3_column_text(stmt, 1))
       ))
     }
     return chunks
@@ -5841,12 +5841,12 @@ final class NativeBackupEngine: NSObject {
     WHERE local_asset_id = ? AND chunk_index = ?
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
     BackupManifestStore.bindText(stmt, 1, path)
     BackupManifestStore.bindText(stmt, 2, assetId)
-    sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
-    sqlite3_step(stmt)
+    exsqlite3_bind_int(stmt, 3, Int32(chunkIndex))
+    exsqlite3_step(stmt)
   }
 
   private func countPendingStagedChunks(assetId: String) -> Int {
@@ -5858,10 +5858,10 @@ final class NativeBackupEngine: NSObject {
     WHERE local_asset_id = ?
       AND status != 'uploaded'
     """
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+    defer { exsqlite3_finalize(stmt) }
     BackupManifestStore.bindText(stmt, 1, assetId)
-    return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
+    return exsqlite3_step(stmt) == SQLITE_ROW ? Int(exsqlite3_column_int(stmt, 0)) : 0
   }
 
   private func markChunkUploading(assetId: String, chunkIndex: Int, taskId: Int) {
@@ -5872,12 +5872,12 @@ final class NativeBackupEngine: NSObject {
     WHERE local_asset_id = ? AND chunk_index = ?
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_int(stmt, 1, Int32(taskId))
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
+    exsqlite3_bind_int(stmt, 1, Int32(taskId))
     BackupManifestStore.bindText(stmt, 2, assetId)
-    sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
-    sqlite3_step(stmt)
+    exsqlite3_bind_int(stmt, 3, Int32(chunkIndex))
+    exsqlite3_step(stmt)
   }
 
   /// Round 8: a chunk callback only touches the chunk rows of the upload
@@ -5904,13 +5904,13 @@ final class NativeBackupEngine: NSObject {
     WHERE \(Self.chunkSessionPredicate)
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_int64(stmt, 1, nowMs())
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
+    exsqlite3_bind_int64(stmt, 1, nowMs())
     BackupManifestStore.bindText(stmt, 2, assetId)
-    sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
+    exsqlite3_bind_int(stmt, 3, Int32(chunkIndex))
     BackupManifestStore.bindText(stmt, 4, uploadSessionId)
-    sqlite3_step(stmt)
+    exsqlite3_step(stmt)
   }
 
   private func markChunkFailed(assetId: String, chunkIndex: Int, uploadSessionId: String, error: String) {
@@ -5921,13 +5921,13 @@ final class NativeBackupEngine: NSObject {
     WHERE \(Self.chunkSessionPredicate)
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
     BackupManifestStore.bindText(stmt, 1, error)
     BackupManifestStore.bindText(stmt, 2, assetId)
-    sqlite3_bind_int(stmt, 3, Int32(chunkIndex))
+    exsqlite3_bind_int(stmt, 3, Int32(chunkIndex))
     BackupManifestStore.bindText(stmt, 4, uploadSessionId)
-    sqlite3_step(stmt)
+    exsqlite3_step(stmt)
   }
 
   /// Round 8: the fence for a chunk-upload callback. MUST run on `dbQueue`,
@@ -5943,10 +5943,10 @@ final class NativeBackupEngine: NSObject {
     guard let db = db else { return }
     let sql = "DELETE FROM backup_upload_chunks WHERE local_asset_id = ?"
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
     BackupManifestStore.bindText(stmt, 1, assetId)
-    sqlite3_step(stmt)
+    exsqlite3_step(stmt)
   }
 
   /// Recover assets stuck in 'uploading' state for more than 5 minutes.
@@ -5961,12 +5961,12 @@ final class NativeBackupEngine: NSObject {
       AND (last_attempt_at IS NULL OR last_attempt_at < ?)
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_int64(stmt, 1, fiveMinAgoMs)
-    sqlite3_step(stmt)
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+    defer { exsqlite3_finalize(stmt) }
+    exsqlite3_bind_int64(stmt, 1, fiveMinAgoMs)
+    exsqlite3_step(stmt)
 
-    let changes = sqlite3_changes(db)
+    let changes = exsqlite3_changes(db)
     if changes > 0 {
       NSLog("[NativeBackupEngine] Recovered \(changes) stuck uploads")
     }
@@ -5979,11 +5979,11 @@ final class NativeBackupEngine: NSObject {
     // `reconcileOrphanedBackgroundTasks()`, so their task_id is safe to clear.
     let liveTaskIds = chunkUploadContinuations.keys
     if liveTaskIds.isEmpty {
-      sqlite3_exec(db, "UPDATE backup_upload_chunks SET status = 'pending', task_id = NULL WHERE status = 'uploading'", nil, nil, nil)
+      exsqlite3_exec(db, "UPDATE backup_upload_chunks SET status = 'pending', task_id = NULL WHERE status = 'uploading'", nil, nil, nil)
     } else {
       let keep = liveTaskIds.map(String.init).joined(separator: ",")
       let sql = "UPDATE backup_upload_chunks SET status = 'pending', task_id = NULL WHERE status = 'uploading' AND (task_id IS NULL OR task_id NOT IN (\(keep)))"
-      sqlite3_exec(db, sql, nil, nil, nil)
+      exsqlite3_exec(db, sql, nil, nil, nil)
     }
   }
 
@@ -7203,9 +7203,9 @@ final class NativeBackupEngine: NSObject {
   private func sumBytes(db: OpaquePointer, expression: String, condition: String) -> Int64 {
     var stmt: OpaquePointer?
     let sql = "SELECT COALESCE(SUM(\(expression)), 0) FROM backup_assets WHERE \(condition)"
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
-    defer { sqlite3_finalize(stmt) }
-    return sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int64(stmt, 0) : 0
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+    defer { exsqlite3_finalize(stmt) }
+    return exsqlite3_step(stmt) == SQLITE_ROW ? exsqlite3_column_int64(stmt, 0) : 0
   }
 
   private func uploadedStagedChunkBytes(db: OpaquePointer) -> Int64 {
@@ -7219,11 +7219,11 @@ final class NativeBackupEngine: NSObject {
       AND a.status != 'uploaded'
       AND COALESCE(a.selected_for_backup, 1) = 1
     """
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
-    defer { sqlite3_finalize(stmt) }
-    while sqlite3_step(stmt) == SQLITE_ROW {
-      guard sqlite3_column_type(stmt, 0) != SQLITE_NULL,
-            let pathPointer = sqlite3_column_text(stmt, 0) else { continue }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+    defer { exsqlite3_finalize(stmt) }
+    while exsqlite3_step(stmt) == SQLITE_ROW {
+      guard exsqlite3_column_type(stmt, 0) != SQLITE_NULL,
+            let pathPointer = exsqlite3_column_text(stmt, 0) else { continue }
       let path = String(cString: pathPointer)
       let size = (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
       total += Int64(max(0, size))
@@ -7234,9 +7234,9 @@ final class NativeBackupEngine: NSObject {
   private func countWhere(db: OpaquePointer, condition: String) -> Int {
     var stmt: OpaquePointer?
     let sql = "SELECT COUNT(*) FROM backup_assets WHERE \(condition)"
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
-    defer { sqlite3_finalize(stmt) }
-    return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : 0
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return 0 }
+    defer { exsqlite3_finalize(stmt) }
+    return exsqlite3_step(stmt) == SQLITE_ROW ? Int(exsqlite3_column_int(stmt, 0)) : 0
   }
 
   // MARK: - Notification

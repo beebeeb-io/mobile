@@ -71,7 +71,7 @@ describe('round 11 finding 6: no SQLITE_STATIC text/blob bind in the native modu
     expect(checked).toBeGreaterThanOrEqual(10);
   });
 
-  test('the engine and the legacy manager bind text through BackupManifestStore.bindText', () => {
+  test('the engine binds text through BackupManifestStore.bindText, the legacy manager through its own', () => {
     const engine = readFileSync(join(IOS, 'NativeBackupEngine.swift'), 'utf8');
     const legacy = readFileSync(join(IOS, 'PhotoBackupManager.swift'), 'utf8');
     // Round 15: clearStagedStateForRestage's binds moved into
@@ -80,12 +80,18 @@ describe('round 11 finding 6: no SQLITE_STATIC text/blob bind in the native modu
     // BackupManifestStore.purgeMismatchedStaged, which binds with the same
     // bindText (36 -> 35 in the engine).
     expect((engine.match(/BackupManifestStore\.bindText\(/g) ?? []).length).toBeGreaterThanOrEqual(35);
-    expect((legacy.match(/BackupManifestStore\.bindText\(/g) ?? []).length).toBeGreaterThanOrEqual(8);
+    // Task 2033: BackupManifestStore.bindText binds expo-sqlite's copy (the
+    // manifest's), so PhotoBackupManager, whose own backup.db runs on the
+    // copy `import SQLite3` binds, has its own transient bindText.
+    expect((legacy.match(/BackupManifestStore\.bindText\(/g) ?? []).length).toBe(0);
+    expect((legacy.match(/Self\.bindText\(/g) ?? []).length).toBeGreaterThanOrEqual(8);
+    expect(legacy).toMatch(/private static let transient = unsafeBitCast\(-1, to: sqlite3_destructor_type\.self\)/);
+    expect(legacy).toMatch(/private static func bindText\(_ stmt: OpaquePointer\?, _ index: Int32, _ value: String\) \{\s*sqlite3_bind_text\(stmt, index, \(value as NSString\)\.utf8String, -1, transient\)/);
     expect(engine).not.toMatch(/\.utf8String, -1, nil\)/);
     expect(legacy).not.toMatch(/\.utf8String, -1, nil\)/);
     const store = readFileSync(join(IOS, 'BackupManifestStore.swift'), 'utf8');
     expect(store).toMatch(/private static let transient = unsafeBitCast\(-1, to: sqlite3_destructor_type\.self\)/);
-    expect(store).toMatch(/static func bindText\(_ stmt: OpaquePointer\?, _ index: Int32, _ value: String\) \{\s*sqlite3_bind_text\(stmt, index, \(value as NSString\)\.utf8String, -1, transient\)/);
+    expect(store).toMatch(/static func bindText\(_ stmt: OpaquePointer\?, _ index: Int32, _ value: String\) \{\s*exsqlite3_bind_text\(stmt, index, \(value as NSString\)\.utf8String, -1, transient\)/);
   });
 
   test('red-proof: the guard flags a nil-destructor bind (the de23774 shape) and passes a transient one', () => {

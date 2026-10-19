@@ -1,5 +1,5 @@
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 /// Task 1667 round 6 (Codex P2 "Reopen the native manifest after successful
 /// recovery", mobile#182 at de6c1498).
@@ -64,7 +64,7 @@ enum ManifestPurgeMode: String, Equatable {
 
 final class BackupManifestHandle {
   enum OpenFailure: String, Equatable {
-    /// `sqlite3_open_v2` failed (no such directory, no permission, a path
+    /// `exsqlite3_open_v2` failed (no such directory, no permission, a path
     /// that cannot be a database file).
     case openFailed = "open_failed"
     /// The file opened but is not a readable database, or the manifest
@@ -117,6 +117,9 @@ final class BackupManifestHandle {
   }
 
   static let openFlags: Int32 = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+  /// Task 2033: the engine connection's busy timeout (ms). Matches
+  /// `BackupManifestStore.keepBusyTimeoutMs` and JS's `MANIFEST_BUSY_TIMEOUT_MS`.
+  static let busyTimeoutMs: Int32 = 2_000
 
   let path: String
   private(set) var db: OpaquePointer?
@@ -127,7 +130,7 @@ final class BackupManifestHandle {
   /// Whether the last successful open applied a pending sign-out reset.
   private(set) var lastOpenAppliedPendingReset = false
   /// Round 7 sweep: a connection this handle closed may still be open (its
-  /// `sqlite3_close` did not return OK, see `BackupManifestStore
+  /// `exsqlite3_close` did not return OK, see `BackupManifestStore
   /// .closeConnection`). Sticky for the life of the process: from then on
   /// the recovery never replaces the file, whatever JS reports, because an
   /// fd of this process may still point at it.
@@ -289,7 +292,7 @@ final class BackupManifestHandle {
         withIntermediateDirectories: true
       )
       var handle: OpaquePointer?
-      guard sqlite3_open_v2(path, &handle, Self.openFlags, nil) == SQLITE_OK, let fresh = handle else {
+      guard exsqlite3_open_v2(path, &handle, Self.openFlags, nil) == SQLITE_OK, let fresh = handle else {
         // A failed open holds no file descriptor on the manifest: closing it
         // cannot touch a JS connection's WAL or locks.
         if let handle { close(handle) }
@@ -297,10 +300,16 @@ final class BackupManifestHandle {
       }
       opened = fresh
     }
+    // Task 2033: JS's connection and this one are now the SAME SQLite copy
+    // (expo-sqlite's, `import ManifestSQLite`), so their locks exclude each
+    // other: a write that meets the other side's write transaction gets
+    // SQLITE_BUSY instead of interleaving as the two copies did. Wait for it
+    // instead of failing (JS sets the same in `BackupDatabase.migrate`).
+    exsqlite3_busy_timeout(opened, Self.busyTimeoutMs)
     // WAL for concurrent access with the JS layer. Its result is not the
     // check: another connection can briefly hold the lock a mode change
     // needs. The schema read below is.
-    sqlite3_exec(opened, "PRAGMA journal_mode = WAL", nil, nil, nil)
+    exsqlite3_exec(opened, "PRAGMA journal_mode = WAL", nil, nil, nil)
     prepareSchema(opened)
     guard BackupManifestStore.tableExistsChecked(opened, "backup_assets") == true else {
       closeOrPark(opened, .unreadable)

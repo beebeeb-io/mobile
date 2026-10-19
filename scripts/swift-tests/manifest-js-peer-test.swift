@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 1667 round 10 (review of mobile#182 at 060bfeb0, findings 5 and 7) —
 // standalone swiftc test for the native manifest handle's rules toward the
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS backup_upload_chunks (
 var schemaBroken = false
 func prepareSchema(_ db: OpaquePointer) {
   guard !schemaBroken else { return }
-  sqlite3_exec(db, schema, nil, nil, nil)
+  exsqlite3_exec(db, schema, nil, nil, nil)
   BackupManifestStore.migrate(db)
 }
 
@@ -90,26 +90,26 @@ final class PendingFlag {
 
 func connect(_ path: String) -> OpaquePointer {
   var db: OpaquePointer?
-  precondition(sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK)
-  sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+  precondition(exsqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK)
+  exsqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
   return db!
 }
 
 func exec(_ db: OpaquePointer, _ sql: String) {
   var err: UnsafeMutablePointer<CChar>?
-  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+  if exsqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
     let msg = err.map { String(cString: $0) } ?? "?"
-    sqlite3_free(err)
+    exsqlite3_free(err)
     fatalError("SQL failed: \(msg)\n\(sql)")
   }
 }
 
 func scalar(_ db: OpaquePointer, _ sql: String) -> Int {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
-  return Int(sqlite3_column_int64(stmt, 0))
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+  return Int(exsqlite3_column_int64(stmt, 0))
 }
 
 func fileSize(_ path: String) -> Int64 {
@@ -201,14 +201,14 @@ do {
   expect(!gate1.admitted && gate1.failure == .pendingResetDeferred, "a6: JS is not admitted while its old connection may be open (got \(gate1))")
   expect(scalar(js, rowsSQL) == 2 && fdsOn(path) == fdsBefore, "a6: still nothing touched")
   // JS closes it (BackupDatabase.admitJsOpen) and asks again.
-  expect(sqlite3_close(js) == SQLITE_OK, "a7: JS closes its old connection")
+  expect(exsqlite3_close(js) == SQLITE_OK, "a7: JS closes its old connection")
   let gate2 = handle.admitPeerOpen(priorPeerHandlesClosed: true)
   expect(gate2.admitted && gate2.failure == nil, "a8: now admitted (got \(gate2))")
   expect(!flag.pending, "a8: the reset ran first")
   expect(handle.db != nil, "a8: the native handle is open")
   let jsNew = connect(path)
   expect(scalar(jsNew, rowsSQL) == 0, "a9: JS opens on an emptied file")
-  sqlite3_close(jsNew)
+  exsqlite3_close(jsNew)
 }
 
 // MARK: - (b) a connection the handle cannot use is parked while JS holds the file
@@ -253,7 +253,7 @@ do {
   exec(js2, "CREATE TABLE IF NOT EXISTS js_side (x INTEGER)")
   expect(h2.openIfClosed() == .unreadable && h2.parkedConnectionCount == 1, "b5: parked")
   let c2 = h2.closedConnectionCount
-  sqlite3_close(js2)
+  exsqlite3_close(js2)
   schemaBroken = false
   let g2 = h2.admitPeerOpen(priorPeerHandlesClosed: true)
   expect(h2.closedConnectionCount == c2 + 1 && h2.parkedConnectionCount == 0, "b6: JS's confirmed close closes the parked connection")
@@ -282,7 +282,7 @@ do {
   let finished = handle.finishAfterFailedReset(allowUnlink: false)
   expect(!finished.ok && flag.pending, "c2: recovery failed, the reset stays pending (ok \(finished.ok))")
   // Later JS manages to close its old connection (BackupDatabase.admitJsOpen).
-  expect(sqlite3_close(js) == SQLITE_OK, "c2: JS's old connection closed")
+  expect(exsqlite3_close(js) == SQLITE_OK, "c2: JS's old connection closed")
   // B's session: JS asks before every open. While the reset cannot run, refused.
   var admittedWithRows: [Int] = []
   for attempt in 0..<3 {
@@ -292,14 +292,14 @@ do {
   }
   expect(handle.db == nil, "c3: no native handle on A's rows either")
   exec(locker, "ROLLBACK")
-  sqlite3_close(locker)
+  exsqlite3_close(locker)
   let gate = handle.admitPeerOpen(priorPeerHandlesClosed: true)
   expect(gate.admitted, "c4: admitted once the reset could run (got \(gate))")
   let jsB = connect(path)
   admittedWithRows.append(scalar(jsB, rowsSQL))
   expect(admittedWithRows == [0], "c4: B never saw A's rows (rows at each admission: \(admittedWithRows))")
   expect(scalar(jsB, "SELECT COUNT(*) FROM backup_pending_marks") >= 0, "c4: the manifest is readable")
-  sqlite3_close(jsB)
+  exsqlite3_close(jsB)
 }
 
 // MARK: - (d) control: no JS connection, behaviour as before
@@ -310,7 +310,7 @@ do {
   let seed = connect(path)
   prepareSchema(seed)
   seedA(seed)
-  sqlite3_close(seed)
+  exsqlite3_close(seed)
   flag.pending = true
   let handle = BackupManifestHandle(path: path, pendingReset: flag.flag, now: { now }, prepareSchema: prepareSchema)
   // A fresh process: JS has not been admitted, so the pending reset is applied at open.
@@ -366,7 +366,7 @@ do {
   // start() / the background task meanwhile: deferred, nothing opened.
   expect(handle.openIfClosed() == .pendingResetDeferred && fdsOn(path) == fdsBefore, "e6: openIfClosed defers and opens nothing")
   // JS retries its close at its next call and asks the gate: confirmed now.
-  expect(sqlite3_close(js) == SQLITE_OK, "e7: JS's connection closed")
+  expect(exsqlite3_close(js) == SQLITE_OK, "e7: JS's connection closed")
   let gate = handle.admitPeerOpen(priorPeerHandlesClosed: true)
   expect(gate.admitted && handle.db != nil && !flag.pending, "e8: the reset runs once JS confirmed, then JS is admitted (got \(gate))")
   expect(scalar(handle.db!, rowsSQL) == 0, "e8: A's rows are gone")

@@ -445,9 +445,20 @@ async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
   }
 }
 
+/**
+ * Task 2033: the native engine's manifest connection runs on this same SQLite
+ * copy (expo-sqlite's, `modules/beebeeb-crypto/ios/ManifestSQLite`), so a write
+ * that meets the engine's write transaction gets SQLITE_BUSY ("database is
+ * locked") instead of interleaving with it as the two copies did. Wait for it
+ * instead. Same value as the engine's `BackupManifestHandle.busyTimeoutMs`.
+ */
+export const MANIFEST_BUSY_TIMEOUT_MS = 2000;
+
 async function migrate(db: SQLite.SQLiteDatabase): Promise<SQLite.SQLiteDatabase> {
-  // Foreign keys + WAL for better concurrency under the upload runner.
+  // Foreign keys + WAL for better concurrency under the upload runner. The
+  // busy timeout comes first so it covers every statement after it.
   await db.execAsync(`
+    PRAGMA busy_timeout = ${MANIFEST_BUSY_TIMEOUT_MS};
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS backup_assets (

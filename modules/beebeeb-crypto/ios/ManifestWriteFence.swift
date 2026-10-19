@@ -1,5 +1,5 @@
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 /// Task 1667 round 8 (Codex P1 "Fence late photo scans before resetting the
 /// manifest", mobile#182 at 556ef334).

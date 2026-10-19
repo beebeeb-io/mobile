@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 1667 round 8 (Codex P1 "Fence late photo scans before resetting the
 // manifest", mobile#182 at 556ef334) — standalone swiftc test for the
@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS backup_upload_chunks (
 """
 
 func prepareSchema(_ db: OpaquePointer) {
-  sqlite3_exec(db, schema, nil, nil, nil)
+  exsqlite3_exec(db, schema, nil, nil, nil)
   BackupManifestStore.migrate(db)
 }
 
@@ -110,13 +110,13 @@ final class PendingFlag {
 /// launch, or the JS layer, would see).
 func onDisk(_ path: String, _ sql: String) -> Int {
   var db: OpaquePointer?
-  guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else { return -1 }
-  defer { sqlite3_close(db) }
+  guard exsqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else { return -1 }
+  defer { exsqlite3_close(db) }
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
-  return Int(sqlite3_column_int64(stmt, 0))
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+  return Int(exsqlite3_column_int64(stmt, 0))
 }
 
 let allRows = "SELECT COUNT(*) FROM backup_assets"
@@ -246,12 +246,12 @@ do {
   startScan(m, account: "acct-A", photoKit: photoKit, done: done, group: group)
   expect(photoKit.started.wait(timeout: .now() + 5) == .success, "a4: the scan is inside the PhotoKit fetch")
   var locker: OpaquePointer?
-  precondition(sqlite3_open_v2(m.path, &locker, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK)
-  sqlite3_busy_timeout(locker, 0)
-  expect(sqlite3_exec(locker, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK, "a4: a second connection holds the writer lock")
+  precondition(exsqlite3_open_v2(m.path, &locker, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK)
+  exsqlite3_busy_timeout(locker, 0)
+  expect(exsqlite3_exec(locker, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK, "a4: a second connection holds the writer lock")
   expect(m.signOut("acct-A") == false, "a4: the in-place reset failed (writer lock)")
-  sqlite3_exec(locker, "ROLLBACK", nil, nil, nil)
-  sqlite3_close(locker)
+  exsqlite3_exec(locker, "ROLLBACK", nil, nil, nil)
+  exsqlite3_close(locker)
   let finish = m.queue.sync { m.handle.finishAfterFailedReset(allowUnlink: true) }
   expect(finish.ok && finish.reopened, "a4: the recovery emptied the file and reopened the handle")
   photoKit.release.signal()

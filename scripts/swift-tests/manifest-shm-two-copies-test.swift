@@ -1,32 +1,46 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 2033 (TestFlight build 240 launch crash) — standalone swiftc test that
-// reproduces, deterministically, the hazard behind
+// reproduced, deterministically, the hazard behind
 // `EXC_BAD_ACCESS (SIGBUS) / FS pagein error: 22 / cluster_pagein past EOF`
 // in `NativeBackupEngine.countWhere` (the JS progress poll at launch) while
 // expo-sqlite's thread was inside `unixShmMap -> seekAndWriteFd` for its first
 // statement on the manifest (`PRAGMA journal_mode = WAL`, BackupDatabase.ts
 // `migrate`).
 //
-// Two SQLite copies, as in the app:
+// Build 240 had two SQLite copies on the manifest: the engine's
+// `import SQLite3` bound the vanilla `sqlite3_*` the Rust core's static
+// library (`libbeebeeb_uniffi.a`) exports (SQLite 3.46.0, libsqlite3-sys
+// bundled; the crash's `sqlite3_step` frame is inside the Beebeeb image), and
+// JS ran on expo-sqlite's own copy (`exsqlite3_*`, 3.50.3).
+//
+// The fix (Option A): the manifest has ONE copy, expo-sqlite's. The test
+// wires both sides as the app does now:
 //   * the ENGINE side is the REAL shipped `BackupManifestHandle` /
 //     `BackupManifestStore` (compiled in by scripts/swift-ci/run-swift-tests.sh)
-//     on `import SQLite3`. In the app that import does NOT reach the system
-//     libsqlite3: the Rust core's static library (`libbeebeeb_uniffi.a`)
-//     exports a vanilla `sqlite3_*` (SQLite 3.46.0, libsqlite3-sys bundled),
-//     and the crash's `sqlite3_step` frame is inside the Beebeeb image. The
-//     runner reproduces that: it links a vanilla SQLite object into this test
-//     binary (expo's amalgamation with the rename reversed, or
-//     `BB_ENGINE_SQLITE_SRC`), and (e0) checks the engine code bound to it.
-//     The macOS system copy cannot stand in: Apple's libsqlite3 locks the
-//     `-shm` in a way F_GETLK from another copy does see (run 2026-10-19:
-//     with it, expo's copy never truncated), so it would hide the bug.
-//   * the JS side is expo-sqlite's OWN copy: the exact
-//     `node_modules/expo-sqlite/vendor/sqlite3/sqlite3.c` the app compiles
-//     (symbols renamed `exsqlite3_*`, SQLite 3.50.3), built by the runner into
-//     a dylib with the podspec's flags and loaded here (`BB_EXPO_SQLITE_DYLIB`).
+//     on `import ManifestSQLite`, through the SAME module map the app's
+//     BeebeebCrypto pod uses (modules/beebeeb-crypto/ios/ManifestSQLite), and
+//     linked against expo's exact amalgamation. The engine-side helpers below
+//     (`countWhere`, `exec`, the schema) mirror NativeBackupEngine, which binds
+//     the same module.
+//   * the JS side is expo-sqlite's copy as expo's own module calls it: the
+//     exact `node_modules/expo-sqlite/vendor/sqlite3/sqlite3.c` the app
+//     compiles (symbols renamed `exsqlite3_*`), built by the runner into a
+//     dylib with the podspec's flags and loaded here with dlopen
+//     (`BB_EXPO_SQLITE_DYLIB`). It is the image the engine side links, so
+//     (e0) checks both sides resolve to one copy.
+//   * the Rust core's copy is still in the binary, as in the app: the runner
+//     links a vanilla `sqlite3_*` object (expo's amalgamation with the rename
+//     reversed, or `BB_ENGINE_SQLITE_SRC`, e.g. libsqlite3-sys 0.30.1's
+//     sqlite3.c = the app's exact 3.46.0). (e0) checks it is present and that
+//     the engine code does not use it. The macOS system copy never stands in
+//     for it: Apple's libsqlite3 locks the `-shm` in a way F_GETLK from
+//     another copy does see (run 2026-10-19), so it would hide the bug.
+//
+// Red on e0d9b86 / 17565132 (engine on the vanilla copy; see the task's
+// evidence for the exact failing assertions). Green from task 2033's fix on.
 //
 // The mechanism (sqlite3.c `unixLockSharedMemory`): the first connection a
 // SQLite copy opens on a WAL database asks F_GETLK whether anyone holds the
@@ -54,6 +68,16 @@ import SQLite3
 //   (c) control: the same with the WAL checkpointed empty first (no frames to
 //       look up): survives even on the broken build, so (b)'s fault comes
 //       from the frame lookup, not from the harness.
+//   (d) the second hazard: a write transaction (`BEGIN IMMEDIATE`) on either
+//       side must exclude the other side's (SQLITE_BUSY). The two copies let
+//       both hold one at once (rc 0 and 0).
+//   (e) the hazard behind task 1667's "never close while the other side may
+//       hold the file" rules: the last connection of one side closing while
+//       the other side's is open must leave `-wal`/`-shm` in place, and the
+//       other side's writes must stay visible. With two copies, a close
+//       concluded it was the file's last connection and deleted them (task
+//       1667 simulator finding). Kept as evidence; the rules themselves stay
+//       (task 2033: simplify only what is proven, see CLAUDE.md).
 
 var failures: [String] = []
 var total = 0
@@ -70,7 +94,7 @@ let fm = FileManager.default
 typealias ExOpen = @convention(c) (UnsafePointer<CChar>?, UnsafeMutablePointer<OpaquePointer?>?, Int32, UnsafePointer<CChar>?) -> Int32
 typealias ExExec = @convention(c) (OpaquePointer?, UnsafePointer<CChar>?, OpaquePointer?, UnsafeMutableRawPointer?, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?) -> Int32
 typealias ExClose = @convention(c) (OpaquePointer?) -> Int32
-typealias ExVfsFind = @convention(c) (UnsafePointer<CChar>?) -> UnsafeMutablePointer<sqlite3_vfs>?
+typealias ExVfsFind = @convention(c) (UnsafePointer<CChar>?) -> UnsafeMutablePointer<exsqlite3_vfs>?
 typealias ExVersion = @convention(c) () -> UnsafePointer<CChar>?
 
 guard let expoDylib = ProcessInfo.processInfo.environment["BB_EXPO_SQLITE_DYLIB"], !expoDylib.isEmpty else {
@@ -138,7 +162,7 @@ func jsOpen(_ path: String) -> (OpaquePointer?, Int32) {
   return (db, rc)
 }
 
-// MARK: - the engine side (real shipped handle + store, system copy)
+// MARK: - the engine side (real shipped handle + store, `import ManifestSQLite`)
 
 let schema = """
 CREATE TABLE IF NOT EXISTS backup_assets (
@@ -159,7 +183,7 @@ CREATE TABLE IF NOT EXISTS backup_upload_chunks (
 
 /// The engine's ensureTables (NativeBackupEngine) + the 1667 migration.
 func prepareSchema(_ db: OpaquePointer) {
-  sqlite3_exec(db, schema, nil, nil, nil)
+  exsqlite3_exec(db, schema, nil, nil, nil)
   BackupManifestStore.migrate(db)
 }
 
@@ -172,21 +196,22 @@ final class PendingFlag {
 
 func exec(_ db: OpaquePointer, _ sql: String) {
   var err: UnsafeMutablePointer<CChar>?
-  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+  if exsqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
     let msg = err.map { String(cString: $0) } ?? "?"
-    sqlite3_free(err)
+    exsqlite3_free(err)
     fatalError("SQL failed: \(msg)\n\(sql)")
   }
 }
 
-/// NativeBackupEngine.pendingUploadCount -> countWhere (NativeBackupEngine.swift:1341/:7239).
+/// NativeBackupEngine.pendingUploadCount -> countWhere (NativeBackupEngine.swift:1341/:7239),
+/// on the same module the engine binds.
 let pendingUploadCondition = "COALESCE(selected_for_backup, 1) = 1 AND status IN ('pending_upload', 'pending_reupload', 'staging', 'staged_upload', 'uploading') AND COALESCE(retry_count, 0) < 10"
 func countWhere(_ db: OpaquePointer, _ condition: String) -> Int {
   var stmt: OpaquePointer?
   let sql = "SELECT COUNT(*) FROM backup_assets WHERE \(condition)"
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-  defer { sqlite3_finalize(stmt) }
-  return sqlite3_step(stmt) == SQLITE_ROW ? Int(sqlite3_column_int(stmt, 0)) : -1
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+  defer { exsqlite3_finalize(stmt) }
+  return exsqlite3_step(stmt) == SQLITE_ROW ? Int(exsqlite3_column_int(stmt, 0)) : -1
 }
 
 func fileSize(_ path: String) -> Int64 {
@@ -258,18 +283,32 @@ if args.count >= 3, args[1] == "--child" {
 try? fm.removeItem(at: root)
 try! fm.createDirectory(at: root, withIntermediateDirectories: true)
 defer { try? fm.removeItem(at: root) }
-print("expo copy: SQLite \(String(cString: exLibVersion()!)); engine copy: SQLite \(String(cString: sqlite3_libversion()))")
+print("expo copy (JS, dlopen): SQLite \(String(cString: exLibVersion()!)); engine side (import ManifestSQLite): SQLite \(String(cString: exsqlite3_libversion()))")
 
-// MARK: - (e0) the engine side runs on its own vanilla copy inside the binary
+// MARK: - (e0) one copy: the engine side binds the image JS uses
+
+func imagePath(_ p: UnsafeRawPointer?) -> String? {
+  guard let p else { return nil }
+  var info = Dl_info()
+  guard dladdr(p, &info) != 0, let name = info.dli_fname else { return nil }
+  return URL(fileURLWithPath: String(cString: name)).resolvingSymlinksInPath().path
+}
 
 do {
-  let fn: @convention(c) (OpaquePointer?) -> Int32 = sqlite3_step
-  var info = Dl_info()
-  let found = dladdr(unsafeBitCast(fn, to: UnsafeRawPointer.self), &info) != 0
-  let image = found ? String(cString: info.dli_fname) : "?"
+  let engineStep: @convention(c) (OpaquePointer?) -> Int32 = exsqlite3_step
+  let engineImage = imagePath(unsafeBitCast(engineStep, to: UnsafeRawPointer.self))
+  let jsImage = imagePath(dlsym(lib, "exsqlite3_step").map { UnsafeRawPointer($0) })
+  let expoImage = URL(fileURLWithPath: expoDylib).resolvingSymlinksInPath().path
+  expect(engineImage != nil && engineImage == jsImage && jsImage == expoImage,
+         "e0: the engine's step and JS's step are the same copy, expo-sqlite's (engine \(engineImage ?? "?"), JS \(jsImage ?? "?"))")
+  // The Rust core's stand-in is still in the binary (as libbeebeeb_uniffi.a's
+  // copy is in the app): the test proves the engine does not use it, not
+  // that it is absent.
   let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
-  expect(found && URL(fileURLWithPath: image).resolvingSymlinksInPath().path == exe,
-         "e0: the engine's sqlite3_step is linked into the binary, as in the app (found in \(image))")
+  let rustStep = dlsym(UnsafeMutableRawPointer(bitPattern: -5), "sqlite3_step") // RTLD_MAIN_ONLY
+  expect(imagePath(rustStep.map { UnsafeRawPointer($0) }) == exe,
+         "e0: a vanilla sqlite3_* (the Rust core's stand-in) is linked into the binary, as in the app")
+  expect(engineImage != exe, "e0: the engine's step is not the vanilla copy in the binary")
 }
 
 // MARK: - (s) instrument self-test
@@ -344,6 +383,90 @@ do {
   print("(c) child: \(describe(c))")
   expect(c.signal == nil && c.status == 0 && c.output.contains("child: survived"),
          "c1: control, WAL checkpointed empty first: the same read survives (\(describe(c)))")
+}
+
+// MARK: - (d) writer exclusion between the engine and JS
+
+do {
+  let dir = root.appendingPathComponent("d-lock", isDirectory: true)
+  let (handle, path) = upgradedEngine(dir, checkpointFirst: false)
+  let engine = handle.db!
+  let (js, rc) = jsOpen(path)
+  expect(rc == SQLITE_OK, "d0: JS opens next to the engine (rc \(rc))")
+  // Measure exclusion, not waiting: the engine's own busy timeout
+  // (BackupManifestHandle.busyTimeoutMs) is lifted for this check and
+  // restored after; JS's connection here has none.
+  exsqlite3_busy_timeout(engine, 0)
+  let engineBegin = exsqlite3_exec(engine, "BEGIN IMMEDIATE", nil, nil, nil)
+  let jsWhileEngine = exExec(js, "BEGIN IMMEDIATE", nil, nil, nil)
+  if jsWhileEngine == SQLITE_OK { _ = exExec(js, "ROLLBACK", nil, nil, nil) }
+  exsqlite3_exec(engine, "ROLLBACK", nil, nil, nil)
+  expect(engineBegin == SQLITE_OK && jsWhileEngine == SQLITE_BUSY,
+         "d1: while the engine holds BEGIN IMMEDIATE, JS's BEGIN IMMEDIATE is refused with SQLITE_BUSY (engine rc \(engineBegin), JS rc \(jsWhileEngine))")
+  let jsBegin = exExec(js, "BEGIN IMMEDIATE", nil, nil, nil)
+  let engineWhileJs = exsqlite3_exec(engine, "BEGIN IMMEDIATE", nil, nil, nil)
+  if engineWhileJs == SQLITE_OK { exsqlite3_exec(engine, "ROLLBACK", nil, nil, nil) }
+  _ = exExec(js, "ROLLBACK", nil, nil, nil)
+  expect(jsBegin == SQLITE_OK && engineWhileJs == SQLITE_BUSY,
+         "d2: while JS holds BEGIN IMMEDIATE, the engine's BEGIN IMMEDIATE is refused with SQLITE_BUSY (JS rc \(jsBegin), engine rc \(engineWhileJs))")
+  // With the engine's busy timeout back, its write waits for JS's and lands.
+  exsqlite3_busy_timeout(engine, BackupManifestHandle.busyTimeoutMs)
+  _ = exExec(js, "BEGIN IMMEDIATE; UPDATE backup_assets SET retry_count = 1 WHERE local_asset_id = 'asset-0/L0/001';", nil, nil, nil)
+  let release = DispatchWorkItem { _ = exExec(js, "COMMIT", nil, nil, nil) }
+  DispatchQueue.global().asyncAfter(deadline: .now() + 0.2, execute: release)
+  let started = Date()
+  let waited = exsqlite3_exec(engine, "UPDATE backup_assets SET retry_count = 2 WHERE local_asset_id = 'asset-1/L0/001'", nil, nil, nil)
+  let ms = Int(Date().timeIntervalSince(started) * 1000)
+  release.wait()
+  expect(waited == SQLITE_OK && ms >= 150 && ms < Int(BackupManifestHandle.busyTimeoutMs),
+         "d3: with the engine's busy timeout, its write waits for JS's transaction and succeeds (rc \(waited) after \(ms) ms)")
+  _ = exClose(js)
+}
+
+// MARK: - (e) the last connection of one side closing keeps -wal/-shm
+
+do {
+  // e1/e2: the engine side's only connection closes while JS's is open (a
+  // failed sign-out reset closes the engine's handle; the recovery opens and
+  // closes one of its own).
+  let dir = root.appendingPathComponent("e-engine-close", isDirectory: true)
+  try? fm.removeItem(at: dir)
+  try! fm.createDirectory(at: dir, withIntermediateDirectories: true)
+  let path = dir.appendingPathComponent("beebeeb-backup.db").path
+  var engine: OpaquePointer?
+  precondition(exsqlite3_open_v2(path, &engine, BackupManifestHandle.openFlags, nil) == SQLITE_OK && engine != nil)
+  exec(engine!, "PRAGMA journal_mode = WAL")
+  prepareSchema(engine!)
+  exec(engine!, """
+  INSERT INTO backup_assets (local_asset_id, content_hash, created_at, asset_type, status)
+  VALUES ('e-asset', '', '2026-10-01T00:00:00Z', 'photo', 'uploaded')
+  """)
+  let (js, rc) = jsOpen(path)
+  expect(rc == SQLITE_OK, "e0b: JS opens next to the engine (rc \(rc))")
+  _ = exExec(js, "SELECT COUNT(*) FROM backup_assets", nil, nil, nil)
+  let closed = BackupManifestStore.closeConnection(engine!)
+  expect(closed && fm.fileExists(atPath: path + "-wal") && fm.fileExists(atPath: path + "-shm"),
+         "e1: the engine side's last connection closing while JS is open leaves -wal and -shm in place (closed \(closed), wal \(fileSize(path + "-wal")), shm \(fileSize(path + "-shm")))")
+  let write = exExec(js, "UPDATE backup_assets SET retry_count = 3 WHERE local_asset_id = 'e-asset'", nil, nil, nil)
+  var reader: OpaquePointer?
+  let reopened = exsqlite3_open_v2(path, &reader, BackupManifestHandle.openFlags, nil) == SQLITE_OK && reader != nil
+  let seen = reopened ? countWhere(reader!, "retry_count = 3") : -1
+  if let reader { _ = BackupManifestStore.closeConnection(reader) }
+  expect(write == SQLITE_OK && seen == 1,
+         "e2: JS's write after that close is seen by the engine's next connection (rc \(write), rows \(seen))")
+  _ = exClose(js)
+
+  // e3: the reverse, task 1667's simulator finding: JS closes while the
+  // engine's handle is open.
+  let dir3 = root.appendingPathComponent("e-js-close", isDirectory: true)
+  let (handle, path3) = upgradedEngine(dir3, checkpointFirst: false)
+  let (js3, rc3) = jsOpen(path3)
+  let jsWrite = exExec(js3, "UPDATE backup_assets SET retry_count = 4 WHERE local_asset_id = 'asset-0/L0/001'", nil, nil, nil)
+  let jsClosed = exClose(js3)
+  let kept = fm.fileExists(atPath: path3 + "-wal") && fm.fileExists(atPath: path3 + "-shm")
+  expect(rc3 == SQLITE_OK && jsWrite == SQLITE_OK && jsClosed == SQLITE_OK && kept
+           && countWhere(handle.db!, "retry_count = 4") == 1,
+         "e3: JS closing while the engine's handle is open leaves -wal/-shm and the engine reads JS's write (open \(rc3), write \(jsWrite), close \(jsClosed), kept \(kept))")
 }
 
 if failures.isEmpty {

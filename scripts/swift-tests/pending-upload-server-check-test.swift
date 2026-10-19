@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 1667 round 10 (review of mobile#182 at 060bfeb0, findings 1, 2 and 4),
 // reworked in round 11 (review of de23774e, findings 2 and 9; server task
@@ -224,7 +224,7 @@ CREATE TABLE IF NOT EXISTS backup_upload_chunks (
 """
 
 func prepareSchema(_ db: OpaquePointer) {
-  sqlite3_exec(db, schema, nil, nil, nil)
+  exsqlite3_exec(db, schema, nil, nil, nil)
   BackupManifestStore.migrate(db)
 }
 
@@ -237,29 +237,29 @@ final class PendingFlag {
 
 func connect(_ path: String) -> OpaquePointer {
   var db: OpaquePointer?
-  precondition(sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK)
-  sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+  precondition(exsqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK)
+  exsqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
   return db!
 }
 
 func exec(_ db: OpaquePointer, _ sql: String) {
   var err: UnsafeMutablePointer<CChar>?
-  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+  if exsqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
     let msg = err.map { String(cString: $0) } ?? "?"
-    sqlite3_free(err)
+    exsqlite3_free(err)
     fatalError("SQL failed: \(msg)\n\(sql)")
   }
 }
 
 func rows(_ db: OpaquePointer, _ sql: String) -> [[String]] {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-  defer { sqlite3_finalize(stmt) }
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+  defer { exsqlite3_finalize(stmt) }
   var out: [[String]] = []
-  while sqlite3_step(stmt) == SQLITE_ROW {
+  while exsqlite3_step(stmt) == SQLITE_ROW {
     var row: [String] = []
-    for i in 0..<sqlite3_column_count(stmt) {
-      row.append(sqlite3_column_text(stmt, i).map { String(cString: $0) } ?? "NULL")
+    for i in 0..<exsqlite3_column_count(stmt) {
+      row.append(exsqlite3_column_text(stmt, i).map { String(cString: $0) } ?? "NULL")
     }
     out.append(row)
   }
@@ -589,12 +589,12 @@ do {
   expect(changed.get() == .deferred(.accountChanged) && status(db, "d1") == "pending_upload", "d4: deferred(accountChanged), nothing written")
   let locker = connect(handle.path)
   exec(locker, "BEGIN IMMEDIATE")
-  sqlite3_busy_timeout(handle.db!, 0)
+  exsqlite3_busy_timeout(handle.db!, 0)
   let locked = Box<PendingUploadServerCheck.Outcome>()
   expect(checkBatch(handle, ticket: ticket, candidates: cands, outcome: locked) == nil, "d5: writer lock: nothing uploads")
   expect(locked.get() == .deferred(.applyFailed), "d5: deferred(applyFailed) (got \(String(describing: locked.get())))")
   exec(locker, "ROLLBACK")
-  sqlite3_close_v2(locker)
+  exsqlite3_close_v2(locker)
   expect(status(db, "d1") == "pending_upload", "d5: nothing promoted under the lock")
   expect(checkBatch(handle, ticket: ticket, candidates: cands) == ["d2"], "d6: after the lock: d1 promoted, d2 uploads")
 }

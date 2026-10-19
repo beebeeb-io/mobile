@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 1667 round 4 (Codex P1 "Fail closed when applying the server
 // identifier map") — standalone swiftc test for the rebuild gate. Compiled
@@ -86,26 +86,26 @@ CREATE TABLE IF NOT EXISTS backup_assets (
 func open(_ path: String) -> OpaquePointer {
   var db: OpaquePointer?
   let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-  precondition(sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
-  sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+  precondition(exsqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
+  exsqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
   return db!
 }
 
 func exec(_ db: OpaquePointer, _ sql: String) {
   var err: UnsafeMutablePointer<CChar>?
-  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+  if exsqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
     let msg = err.map { String(cString: $0) } ?? "?"
-    sqlite3_free(err)
+    exsqlite3_free(err)
     fatalError("SQL failed: \(msg)\n\(sql)")
   }
 }
 
 func scalar(_ db: OpaquePointer, _ sql: String) -> Int {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
-  return Int(sqlite3_column_int64(stmt, 0))
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+  return Int(exsqlite3_column_int64(stmt, 0))
 }
 
 let now: Int64 = 1_800_000_000_000
@@ -200,8 +200,8 @@ do {
   expect(calls.fetch == 0 && calls.applyMap == 0, "lock at start: no fetch, no apply")
   expect(pending(db) == 5, "lock at start: all 5 photos still pending, none promoted")
   exec(locker, "ROLLBACK")
-  sqlite3_close_v2(locker)
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(locker)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 2. Writer lock taken while the map is fetched (the Codex case)
@@ -232,8 +232,8 @@ do {
   expect(pending(db) == 1, "after release: only p5 (never uploaded) is left to upload (got \(pending(db)))")
   expect(scalar(db, "SELECT COUNT(*) FROM backup_assets WHERE status = 'uploaded' AND uploaded_account_id = '\(account)'") == 4,
          "after release: p1..p4 uploaded for acct-A")
-  sqlite3_close_v2(locker)
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(locker)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 3. Writer lock taken after the map applied, before the kept marks
@@ -256,8 +256,8 @@ do {
   expect(after == .ready(rebuilt: false, promoted: 0, keptApplied: 1),
          "after release: ready without a second fetch, kept mark applied (got \(String(describing: after)))")
   expect(pending(db) == 1, "after release: only p5 left")
-  sqlite3_close_v2(locker)
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(locker)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 4. Already ready this process: kept marks under a lock still defer
@@ -277,8 +277,8 @@ do {
   expect(nothingKept == .ready(rebuilt: false, promoted: 0, keptApplied: 0),
          "ready fast path with nothing kept needs no write: ready even under a lock (got \(String(describing: nothingKept)))")
   exec(locker, "ROLLBACK")
-  sqlite3_close_v2(locker)
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(locker)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 5. Other failures on the path defer too; an empty map is a valid answer
@@ -310,7 +310,7 @@ do {
   }
   expect(empty == .ready(rebuilt: true, promoted: 0, keptApplied: 1),
          "an empty server map that APPLIED is ready (got \(String(describing: empty)))")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 6. Control: the pre-round-4 shape is caught by this harness
@@ -329,8 +329,8 @@ do {
   expect(isReady(o) && pending(db) == 5,
          "control (failure read as 0): ready with all 5 photos still pending — the duplicate-upload shape (got \(String(describing: o)), \(pending(db)) pending)")
   exec(locker, "ROLLBACK")
-  sqlite3_close_v2(locker)
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(locker)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 7. Bounded backoff

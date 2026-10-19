@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 1667 round 14 (review of mobile#182 at 18312919, the P1: "server-
 // completed but unrecorded uploads must survive sign-out"). Standalone swiftc
@@ -115,33 +115,33 @@ CREATE TABLE IF NOT EXISTS backup_upload_chunks (
 func open(_ path: String) -> OpaquePointer {
   var db: OpaquePointer?
   let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-  precondition(sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
-  sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+  precondition(exsqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
+  exsqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
   return db!
 }
 
 func exec(_ db: OpaquePointer, _ sql: String) {
   var err: UnsafeMutablePointer<CChar>?
-  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+  if exsqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
     let msg = err.map { String(cString: $0) } ?? "?"
-    sqlite3_free(err)
+    exsqlite3_free(err)
     fatalError("SQL failed: \(msg)\n\(sql)")
   }
 }
 
 func scalar(_ db: OpaquePointer, _ sql: String) -> Int {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
-  return Int(sqlite3_column_int64(stmt, 0))
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+  return Int(exsqlite3_column_int64(stmt, 0))
 }
 
 func text(_ db: OpaquePointer, _ sql: String) -> String? {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW, let c = sqlite3_column_text(stmt, 0) else { return nil }
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW, let c = exsqlite3_column_text(stmt, 0) else { return nil }
   return String(cString: c)
 }
 
@@ -400,9 +400,9 @@ func batch(_ d: Device, _ server: FakeServer, account: String) -> [String] {
   let pending: [String] = d.queue.sync {
     var out: [String] = []
     var stmt: OpaquePointer?
-    sqlite3_prepare_v2(d.db, "SELECT local_asset_id FROM backup_assets WHERE status IN ('pending_upload', 'pending_reupload') ORDER BY local_asset_id", -1, &stmt, nil)
-    while sqlite3_step(stmt) == SQLITE_ROW { out.append(String(cString: sqlite3_column_text(stmt, 0))) }
-    sqlite3_finalize(stmt)
+    exsqlite3_prepare_v2(d.db, "SELECT local_asset_id FROM backup_assets WHERE status IN ('pending_upload', 'pending_reupload') ORDER BY local_asset_id", -1, &stmt, nil)
+    while exsqlite3_step(stmt) == SQLITE_ROW { out.append(String(cString: exsqlite3_column_text(stmt, 0))) }
+    exsqlite3_finalize(stmt)
     return out
   }
   for id in pending {
@@ -703,7 +703,7 @@ do {
   BackupManifestStore.migrate(db)
   expect(scalar(db, "SELECT COUNT(*) FROM backup_pending_marks WHERE needs_resolution = 0") == 1, "i.1 an earlier build's mark reads as confirmed")
   expect(BackupManifestStore.applyPendingMarks(db, accountId: A, nowMs: now) == 1, "i.2 and is promoted as before")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - (j) the flush budget holds with a stalled GET /files
@@ -1087,9 +1087,9 @@ do {
   _ = d.queue.sync { BackupManifestStore.keepInFlightUploads(d.db, nowMs: now) }
   var keptRows: Set<String> = []
   var stmt: OpaquePointer?
-  sqlite3_prepare_v2(d.db, "SELECT account_id || '/' || local_asset_id FROM backup_pending_marks WHERE needs_resolution = 1", -1, &stmt, nil)
-  while sqlite3_step(stmt) == SQLITE_ROW { keptRows.insert(String(cString: sqlite3_column_text(stmt, 0))) }
-  sqlite3_finalize(stmt)
+  exsqlite3_prepare_v2(d.db, "SELECT account_id || '/' || local_asset_id FROM backup_pending_marks WHERE needs_resolution = 1", -1, &stmt, nil)
+  while exsqlite3_step(stmt) == SQLITE_ROW { keptRows.insert(String(cString: exsqlite3_column_text(stmt, 0))) }
+  exsqlite3_finalize(stmt)
   let expected: Set<String> = ["\(A)/k1", "\(A)/k2", "\(B)/k3"]
   expect(keptRows == expected, "r.1 the keep selects exactly k1, k2, k3 (got \(keptRows.sorted()))")
   expect(snapshot == expected, "r.2 the failed-reset snapshot selects the same rows (got \(snapshot.sorted()))")
@@ -1113,7 +1113,7 @@ func holdWriteLock(_ path: String, holdMs: UInt32) -> (started: DispatchSemaphor
     started.signal()
     usleep(holdMs * 1000)
     exec(js, "COMMIT")
-    sqlite3_close(js)
+    exsqlite3_close(js)
     done.signal()
   }
   return (started, done)
@@ -1143,10 +1143,10 @@ do {
   expect(status(d, "x1") == "pending_reupload::", "s.4 then the purge cleared x1 (got \(status(d, "x1")))")
   expect(busyTimeout(d) == 0, "s.5 the busy timeout is restored to 0 after the keep (got \(busyTimeout(d)))")
   // A connection that had its own timeout gets it back.
-  sqlite3_busy_timeout(d.db, 500)
+  exsqlite3_busy_timeout(d.db, 500)
   _ = d.queue.sync { BackupManifestStore.keepInFlightUploads(d.db, nowMs: now) }
   expect(busyTimeout(d) == 500, "s.6 a connection's own timeout (500 ms) is restored (got \(busyTimeout(d)))")
-  sqlite3_busy_timeout(d.db, 0)
+  exsqlite3_busy_timeout(d.db, 0)
 }
 
 // (s-control) the same lock with no wait (083d5f23's keep, busyTimeoutMs 0):

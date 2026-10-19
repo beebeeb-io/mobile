@@ -231,8 +231,8 @@ final class PhotoBackupManager: NSObject {
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
     for asset in assets {
-      BackupManifestStore.bindText(stmt, 1, asset.localIdentifier)
-      BackupManifestStore.bindText(stmt, 2, now)
+      Self.bindText(stmt, 1, asset.localIdentifier)
+      Self.bindText(stmt, 2, now)
       sqlite3_step(stmt)
       sqlite3_reset(stmt)
     }
@@ -260,17 +260,29 @@ final class PhotoBackupManager: NSObject {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
     defer { sqlite3_finalize(stmt) }
-    BackupManifestStore.bindText(stmt, 1, status)
+    Self.bindText(stmt, 1, status)
     bindOptional(stmt, 2, fileId)
     bindOptional(stmt, 3, error)
     bindOptional(stmt, 4, completedAt)
-    BackupManifestStore.bindText(stmt, 5, localIdentifier)
+    Self.bindText(stmt, 5, localIdentifier)
     sqlite3_step(stmt)
+  }
+
+  /// Task 2033: this file's own `backup.db` runs on the SQLite copy `import
+  /// SQLite3` binds (in the app, the Rust core's), so it binds with that copy.
+  /// `BackupManifestStore.bindText` binds expo-sqlite's copy (`exsqlite3_*`),
+  /// valid only on manifest statements: calling it on a statement of another
+  /// copy is a cross-copy call. Text binds copy their bytes (SQLITE_TRANSIENT,
+  /// task 1667 round 11; `native-sqlite-bind-transient.guard.test.ts`).
+  private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+  private static func bindText(_ stmt: OpaquePointer?, _ index: Int32, _ value: String) {
+    sqlite3_bind_text(stmt, index, (value as NSString).utf8String, -1, transient)
   }
 
   private func bindOptional(_ stmt: OpaquePointer?, _ idx: Int32, _ value: String?) {
     if let v = value {
-      BackupManifestStore.bindText(stmt, idx, v)
+      Self.bindText(stmt, idx, v)
     } else {
       sqlite3_bind_null(stmt, idx)
     }
@@ -291,8 +303,8 @@ final class PhotoBackupManager: NSObject {
       var stmt: OpaquePointer?
       guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
       defer { sqlite3_finalize(stmt) }
-      BackupManifestStore.bindText(stmt, 1, key)
-      BackupManifestStore.bindText(stmt, 2, value)
+      Self.bindText(stmt, 1, key)
+      Self.bindText(stmt, 2, value)
       sqlite3_step(stmt)
     }
   }
@@ -302,7 +314,7 @@ final class PhotoBackupManager: NSObject {
     let sql = "SELECT value FROM backup_state WHERE key = ?"
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
-    BackupManifestStore.bindText(stmt, 1, key)
+    Self.bindText(stmt, 1, key)
     guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
     return String(cString: sqlite3_column_text(stmt, 0))
   }
