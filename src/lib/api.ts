@@ -1525,6 +1525,31 @@ export interface UploadProgress {
   cryptoBytesPerSec?: number;
   uploadSessionId?: string;
   protocol?: 'v1' | 'v2';
+  /**
+   * Task 2062 — the COUNTRY the server chose for this file at upload init
+   * (`storage_location.country`), so the activity card can say "→ Finland"
+   * while the bytes move. Absent until init has answered, from an older
+   * server, for an unknown pool, and for a session resumed from storage.
+   */
+  storageCountry?: string;
+}
+
+/**
+ * Task 2062 — wraps an upload's `onProgress` so every event emitted after init
+ * carries the init response's country. `note(init)` is a no-op for a response
+ * with no usable country (the card keeps its "Europe" fallback).
+ */
+export function trackInitCountry(onProgress?: (p: UploadProgress) => void): {
+  onProgress: ((p: UploadProgress) => void) | undefined;
+  note: (initResponse: unknown) => void;
+} {
+  let country: string | null = null;
+  return {
+    onProgress: onProgress ? (p) => onProgress(country ? { ...p, storageCountry: country } : p) : undefined,
+    note: (initResponse) => {
+      country = fileStorageCountry(initResponse) ?? country;
+    },
+  };
 }
 
 export async function uploadFile(
@@ -1651,12 +1676,15 @@ export async function uploadEncryptedChunked(params: {
     plaintextSizeBytes,
     resumeKey,
     resumeMeta,
-    onProgress,
+    onProgress: onProgressRaw,
     readEncryptedChunk,
     versionReplace,
     foregroundTransfer,
     signal,
   } = params
+  // Task 2062: every progress event carries the country the init named.
+  const initCountry = trackInitCountry(onProgressRaw)
+  const onProgress = initCountry.onProgress
   // Task 1594 round 3 (T5): snapshot the session at this upload's own start —
   // see `endSessionForAccountMismatch`. Threaded into `initUploadV2` and
   // `finalizeUpload` below, plus every direct throwUploadError call here.
@@ -1706,6 +1734,7 @@ export async function uploadEncryptedChunked(params: {
       baseVersionNumber: versionReplace?.baseVersionNumber,
     })
     if (v2Init) {
+      initCountry.note(v2Init)
       protocol = 'v2'
       serverFileId = v2Init.file_id
       uploadSessionId = v2Init.upload_session_id
@@ -1766,6 +1795,7 @@ export async function uploadEncryptedChunked(params: {
       await throwUploadError(initRes.status, err, initRes.statusText, authSnapshot)
     }
     const init = (await initRes.json()) as { file_id: string }
+    initCountry.note(init)
     serverFileId = init.file_id
   }
 
@@ -2028,8 +2058,11 @@ export async function uploadEncryptedFileNative(params: {
   if (!isNativeUploadAvailable()) return null
   const {
     masterKeyHandleId, fileId, inputUri, nameEncrypted, v2InitNameEncrypted,
-    parentId, isMedia, createdAt, plaintextSizeBytes, resumeKey, resumeMeta, onProgress, signal,
+    parentId, isMedia, createdAt, plaintextSizeBytes, resumeKey, resumeMeta, onProgress: onProgressRaw, signal,
   } = params
+  // Task 2062: every progress event carries the country the init named.
+  const initCountry = trackInitCountry(onProgressRaw)
+  const onProgress = initCountry.onProgress
   // Task 1594 round 3 (T5): snapshot the session at this upload's own start —
   // see `endSessionForAccountMismatch`.
   const authSnapshot = await captureRequestAuthSnapshot()
@@ -2070,6 +2103,7 @@ export async function uploadEncryptedFileNative(params: {
       chunkCount: plan.chunkCount,
     })
     if (!v2Init) return null
+    initCountry.note(v2Init)
     if (v2Init.chunk_size_bytes !== plan.chunkSizeBytes || v2Init.chunk_count !== plan.chunkCount) {
       throw new ApiError(500, 'Server changed the upload chunk plan', 'chunk_plan_mismatch')
     }
@@ -2308,6 +2342,8 @@ interface UploadV2InitResponse {
    */
   lease_seconds?: number;
   heartbeat_interval_secs?: number;
+  /** Task 2062 — the pool chosen at init: `{ region, country, country_code }`, no city. */
+  storage_location?: { country?: string | null; country_code?: string | null } | null;
 }
 
 /**
@@ -2478,6 +2514,7 @@ async function initUploadV2(params: {
     chunk_count: data.chunk_count,
     lease_seconds: data.lease_seconds,
     heartbeat_interval_secs: data.heartbeat_interval_secs,
+    storage_location: data.storage_location,
   }
 }
 
