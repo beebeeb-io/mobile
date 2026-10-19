@@ -36,6 +36,7 @@ MANIFEST=(
   "backup-device-id-test.swift|modules/beebeeb-crypto/ios/BackupDeviceId.swift modules/beebeeb-crypto/ios/PendingUploadServerCheck.swift modules/beebeeb-crypto/ios/PhotoBackupServerResponses.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift"
   "backup-surface-state-test.swift|modules/beebeeb-crypto/ios/BackupSurfaceState.swift modules/beebeeb-crypto/ios/PendingUploadServerCheck.swift modules/beebeeb-crypto/ios/PhotoBackupServerResponses.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift"
   "kept-in-flight-upload-test.swift|modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/SignOutMarkFlush.swift modules/beebeeb-crypto/ios/ManifestWriteFence.swift modules/beebeeb-crypto/ios/BackupManifestHandle.swift modules/beebeeb-crypto/ios/PendingUploadServerCheck.swift modules/beebeeb-crypto/ios/PhotoBackupServerClient.swift modules/beebeeb-crypto/ios/PhotoBackupServerResponses.swift"
+  "manifest-shm-two-copies-test.swift|modules/beebeeb-crypto/ios/BackupManifestHandle.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/ManifestWriteFence.swift"
   "pending-upload-server-check-test.swift|modules/beebeeb-crypto/ios/PendingUploadServerCheck.swift modules/beebeeb-crypto/ios/PhotoBackupServerClient.swift modules/beebeeb-crypto/ios/PhotoBackupServerResponses.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/ManifestWriteFence.swift modules/beebeeb-crypto/ios/BackupManifestHandle.swift"
 )
 
@@ -58,6 +59,60 @@ for driver in scripts/swift-tests/*-test.swift scripts/swift-tests/*-harness.swi
   fi
 done
 
+# Task 2033: the camera-roll manifest runs on ONE SQLite copy, expo-sqlite's
+# (`exsqlite3_*`). A Swift file that `import ManifestSQLite` (the manifest
+# files, and drivers that touch a manifest connection) is compiled with the
+# SAME module map the app's BeebeebCrypto pod uses
+# (modules/beebeeb-crypto/ios/ManifestSQLite, `-I` here, SWIFT_INCLUDE_PATHS
+# there) and linked against expo's exact vendored amalgamation, built once
+# with ExpoSQLite.podspec's flags as a dylib. A driver that dlopens it
+# (BB_EXPO_SQLITE_DYLIB) gets the same image: one copy, as in the app.
+MANIFEST_SQLITE_INCLUDE=modules/beebeeb-crypto/ios/ManifestSQLite
+EXPO_SQLITE_SRC=node_modules/expo-sqlite/vendor/sqlite3/sqlite3.c
+SQLITE_BUILD_DIR="$(mktemp -d)"
+EXPO_SQLITE_DYLIB="$SQLITE_BUILD_DIR/libexpo-sqlite3.dylib"
+VANILLA_SQLITE_OBJ="$SQLITE_BUILD_DIR/vanilla-sqlite3.o"
+expo_sqlite_state=""   # "", "ok" or "failed"
+vanilla_sqlite_state=""
+EXPO_CFLAGS=(-DHAVE_USLEEP=1 -DSQLITE_ENABLE_LOCKING_STYLE=0 -DSQLITE_ENABLE_BYTECODE_VTAB=1 -DSQLITE_TEMP_STORE=2
+  -DSQLITE_ENABLE_SESSION=1 -DSQLITE_ENABLE_PREUPDATE_HOOK=1 -DSQLITE_ENABLE_MATH_FUNCTIONS=1
+  -DSQLITE_ENABLE_FTS4=1 -DSQLITE_ENABLE_FTS3_PARENTHESIS=1 -DSQLITE_ENABLE_FTS5=1)
+
+build_expo_sqlite() {
+  [ -n "$expo_sqlite_state" ] && { [ "$expo_sqlite_state" = ok ]; return; }
+  expo_sqlite_state=failed
+  if [ ! -f "$EXPO_SQLITE_SRC" ]; then
+    echo "MISSING $EXPO_SQLITE_SRC (run bun install first)"
+    return 1
+  fi
+  if ! xcrun clang -dynamiclib -O1 -w "${EXPO_CFLAGS[@]}" -install_name "$EXPO_SQLITE_DYLIB" \
+    "$EXPO_SQLITE_SRC" -o "$EXPO_SQLITE_DYLIB" >"$LOG_DIR/expo-sqlite.build.log" 2>&1; then
+    cat "$LOG_DIR/expo-sqlite.build.log"
+    return 1
+  fi
+  expo_sqlite_state=ok
+}
+
+# The Rust core's stand-in for manifest-shm-two-copies-test: a vanilla
+# `sqlite3_*` linked INTO the test binary, as libbeebeeb_uniffi.a's bundled
+# copy is in the app (expo's amalgamation with its rename reversed, or
+# BB_ENGINE_SQLITE_SRC, e.g. libsqlite3-sys 0.30.1's sqlite3.c = the app's
+# exact 3.46.0). Never the macOS system library: Apple's copy hides the bug.
+build_vanilla_sqlite() {
+  [ -n "$vanilla_sqlite_state" ] && { [ "$vanilla_sqlite_state" = ok ]; return; }
+  vanilla_sqlite_state=failed
+  local src="${BB_ENGINE_SQLITE_SRC:-}"
+  if [ -z "$src" ]; then
+    src="$SQLITE_BUILD_DIR/vanilla-sqlite3.c"
+    sed 's/exsqlite3/sqlite3/g' "$EXPO_SQLITE_SRC" >"$src" || return 1
+  fi
+  if ! xcrun clang -c -O1 -w -DSQLITE_THREADSAFE=1 "$src" -o "$VANILLA_SQLITE_OBJ" >"$LOG_DIR/vanilla-sqlite.build.log" 2>&1; then
+    cat "$LOG_DIR/vanilla-sqlite.build.log"
+    return 1
+  fi
+  vanilla_sqlite_state=ok
+}
+
 for entry in "${MANIFEST[@]}"; do
   base="${entry%%|*}"
   srcs="${entry#*|}"
@@ -67,11 +122,31 @@ for entry in "${MANIFEST[@]}"; do
   cp "$driver" "$tmp/main.swift"
   echo "== $base  (sources: $srcs)"
   flags=(-swift-version 5 -O)
+  extra_objs=()
+  # shellcheck disable=SC2086
+  if grep -qE '^import ManifestSQLite$' $srcs "$driver"; then
+    if ! build_expo_sqlite; then
+      echo "COMPILE FAILED: $base (expo-sqlite's SQLite copy)"
+      rc=1
+      continue
+    fi
+    flags+=(-I "$MANIFEST_SQLITE_INCLUDE")
+    extra_objs+=("$EXPO_SQLITE_DYLIB")
+    export BB_EXPO_SQLITE_DYLIB="$EXPO_SQLITE_DYLIB"
+  fi
   case "$base" in
     native-video-streamer-harness.swift|native-preview-working-storage-test.swift) flags+=(-DDEBUG) ;;
+    manifest-shm-two-copies-test.swift)
+      if ! build_expo_sqlite || ! build_vanilla_sqlite; then
+        echo "COMPILE FAILED: $base (SQLite copies)"
+        rc=1
+        continue
+      fi
+      extra_objs+=("$VANILLA_SQLITE_OBJ")
+      ;;
   esac
   # shellcheck disable=SC2086
-  if ! xcrun swiftc "${flags[@]}" $srcs "$tmp/main.swift" -o "$tmp/t" >"$LOG_DIR/$base.build.log" 2>&1; then
+  if ! xcrun swiftc "${flags[@]}" $srcs "$tmp/main.swift" ${extra_objs[@]+"${extra_objs[@]}"} -o "$tmp/t" >"$LOG_DIR/$base.build.log" 2>&1; then
     cat "$LOG_DIR/$base.build.log"
     echo "COMPILE FAILED: $base"
     rc=1

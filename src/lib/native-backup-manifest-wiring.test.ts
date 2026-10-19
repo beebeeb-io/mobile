@@ -177,7 +177,7 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     const [deferred, sqlOpen] = order(
       open,
       'if peerMayHoldFile, pendingReset.get() { return .pendingResetDeferred }',
-      'sqlite3_open_v2(path, &handle, Self.openFlags, nil)',
+      'exsqlite3_open_v2(path, &handle, Self.openFlags, nil)',
     );
     expect(deferred).toBeGreaterThan(-1);
     expect(sqlOpen).toBeGreaterThan(deferred);
@@ -673,7 +673,7 @@ describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondit
 
   test('the reset reads backup_verification\'s existence (an error fails the reset) and checks secure_delete', () => {
     const reset = body(storeSwift, 'static func resetInPlace(');
-    expect(reset).toMatch(/guard sqlite3_exec\(db, "PRAGMA secure_delete = ON", nil, nil, nil\) == SQLITE_OK else \{ return false \}/);
+    expect(reset).toMatch(/guard exsqlite3_exec\(db, "PRAGMA secure_delete = ON", nil, nil, nil\) == SQLITE_OK else \{ return false \}/);
     expect(reset).toMatch(/guard let hasVerification = tableExistsChecked\(db, "backup_verification"\) else \{ return false \}/);
     expect(reset).not.toMatch(/tableExists\(db, "backup_verification"\)/);
   });
@@ -1302,8 +1302,8 @@ describe('round 16 (review of mobile#182 at 083d5f23)', () => {
     const [read, set, restore, write] = order(
       keep,
       'let previousBusyMs = pragmaInt(db, "PRAGMA busy_timeout") ?? 0',
-      'sqlite3_busy_timeout(db, max(busyTimeoutMs, previousBusyMs))',
-      'defer { sqlite3_busy_timeout(db, previousBusyMs) }',
+      'exsqlite3_busy_timeout(db, max(busyTimeoutMs, previousBusyMs))',
+      'defer { exsqlite3_busy_timeout(db, previousBusyMs) }',
       'keepInFlightSQL(excludedCount: 0, scope: scope)',
     );
     expect(read).toBeGreaterThan(-1);

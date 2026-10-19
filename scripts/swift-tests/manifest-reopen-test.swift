@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 1667 round 6 (Codex P2 "Reopen the native manifest after successful
 // recovery", mobile#182 at de6c1498) — standalone swiftc test for the native
@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS backup_upload_chunks (
 
 /// What the engine hands the handle as `prepareSchema` (ensureTables).
 func prepareSchema(_ db: OpaquePointer) {
-  sqlite3_exec(db, schema, nil, nil, nil)
+  exsqlite3_exec(db, schema, nil, nil, nil)
   BackupManifestStore.migrate(db)
 }
 
@@ -95,35 +95,35 @@ final class PendingFlag {
 func connect(_ path: String) -> OpaquePointer {
   var db: OpaquePointer?
   let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-  precondition(sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
-  sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+  precondition(exsqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
+  exsqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
   return db!
 }
 
 func exec(_ db: OpaquePointer, _ sql: String) {
   var err: UnsafeMutablePointer<CChar>?
-  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+  if exsqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
     let msg = err.map { String(cString: $0) } ?? "?"
-    sqlite3_free(err)
+    exsqlite3_free(err)
     fatalError("SQL failed: \(msg)\n\(sql)")
   }
 }
 
 func scalar(_ db: OpaquePointer, _ sql: String) -> Int {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
-  return Int(sqlite3_column_int64(stmt, 0))
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+  return Int(exsqlite3_column_int64(stmt, 0))
 }
 
 func strings(_ db: OpaquePointer, _ sql: String) -> [String] {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-  defer { sqlite3_finalize(stmt) }
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+  defer { exsqlite3_finalize(stmt) }
   var out: [String] = []
-  while sqlite3_step(stmt) == SQLITE_ROW {
-    if let t = sqlite3_column_text(stmt, 0) { out.append(String(cString: t)) }
+  while exsqlite3_step(stmt) == SQLITE_ROW {
+    if let t = exsqlite3_column_text(stmt, 0) { out.append(String(cString: t)) }
   }
   return out
 }
@@ -132,13 +132,13 @@ func strings(_ db: OpaquePointer, _ sql: String) -> [String] {
 /// handle under test wrote the on-disk file, not a deleted inode.
 func onDisk(_ path: String, _ sql: String) -> Int {
   let db = connect(path)
-  defer { sqlite3_close_v2(db) }
+  defer { exsqlite3_close_v2(db) }
   return scalar(db, sql)
 }
 
 func onDiskStrings(_ path: String, _ sql: String) -> [String] {
   let db = connect(path)
-  defer { sqlite3_close_v2(db) }
+  defer { exsqlite3_close_v2(db) }
   return strings(db, sql)
 }
 
@@ -210,7 +210,7 @@ do {
 
   // JS closes its handle (account-cleanup.ts), then calls finish.
   exec(js, "ROLLBACK")
-  sqlite3_close_v2(js)
+  exsqlite3_close_v2(js)
   let finished = handle.finishAfterFailedReset(allowUnlink: true)
   expect(finished.ok, "a5: the recovery empties the manifest")
   expect(!finished.unlinked, "a5: the reset succeeded in place (no replace)")
@@ -240,7 +240,7 @@ do {
   // JS reopens lazily and sees the same rows.
   let jsAgain = connect(path)
   expect(scalar(jsAgain, pendingSQL) == 3, "a11: the JS connection reopened on the same file sees them")
-  sqlite3_close_v2(jsAgain)
+  exsqlite3_close_v2(jsAgain)
 }
 
 // (a, replaced file) the reset cannot run even with every connection closed:
@@ -257,7 +257,7 @@ do {
   // A manifest the store cannot reset (no backup_assets): the recovery must replace it.
   exec(js, "ROLLBACK")
   exec(js, "DROP TABLE backup_assets")
-  sqlite3_close_v2(js)
+  exsqlite3_close_v2(js)
   let before = inode(path)
   let finished = handle.finishAfterFailedReset(allowUnlink: true)
   expect(finished.ok && finished.unlinked, "ar2: the file was replaced (ok \(finished.ok), unlinked \(finished.unlinked))")
@@ -272,7 +272,7 @@ do {
 // MARK: - (b) a manifest that cannot be (re)opened
 
 do {
-  // b1: the SQLite directory is a regular file -> sqlite3_open_v2 fails.
+  // b1: the SQLite directory is a regular file -> exsqlite3_open_v2 fails.
   let dir = root.appendingPathComponent("b-open", isDirectory: true)
   try! fm.createDirectory(at: dir, withIntermediateDirectories: true)
   let blocker = dir.appendingPathComponent("SQLite").path
@@ -346,7 +346,7 @@ do {
   expect(stillDeferred.decision != .proceed && availability.failure == .pendingResetDeferred,
          "b6: still deferred until JS confirms its close (got \(String(describing: availability.failure)))")
   // JS closes its connection and confirms it at its next open (the gate).
-  sqlite3_close_v2(js)
+  exsqlite3_close_v2(js)
   let gate = seedHandle.admitPeerOpen(priorPeerHandlesClosed: true)
   expect(gate.admitted, "b6: JS admitted once its close is confirmed (got \(gate))")
   // The JS lock goes away: the retry applies the reset, then proceeds.
@@ -392,7 +392,7 @@ do {
   expect(signIn.decision == .proceed && signIn.scanned, "c4: sign-in proceeds and the scan commits")
   expect(handle.db == launchDb && handle.openCount == 1, "c4: start() did not reopen")
   expect(scalar(js, pendingSQL) == 3 && onDisk(path, pendingSQL) == 3, "c4: JS and the file see B's 3 queued rows")
-  sqlite3_close_v2(js)
+  exsqlite3_close_v2(js)
 }
 
 // MARK: - Report

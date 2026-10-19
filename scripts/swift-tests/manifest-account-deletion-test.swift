@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 1667 round 9 (Codex P1 "Delete retained marks during permanent account
 // deletion", mobile#182 at dacc089d) — standalone swiftc test for the purge
@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS backup_verification (
 """
 
 func prepareSchema(_ db: OpaquePointer) {
-  sqlite3_exec(db, schema, nil, nil, nil)
+  exsqlite3_exec(db, schema, nil, nil, nil)
   BackupManifestStore.migrate(db)
 }
 
@@ -116,32 +116,32 @@ final class Flag {
 func connect(_ path: String) -> OpaquePointer {
   var db: OpaquePointer?
   let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-  precondition(sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
-  sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+  precondition(exsqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
+  exsqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
   return db!
 }
 
 func exec(_ db: OpaquePointer, _ sql: String) {
   var err: UnsafeMutablePointer<CChar>?
-  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+  if exsqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
     let msg = err.map { String(cString: $0) } ?? "?"
-    sqlite3_free(err)
+    exsqlite3_free(err)
     fatalError("SQL failed: \(msg)\n\(sql)")
   }
 }
 
 func scalar(_ db: OpaquePointer, _ sql: String) -> Int {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
-  return Int(sqlite3_column_int64(stmt, 0))
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+  return Int(exsqlite3_column_int64(stmt, 0))
 }
 
 /// What a NEW connection sees in the file at `path` right now.
 func onDisk(_ path: String, _ sql: String) -> Int {
   let db = connect(path)
-  defer { sqlite3_close_v2(db) }
+  defer { exsqlite3_close_v2(db) }
   return scalar(db, sql)
 }
 
@@ -269,7 +269,7 @@ do {
   expect(handle.resetForSignOut(outgoingAccountId: accountB, mode: .signOut), "b.1: B's sign-out reset succeeds")
   expect(onDisk(path, marksB) == 3, "b.2: B keeps its 2 marks plus the new one (got \(onDisk(path, marksB)))")
   expect(onDisk(path, marksA) == 0, "b.2: and A still has none")
-  sqlite3_close_v2(js)
+  exsqlite3_close_v2(js)
 }
 
 // MARK: - (a2) the deletion's reset fails; the recovery (in place) keeps nothing of A
@@ -286,7 +286,7 @@ do {
          "a2.1: the deletion's reset fails under the JS lock")
   expect(pending.value && discard.value, "a2.2: the pending reset is recorded as a deletion's")
   exec(js, "ROLLBACK")
-  sqlite3_close_v2(js)
+  exsqlite3_close_v2(js)
   let finished = handle.finishAfterFailedReset(allowUnlink: true)
   expect(finished.ok && !finished.unlinked, "a2.3: the recovery reset the file in place (ok \(finished.ok), unlinked \(finished.unlinked))")
   let r = retainedOfA(path)
@@ -312,7 +312,7 @@ do {
   // A manifest the store cannot reset (no backup_assets): the recovery replaces it.
   exec(js, "ROLLBACK")
   exec(js, "DROP TABLE backup_assets")
-  sqlite3_close_v2(js)
+  exsqlite3_close_v2(js)
   let finished = handle.finishAfterFailedReset(allowUnlink: true)
   expect(finished.ok && finished.unlinked, "a3.2: the file was replaced (ok \(finished.ok), unlinked \(finished.unlinked))")
   expect(onDisk(path, marksA) == 0, "a3.3: the replacement carried 0 marks of A (got \(onDisk(path, marksA)))")
@@ -334,7 +334,7 @@ do {
     expect(!handle.resetForSignOut(outgoingAccountId: accountA, mode: .accountDeleted, deletedAccountIds: [accountA]),
            "a4.1: the deletion's reset fails")
     exec(js, "ROLLBACK")
-    sqlite3_close_v2(js)
+    exsqlite3_close_v2(js)
     // The process ends before JS calls finishBackupManifestPurge.
   }
   expect(pending.value && discard.value, "a4.2: both flags survive the process")
@@ -368,7 +368,7 @@ func processOneLeavesADeletionPending(_ path: String, _ pending: Flag, _ discard
   expect(!handle.resetForSignOut(outgoingAccountId: accountA, mode: .accountDeleted, deletedAccountIds: [accountA]),
          "a6.1: process 1: A's deletion reset fails")
   exec(js, "ROLLBACK")
-  sqlite3_close_v2(js)
+  exsqlite3_close_v2(js)
   // Process 1 ends here (no finishBackupManifestPurge).
 }
 
@@ -387,7 +387,7 @@ do {
   expect(next.deletedAccountIds == [accountB], "a6.4: this process knows only B")
   expect(next.activeDiscard.all, "a6.5: the inherited deletion still forces 'discard every mark'")
   exec(js, "ROLLBACK")
-  sqlite3_close_v2(js)
+  exsqlite3_close_v2(js)
   let finished = next.finishAfterFailedReset(allowUnlink: true)
   expect(finished.ok, "a6.6: the recovery succeeds")
   expect(onDisk(path, marksA) == 0, "a6.7: 0 of deleted account A's marks remain (got \(onDisk(path, marksA)))")
@@ -412,7 +412,7 @@ do {
   let finished = next.finishAfterFailedReset(allowUnlink: false)
   expect(!finished.ok, "a7.3: the recovery fails while JS still holds the lock")
   exec(js, "ROLLBACK")
-  sqlite3_close_v2(js)
+  exsqlite3_close_v2(js)
   // Task 1667 round 12 (review item 4): with JS's close unconfirmed nothing
   // is opened until JS confirms it (its next open asks the gate).
   expect(next.openIfClosed() == .pendingResetDeferred, "a7.4: deferred while JS's close is unconfirmed")
@@ -485,14 +485,14 @@ do {
   // records it (`recordScanInsert`).
   let js = connect(path)
   exec(js, "BEGIN IMMEDIATE")
-  sqlite3_busy_timeout(handle.db!, 0)
+  exsqlite3_busy_timeout(handle.db!, 0)
   let written = FencedManifestWrites.scanInsert(
     handle.db, fence: handle.writeFence, ticket: ticketA, writer: "scan.insert",
     assets: [BackupManifestStore.ScannedAsset(localAssetId: "ida-x", createdAt: "2026-10-18T10:00:00Z", assetType: "photo")],
     selection: nil, nowMs: now
   )
   exec(js, "ROLLBACK")
-  sqlite3_close_v2(js)
+  exsqlite3_close_v2(js)
   expect(written == .written(inserted: false, entered: 0), "d1: A's scan insert failed (got \(written))")
   if case .written(let inserted, _) = written { handle.scanInsertHealth.record(inserted: inserted, source: .fullScan) }
   expect(handle.scanInsertHealth.failed, "d1: the failure is recorded for A")

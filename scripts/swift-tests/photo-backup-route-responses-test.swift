@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 1667 round 5 (Codex P1 "Fail closed when the identifier route returns
 // 404") — standalone swiftc test for how the engine reads the two
@@ -258,33 +258,33 @@ let acctA = "acct-A"
 func open(_ path: String) -> OpaquePointer {
   var db: OpaquePointer?
   let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-  precondition(sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
-  sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+  precondition(exsqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
+  exsqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
   return db!
 }
 
 func exec(_ db: OpaquePointer, _ sql: String) {
   var err: UnsafeMutablePointer<CChar>?
-  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+  if exsqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
     let msg = err.map { String(cString: $0) } ?? "?"
-    sqlite3_free(err)
+    exsqlite3_free(err)
     fatalError("SQL failed: \(msg)\n\(sql)")
   }
 }
 
 func scalar(_ db: OpaquePointer, _ sql: String) -> Int {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
-  return Int(sqlite3_column_int64(stmt, 0))
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+  return Int(exsqlite3_column_int64(stmt, 0))
 }
 
 func text(_ db: OpaquePointer, _ sql: String) -> String? {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW, let c = sqlite3_column_text(stmt, 0) else { return nil }
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW, let c = exsqlite3_column_text(stmt, 0) else { return nil }
   return String(cString: c)
 }
 
@@ -389,7 +389,7 @@ for (label, reply) in [("empty", Reply(status: 404, headers: [:], body: Data()))
   expect(ready == .ready(rebuilt: true, promoted: 3, keptApplied: 1),
          "identifiers 404 (\(label)) then 200: ready, 3 promoted + 1 kept (got \(String(describing: ready)))")
   expect(pendingUploads(db) == 1, "identifiers 404 (\(label)) then 200: only p5 (never uploaded) left to upload")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - 4. Mark 404 through the real flush + sign-out reset + re-sign-in
@@ -447,7 +447,7 @@ do {
   expect((BackupManifestStore.pendingServerMarks(db, accountId: acctA, limit: 10) ?? []).map { $0.assetId } == ["m-proxy"],
          "m-proxy is still unmarked: the catch-up sends it to the server")
   expect(!kept(db, "m-proxy"), "the kept row is consumed")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // Every other non-API 404 shape: not done, kept through sign-out.
@@ -468,7 +468,7 @@ for (label, reply) in foreign404s {
   expect(!marked(db, "m-1"), "mark 404, \(label): no server_marked_at")
   _ = BackupManifestStore.resetInPlace(db, nowMs: now)
   expect(kept(db, "m-1"), "mark 404, \(label): kept as a pending mark through sign-out")
-  sqlite3_close_v2(db)
+  exsqlite3_close_v2(db)
 }
 
 // MARK: - Report

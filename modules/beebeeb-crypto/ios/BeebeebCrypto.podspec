@@ -18,6 +18,12 @@ Pod::Spec.new do |s|
   s.dependency 'ExpoModulesCore'
   s.dependency 'SDWebImage/Core'
   s.dependency 'SDWebImageWebPCoder'
+  # Task 2033: the camera-roll manifest (beebeeb-backup.db) runs on expo-sqlite's
+  # SQLite copy, the one the JS layer uses (`exsqlite3_*`, linked from ExpoSQLite's
+  # static library). `ManifestSQLite/module.modulemap` exposes its header to the
+  # manifest Swift files; never `import SQLite3` there (that binds the Rust
+  # core's own copy, a second one in the process).
+  s.dependency 'ExpoSQLite'
 
   s.source_files = '**/*.{h,m,mm,swift}'
   s.vendored_frameworks = '../../../ios/BeebeebCore.xcframework'
@@ -29,6 +35,7 @@ Pod::Spec.new do |s|
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'SWIFT_COMPILATION_MODE' => 'wholemodule',
+    'SWIFT_INCLUDE_PATHS' => '$(inherited) "$(PODS_TARGET_SRCROOT)/ManifestSQLite"',
     'FRAMEWORK_SEARCH_PATHS' => '$(inherited) ${PODS_ROOT}/.. ${PROJECT_DIR}/..',
     'HEADER_SEARCH_PATHS[sdk=iphonesimulator*]' => '$(inherited) "$(PODS_TARGET_SRCROOT)/../../../ios/BeebeebCore.xcframework/ios-arm64_x86_64-simulator/Headers"',
     'HEADER_SEARCH_PATHS[sdk=iphoneos*]' => '$(inherited) "$(PODS_TARGET_SRCROOT)/../../../ios/BeebeebCore.xcframework/ios-arm64/Headers"',

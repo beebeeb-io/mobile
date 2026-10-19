@@ -787,19 +787,63 @@ sign-out purge did, the process kept using the deleted inode, and the next cold 
 an empty manifest and uploaded every photo again into the same folder (sim evidence
 `_qa-evidence/1962/sim-dup/`).
 
-- **Never close the JS handle while the engine's connection is open on the file.** expo-sqlite
-  compiles its own SQLite (`node_modules/expo-sqlite/ios/sqlite3.c`); the engine links the system
-  one. Two SQLite copies in one process cannot see each other's connections: a JS `closeAsync()`
+- **ONE SQLite copy for the manifest: expo-sqlite's (task 2033, Option A).** Linkage truth:
+  `import SQLite3` in this app does NOT reach the system libsqlite3 (this file used to say so):
+  `ios/BeebeebCore.xcframework`'s `libbeebeeb_uniffi.a` exports a vanilla `sqlite3_*` (SQLite
+  3.46.0, libsqlite3-sys bundled, used by the Rust core's own `fp_cache`; `nm -gU ... | grep
+  _sqlite3_step`) and the linker binds every Swift `sqlite3_*` call to it. expo-sqlite compiles its
+  own copy (`node_modules/expo-sqlite/vendor/sqlite3/sqlite3.c`, 3.50.3, symbols renamed
+  `exsqlite3_*`, in `libExpoSQLite.a`). Until build 240 the engine was on the Rust copy and JS on
+  expo's. Now the manifest files (`BackupManifestHandle`, `BackupManifestStore`,
+  `ManifestWriteFence`, `NativeBackupEngine`) `import ManifestSQLite`
+  (`modules/beebeeb-crypto/ios/ManifestSQLite/module.modulemap` -> expo's vendored `sqlite3.h`;
+  `BeebeebCrypto.podspec` puts it on `SWIFT_INCLUDE_PATHS` and depends on `ExpoSQLite`) and call
+  `exsqlite3_*`, the same code JS runs. Rules: never `import SQLite3` in a manifest file, never
+  call a bare `sqlite3_*` there, never pass a manifest connection or statement to a file on the
+  other copy and never call `BackupManifestStore`/`BackupManifestHandle` helpers from a file that
+  `import SQLite3` (PhotoBackupManager's own `backup.db` used `BackupManifestStore.bindText` until
+  2033: it has its own now). Every OTHER SQLite file stays on one copy too: the File Provider cache
+  (BeebeebCryptoModule, PlaintextStorageProtection, the Rust `fp_cache`, the extension) and
+  `ThumbnailQueueDB`/`PhotoBackupManager` stay on the Rust copy; never move one of their call sites
+  alone. No extension target compiles a manifest file (they do not link ExpoSQLite). Guard:
+  `src/lib/manifest-single-sqlite-copy.guard.test.ts`. Linkage check on a build: `nm -u` on
+  `BeebeebCrypto.build/Objects-normal/arm64/{NativeBackupEngine,BackupManifestStore,BackupManifestHandle}.o`
+  lists `_exsqlite3_*` and no `_sqlite3_*`.
+- **Why (TestFlight 240 launch crash).** With two copies, a copy's first connection asks F_GETLK
+  about the `-shm` DMS byte; F_GETLK never reports same-process locks, so it truncated `-shm` to 3
+  bytes and re-extended it. Since round 10 the JS open gate opens the engine's handle first, so
+  JS's first `migrate` statement truncated the `-shm` the engine had mmapped; an engine read in
+  that window that touched the WAL-index hash (any WAL frames) died with `SIGBUS / cluster_pagein
+  past EOF`. The pair also let both copies hold `BEGIN IMMEDIATE` at once (no writer exclusion),
+  and a close on one copy deleted `-wal`/`-shm` under the other. All three are asserted by
+  `scripts/swift-tests/manifest-shm-two-copies-test.swift` (a/b, d, e; red on 17565132, green
+  since 2033). The runner (`run-swift-tests.sh`) compiles every file that `import ManifestSQLite`
+  with the same module map (`-I`) and links expo's exact amalgamation, built with the podspec's
+  flags; the shm test also links a vanilla copy as the Rust core's stand-in.
+- **Writers now exclude each other: both sides wait (task 2033).** One copy means a write that
+  meets the other side's write transaction gets SQLITE_BUSY instead of interleaving. The engine's
+  connection sets `BackupManifestHandle.busyTimeoutMs` (2000 ms) at open, before its first
+  statement; JS sets `PRAGMA busy_timeout = MANIFEST_BUSY_TIMEOUT_MS` (same value) as the first
+  statement of `BackupDatabase.migrate`. Keep the two equal (the guard checks). Never hold a
+  manifest write transaction across a call that waits on the other side.
+- **Never close the JS handle while the engine's connection is open on the file.** Two SQLite
+  copies in one process cannot see each other's connections: a JS `closeAsync()`
   concluded it was the last connection and deleted `-wal`/`-shm` under the engine's open handle
-  (simulator, task 1667). So an ordinary sign-out keeps the JS handle OPEN (the reset runs through
+  (simulator, task 1667). Task 2033: with one copy that deletion no longer happens (test (e) of
+  `manifest-shm-two-copies-test.swift`), but this rule and the round 10/12 rules below (the JS
+  purge hold and drain, `peerMayHoldFile`, parking instead of closing, `pending_reset_deferred`)
+  are KEPT unchanged: they also order the reset against JS's reads, no test yet proves each one
+  removable, and a lifecycle change was not worth the risk in the App Store build. Simplifying
+  them is follow-up work, one rule at a time, each with its own failing test first. So an ordinary sign-out keeps the JS handle OPEN (the reset runs through
   the engine's handle). JS closes it in exactly two places, both after the engine's handle is
   closed: (1) the failed-reset path: the native reset failed and the engine closed its own handle,
   then `account-cleanup.ts` calls `closeHandles()` (`closeHandleForStoragePurge`) still under the
   purge hold, then `finishBackupManifestPurge(closed)`; (2) `admitJsOpen` closes leftover JS
   connections (`unclosedHandles`) when the native gate answers `pending_reset_deferred`, i.e. a
   reset is pending and the engine has no connection open. Removing either close breaks that
-  recovery. (Known gap, round 14 follow-up: on a failed reset the ENGINE closes its system-SQLite
-  connection while the JS one is still open, the reverse of this rule.)
+  recovery. (Known gap, round 14 follow-up: on a failed reset the ENGINE closes its connection while the JS
+  one is still open, the reverse of this rule; with one copy since 2033 that close no longer
+  removes `-wal`/`-shm`, test (e1).)
 - **Sign-out** (`purgeAllPlaintextCaches` → native `purgePlaintextStorage`): JS holds its database
   work, handle open (`storage-purge-participants.ts`); native `prepareForStoragePurge()` stops and
   unbinds the engine, clears `photoBackupParentFolderId`, empties the manifest IN PLACE through its
@@ -981,7 +1025,8 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   `src/services/BackupDatabase.1667-write-fence.test.ts`, `src/services/BackupDatabase.1667-js-open-gate.test.ts`,
   `src/lib/account-cleanup.1667-real-purge-wrapper.test.ts` (round 11: the REAL `purgePlaintextStorage`
   wrapper propagates a native rejection, so a failed native purge counts as failed),
-  `src/lib/native-sqlite-bind-transient.guard.test.ts`.
+  `src/lib/native-sqlite-bind-transient.guard.test.ts`, `scripts/swift-tests/manifest-shm-two-copies-test.swift`,
+  `src/lib/manifest-single-sqlite-copy.guard.test.ts` (task 2033).
 
 
 ## Files (File Provider extension) — testing it (task 1722)

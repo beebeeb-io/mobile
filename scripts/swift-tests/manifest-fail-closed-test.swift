@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 // Task 1667 round 7 (mobile#182 at dc531405) — standalone swiftc test for
 // the fail-closed rules of the sign-out / recovery / rebuild / upload-record
@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS backup_upload_chunks (
 """
 
 func prepareSchema(_ db: OpaquePointer) {
-  sqlite3_exec(db, schema, nil, nil, nil)
+  exsqlite3_exec(db, schema, nil, nil, nil)
   BackupManifestStore.migrate(db)
 }
 
@@ -94,31 +94,31 @@ final class PendingFlag {
 func connect(_ path: String, wal: Bool = true) -> OpaquePointer {
   var db: OpaquePointer?
   let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-  precondition(sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
-  if wal { sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil) }
+  precondition(exsqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, "open \(path)")
+  if wal { exsqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil) }
   return db!
 }
 
 func exec(_ db: OpaquePointer, _ sql: String) {
   var err: UnsafeMutablePointer<CChar>?
-  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+  if exsqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
     let msg = err.map { String(cString: $0) } ?? "?"
-    sqlite3_free(err)
+    exsqlite3_free(err)
     fatalError("SQL failed: \(msg)\n\(sql)")
   }
 }
 
 func scalar(_ db: OpaquePointer, _ sql: String) -> Int {
   var stmt: OpaquePointer?
-  guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-  defer { sqlite3_finalize(stmt) }
-  guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
-  return Int(sqlite3_column_int64(stmt, 0))
+  guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+  defer { exsqlite3_finalize(stmt) }
+  guard exsqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+  return Int(exsqlite3_column_int64(stmt, 0))
 }
 
 func onDisk(_ path: String, _ sql: String) -> Int {
   let db = connect(path)
-  defer { sqlite3_close(db) }
+  defer { exsqlite3_close(db) }
   return scalar(db, sql)
 }
 
@@ -181,7 +181,7 @@ func seededFile(_ path: String, rows: Int, wal: Bool = true) {
     VALUES ('a\(i)', 'f-a\(i)', '2026-10-01T00:00:00Z', 'photo', 'uploaded', '\(accountA)')
     """)
   }
-  precondition(sqlite3_close(db) == SQLITE_OK)
+  precondition(exsqlite3_close(db) == SQLITE_OK)
 }
 
 /// Overwrites page `page` (1-based) of the file with 0xFF bytes.
@@ -248,7 +248,7 @@ do {
   expect(outcome == .deferred(.fetchFailed), "1d: the gate defers on a malformed 2xx map (got \(String(describing: outcome)))")
   expect(scalar(db, "SELECT COUNT(*) FROM backup_assets WHERE status = 'uploaded'") == 0,
          "1d: no row promoted from a partial map")
-  sqlite3_close(db)
+  exsqlite3_close(db)
 }
 
 // MARK: - 2. Codex P2: a failed pending-mark snapshot keeps the file
@@ -260,7 +260,7 @@ do {
   seededFile(path, rows: 3, wal: false)
   let probe = connect(path, wal: false)
   let rootPage = scalar(probe, "SELECT rootpage FROM sqlite_master WHERE name = 'backup_assets'")
-  sqlite3_close(probe)
+  exsqlite3_close(probe)
   expect(rootPage > 1, "2a0: found backup_assets' root page (\(rootPage))")
   corruptPage(path, rootPage)
   let before = inode(path)
@@ -268,7 +268,7 @@ do {
   let direct = connect(path)
   let snapshot: [BackupManifestStore.PendingMark]? = BackupManifestStore.pendingMarksSnapshot(direct, nowMs: now)
   expect(snapshot == nil, "2a1: a snapshot whose step fails is nil (got \(snapshot.map { "\($0.count) rows" } ?? "nil"))")
-  sqlite3_close(direct)
+  exsqlite3_close(direct)
 
   let r = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now, allowUnlink: true)
   expect(!r.unlinked, "2a2: the file is NOT replaced after a failed snapshot")
@@ -291,7 +291,7 @@ do {
   """)
   let snapshot: [BackupManifestStore.PendingMark]? = BackupManifestStore.pendingMarksSnapshot(db, nowMs: now)
   expect(snapshot == nil, "2b1: a snapshot whose query cannot be prepared is nil (got \(snapshot.map { "\($0.count) rows" } ?? "nil"))")
-  sqlite3_close(db)
+  exsqlite3_close(db)
   let before = inode(path)
   let r = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now, allowUnlink: true)
   expect(!r.unlinked && inode(path) == before, "2b2: the file is kept (unlinked \(r.unlinked))")
@@ -309,7 +309,7 @@ do {
   let before = inode(path)
   let r = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now, allowUnlink: true)
   exec(locker, "ROLLBACK")
-  sqlite3_close(locker)
+  exsqlite3_close(locker)
   expect(r.ok && r.unlinked && inode(path) != before, "2c1: a complete snapshot still allows the replacement (ok \(r.ok), unlinked \(r.unlinked))")
   expect(onDisk(path, keptForA) == 3, "2c2: all 3 of A's associations carried")
   expect(onDisk(path, "SELECT COUNT(*) FROM backup_pending_marks WHERE account_id = 'acct-B'") == 1, "2c2: B's kept row carried")
@@ -328,7 +328,7 @@ func seedA(_ db: OpaquePointer) {
 
 do {
   // 3a: a statement was left un-finalized on the engine's handle, so the
-  // close cannot complete (sqlite3_close_v2 makes it a zombie that keeps its
+  // close cannot complete (exsqlite3_close_v2 makes it a zombie that keeps its
   // fd). The recovery must not replace the file beneath that fd.
   let name = "zombie-stmt"
   let path = manifestPath(name)
@@ -337,23 +337,23 @@ do {
   expect(handle.openIfClosed() == nil, "3a0: open")
   seedA(handle.db!)
   var leaked: OpaquePointer?
-  _ = sqlite3_prepare_v2(handle.db!, "SELECT local_asset_id FROM backup_assets", -1, &leaked, nil)
-  _ = sqlite3_step(leaked) // holds a read snapshot while it lives
+  _ = exsqlite3_prepare_v2(handle.db!, "SELECT local_asset_id FROM backup_assets", -1, &leaked, nil)
+  _ = exsqlite3_step(leaked) // holds a read snapshot while it lives
   let js = connect(path)
   exec(js, "BEGIN IMMEDIATE")
   expect(!handle.resetForSignOut(outgoingAccountId: accountA), "3a1: reset fails under the JS lock")
   exec(js, "ROLLBACK")
-  sqlite3_close(js)
+  exsqlite3_close(js)
   let before = inode(path)
   let finished = handle.finishAfterFailedReset(allowUnlink: true)
   let orphans = orphanedFds(containing: name)
   expect(orphans.isEmpty, "3a2: no fd of this process on a deleted manifest (got \(orphans))")
   expect(!finished.unlinked && inode(path) == before, "3a3: the file is not replaced beneath the zombie connection (unlinked \(finished.unlinked))")
-  sqlite3_finalize(leaked) // releases the zombie
+  exsqlite3_finalize(leaked) // releases the zombie
 }
 
 do {
-  // 3b: a BLOB handle keeps the closed connection open (sqlite3_close
+  // 3b: a BLOB handle keeps the closed connection open (exsqlite3_close
   // cannot close it). The recovery must not replace the file, whatever JS
   // reports, while that fd may still be live.
   let name = "zombie-blob"
@@ -364,19 +364,19 @@ do {
   seedA(handle.db!)
   let rowid = Int64(scalar(handle.db!, "SELECT rowid FROM backup_assets WHERE local_asset_id = 'a1'"))
   var blob: OpaquePointer?
-  expect(sqlite3_blob_open(handle.db!, "main", "backup_assets", "remote_file_id", rowid, 0, &blob) == SQLITE_OK,
+  expect(exsqlite3_blob_open(handle.db!, "main", "backup_assets", "remote_file_id", rowid, 0, &blob) == SQLITE_OK,
          "3b0: a BLOB handle is open on the engine's connection")
   let js = connect(path)
   exec(js, "BEGIN IMMEDIATE")
   expect(!handle.resetForSignOut(outgoingAccountId: accountA), "3b1: reset fails under the JS lock")
   exec(js, "ROLLBACK")
-  sqlite3_close(js)
+  exsqlite3_close(js)
   let before = inode(path)
   let finished = handle.finishAfterFailedReset(allowUnlink: true)
   let orphans = orphanedFds(containing: name)
   expect(orphans.isEmpty, "3b2: no fd of this process on a deleted manifest (got \(orphans))")
   expect(!finished.unlinked && inode(path) == before, "3b3: the file is not replaced beneath the still-open connection (unlinked \(finished.unlinked))")
-  sqlite3_blob_close(blob)
+  exsqlite3_blob_close(blob)
 }
 
 // MARK: - 4. Pre-column rows keep their associations
@@ -424,7 +424,7 @@ do {
   exec(js, "BEGIN IMMEDIATE")
   expect(!handle.resetForSignOut(outgoingAccountId: accountA), "4b1: reset fails under the JS lock")
   exec(js, "ROLLBACK")
-  sqlite3_close(js)
+  exsqlite3_close(js)
   let finished = handle.finishAfterFailedReset(allowUnlink: true)
   expect(finished.ok, "4b2: the recovery empties the manifest")
   expect(onDisk(path, legacyRow) == 0, "4b2: the legacy row is gone from the manifest")
@@ -439,14 +439,14 @@ do {
   seedLegacy(db)
   let other = connect(path)
   exec(other, "BEGIN IMMEDIATE")
-  sqlite3_busy_timeout(db, 0)
+  exsqlite3_busy_timeout(db, 0)
   let adopted: Int? = BackupManifestStore.adoptUnowned(db, accountId: accountA)
   expect(adopted == nil, "4c1: an adoption that could not run is nil (got \(String(describing: adopted)))")
   exec(other, "ROLLBACK")
-  sqlite3_close(other)
+  exsqlite3_close(other)
   let control: Int? = BackupManifestStore.adoptUnowned(db, accountId: accountA)
   expect(control == 1, "4c2: control: it adopts the row once the lock is gone (got \(String(describing: control)))")
-  sqlite3_close(db)
+  exsqlite3_close(db)
 }
 
 // MARK: - 5. A scan insert reports every row or failure
@@ -464,14 +464,14 @@ do {
   prepareSchema(db)
   let other = connect(path)
   exec(other, "BEGIN IMMEDIATE")
-  sqlite3_busy_timeout(db, 0)
+  exsqlite3_busy_timeout(db, 0)
   let ok = BackupManifestStore.insertScannedAssets(db, scan, nowMs: now)
   exec(other, "ROLLBACK")
-  sqlite3_close(other)
+  exsqlite3_close(other)
   let rows = scalar(db, "SELECT COUNT(*) FROM backup_assets")
   expect(!ok, "5a1: an insert that wrote nothing reports failure (ok \(ok), rows \(rows))")
   expect(rows == 0, "5a1: nothing inserted")
-  sqlite3_close(db)
+  exsqlite3_close(db)
 }
 
 do {
@@ -491,7 +491,7 @@ do {
   exec(db, "DROP TRIGGER block_bad")
   expect(BackupManifestStore.insertScannedAssets(db, scan, nowMs: now), "5b3: control: the same batch commits")
   expect(scalar(db, "SELECT COUNT(*) FROM backup_assets") == 3, "5b3: control: 3 rows")
-  sqlite3_close(db)
+  exsqlite3_close(db)
 }
 
 // MARK: - 6. markUploaded reports whether it recorded the upload
@@ -508,14 +508,14 @@ do {
   expect((missing as? Bool) == false, "6a: no such row -> false (got \(missing))")
   let other = connect(path)
   exec(other, "BEGIN IMMEDIATE")
-  sqlite3_busy_timeout(db, 0)
+  exsqlite3_busy_timeout(db, 0)
   let locked: Any = BackupManifestStore.markUploaded(db, assetId: "u1", remoteFileId: "f-u1", accountId: accountA, uploadedAtIso: "2026-10-18T01:00:00Z")
   exec(other, "ROLLBACK")
-  sqlite3_close(other)
+  exsqlite3_close(other)
   expect((locked as? Bool) == false, "6b: a write that failed -> false (got \(locked))")
   let recorded: Any = BackupManifestStore.markUploaded(db, assetId: "u1", remoteFileId: "f-u1", accountId: accountA, uploadedAtIso: "2026-10-18T01:00:00Z")
   expect((recorded as? Bool) == true, "6c: control: the recorded upload -> true (got \(recorded))")
-  sqlite3_close(db)
+  exsqlite3_close(db)
 }
 
 // MARK: - 7. pendingServerMarks reports a read failure
@@ -528,7 +528,7 @@ do {
   exec(db, "INSERT INTO backup_assets VALUES ('a1', 'f-a1', 'uploaded', 'acct-A', '2026-10-18T00:00:00Z')")
   let rows: [(assetId: String, fileId: String)]? = BackupManifestStore.pendingServerMarks(db, accountId: accountA, limit: 10)
   expect(rows == nil, "7a: a read that cannot run is nil, not an empty list (got \(rows.map { "\($0.count) rows" } ?? "nil"))")
-  sqlite3_close(db)
+  exsqlite3_close(db)
 }
 
 // MARK: - 8. The new file is built before the old one is touched
@@ -543,7 +543,7 @@ do {
   let before = inode(path)
   let r = BackupManifestStore.recoverAfterFailedReset(path: path, nowMs: now, allowUnlink: true)
   exec(locker, "ROLLBACK")
-  sqlite3_close(locker)
+  exsqlite3_close(locker)
   expect(!r.ok && !r.unlinked, "8a: a new file that cannot be built means no replacement (ok \(r.ok), unlinked \(r.unlinked))")
   expect(inode(path) == before, "8b: the old file is untouched")
   expect(onDisk(path, "SELECT COUNT(*) FROM backup_assets") == 2, "8c: its rows are all still there to retry from")

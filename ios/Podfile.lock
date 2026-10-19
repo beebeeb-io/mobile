@@ -1,6 +1,7 @@
 PODS:
   - BeebeebCrypto (1.0.0):
     - ExpoModulesCore
+    - ExpoSQLite
     - SDWebImage/Core
     - SDWebImageWebPCoder
   - EASClient (57.0.2):
@@ -2953,7 +2954,7 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
 SPEC CHECKSUMS:
-  BeebeebCrypto: c8111f567dd47d0b211a444d46b3eb299189b0cb
+  BeebeebCrypto: f986a3c66fa7793cb8e12aae3b51ab18d19bfcfb
   EASClient: 19dbd341708f694a526bdfe9e541fa54a7b8650b
   EXApplication: bbd517d50878ca1d121fb3843392beb210181e28
   EXConstants: 736b7f1ed7235956785cb81e0ce37ab6a4f33fb4

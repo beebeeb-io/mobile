@@ -1,5 +1,5 @@
 import Foundation
-import SQLite3
+import ManifestSQLite
 
 /// Task 1667 — account-scoped state of the camera-roll backup manifest
 /// (`backup_assets` in `Documents/SQLite/beebeeb-backup.db`).
@@ -130,7 +130,7 @@ enum BackupManifestStore {
   /// Idempotent: an ALTER on a column that exists fails harmlessly.
   static func migrate(_ db: OpaquePointer) {
     for migration in columnMigrations {
-      sqlite3_exec(db, migration, nil, nil, nil)
+      exsqlite3_exec(db, migration, nil, nil, nil)
     }
     ensurePendingMarksTable(db)
   }
@@ -139,8 +139,8 @@ enum BackupManifestStore {
   /// added to a table an earlier build created; the ALTER fails harmlessly
   /// when the column exists).
   static func ensurePendingMarksTable(_ db: OpaquePointer) {
-    sqlite3_exec(db, pendingMarksTableSQL, nil, nil, nil)
-    sqlite3_exec(db, pendingMarksResolutionColumnSQL, nil, nil, nil)
+    exsqlite3_exec(db, pendingMarksTableSQL, nil, nil, nil)
+    exsqlite3_exec(db, pendingMarksResolutionColumnSQL, nil, nil, nil)
   }
 
   /// Round 14: keeps every upload that may be in flight on the server (see
@@ -225,11 +225,11 @@ enum BackupManifestStore {
   ) -> Int? {
     guard tableExists(db, "backup_assets") else { return 0 }
     let previousBusyMs = pragmaInt(db, "PRAGMA busy_timeout") ?? 0
-    sqlite3_busy_timeout(db, max(busyTimeoutMs, previousBusyMs))
-    defer { sqlite3_busy_timeout(db, previousBusyMs) }
+    exsqlite3_busy_timeout(db, max(busyTimeoutMs, previousBusyMs))
+    defer { exsqlite3_busy_timeout(db, previousBusyMs) }
     ensurePendingMarksTable(db)
     let kept = run(db, keepInFlightSQL(excludedCount: 0, scope: scope)) { stmt in
-      sqlite3_bind_int64(stmt, 1, nowMs)
+      exsqlite3_bind_int64(stmt, 1, nowMs)
       if let id = scope.boundValue { bindText(stmt, 2, id) }
     }
     return kept >= 0 ? kept : nil
@@ -271,7 +271,7 @@ enum BackupManifestStore {
   static func clearStagedForRestage(_ db: OpaquePointer, assetId: String, error: String, nowMs: Int64) -> Bool {
     let updated = run(db, restageSQL) { stmt in
       bindText(stmt, 1, error)
-      sqlite3_bind_int64(stmt, 2, nowMs)
+      exsqlite3_bind_int64(stmt, 2, nowMs)
       bindText(stmt, 3, assetId)
     }
     let chunks = run(db, "DELETE FROM backup_upload_chunks WHERE local_asset_id = ?") { stmt in
@@ -309,22 +309,22 @@ enum BackupManifestStore {
     // FIRST: the purge below clears the ids that identify the upload.
     let kept = keepInFlightUploads(db, nowMs: nowMs, busyTimeoutMs: keepBusyTimeoutMs)
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, """
+    guard exsqlite3_prepare_v2(db, """
     SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
     FROM backup_assets
     WHERE staged_file_id IS NOT NULL
     """, -1, &stmt, nil) == SQLITE_OK else { return (kept, 0) }
     var staged: [StagedRow] = []
-    while sqlite3_step(stmt) == SQLITE_ROW {
-      guard let a = sqlite3_column_text(stmt, 0), let f = sqlite3_column_text(stmt, 2) else { continue }
+    while exsqlite3_step(stmt) == SQLITE_ROW {
+      guard let a = exsqlite3_column_text(stmt, 0), let f = exsqlite3_column_text(stmt, 2) else { continue }
       staged.append(StagedRow(
         assetId: String(cString: a),
-        stagedDir: sqlite3_column_text(stmt, 1).map { String(cString: $0) },
+        stagedDir: exsqlite3_column_text(stmt, 1).map { String(cString: $0) },
         fileId: String(cString: f),
-        forAccount: sqlite3_column_text(stmt, 3).map { String(cString: $0) }
+        forAccount: exsqlite3_column_text(stmt, 3).map { String(cString: $0) }
       ))
     }
-    sqlite3_finalize(stmt)
+    exsqlite3_finalize(stmt)
     for row in staged {
       removeFiles(row)
       clearStagedForRestage(db, assetId: row.assetId, error: error, nowMs: nowMs)
@@ -359,7 +359,7 @@ enum BackupManifestStore {
     // FIRST: the purge below clears the ids that identify the upload.
     let kept = keepInFlightUploads(db, nowMs: nowMs, scope: .stagedForOtherThan(currentAccountId))
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, """
+    guard exsqlite3_prepare_v2(db, """
     SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
     FROM backup_assets
     WHERE staged_file_id IS NOT NULL
@@ -367,16 +367,16 @@ enum BackupManifestStore {
     """, -1, &stmt, nil) == SQLITE_OK else { return (kept, 0) }
     bindText(stmt, 1, currentAccountId)
     var mismatched: [StagedRow] = []
-    while sqlite3_step(stmt) == SQLITE_ROW {
-      guard let a = sqlite3_column_text(stmt, 0), let f = sqlite3_column_text(stmt, 2) else { continue }
+    while exsqlite3_step(stmt) == SQLITE_ROW {
+      guard let a = exsqlite3_column_text(stmt, 0), let f = exsqlite3_column_text(stmt, 2) else { continue }
       mismatched.append(StagedRow(
         assetId: String(cString: a),
-        stagedDir: sqlite3_column_text(stmt, 1).map { String(cString: $0) },
+        stagedDir: exsqlite3_column_text(stmt, 1).map { String(cString: $0) },
         fileId: String(cString: f),
-        forAccount: sqlite3_column_text(stmt, 3).map { String(cString: $0) }
+        forAccount: exsqlite3_column_text(stmt, 3).map { String(cString: $0) }
       ))
     }
-    sqlite3_finalize(stmt)
+    exsqlite3_finalize(stmt)
     for row in mismatched {
       removeFiles(row)
       clearStagedForRestage(db, assetId: row.assetId, error: error, nowMs: nowMs)
@@ -436,17 +436,17 @@ enum BackupManifestStore {
     // connection whose settings cannot be read is not reset (fail closed).
     guard let previous = connectionSettings(db) else { return false }
     defer { restoreConnectionSettings(db, previous) }
-    sqlite3_busy_timeout(db, busyTimeoutMs)
+    exsqlite3_busy_timeout(db, busyTimeoutMs)
     // Round 7 sweep: an unconfirmed `secure_delete` would leave the outgoing
     // account's rows in the freed pages while reporting the reset done.
-    guard sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK else { return false }
+    guard exsqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK else { return false }
     guard tableExists(db, "backup_assets") else { return false }
     // Round 7 sweep: whether `backup_verification` exists must be READ, not
     // assumed. `tableExists` turns a read error into "no such table", and the
     // reset then skipped that DELETE and reported success with its rows kept.
     guard let hasVerification = tableExistsChecked(db, "backup_verification") else { return false }
     ensurePendingMarksTable(db)
-    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
+    guard exsqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
     // Round 9: a deleted account's kept marks go first, and none of its
     // unmarked uploads is kept below.
     var ok = deleteDiscardedMarks(db, discard)
@@ -466,7 +466,7 @@ enum BackupManifestStore {
          AND server_marked_at IS NULL
       """ + excluded
       ok = run(db, keepSQL) { stmt in
-        sqlite3_bind_int64(stmt, 1, nowMs)
+        exsqlite3_bind_int64(stmt, 1, nowMs)
         for (i, id) in ids.enumerated() { bindText(stmt, Int32(i + 2), id) }
       } >= 0
       // Round 14 (the P1): uploads still in flight, for resolution at the
@@ -474,27 +474,27 @@ enum BackupManifestStore {
       // `keepInFlightUploads`; this keeps any row still carrying its ids).
       if ok {
         ok = run(db, keepInFlightSQL(excludedCount: ids.count)) { stmt in
-          sqlite3_bind_int64(stmt, 1, nowMs)
+          exsqlite3_bind_int64(stmt, 1, nowMs)
           for (i, id) in ids.enumerated() { bindText(stmt, Int32(i + 2), id) }
         } >= 0
       }
     }
     if ok {
       ok = run(db, "DELETE FROM backup_pending_marks WHERE created_at_ms < ?") { stmt in
-        sqlite3_bind_int64(stmt, 1, nowMs - pendingMarksRetentionMs)
+        exsqlite3_bind_int64(stmt, 1, nowMs - pendingMarksRetentionMs)
       } >= 0
     }
-    if ok { ok = sqlite3_exec(db, "DELETE FROM backup_assets", nil, nil, nil) == SQLITE_OK }
-    if ok { ok = sqlite3_exec(db, "DELETE FROM backup_upload_chunks", nil, nil, nil) == SQLITE_OK }
+    if ok { ok = exsqlite3_exec(db, "DELETE FROM backup_assets", nil, nil, nil) == SQLITE_OK }
+    if ok { ok = exsqlite3_exec(db, "DELETE FROM backup_upload_chunks", nil, nil, nil) == SQLITE_OK }
     // Created by the JS layer (BackupDatabase.ts); absent until it opened once.
     if ok, hasVerification {
-      ok = sqlite3_exec(db, "DELETE FROM backup_verification", nil, nil, nil) == SQLITE_OK
+      ok = exsqlite3_exec(db, "DELETE FROM backup_verification", nil, nil, nil) == SQLITE_OK
     }
     if ok {
-      ok = sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
+      ok = exsqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
     }
     if !ok {
-      sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+      exsqlite3_exec(db, "ROLLBACK", nil, nil, nil)
       return false
     }
     return truncateWal(db, attempts: checkpointAttempts, retryDelayUs: retryDelayUs).ok
@@ -515,7 +515,7 @@ enum BackupManifestStore {
   }
 
   static func restoreConnectionSettings(_ db: OpaquePointer, _ settings: ConnectionSettings) {
-    sqlite3_busy_timeout(db, settings.busyTimeoutMs)
+    exsqlite3_busy_timeout(db, settings.busyTimeoutMs)
     // The PRAGMA takes OFF / ON / FAST (an integer 2 reads as ON).
     let mode: String
     switch settings.secureDelete {
@@ -523,22 +523,22 @@ enum BackupManifestStore {
     case 2: mode = "FAST"
     default: mode = "ON"
     }
-    sqlite3_exec(db, "PRAGMA secure_delete = \(mode)", nil, nil, nil)
+    exsqlite3_exec(db, "PRAGMA secure_delete = \(mode)", nil, nil, nil)
   }
 
   private static func pragmaInt(_ db: OpaquePointer, _ sql: String) -> Int32? {
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
-    guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-    return sqlite3_column_int(stmt, 0)
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { exsqlite3_finalize(stmt) }
+    guard exsqlite3_step(stmt) == SQLITE_ROW else { return nil }
+    return exsqlite3_column_int(stmt, 0)
   }
 
   /// Round 9: deletes the kept marks `discard` names (inside the caller's
   /// transaction). True when nothing is named or the DELETE ran.
   static func deleteDiscardedMarks(_ db: OpaquePointer, _ discard: MarkDiscard) -> Bool {
     if discard.all {
-      return sqlite3_exec(db, "DELETE FROM backup_pending_marks", nil, nil, nil) == SQLITE_OK
+      return exsqlite3_exec(db, "DELETE FROM backup_pending_marks", nil, nil, nil) == SQLITE_OK
     }
     let ids = discard.sortedIds
     guard !ids.isEmpty else { return true }
@@ -571,7 +571,7 @@ enum BackupManifestStore {
     for attempt in 1...max(1, attempts) {
       var logFrames: Int32 = -1
       var checkpointed: Int32 = -1
-      let rc = sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, &logFrames, &checkpointed)
+      let rc = exsqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, &logFrames, &checkpointed)
       let walBytes = walFileSize(db)
       let ok = rc == SQLITE_OK
       last = CheckpointResult(ok: ok, attempts: attempt, rc: rc, logFrames: logFrames, checkpointedFrames: checkpointed, walBytes: walBytes)
@@ -583,7 +583,7 @@ enum BackupManifestStore {
 
   /// Size of this connection's `-wal` file; 0 when there is none.
   static func walFileSize(_ db: OpaquePointer) -> Int64 {
-    guard let main = sqlite3_db_filename(db, "main") else { return 0 }
+    guard let main = exsqlite3_db_filename(db, "main") else { return 0 }
     let walPath = String(cString: main) + "-wal"
     guard let attrs = try? FileManager.default.attributesOfItem(atPath: walPath) else { return 0 }
     return (attrs[.size] as? NSNumber)?.int64Value ?? 0
@@ -659,8 +659,8 @@ enum BackupManifestStore {
     removeStaging()
     var fresh: OpaquePointer?
     let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-    guard sqlite3_open_v2(staging, &fresh, flags, nil) == SQLITE_OK, let fresh else {
-      if let fresh { sqlite3_close_v2(fresh) }
+    guard exsqlite3_open_v2(staging, &fresh, flags, nil) == SQLITE_OK, let fresh else {
+      if let fresh { exsqlite3_close_v2(fresh) }
       removeStaging()
       return (false, false)
     }
@@ -672,9 +672,9 @@ enum BackupManifestStore {
     // 'uploading' rows (the engine's, written before JS's first open) into
     // 'uploaded' with no file id: never retried, never checked, missing from
     // the backup. A new file holds no legacy rows, so the migration is moot.
-    let built = sqlite3_exec(fresh, "PRAGMA journal_mode = DELETE", nil, nil, nil) == SQLITE_OK
-      && sqlite3_exec(fresh, "PRAGMA user_version = \(jsSchemaVersion)", nil, nil, nil) == SQLITE_OK
-      && sqlite3_exec(fresh, pendingMarksTableSQL, nil, nil, nil) == SQLITE_OK
+    let built = exsqlite3_exec(fresh, "PRAGMA journal_mode = DELETE", nil, nil, nil) == SQLITE_OK
+      && exsqlite3_exec(fresh, "PRAGMA user_version = \(jsSchemaVersion)", nil, nil, nil) == SQLITE_OK
+      && exsqlite3_exec(fresh, pendingMarksTableSQL, nil, nil, nil) == SQLITE_OK
       && insertPendingMarks(fresh, carrying)
     let closed = closeConnection(fresh)
     guard built, closed else {
@@ -705,27 +705,27 @@ enum BackupManifestStore {
   private static func openConnection(_ path: String) -> OpaquePointer? {
     var db: OpaquePointer?
     let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-    guard sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, let db else {
-      if let db { sqlite3_close_v2(db) }
+    guard exsqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, let db else {
+      if let db { exsqlite3_close_v2(db) }
       return nil
     }
-    sqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
+    exsqlite3_exec(db, "PRAGMA journal_mode = WAL", nil, nil, nil)
     return db
   }
 
   /// Round 7 sweep: closes `db` and reports whether the connection is
-  /// really closed. `sqlite3_close_v2` always "succeeds": with a statement,
+  /// really closed. `exsqlite3_close_v2` always "succeeds": with a statement,
   /// BLOB or backup still open it only marks the connection a zombie, and
   /// its file descriptor stays open until that is released. A file then
   /// unlinked "with every connection closed" is unlinked under that fd.
-  /// `sqlite3_close` refuses (SQLITE_BUSY) in exactly those cases: then the
-  /// connection is handed to `sqlite3_close_v2` to close once released, and
+  /// `exsqlite3_close` refuses (SQLITE_BUSY) in exactly those cases: then the
+  /// connection is handed to `exsqlite3_close_v2` to close once released, and
   /// this returns false. Nothing here finalizes a statement it does not own
   /// (a BLOB's internal statement would be freed under its handle).
   @discardableResult
   static func closeConnection(_ db: OpaquePointer) -> Bool {
-    if sqlite3_close(db) == SQLITE_OK { return true }
-    sqlite3_close_v2(db)
+    if exsqlite3_close(db) == SQLITE_OK { return true }
+    exsqlite3_close_v2(db)
     return false
   }
 
@@ -790,20 +790,20 @@ enum BackupManifestStore {
   /// nil on any failure (prepare, a step that is not ROW/DONE, a NULL column).
   private static func select(_ db: OpaquePointer, _ sql: String, bindMs: Int64) -> [PendingMark]? {
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
-    sqlite3_bind_int64(stmt, 1, bindMs)
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { exsqlite3_finalize(stmt) }
+    exsqlite3_bind_int64(stmt, 1, bindMs)
     var rows: [PendingMark] = []
     while true {
-      let rc = sqlite3_step(stmt)
+      let rc = exsqlite3_step(stmt)
       if rc == SQLITE_DONE { return rows }
       guard rc == SQLITE_ROW else { return nil }
-      guard let a = sqlite3_column_text(stmt, 0), let l = sqlite3_column_text(stmt, 1),
-            let f = sqlite3_column_text(stmt, 2) else { return nil }
+      guard let a = exsqlite3_column_text(stmt, 0), let l = exsqlite3_column_text(stmt, 1),
+            let f = exsqlite3_column_text(stmt, 2) else { return nil }
       rows.append(PendingMark(
         accountId: String(cString: a), assetId: String(cString: l),
-        fileId: String(cString: f), createdAtMs: sqlite3_column_int64(stmt, 3),
-        needsResolution: sqlite3_column_int64(stmt, 4) != 0
+        fileId: String(cString: f), createdAtMs: exsqlite3_column_int64(stmt, 3),
+        needsResolution: exsqlite3_column_int64(stmt, 4) != 0
       ))
     }
   }
@@ -812,7 +812,7 @@ enum BackupManifestStore {
   static func insertPendingMarks(_ db: OpaquePointer, _ marks: [PendingMark]) -> Bool {
     guard !marks.isEmpty else { return true }
     ensurePendingMarksTable(db)
-    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
+    guard exsqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
     var ok = true
     // Round 14: a confirmed mark is written after any unresolved row of the
     // same photo, so it wins (INSERT OR REPLACE).
@@ -824,12 +824,12 @@ enum BackupManifestStore {
         bindText(stmt, 1, m.accountId)
         bindText(stmt, 2, m.assetId)
         bindText(stmt, 3, m.fileId)
-        sqlite3_bind_int64(stmt, 4, m.createdAtMs)
-        sqlite3_bind_int(stmt, 5, m.needsResolution ? 1 : 0)
+        exsqlite3_bind_int64(stmt, 4, m.createdAtMs)
+        exsqlite3_bind_int(stmt, 5, m.needsResolution ? 1 : 0)
       } >= 0
     }
-    if ok, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK { return true }
-    sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    if ok, exsqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK { return true }
+    exsqlite3_exec(db, "ROLLBACK", nil, nil, nil)
     return false
   }
 
@@ -846,11 +846,11 @@ enum BackupManifestStore {
     guard let exists = tableExistsChecked(db, "backup_pending_marks") else { return nil }
     guard exists else { return 0 }
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM backup_pending_marks WHERE account_id = ?", -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, "SELECT COUNT(*) FROM backup_pending_marks WHERE account_id = ?", -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { exsqlite3_finalize(stmt) }
     bindText(stmt, 1, accountId)
-    guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-    return Int(sqlite3_column_int64(stmt, 0))
+    guard exsqlite3_step(stmt) == SQLITE_ROW else { return nil }
+    return Int(exsqlite3_column_int64(stmt, 0))
   }
 
   /// Round 5 (Codex P2 "Expire pending marks even when the current account
@@ -869,7 +869,7 @@ enum BackupManifestStore {
     guard let exists = tableExistsChecked(db, "backup_pending_marks") else { return nil }
     guard exists else { return 0 }
     let deleted = run(db, "DELETE FROM backup_pending_marks WHERE created_at_ms < ?") { stmt in
-      sqlite3_bind_int64(stmt, 1, nowMs - pendingMarksRetentionMs)
+      exsqlite3_bind_int64(stmt, 1, nowMs - pendingMarksRetentionMs)
     }
     return deleted >= 0 ? deleted : nil
   }
@@ -896,7 +896,7 @@ enum BackupManifestStore {
     guard !accountId.isEmpty else { return 0 }
     guard let count = pendingMarkCountChecked(db, accountId: accountId) else { return nil }
     guard count > 0 else { return 0 }
-    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
+    guard exsqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
     let promoteSQL = """
     UPDATE backup_assets
        SET status = 'uploaded',
@@ -918,7 +918,7 @@ enum BackupManifestStore {
     let promoted = run(db, promoteSQL) { stmt in
       bindText(stmt, 1, accountId)
       bindText(stmt, 2, iso)
-      sqlite3_bind_int64(stmt, 3, nowMs - pendingMarksRetentionMs)
+      exsqlite3_bind_int64(stmt, 3, nowMs - pendingMarksRetentionMs)
     }
     // Consume every kept row the manifest now carries for this account (just
     // promoted, or already uploaded with that same file).
@@ -931,8 +931,8 @@ enum BackupManifestStore {
                       AND a.uploaded_account_id = ?1
                       AND a.remote_file_id = backup_pending_marks.remote_file_id)
     """) { stmt in bindText(stmt, 1, accountId) }
-    guard promoted >= 0, consumed >= 0, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
-      sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    guard promoted >= 0, consumed >= 0, exsqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+      exsqlite3_exec(db, "ROLLBACK", nil, nil, nil)
       return nil
     }
     return promoted
@@ -955,14 +955,14 @@ enum BackupManifestStore {
     guard let exists = tableExistsChecked(db, "backup_pending_marks") else { return nil }
     guard exists else { return [] }
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, """
+    guard exsqlite3_prepare_v2(db, """
     SELECT local_asset_id, remote_file_id FROM backup_pending_marks
      WHERE account_id = ? AND needs_resolution = 1 AND created_at_ms >= ?
      ORDER BY local_asset_id
     """, -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
+    defer { exsqlite3_finalize(stmt) }
     bindText(stmt, 1, accountId)
-    sqlite3_bind_int64(stmt, 2, nowMs - pendingMarksRetentionMs)
+    exsqlite3_bind_int64(stmt, 2, nowMs - pendingMarksRetentionMs)
     return readInFlightRows(stmt)
   }
 
@@ -973,10 +973,10 @@ enum BackupManifestStore {
   private static func readInFlightRows(_ stmt: OpaquePointer?) -> [KeptInFlight]? {
     var rows: [KeptInFlight] = []
     while true {
-      let rc = sqlite3_step(stmt)
+      let rc = exsqlite3_step(stmt)
       if rc == SQLITE_DONE { return rows }
       guard rc == SQLITE_ROW,
-            let a = sqlite3_column_text(stmt, 0), let f = sqlite3_column_text(stmt, 1) else { return nil }
+            let a = exsqlite3_column_text(stmt, 0), let f = exsqlite3_column_text(stmt, 1) else { return nil }
       rows.append(KeptInFlight(assetId: String(cString: a), fileId: String(cString: f)))
     }
   }
@@ -1012,13 +1012,13 @@ enum BackupManifestStore {
   static func inFlightUploads(_ db: OpaquePointer, accountId: String) -> [KeptInFlight]? {
     guard !accountId.isEmpty else { return [] }
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, """
+    guard exsqlite3_prepare_v2(db, """
     SELECT local_asset_id, remote_file_id FROM backup_assets
      WHERE \(inFlightPredicate)
        AND staged_account_id = ?
      ORDER BY local_asset_id
     """, -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
+    defer { exsqlite3_finalize(stmt) }
     bindText(stmt, 1, accountId)
     return readInFlightRows(stmt)
   }
@@ -1103,7 +1103,7 @@ enum BackupManifestStore {
   static func claim(_ db: OpaquePointer, accountId: String, nowMs: Int64) -> (adopted: Int, requeued: Int)? {
     guard !accountId.isEmpty else { return (0, 0) }
     ensurePendingMarksTable(db)
-    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
+    guard exsqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
     let adoptSQL = """
     UPDATE backup_assets
        SET uploaded_account_id = ?
@@ -1134,7 +1134,7 @@ enum BackupManifestStore {
        AND server_marked_at IS NULL
     """
     let keptOthers = run(db, keepOthersSQL) { stmt in
-      sqlite3_bind_int64(stmt, 1, nowMs)
+      exsqlite3_bind_int64(stmt, 1, nowMs)
       bindText(stmt, 2, accountId)
     }
 
@@ -1154,11 +1154,11 @@ enum BackupManifestStore {
        AND staged_file_id IS NULL
     """
     let requeued = run(db, requeueSQL) { stmt in
-      sqlite3_bind_int64(stmt, 1, nowMs)
+      exsqlite3_bind_int64(stmt, 1, nowMs)
       bindText(stmt, 2, accountId)
     }
-    guard adopted >= 0, keptOthers >= 0, requeued >= 0, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
-      sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    guard adopted >= 0, keptOthers >= 0, requeued >= 0, exsqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+      exsqlite3_exec(db, "ROLLBACK", nil, nil, nil)
       return nil
     }
     return (adopted, requeued)
@@ -1169,11 +1169,11 @@ enum BackupManifestStore {
   static func uploadedCount(_ db: OpaquePointer, accountId: String) -> Int? {
     let sql = "SELECT COUNT(*) FROM backup_assets WHERE status = 'uploaded' AND uploaded_account_id = ?"
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { exsqlite3_finalize(stmt) }
     bindText(stmt, 1, accountId)
-    guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-    return Int(sqlite3_column_int64(stmt, 0))
+    guard exsqlite3_step(stmt) == SQLITE_ROW else { return nil }
+    return Int(exsqlite3_column_int64(stmt, 0))
   }
 
   /// A manifest holding nothing this account uploaded must be rebuilt from
@@ -1218,10 +1218,10 @@ enum BackupManifestStore {
   /// one statement per row in the common case:
   /// 1. the upsert, whose UPDATE half skips `local_missing` rows. A row it
   ///    INSERTED is told apart from one it updated by
-  ///    `sqlite3_last_insert_rowid` (reset to 0 before each step; an upsert
+  ///    `exsqlite3_last_insert_rowid` (reset to 0 before each step; an upsert
   ///    that updates leaves it untouched; `backup_assets` is a rowid table);
-  /// 2. only when the upsert changed nothing (`sqlite3_changes` 0: the row is
-  ///    `local_missing`), the revive UPDATE, counted by `sqlite3_changes`.
+  /// 2. only when the upsert changed nothing (`exsqlite3_changes` 0: the row is
+  ///    `local_missing`), the revive UPDATE, counted by `exsqlite3_changes`.
   static func insertScannedAssetsCounting(_ db: OpaquePointer, _ assets: [ScannedAsset], nowMs: Int64) -> Int? {
     let upsertSQL = """
     INSERT INTO backup_assets
@@ -1245,50 +1245,50 @@ enum BackupManifestStore {
        AND status = 'local_missing'
     """
     var upsert: OpaquePointer?
-    guard sqlite3_prepare_v2(db, upsertSQL, -1, &upsert, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(upsert) }
+    guard exsqlite3_prepare_v2(db, upsertSQL, -1, &upsert, nil) == SQLITE_OK else { return nil }
+    defer { exsqlite3_finalize(upsert) }
     var revive: OpaquePointer?
-    guard sqlite3_prepare_v2(db, reviveSQL, -1, &revive, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(revive) }
+    guard exsqlite3_prepare_v2(db, reviveSQL, -1, &revive, nil) == SQLITE_OK else { return nil }
+    defer { exsqlite3_finalize(revive) }
 
     // Round 7 sweep: every step is checked. Before, a failed BEGIN or a
     // failed row (writer lock, I/O) was ignored and COMMIT reported the
     // batch inserted; the rebuild gate could then apply the server map to a
     // manifest missing those rows, and they uploaded again once a later
     // scan inserted them.
-    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
+    guard exsqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
     var entered = 0
     for asset in assets {
       bindText(upsert, 1, asset.localAssetId)
       bindText(upsert, 2, asset.createdAt)
       bindText(upsert, 3, asset.assetType)
-      sqlite3_bind_int64(upsert, 4, nowMs)
-      sqlite3_set_last_insert_rowid(db, 0)
-      let rc = sqlite3_step(upsert)
-      sqlite3_reset(upsert)
+      exsqlite3_bind_int64(upsert, 4, nowMs)
+      exsqlite3_set_last_insert_rowid(db, 0)
+      let rc = exsqlite3_step(upsert)
+      exsqlite3_reset(upsert)
       guard rc == SQLITE_DONE else {
-        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        exsqlite3_exec(db, "ROLLBACK", nil, nil, nil)
         return nil
       }
-      if sqlite3_last_insert_rowid(db) != 0 {
+      if exsqlite3_last_insert_rowid(db) != 0 {
         entered += 1
         continue
       }
-      guard sqlite3_changes(db) == 0 else { continue }
+      guard exsqlite3_changes(db) == 0 else { continue }
       // The upsert left the row alone: it is `local_missing`. Revive it.
       bindText(revive, 1, asset.createdAt)
       bindText(revive, 2, asset.assetType)
       bindText(revive, 3, asset.localAssetId)
-      let reviveRc = sqlite3_step(revive)
-      sqlite3_reset(revive)
+      let reviveRc = exsqlite3_step(revive)
+      exsqlite3_reset(revive)
       guard reviveRc == SQLITE_DONE else {
-        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        exsqlite3_exec(db, "ROLLBACK", nil, nil, nil)
         return nil
       }
-      entered += Int(sqlite3_changes(db))
+      entered += Int(exsqlite3_changes(db))
     }
-    guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
-      sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    guard exsqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+      exsqlite3_exec(db, "ROLLBACK", nil, nil, nil)
       return nil
     }
     return entered
@@ -1302,20 +1302,20 @@ enum BackupManifestStore {
   @discardableResult
   static func updateSelectionScope(_ db: OpaquePointer, allowedAssetIds: Set<String>, hasAlbumSelection: Bool) -> Bool {
     guard hasAlbumSelection else {
-      return sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 1 WHERE COALESCE(selected_for_backup, 1) != 1", nil, nil, nil) == SQLITE_OK
+      return exsqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 1 WHERE COALESCE(selected_for_backup, 1) != 1", nil, nil, nil) == SQLITE_OK
     }
 
     let sqlInChunk = 400
     let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { return false }
+    guard exsqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { return false }
     var didCommit = false
     defer {
       if !didCommit {
-        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        exsqlite3_exec(db, "ROLLBACK", nil, nil, nil)
       }
     }
 
-    guard sqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 0", nil, nil, nil) == SQLITE_OK else { return false }
+    guard exsqlite3_exec(db, "UPDATE backup_assets SET selected_for_backup = 0", nil, nil, nil) == SQLITE_OK else { return false }
 
     let assetIds = Array(allowedAssetIds)
     for start in stride(from: 0, to: assetIds.count, by: sqlInChunk) {
@@ -1324,24 +1324,24 @@ enum BackupManifestStore {
       let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ",")
       let sql = "UPDATE backup_assets SET selected_for_backup = 1 WHERE local_asset_id IN (\(placeholders))"
       var stmt: OpaquePointer?
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+      guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
       var didBindBatch = true
       for (index, assetId) in batch.enumerated() {
-        if sqlite3_bind_text(stmt, Int32(index + 1), (assetId as NSString).utf8String, -1, transient) != SQLITE_OK {
+        if exsqlite3_bind_text(stmt, Int32(index + 1), (assetId as NSString).utf8String, -1, transient) != SQLITE_OK {
           didBindBatch = false
           break
         }
       }
       guard didBindBatch else {
-        sqlite3_finalize(stmt)
+        exsqlite3_finalize(stmt)
         return false
       }
-      let stepResult = sqlite3_step(stmt)
-      sqlite3_finalize(stmt)
+      let stepResult = exsqlite3_step(stmt)
+      exsqlite3_finalize(stmt)
       guard stepResult == SQLITE_DONE else { return false }
     }
 
-    guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else { return false }
+    guard exsqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else { return false }
     didCommit = true
     return true
   }
@@ -1410,16 +1410,16 @@ enum BackupManifestStore {
      LIMIT ?
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { exsqlite3_finalize(stmt) }
     bindText(stmt, 1, accountId)
-    sqlite3_bind_int(stmt, 2, Int32(max(0, limit)))
+    exsqlite3_bind_int(stmt, 2, Int32(max(0, limit)))
     var rows: [(assetId: String, fileId: String)] = []
     while true {
-      let rc = sqlite3_step(stmt)
+      let rc = exsqlite3_step(stmt)
       if rc == SQLITE_DONE { return rows }
       guard rc == SQLITE_ROW,
-            let a = sqlite3_column_text(stmt, 0), let f = sqlite3_column_text(stmt, 1) else { return nil }
+            let a = exsqlite3_column_text(stmt, 0), let f = exsqlite3_column_text(stmt, 1) else { return nil }
       rows.append((String(cString: a), String(cString: f)))
     }
   }
@@ -1432,7 +1432,7 @@ enum BackupManifestStore {
      WHERE local_asset_id = ? AND remote_file_id = ? AND status = 'uploaded'
     """
     _ = run(db, sql) { stmt in
-      sqlite3_bind_int64(stmt, 1, nowMs)
+      exsqlite3_bind_int64(stmt, 1, nowMs)
       bindText(stmt, 2, assetId)
       bindText(stmt, 3, fileId)
     }
@@ -1526,27 +1526,27 @@ enum BackupManifestStore {
        AND status IN (\(statuses))
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
-    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { exsqlite3_finalize(stmt) }
+    guard exsqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
     var promoted = Set<String>()
     for (local, fileId) in localToFileId.sorted(by: { $0.key < $1.key }) {
       bindText(stmt, 1, fileId)
       bindText(stmt, 2, uploadedAtIso)
       bindText(stmt, 3, accountId)
-      sqlite3_bind_int64(stmt, 4, nowMs)
+      exsqlite3_bind_int64(stmt, 4, nowMs)
       bindText(stmt, 5, local)
-      let rc = sqlite3_step(stmt)
-      sqlite3_reset(stmt)
-      sqlite3_clear_bindings(stmt)
+      let rc = exsqlite3_step(stmt)
+      exsqlite3_reset(stmt)
+      exsqlite3_clear_bindings(stmt)
       guard rc == SQLITE_DONE else {
-        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        exsqlite3_exec(db, "ROLLBACK", nil, nil, nil)
         return nil
       }
-      if sqlite3_changes(db) > 0 { promoted.insert(local) }
+      if exsqlite3_changes(db) > 0 { promoted.insert(local) }
     }
-    guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
-      sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    guard exsqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+      exsqlite3_exec(db, "ROLLBACK", nil, nil, nil)
       return nil
     }
     return promoted
@@ -1567,13 +1567,13 @@ enum BackupManifestStore {
      ORDER BY created_at DESC
     """
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { exsqlite3_finalize(stmt) }
     var ids: [String] = []
     while true {
-      let rc = sqlite3_step(stmt)
+      let rc = exsqlite3_step(stmt)
       if rc == SQLITE_DONE { return ids }
-      guard rc == SQLITE_ROW, let text = sqlite3_column_text(stmt, 0) else { return nil }
+      guard rc == SQLITE_ROW, let text = exsqlite3_column_text(stmt, 0) else { return nil }
       ids.append(String(cString: text))
     }
   }
@@ -1583,17 +1583,17 @@ enum BackupManifestStore {
   private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
   static func bindText(_ stmt: OpaquePointer?, _ index: Int32, _ value: String) {
-    sqlite3_bind_text(stmt, index, (value as NSString).utf8String, -1, transient)
+    exsqlite3_bind_text(stmt, index, (value as NSString).utf8String, -1, transient)
   }
 
   /// Prepares, binds, steps once. Returns rows changed, or -1 on error.
   private static func run(_ db: OpaquePointer, _ sql: String, bind: (OpaquePointer?) -> Void) -> Int {
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+    defer { exsqlite3_finalize(stmt) }
     bind(stmt)
-    guard sqlite3_step(stmt) == SQLITE_DONE else { return -1 }
-    return Int(sqlite3_changes(db))
+    guard exsqlite3_step(stmt) == SQLITE_DONE else { return -1 }
+    return Int(exsqlite3_changes(db))
   }
 
   static func tableExists(_ db: OpaquePointer, _ name: String) -> Bool {
@@ -1604,10 +1604,10 @@ enum BackupManifestStore {
   static func tableExistsChecked(_ db: OpaquePointer, _ name: String) -> Bool? {
     let sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
     var stmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-    defer { sqlite3_finalize(stmt) }
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+    defer { exsqlite3_finalize(stmt) }
     bindText(stmt, 1, name)
-    switch sqlite3_step(stmt) {
+    switch exsqlite3_step(stmt) {
     case SQLITE_ROW: return true
     case SQLITE_DONE: return false
     default: return nil
