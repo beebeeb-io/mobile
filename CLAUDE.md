@@ -877,6 +877,12 @@ an empty manifest and uploaded every photo again into the same folder (sim evide
   Retry-After is honoured. Both getMe paths (refreshAuth and the cold launch's `retryGetMe`) name
   the key owner through `getMeNamingKeyOwner` (`src/lib/cold-start-owner.ts`). JS sign-out first calls
   `flushBackupServerMarksForSignOut` (before `logout()` revokes the token, ~8 s, no row cap).
+  Round 16: the keep waits up to 2 s for another connection's write lock (temporary busy timeout,
+  restored on return). The mismatch purges keep too, scoped to the rows they clear:
+  `purgeMismatchedStagedAssets` (bindAccount, start, the BG task) through
+  `BackupManifestStore.purgeMismatchedStaged`, and `uploadSingleAsset`'s per-row refusal through
+  `restageMismatchedRow`. `claim` keeps another account's unmarked uploads as marks before it
+  re-queues them. These matter only when the previous account's teardown never ran.
 - **A reset counts only if the WAL was truncated** (`sqlite3_wal_checkpoint_v2` TRUNCATE rc, retried).
   Round 13: it runs on the engine's long-lived connection and restores that connection's busy
   timeout and `secure_delete` on every return (`BackupManifestStore.connectionSettings`).

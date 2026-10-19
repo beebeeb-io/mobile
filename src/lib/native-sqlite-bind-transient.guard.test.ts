@@ -76,7 +76,10 @@ describe('round 11 finding 6: no SQLITE_STATIC text/blob bind in the native modu
     const legacy = readFileSync(join(IOS, 'PhotoBackupManager.swift'), 'utf8');
     // Round 15: clearStagedStateForRestage's binds moved into
     // BackupManifestStore.clearStagedForRestage (38 -> 36 in the engine).
-    expect((engine.match(/BackupManifestStore\.bindText\(/g) ?? []).length).toBeGreaterThanOrEqual(36);
+    // Round 16: purgeMismatchedStagedAssets' select moved into
+    // BackupManifestStore.purgeMismatchedStaged, which binds with the same
+    // bindText (36 -> 35 in the engine).
+    expect((engine.match(/BackupManifestStore\.bindText\(/g) ?? []).length).toBeGreaterThanOrEqual(35);
     expect((legacy.match(/BackupManifestStore\.bindText\(/g) ?? []).length).toBeGreaterThanOrEqual(8);
     expect(engine).not.toMatch(/\.utf8String, -1, nil\)/);
     expect(legacy).not.toMatch(/\.utf8String, -1, nil\)/);

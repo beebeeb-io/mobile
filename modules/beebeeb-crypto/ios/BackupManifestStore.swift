@@ -151,7 +151,7 @@ enum BackupManifestStore {
   /// Owner is `staged_account_id`, the account whose key and session staged
   /// and opened the upload (task 1531; a row without one is purged as
   /// mismatched staged state and never resumed).
-  static func keepInFlightSQL(excludedCount: Int) -> String {
+  static func keepInFlightSQL(excludedCount: Int, scope: InFlightScope = .all) -> String {
     let excluded = excludedCount == 0
       ? ""
       : "\n       AND staged_account_id NOT IN (" + Array(repeating: "?", count: excludedCount).joined(separator: ", ") + ")"
@@ -160,13 +160,48 @@ enum BackupManifestStore {
     SELECT staged_account_id, local_asset_id, remote_file_id, ?, 1
       FROM backup_assets
      WHERE \(inFlightPredicate)
-    """ + excluded + """
+    """ + excluded + scope.sql + """
 
     ON CONFLICT(account_id, local_asset_id) DO UPDATE
        SET remote_file_id = excluded.remote_file_id, created_at_ms = excluded.created_at_ms
      WHERE backup_pending_marks.needs_resolution = 1
     """
   }
+
+  /// Round 16 (review of mobile#182 at 083d5f23, finding 2): which in-flight
+  /// rows a keep copies. Its one bound value follows `nowMs` and any excluded
+  /// ids (`keepInFlightUploads` binds it at index 2; the reset never scopes).
+  enum InFlightScope: Equatable {
+    /// Every in-flight row (the teardown purge).
+    case all
+    /// The rows staged for another account than this one (the mismatch
+    /// purge at bindAccount / start / the BG task).
+    case stagedForOtherThan(String)
+    /// One row (uploadSingleAsset's per-row mismatch refusal).
+    case asset(String)
+
+    var sql: String {
+      switch self {
+      case .all: return ""
+      case .stagedForOtherThan: return "\n       AND staged_account_id != ?"
+      case .asset: return "\n       AND local_asset_id = ?"
+      }
+    }
+
+    var boundValue: String? {
+      switch self {
+      case .all: return nil
+      case let .stagedForOtherThan(id), let .asset(id): return id
+      }
+    }
+  }
+
+  /// Round 16 (review of mobile#182 at 083d5f23, finding 1): how long the keep
+  /// waits for another connection's write lock (the JS layer's expo-sqlite
+  /// writes take milliseconds). The engine's long-lived connection has no
+  /// busy timeout of its own, so without this the keep failed at once on
+  /// SQLITE_BUSY and the purge after it cleared the ids anyway.
+  static let keepBusyTimeoutMs: Int32 = 2_000
 
   /// Round 14: the sign-out purge calls this BEFORE `purgeAllStagedAssets`
   /// (which clears `remote_file_id` and `upload_session_id` of every staged
@@ -175,12 +210,27 @@ enum BackupManifestStore {
   /// (account deletion) and the expiry to these rows as to every kept mark,
   /// and keeps any in-flight row still carrying its ids. Returns the rows
   /// kept; nil when the write did not run.
+  ///
+  /// Round 16 (finding 1): the keep runs under `busyTimeoutMs` (read, set,
+  /// restore, as `resetInPlace` does), so a writer holding the lock briefly
+  /// delays it instead of failing it. A connection whose timeout cannot be
+  /// read is restored to 0, the engine connection's own setting. Round 16
+  /// (finding 2): `scope` limits it to the rows a mismatch purge clears.
   @discardableResult
-  static func keepInFlightUploads(_ db: OpaquePointer, nowMs: Int64) -> Int? {
+  static func keepInFlightUploads(
+    _ db: OpaquePointer,
+    nowMs: Int64,
+    scope: InFlightScope = .all,
+    busyTimeoutMs: Int32 = keepBusyTimeoutMs
+  ) -> Int? {
     guard tableExists(db, "backup_assets") else { return 0 }
+    let previousBusyMs = pragmaInt(db, "PRAGMA busy_timeout") ?? 0
+    sqlite3_busy_timeout(db, max(busyTimeoutMs, previousBusyMs))
+    defer { sqlite3_busy_timeout(db, previousBusyMs) }
     ensurePendingMarksTable(db)
-    let kept = run(db, keepInFlightSQL(excludedCount: 0)) { stmt in
+    let kept = run(db, keepInFlightSQL(excludedCount: 0, scope: scope)) { stmt in
       sqlite3_bind_int64(stmt, 1, nowMs)
+      if let id = scope.boundValue { bindText(stmt, 2, id) }
     }
     return kept >= 0 ? kept : nil
   }
@@ -253,10 +303,11 @@ enum BackupManifestStore {
     _ db: OpaquePointer,
     nowMs: Int64,
     error: String,
+    keepBusyTimeoutMs: Int32 = keepBusyTimeoutMs,
     removeFiles: (StagedRow) -> Void
   ) -> (keptInFlight: Int?, purged: Int) {
     // FIRST: the purge below clears the ids that identify the upload.
-    let kept = keepInFlightUploads(db, nowMs: nowMs)
+    let kept = keepInFlightUploads(db, nowMs: nowMs, busyTimeoutMs: keepBusyTimeoutMs)
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, """
     SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
@@ -279,6 +330,69 @@ enum BackupManifestStore {
       clearStagedForRestage(db, assetId: row.assetId, error: error, nowMs: nowMs)
     }
     return (kept, staged.count)
+  }
+
+  // MARK: - Round 16: the mismatch purges keep first too
+
+  /// Round 16 (review of mobile#182 at 083d5f23, finding 2): the engine's
+  /// `purgeMismatchedStagedAssets` (bindAccount, start, the BG task): every
+  /// staged row NOT proven to be `currentAccountId`'s (another account's, or
+  /// untagged) loses its staged state (task 1531). It keeps the other
+  /// account's in-flight uploads FIRST, scoped to exactly those rows, because
+  /// the restage clears their server file id and session id. The case: A's
+  /// teardown never ran (`handleConfirmedAccountMismatch` unbinds without a
+  /// purge, then the app died), the app relaunches with B's token, and an A
+  /// upload whose complete reached the server unrecorded would upload a
+  /// second time when A returns. Kept, A's next sign-in resolves it
+  /// (`KeptUploadResolution`). An untagged row has no owner to keep it for
+  /// (`inFlightPredicate` needs `staged_account_id`) and is only purged, as
+  /// before. Returns the rows kept (nil when the keep did not run) and the
+  /// rows purged.
+  @discardableResult
+  static func purgeMismatchedStaged(
+    _ db: OpaquePointer,
+    currentAccountId: String,
+    nowMs: Int64,
+    error: String,
+    removeFiles: (StagedRow) -> Void
+  ) -> (keptInFlight: Int?, purged: Int) {
+    // FIRST: the purge below clears the ids that identify the upload.
+    let kept = keepInFlightUploads(db, nowMs: nowMs, scope: .stagedForOtherThan(currentAccountId))
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, """
+    SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
+    FROM backup_assets
+    WHERE staged_file_id IS NOT NULL
+      AND (staged_account_id IS NULL OR staged_account_id != ?)
+    """, -1, &stmt, nil) == SQLITE_OK else { return (kept, 0) }
+    bindText(stmt, 1, currentAccountId)
+    var mismatched: [StagedRow] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      guard let a = sqlite3_column_text(stmt, 0), let f = sqlite3_column_text(stmt, 2) else { continue }
+      mismatched.append(StagedRow(
+        assetId: String(cString: a),
+        stagedDir: sqlite3_column_text(stmt, 1).map { String(cString: $0) },
+        fileId: String(cString: f),
+        forAccount: sqlite3_column_text(stmt, 3).map { String(cString: $0) }
+      ))
+    }
+    sqlite3_finalize(stmt)
+    for row in mismatched {
+      removeFiles(row)
+      clearStagedForRestage(db, assetId: row.assetId, error: error, nowMs: nowMs)
+    }
+    return (kept, mismatched.count)
+  }
+
+  /// Round 16 (finding 2): `uploadSingleAsset`'s per-row refusal of a staged
+  /// row encrypted for another account: keep that row if it is in flight for
+  /// its owner, then clear its staged state. Scoped to the one row.
+  @discardableResult
+  static func restageMismatchedRow(
+    _ db: OpaquePointer, assetId: String, error: String, nowMs: Int64
+  ) -> (keptInFlight: Int?, cleared: Bool) {
+    let kept = keepInFlightUploads(db, nowMs: nowMs, scope: .asset(assetId))
+    return (kept, clearStagedForRestage(db, assetId: assetId, error: error, nowMs: nowMs))
   }
 
   static func currentMs() -> Int64 {
@@ -988,6 +1102,7 @@ enum BackupManifestStore {
   @discardableResult
   static func claim(_ db: OpaquePointer, accountId: String, nowMs: Int64) -> (adopted: Int, requeued: Int)? {
     guard !accountId.isEmpty else { return (0, 0) }
+    ensurePendingMarksTable(db)
     guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return nil }
     let adoptSQL = """
     UPDATE backup_assets
@@ -998,6 +1113,30 @@ enum BackupManifestStore {
        AND status IN (\(remoteBoundStatuses))
     """
     let adopted = run(db, adoptSQL) { stmt in bindText(stmt, 1, accountId) }
+
+    // Round 16 (review of mobile#182 at 083d5f23, finding 2's path): another
+    // account's rows are here only when its teardown never ran (a normal
+    // sign-out empties the manifest). Its uploads the server's map does not
+    // have yet (`server_marked_at` NULL) are kept for it first, exactly as
+    // the sign-out reset keeps them, because the requeue below forgets them
+    // and that account's next sign-in would upload those photos again.
+    // (`ensurePendingMarksTable` ran before BEGIN.)
+    let keepOthersSQL = """
+    INSERT OR REPLACE INTO backup_pending_marks (account_id, local_asset_id, remote_file_id, created_at_ms)
+    SELECT uploaded_account_id, local_asset_id, remote_file_id, ?
+      FROM backup_assets
+     WHERE status = 'uploaded'
+       AND uploaded_account_id IS NOT NULL
+       AND uploaded_account_id != ''
+       AND uploaded_account_id != ?
+       AND staged_file_id IS NULL
+       AND remote_file_id IS NOT NULL
+       AND server_marked_at IS NULL
+    """
+    let keptOthers = run(db, keepOthersSQL) { stmt in
+      sqlite3_bind_int64(stmt, 1, nowMs)
+      bindText(stmt, 2, accountId)
+    }
 
     let requeueSQL = """
     UPDATE backup_assets
@@ -1018,7 +1157,7 @@ enum BackupManifestStore {
       sqlite3_bind_int64(stmt, 1, nowMs)
       bindText(stmt, 2, accountId)
     }
-    guard adopted >= 0, requeued >= 0, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+    guard adopted >= 0, keptOthers >= 0, requeued >= 0, sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
       sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
       return nil
     }

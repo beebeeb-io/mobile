@@ -1098,6 +1098,191 @@ do {
   expect(kia == ["k1", "k2"], "r.4 the kept reader reads A's rows through the same reader (got \(kia))")
 }
 
+// MARK: - Round 16 (review of mobile#182 at 083d5f23)
+
+/// Another connection on the same file (the JS layer's expo-sqlite) takes the
+/// write lock, holds it for `holdMs`, then commits. `started` fires once the
+/// lock is held.
+func holdWriteLock(_ path: String, holdMs: UInt32) -> (started: DispatchSemaphore, done: DispatchSemaphore) {
+  let started = DispatchSemaphore(value: 0)
+  let done = DispatchSemaphore(value: 0)
+  Thread.detachNewThread {
+    let js = open(path)
+    exec(js, "BEGIN IMMEDIATE")
+    exec(js, "UPDATE backup_assets SET retry_count = retry_count WHERE local_asset_id = 'p2'")
+    started.signal()
+    usleep(holdMs * 1000)
+    exec(js, "COMMIT")
+    sqlite3_close(js)
+    done.signal()
+  }
+  return (started, done)
+}
+
+func busyTimeout(_ d: Device) -> Int { scalar(d.db, "PRAGMA busy_timeout") }
+
+// MARK: - (s) finding 1: the teardown's keep waits for a brief writer lock
+
+// The engine's connection has no busy timeout. At 083d5f23 the keep failed at
+// once on SQLITE_BUSY when JS held the write lock, and the purge cleared the
+// ids anyway (traced kept=-1).
+do {
+  let (d, _) = deviceWithInFlightX1("s.db")
+  expect(busyTimeout(d) == 0, "s.0 the engine-shaped connection starts with no busy timeout (got \(busyTimeout(d)))")
+  let js = holdWriteLock(root.appendingPathComponent("s.db").path, holdMs: 300)
+  js.started.wait()
+  let t0 = Date()
+  let r = stagedPurge(d)
+  let waited = Date().timeIntervalSince(t0)
+  js.done.wait()
+  expect(r.keptInFlight == 1 && r.purged == 1,
+         "s.1 with JS holding the write lock for 300 ms, the keep still keeps x1 (got kept \(String(describing: r.keptInFlight)), purged \(r.purged))")
+  expect(waited >= 0.2 && waited < 2.0, "s.2 the keep WAITED for the lock (\(String(format: "%.3f", waited)) s, expected 0.2..2)")
+  expect(text(d.db, "SELECT remote_file_id FROM backup_pending_marks WHERE account_id = '\(A)' AND local_asset_id = 'x1' AND needs_resolution = 1") == "f-x1",
+         "s.3 x1 is kept for A with f-x1")
+  expect(status(d, "x1") == "pending_reupload::", "s.4 then the purge cleared x1 (got \(status(d, "x1")))")
+  expect(busyTimeout(d) == 0, "s.5 the busy timeout is restored to 0 after the keep (got \(busyTimeout(d)))")
+  // A connection that had its own timeout gets it back.
+  sqlite3_busy_timeout(d.db, 500)
+  _ = d.queue.sync { BackupManifestStore.keepInFlightUploads(d.db, nowMs: now) }
+  expect(busyTimeout(d) == 500, "s.6 a connection's own timeout (500 ms) is restored (got \(busyTimeout(d)))")
+  sqlite3_busy_timeout(d.db, 0)
+}
+
+// (s-control) the same lock with no wait (083d5f23's keep, busyTimeoutMs 0):
+// the keep fails, nothing is kept. Proves s.1 met a real lock.
+do {
+  let (d, _) = deviceWithInFlightX1("s-control.db")
+  let js = holdWriteLock(root.appendingPathComponent("s-control.db").path, holdMs: 300)
+  js.started.wait()
+  let r = d.queue.sync {
+    BackupManifestStore.purgeAllStaged(d.db, nowMs: now, error: "control", keepBusyTimeoutMs: 0, removeFiles: { _ in })
+  }
+  js.done.wait()
+  expect(r.keptInFlight == nil, "s.c1 control: with no wait the keep fails on the lock (got \(String(describing: r.keptInFlight)))")
+  expect(kept(d, A, resolution: 1) == 0, "s.c2 control: nothing is kept (got \(kept(d, A, resolution: 1)))")
+}
+
+// MARK: - (t) finding 2: a missed teardown, then a relaunch as B
+
+// A's teardown never ran (handleConfirmedAccountMismatch unbinds without a
+// purge, then the app died). The app relaunches with B's token:
+// bindAccount(B) -> claimManifest(B) -> purgeMismatchedStagedAssets(B) (the
+// shipped BackupManifestStore.claim and .purgeMismatchedStaged). B signs out
+// later; A returns.
+func seedMissedTeardownExtras(_ d: Device) {
+  exec(d.db, """
+  INSERT INTO backup_assets (local_asset_id, remote_file_id, created_at, asset_type, status, retry_count,
+                             staged_file_id, staged_dir, upload_session_id, staged_account_id)
+  VALUES ('b1', 'f-b1', '2026-10-18T00:00:00Z', 'photo', 'staged_upload', 0, 'sf-b1', '/staging/sf-b1', 's-b1', '\(B)');
+  INSERT INTO backup_assets (local_asset_id, remote_file_id, created_at, asset_type, status, retry_count,
+                             staged_file_id, staged_dir, upload_session_id, staged_account_id)
+  VALUES ('n1', 'f-n1', '2026-10-18T00:00:00Z', 'photo', 'staged_upload', 0, 'sf-n1', '/staging/sf-n1', 's-n1', NULL);
+  """)
+}
+
+/// NativeBackupEngine.bindAccount(B) after A's missed teardown.
+func relaunchAs(_ d: Device, _ account: String) -> (claimed: (adopted: Int, requeued: Int)?, purge: (keptInFlight: Int?, purged: Int)) {
+  d.queue.sync {
+    d.fence.bind(accountId: account)
+    let claimed = BackupManifestStore.claim(d.db, accountId: account, nowMs: now)
+    let purge = BackupManifestStore.purgeMismatchedStaged(
+      d.db, currentAccountId: account, nowMs: now,
+      error: "Re-encrypting: staged ciphertext not verified for this account", removeFiles: { _ in }
+    )
+    return (claimed, purge)
+  }
+}
+
+do {
+  let (d, server) = deviceWithInFlightX1("t.db")
+  seedMissedTeardownExtras(d)
+  let r = relaunchAs(d, B)
+  expect(r.claimed?.requeued == 1, "t.1 claim(B) re-queues A's uploaded u1 (got \(String(describing: r.claimed)))")
+  expect(r.purge.keptInFlight == 1 && r.purge.purged == 2,
+         "t.2 the mismatch purge keeps A's in-flight x1 only, and purges x1 + the untagged n1 (got kept \(String(describing: r.purge.keptInFlight)), purged \(r.purge.purged))")
+  expect(text(d.db, "SELECT remote_file_id FROM backup_pending_marks WHERE account_id = '\(A)' AND local_asset_id = 'x1' AND needs_resolution = 1") == "f-x1",
+         "t.3 x1 is kept for A, to resolve, with f-x1")
+  expect(text(d.db, "SELECT remote_file_id FROM backup_pending_marks WHERE account_id = '\(A)' AND local_asset_id = 'u1' AND needs_resolution = 0") == "f-u1",
+         "t.4 claim keeps A's unmarked u1 as a mark before re-queueing it")
+  expect(kept(d, B, resolution: 1) == 0, "t.5 B's own in-flight b1 is not kept by B's mismatch purge (got \(kept(d, B, resolution: 1)))")
+  expect(status(d, "b1") == "staged_upload:f-b1:", "t.6 B's own staged b1 is untouched (got \(status(d, "b1")))")
+  expect(scalar(d.db, "SELECT COUNT(*) FROM backup_pending_marks WHERE local_asset_id = 'n1'") == 0,
+         "t.7 the untagged n1 has no owner to keep it for and is only purged")
+  expect(status(d, "x1") == "pending_reupload::" && status(d, "n1") == "pending_reupload::",
+         "t.8 x1 and n1 lost their staged state (got \(status(d, "x1")), \(status(d, "n1")))")
+  // B's session ends.
+  expect(signOutPurge(d), "t.9 B's sign-out reset succeeds")
+  expect(kept(d, A, resolution: 1) == 1 && kept(d, A, resolution: 0) == 1,
+         "t.10 A's kept x1 (to resolve) and u1 (mark) survive B's session (got \(kept(d, A, resolution: 1)), \(kept(d, A, resolution: 0)))")
+  // A returns.
+  let t = signIn(d, account: A)
+  let g = gate(d, server, account: A, ticket: t)
+  if case .ready? = g {} else { expect(false, "t.11 A's gate is ready (got \(String(describing: g)))") }
+  let up = batch(d, server, account: A)
+  catchUp(d, server, account: A, ticket: t)
+  expect(up == ["p2"], "t.12 only p2 uploads for A (got \(up))")
+  expect(server.uploadCount(A, "x1") == 0, "t.13 x1 is NOT uploaded a second time (got \(server.uploadCount(A, "x1")))")
+  expect(server.uploadCount(A, "u1") == 0, "t.14 u1 is NOT uploaded a second time (got \(server.uploadCount(A, "u1")))")
+  expect(server.marks[A]?["x1"] == "f-x1" && server.marks[A]?["u1"] == "f-u1", "t.15 x1 and u1 are marked on the server for A")
+  expect(server.inspects.filter { $0 == "f-b1" }.isEmpty, "t.16 A never asks about B's file")
+}
+
+// (t-control) 083d5f23's bindAccount: the engine's old select + restage, and
+// the claim without its keep: x1 and u1 upload a second time when A returns.
+do {
+  let (d, server) = deviceWithInFlightX1("t-control.db")
+  seedMissedTeardownExtras(d)
+  d.queue.sync {
+    d.fence.bind(accountId: B)
+    exec(d.db, """
+    UPDATE backup_assets SET status = 'pending_upload', remote_file_id = NULL, uploaded_account_id = NULL, server_marked_at = NULL
+     WHERE uploaded_account_id IS NOT NULL AND uploaded_account_id != '\(B)' AND staged_file_id IS NULL
+    """)
+    exec(d.db, """
+    UPDATE backup_assets
+       SET status = 'pending_reupload', remote_file_id = NULL, upload_session_id = NULL,
+           staged_file_id = NULL, staged_dir = NULL, staged_at = NULL
+     WHERE staged_file_id IS NOT NULL AND (staged_account_id IS NULL OR staged_account_id != '\(B)')
+    """)
+  }
+  _ = signOutPurge(d)
+  let t = signIn(d, account: A)
+  _ = gate(d, server, account: A, ticket: t)
+  _ = batch(d, server, account: A)
+  expect(server.uploadCount(A, "x1") == 1 && server.uploadCount(A, "u1") == 1,
+         "t.c control: 083d5f23's relaunch as B makes A upload x1 and u1 a SECOND time (got x1 \(server.uploadCount(A, "x1")), u1 \(server.uploadCount(A, "u1")))")
+}
+
+// MARK: - (u) finding 2: uploadSingleAsset's per-row mismatch refusal
+
+do {
+  let (d, server) = deviceWithInFlightX1("u.db")
+  // A second in-flight row of A that this refusal does not touch.
+  exec(d.db, """
+  INSERT INTO backup_assets (local_asset_id, remote_file_id, created_at, asset_type, status, retry_count,
+                             staged_file_id, staged_dir, upload_session_id, staged_account_id)
+  VALUES ('y1', 'f-y1', '2026-10-18T00:00:00Z', 'photo', 'staged_upload', 0, 'sf-y1', '/staging/sf-y1', 's-y1', '\(A)');
+  """)
+  server.files["f-y1"] = (A, false)
+  let r = d.queue.sync {
+    BackupManifestStore.restageMismatchedRow(d.db, assetId: "x1", error: "Re-encrypting: staged ciphertext not verified for this account", nowMs: now)
+  }
+  expect(r.keptInFlight == 1 && r.cleared, "u.1 the refusal keeps x1, then clears it (got kept \(String(describing: r.keptInFlight)), cleared \(r.cleared))")
+  expect(text(d.db, "SELECT remote_file_id FROM backup_pending_marks WHERE account_id = '\(A)' AND local_asset_id = 'x1' AND needs_resolution = 1") == "f-x1",
+         "u.2 x1 is kept for A with f-x1")
+  expect(scalar(d.db, "SELECT COUNT(*) FROM backup_pending_marks WHERE local_asset_id = 'y1'") == 0,
+         "u.3 scoped to the one row: y1 is not kept")
+  expect(status(d, "x1") == "pending_reupload::" && status(d, "y1") == "staged_upload:f-y1:",
+         "u.4 x1 is cleared, y1 untouched (got \(status(d, "x1")), \(status(d, "y1")))")
+  // A returns (B's session never purged anything else here): x1 resolves complete.
+  expect(signOutPurge(d), "u.5 the next sign-out reset succeeds")
+  let t = signIn(d, account: A)
+  _ = gate(d, server, account: A, ticket: t)
+  _ = batch(d, server, account: A)
+  expect(server.uploadCount(A, "x1") == 0, "u.6 x1 is NOT uploaded a second time (got \(server.uploadCount(A, "x1")))")
+}
+
 // MARK: - Report
 
 if failures.isEmpty {

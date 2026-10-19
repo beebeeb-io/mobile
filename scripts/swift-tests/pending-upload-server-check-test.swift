@@ -389,7 +389,10 @@ func bulkPass(_ handle: BackupManifestHandle, ticket: ManifestWriteFence.Ticket,
 func runRebuildGate(_ handle: BackupManifestHandle, ticket: ManifestWriteFence.Ticket, alreadyReady: Bool,
                     state: EngineState = EngineState()) -> ManifestRebuildGate.Outcome? {
   let c = client()
-  let steps = ManifestRebuildGate.Steps(
+  // Named `gateSteps`, not `steps`: a local `steps` shadows the global
+  // `steps(...)` helper called inside `fetchMap`, which Swift 6.3 rejects
+  // ("cannot call value of non-function type"); 6.4 resolved it silently.
+  let gateSteps = ManifestRebuildGate.Steps(
     needsRebuild: {
       FencedManifestWrites.needsRebuild(handle.db, fence: handle.writeFence, ticket: ticket, accountId: accountA,
                                         scanInsertFailed: false, nowMs: now)
@@ -415,10 +418,10 @@ func runRebuildGate(_ handle: BackupManifestHandle, ticket: ManifestWriteFence.T
       FencedManifestWrites.applyKept(handle.db, fence: handle.writeFence, ticket: ticket, accountId: accountA, nowMs: now)
     }
   )
-  let outcome = runBounded { await ManifestRebuildGate.run(alreadyReady: alreadyReady, steps: steps) }
+  let outcome: ManifestRebuildGate.Outcome? = runBounded { await ManifestRebuildGate.run(alreadyReady: alreadyReady, steps: gateSteps) }
   if case let .deferred(reason)? = outcome {
     state.pause.recordRebuild(reason, lacksBackedUp: state.support.lacksBackedUp)
-  } else if case .ready(true, _, _)? = outcome {
+  } else if case .ready(rebuilt: true, promoted: _, keptApplied: _)? = outcome {
     state.pause.clear()
   }
   return outcome

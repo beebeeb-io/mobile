@@ -1219,7 +1219,8 @@ describe('round 14 (review of mobile#182 at 18312919)', () => {
     const purgeStore = code(lazyBody(storeSwift, 'static func purgeAllStaged('));
     const [keep, select, clearRow] = order(
       purgeStore,
-      'let kept = keepInFlightUploads(db, nowMs: nowMs)',
+      // Round 16 anchor: the keep now passes its busy timeout (finding 1).
+      'let kept = keepInFlightUploads(db, nowMs: nowMs, busyTimeoutMs: keepBusyTimeoutMs)',
       'WHERE staged_file_id IS NOT NULL',
       'clearStagedForRestage(db, assetId: row.assetId',
     );
@@ -1287,5 +1288,68 @@ describe('round 14 (review of mobile#182 at 18312919)', () => {
     const ts = readFileSync(join(import.meta.dir, '../../modules/beebeeb-crypto/src/BeebeebCrypto.ts'), 'utf8');
     expect(ts).toMatch(/currently signed-in user's id, never a cached\/stale one\.\n \*\/\nexport async function enablePhotoBackup\(/);
     expect(ts).not.toMatch(/never a cached\/stale one\.\n \*\/\n\/\*\*/);
+  });
+});
+
+// Round 16 (review of mobile#182 at 083d5f23, findings 1 and 2). The behaviour
+// is driven on real SQLite by kept-in-flight-upload-test.swift (s, t, u); these
+// pin the engine's calls, which the swift tests model.
+describe('round 16 (review of mobile#182 at 083d5f23)', () => {
+  const storeSwift = readFileSync(join(IOS, 'BackupManifestStore.swift'), 'utf8');
+
+  test('finding 1: the keep runs under a temporary busy timeout, restored on return', () => {
+    const keep = body(storeSwift, 'static func keepInFlightUploads(');
+    const [read, set, restore, write] = order(
+      keep,
+      'let previousBusyMs = pragmaInt(db, "PRAGMA busy_timeout") ?? 0',
+      'sqlite3_busy_timeout(db, max(busyTimeoutMs, previousBusyMs))',
+      'defer { sqlite3_busy_timeout(db, previousBusyMs) }',
+      'keepInFlightSQL(excludedCount: 0, scope: scope)',
+    );
+    expect(read).toBeGreaterThan(-1);
+    expect(set).toBeGreaterThan(read);
+    expect(restore).toBeGreaterThan(set);
+    expect(write).toBeGreaterThan(restore);
+    expect(storeSwift).toMatch(/static let keepBusyTimeoutMs: Int32 = 2_000/);
+  });
+
+  test('finding 2: the mismatch purge (bindAccount, start, the BG task) keeps the mismatched rows first', () => {
+    const purge = body(engine, 'func purgeMismatchedStagedAssets(currentAccountId accountId: String?) -> Int {');
+    expect(purge).toMatch(/BackupManifestStore\.purgeMismatchedStaged\(/);
+    // The engine no longer clears staged rows itself here.
+    expect(purge).not.toMatch(/clearStagedStateForRestage\(/);
+    expect(purge).not.toMatch(/sqlite3_prepare_v2/);
+    const store = body(storeSwift, 'static func purgeMismatchedStaged(');
+    const [keep, select, clearRow] = order(
+      store,
+      'let kept = keepInFlightUploads(db, nowMs: nowMs, scope: .stagedForOtherThan(currentAccountId))',
+      'AND (staged_account_id IS NULL OR staged_account_id != ?)',
+      'clearStagedForRestage(db, assetId: row.assetId',
+    );
+    expect(keep).toBeGreaterThan(-1);
+    expect(select).toBeGreaterThan(keep);
+    expect(clearRow).toBeGreaterThan(select);
+    // Its three callers are unchanged.
+    expect((engine.match(/purgeMismatchedStagedAssets\(currentAccountId: (?:userId|accountId)\)/g) ?? []).length).toBe(3);
+  });
+
+  test('finding 2: uploadSingleAsset\'s per-row mismatch refusal keeps that row first', () => {
+    const upload = code(engine.slice(engine.indexOf('if staged.stagedAccountId != batchAccountId {')));
+    const refusal = upload.slice(0, upload.indexOf('return false'));
+    const [fence, restage] = order(
+      refusal,
+      'guard admitsWrite(ticket, "clearStagedStateForRestage") else { return }',
+      'restageMismatchedStagedRow(\n              assetId: asset.localAssetId,',
+    );
+    expect(fence).toBeGreaterThan(-1);
+    expect(restage).toBeGreaterThan(fence);
+    expect(refusal).not.toMatch(/\bclearStagedStateForRestage\(\s*assetId/);
+    expect(body(engine, 'private func restageMismatchedStagedRow(assetId: String, error: String) {')).toMatch(
+      /BackupManifestStore\.restageMismatchedRow\(db, assetId: assetId, error: error, nowMs: nowMs\(\)\)/,
+    );
+    const row = body(storeSwift, 'static func restageMismatchedRow(');
+    const [keep, clear] = order(row, 'keepInFlightUploads(db, nowMs: nowMs, scope: .asset(assetId))', 'clearStagedForRestage(db, assetId: assetId');
+    expect(keep).toBeGreaterThan(-1);
+    expect(clear).toBeGreaterThan(keep);
   });
 });

@@ -32,14 +32,17 @@ import { stripSwift } from './swift-db-queue-audit';
  * `BackupManifestStore` functions that write. Round 15 (review of mobile#182 at
  * dd97f2ac, item 7): the round-14 writers `keepInFlightUploads`,
  * `recordInFlightComplete` and `resolveKeptInFlight`, and the round-15 staged
- * purge (`purgeAllStaged`, `clearStagedForRestage`). A direct call of any of
- * them in an unfenced, non-exempt dbQueue block is a violation.
+ * purge (`purgeAllStaged`, `clearStagedForRestage`). Round 16 (review at
+ * 083d5f23, finding 2): the mismatch purges (`purgeMismatchedStaged`,
+ * `restageMismatchedRow`), which keep in-flight rows first. A direct call of any
+ * of them in an unfenced, non-exempt dbQueue block is a violation.
  */
 export const STORE_WRITES = [
   'insertScannedAssets', 'insertScannedAssetsCounting', 'updateSelectionScope', 'markUploaded', 'claim', 'applyServerMap',
   'applyPendingMarks', 'expirePendingMarks', 'adoptUnowned', 'recordServerMarked', 'insertPendingMarks',
   'resetInPlace', 'migrate',
   'keepInFlightUploads', 'recordInFlightComplete', 'resolveKeptInFlight', 'purgeAllStaged', 'clearStagedForRestage',
+  'purgeMismatchedStaged', 'restageMismatchedRow',
 ];
 
 /** The handle's reset / recovery / open: these ADVANCE the fence (or open the file). */
@@ -55,7 +58,7 @@ export const EXEMPT: Record<string, string> = {
   // Round 11: start()/stop() run their bodies (startLocked/stopLocked) inside
   // one BackupEngineLifecycle transition.
   startLocked:
-    'purgeMismatchedStagedAssets: removes staged state encrypted for another account (UPDATE to pending + file delete); it can only take data out, never add a row or an association',
+    'purgeMismatchedStagedAssets: removes staged state encrypted for another account (UPDATE to pending + file delete). Round 16: before that it copies the other account\'s in-flight rows (already in this manifest) into kept rows for that account\'s next sign-in; it adds no photo row and no association to the current account, and after a sign-out reset the manifest it reads is empty',
   bindAccount:
     'purgeMismatchedStagedAssets (as in startLocked) plus the fence bind itself, the explicit sign-in that opens the new generation',
   handleBackgroundTask:

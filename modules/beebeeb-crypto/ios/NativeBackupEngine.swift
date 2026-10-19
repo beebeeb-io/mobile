@@ -3821,7 +3821,9 @@ final class NativeBackupEngine: NSObject {
             if let stagedDir = staged.stagedDir {
               removeStagedDirectory(stagedDir: stagedDir, fileId: staged.stagedFileId ?? "")
             }
-            clearStagedStateForRestage(
+            // Task 1667 round 16 (finding 2): keeps this row first if it is
+            // in flight for its owner (the restage clears its ids).
+            restageMismatchedStagedRow(
               assetId: asset.localAssetId,
               error: "Re-encrypting: staged ciphertext not verified for this account"
             )
@@ -5706,6 +5708,17 @@ final class NativeBackupEngine: NSObject {
     BackupManifestStore.clearStagedForRestage(db, assetId: assetId, error: error, nowMs: nowMs())
   }
 
+  /// Task 1667 round 16 (review of mobile#182 at 083d5f23, finding 2):
+  /// `uploadSingleAsset`'s per-row refusal of a row staged for another
+  /// account. `BackupManifestStore.restageMismatchedRow` keeps the row for
+  /// its owner if it is in flight, then clears it like
+  /// `clearStagedStateForRestage`. MUST run on `dbQueue`.
+  private func restageMismatchedStagedRow(assetId: String, error: String) {
+    guard let db = db else { return }
+    let result = BackupManifestStore.restageMismatchedRow(db, assetId: assetId, error: error, nowMs: nowMs())
+    RuntimeTrace.event("backup.native.staged_account_mismatch.in_flight_kept", ["kept": result.keptInFlight ?? -1])
+  }
+
   /// Mark an asset as successfully uploaded.
   ///
   /// Task 1667 round 7 sweep: false when the manifest did not record it (no
@@ -6029,58 +6042,33 @@ final class NativeBackupEngine: NSObject {
   /// here) — it does not wrap itself, so a caller that is not already on
   /// `dbQueue` must do `dbQueue.sync { purgeMismatchedStagedAssets(...) }`
   /// (see `start()`), not call it directly.
+  ///
+  /// Task 1667 round 16 (review of mobile#182 at 083d5f23, finding 2): the
+  /// select and the restage live in `BackupManifestStore.purgeMismatchedStaged`,
+  /// which first keeps the mismatched account's in-flight uploads (scoped to
+  /// those rows) for resolution at that account's next sign-in. Without it, a
+  /// missed teardown followed by a relaunch as another account cleared the
+  /// ids of an upload that may be complete on the server, and the photo
+  /// uploaded a second time when its account returned.
   @discardableResult
   func purgeMismatchedStagedAssets(currentAccountId accountId: String?) -> Int {
     guard let db = db, let accountId, !accountId.isEmpty else { return 0 }
-
-    let selectSql = """
-    SELECT local_asset_id, staged_dir, staged_file_id, staged_account_id
-    FROM backup_assets
-    WHERE staged_file_id IS NOT NULL
-      AND (staged_account_id IS NULL OR staged_account_id != ?)
-    """
-    var selectStmt: OpaquePointer?
-    guard sqlite3_prepare_v2(db, selectSql, -1, &selectStmt, nil) == SQLITE_OK else { return 0 }
-    BackupManifestStore.bindText(selectStmt, 1, accountId)
-
-    var mismatched: [(assetId: String, stagedDir: String?, fileId: String, otherAccount: String?)] = []
-    while sqlite3_step(selectStmt) == SQLITE_ROW {
-      let assetId = String(cString: sqlite3_column_text(selectStmt, 0))
-      let stagedDir: String? = sqlite3_column_type(selectStmt, 1) != SQLITE_NULL
-        ? String(cString: sqlite3_column_text(selectStmt, 1))
-        : nil
-      let fileId = String(cString: sqlite3_column_text(selectStmt, 2))
-      // Untagged (pre-migration) rows are exactly what this query now also
-      // selects, so `staged_account_id` (column 3) may itself be NULL here —
-      // reading it with `sqlite3_column_text` unconditionally on a NULL
-      // column returns a null pointer, and `String(cString:)` on that is
-      // undefined behavior, so it MUST be NULL-checked like every other
-      // nullable column above.
-      let otherAccount: String? = sqlite3_column_type(selectStmt, 3) != SQLITE_NULL
-        ? String(cString: sqlite3_column_text(selectStmt, 3))
-        : nil
-      mismatched.append((assetId, stagedDir, fileId, otherAccount))
-    }
-    sqlite3_finalize(selectStmt)
-
-    guard !mismatched.isEmpty else { return 0 }
-
-    for row in mismatched {
+    let result = BackupManifestStore.purgeMismatchedStaged(
+      db, currentAccountId: accountId, nowMs: nowMs(),
+      error: "Re-encrypting: staged ciphertext not verified for this account"
+    ) { row in
       if let stagedDir = row.stagedDir {
         removeStagedDirectory(stagedDir: stagedDir, fileId: row.fileId)
       }
-      clearStagedStateForRestage(
-        assetId: row.assetId,
-        error: "Re-encrypting: staged ciphertext not verified for this account"
-      )
       RuntimeTrace.event("backup.native.staged_account_mismatch.purged", [
-        "stagedForAccount": row.otherAccount ?? "(untagged/pre-migration)",
+        "stagedForAccount": row.forAccount ?? "(untagged/pre-migration)",
         "currentAccount": accountId
       ])
     }
-
-    NSLog("[NativeBackupEngine] Purged \(mismatched.count) staged asset(s) encrypted for a different (or unproven) account")
-    return mismatched.count
+    guard result.purged > 0 else { return 0 }
+    RuntimeTrace.event("backup.native.staged_account_mismatch.in_flight_kept", ["kept": result.keptInFlight ?? -1])
+    NSLog("[NativeBackupEngine] Purged \(result.purged) staged asset(s) encrypted for a different (or unproven) account")
+    return result.purged
   }
 
   /// Task 1531 [P0] round 3 (lead review): purge EVERY staged asset,
