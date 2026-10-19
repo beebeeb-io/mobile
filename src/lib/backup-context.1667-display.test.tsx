@@ -12,9 +12,10 @@
 // `applyNativeProgress` kept its last-RECEIVED payload. After re-enable,
 // native returned the identical 25/25 payload, every poll returned early,
 // and the display stayed at 0 until the process restarted.
-// Fix: the shown state is written only by native reads (so the dedupe always
-// compares against it), and "backup off shows nothing" is derived from the
-// toggle instead of written into that state.
+// Fix: the shown native payload is written only by native reads (so the
+// dedupe always compares against what is shown) and cleared when backup is
+// turned on; "backup off shows nothing" is derived from the toggle instead of
+// written into that state.
 //
 // These tests render the REAL BackupProvider with react-test-renderer (every
 // dependency mocked, same convention as ConfirmActionPrompt.test.tsx) and
@@ -43,6 +44,8 @@ let currentUser: { user_id: string } | null = { user_id: USER_A };
 let unlocked = true;
 let nativeProgressFor: () => Record<string, unknown> = () => full25();
 let heldTrigger: { promise: Promise<unknown>; resolve: (v: unknown) => void } | null = null;
+let holdReads = false;
+const heldReads: Array<(v: unknown) => void> = [];
 let disableThrows = false;
 const calls = { getBackupProgress: 0, enablePhotoBackup: [] as Array<[string, string]>, disablePhotoBackup: 0 };
 
@@ -127,7 +130,11 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   enableCalendarBackup: async () => {},
   resumeContactsBackup: async () => {},
   resumeCalendarBackup: async () => {},
-  getBackupProgress: async () => { calls.getBackupProgress += 1; return nativeProgressFor(); },
+  getBackupProgress: async () => {
+    calls.getBackupProgress += 1;
+    if (holdReads) return new Promise((r) => { heldReads.push(r); });
+    return nativeProgressFor();
+  },
   triggerImmediateBackup: async () => (heldTrigger ? heldTrigger.promise : nativeProgressFor()),
   mirrorBackupClientSession: async () => true,
   getPhotoBackupIncludeVideos: async () => true,
@@ -139,8 +146,7 @@ const {
   BackupProvider,
   useBackup,
   backupPrefKey,
-  nextShownProgress,
-  EMPTY_SHOWN_PROGRESS,
+  nextShownNativeProgress,
 } = await import('./backup-context');
 
 let latest: ReturnType<typeof useBackup> | null = null;
@@ -186,6 +192,8 @@ beforeEach(() => {
   calls.enablePhotoBackup = [];
   calls.disablePhotoBackup = 0;
   heldTrigger = null;
+  holdReads = false;
+  heldReads.length = 0;
   disableThrows = false;
   latest = null;
   renders = 0;
@@ -222,6 +230,34 @@ describe('task 1667 5b — backed-up count after camera backup off -> on', () =>
     expect(latest!.backupProgress.state).toBe('complete');
   });
 
+  test('re-enable never shows the progress kept from before: nothing until native answers, then its answer', async () => {
+    nativeProgressFor = () => ({ ...full25(), completed: 22, inProgress: 3, pending: 0, uploading: 3, state: 'uploading' });
+    store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
+    await mount();
+    expect(latest!.backupProgress.state).toBe('uploading');
+
+    await act(async () => { await latest!.togglePhotoBackup(); });
+    await settle();
+    expect(shown()).toEqual({ completed: 0, total: 0 });
+
+    // Turn it on while every native read is still on its way.
+    nativeProgressFor = () => full25();
+    holdReads = true;
+    let toggling!: Promise<void>;
+    await act(async () => { toggling = latest!.togglePhotoBackup(); });
+    await settle();
+    expect(latest!.isPhotoBackupEnabled).toBe(true);
+    expect(heldReads.length).toBeGreaterThan(0);
+    expect(shown()).toEqual({ completed: 0, total: 0 });
+    expect(latest!.backupProgress.inProgress).toBe(0);
+    expect(latest!.backupProgress.state).not.toBe('uploading');
+
+    await act(async () => { for (const r of heldReads.splice(0)) r(full25()); await toggling; });
+    await settle();
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+    expect(latest!.backupProgress.state).toBe('complete');
+  });
+
   test('off -> on twice in a row still lands on 25 of 25 each time', async () => {
     store.set(backupPrefKey('beebeeb_camera_backup', USER_A), 'true');
     await mount();
@@ -254,10 +290,17 @@ describe('task 1667 5b — turning backup off always clears the count', () => {
     expect(shown()).toEqual({ completed: 0, total: 0 });
 
     // Native answers after the reset.
-    await act(async () => { heldTrigger!.resolve(full25()); await pending; });
+    await act(async () => { heldTrigger!.resolve({ ...full25(), completed: 20, inProgress: 5, state: 'uploading' }); await pending; });
     await settle();
     expect(latest!.isPhotoBackupEnabled).toBe(false);
     expect(shown()).toEqual({ completed: 0, total: 0 });
+
+    // ... and turning backup on again shows native's fresh answer, not that late read.
+    heldTrigger = null;
+    await act(async () => { await latest!.togglePhotoBackup(); });
+    await settle();
+    expect(shown()).toEqual({ completed: 25, total: 25 });
+    expect(latest!.backupProgress.state).toBe('complete');
   });
 
   test('a native disable that throws still clears the count', async () => {
@@ -336,26 +379,21 @@ describe('task 1686 kept — an unchanged native read re-renders nothing', () =>
   });
 });
 
-describe('task 1667 5b + task 1686 — nextShownProgress compares against what is shown', () => {
-  test('an equal payload returns the SAME state object (React bails out: no idle re-render)', () => {
-    const first = nextShownProgress(EMPTY_SHOWN_PROGRESS, full25());
-    expect(first).not.toBe(EMPTY_SHOWN_PROGRESS);
-    expect(first.progress.completed).toBe(25);
-    expect(nextShownProgress(first, full25())).toBe(first);
+describe('task 1667 5b + task 1686 — nextShownNativeProgress compares against what is shown', () => {
+  test('an equal payload returns the SAME object (React bails out: no idle re-render)', () => {
+    const first = full25();
+    expect(nextShownNativeProgress(first, full25())).toBe(first);
   });
 
-  test('from the empty state the payload is always shown', () => {
-    const again = nextShownProgress(EMPTY_SHOWN_PROGRESS, full25());
-    expect(again).not.toBe(EMPTY_SHOWN_PROGRESS);
-    expect(again.source).not.toBeNull();
-    expect(again.progress.completed).toBe(25);
+  test('from nothing shown (null) the payload is always shown', () => {
+    const p = full25();
+    expect(nextShownNativeProgress(null, p)).toBe(p);
   });
 
   test('a changed payload replaces the shown one', () => {
-    const a = nextShownProgress(EMPTY_SHOWN_PROGRESS, full25());
-    const b = nextShownProgress(a, { ...full25(), completed: 24, pending: 1, state: 'idle' });
-    expect(b).not.toBe(a);
-    expect(b.progress.completed).toBe(24);
+    const a = full25();
+    const b = { ...full25(), completed: 24, pending: 1, state: 'idle' };
+    expect(nextShownNativeProgress(a, b)).toBe(b);
   });
 });
 
