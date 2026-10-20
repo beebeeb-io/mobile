@@ -25,6 +25,9 @@
 import { describe, expect, test } from 'bun:test';
 import { billingBadgeLabel, billingStatusView, formatBillingDate } from './billing-status';
 
+// Fixed injected clock: trial fixtures are "in the future" relative to this, forever.
+const NOW = new Date('2026-10-01T00:00:00Z');
+
 describe('formatBillingDate', () => {
   test('formats an ISO date as "Mon D, YYYY" (matches the pre-existing inline format)', () => {
     expect(formatBillingDate('2026-10-12T00:00:00Z')).toBe('Oct 12, 2026');
@@ -85,7 +88,7 @@ describe('billingStatusView — findings 2, 4, 6: trialing subscription must be 
       // trial.rs sets current_period_end === trial_ends_at for a trialing row.
       current_period_end: '2026-10-20T00:00:00Z',
       trial_ends_at: '2026-10-20T00:00:00Z',
-    });
+    }, NOW);
     expect(view.badgeKind).toBe('trial');
     expect(view.statusLine).toBe('Trial ends Oct 20, 2026');
     expect(view.statusLine).not.toContain('Renews');
@@ -96,7 +99,7 @@ describe('billingStatusView — findings 2, 4, 6: trialing subscription must be 
       plan: 'pro',
       status: 'trialing',
       current_period_end: '2026-10-20T00:00:00Z',
-    });
+    }, NOW);
     expect(view.badgeKind).toBe('trial');
     expect(view.statusLine).toBe('Trial ends Oct 20, 2026');
   });
@@ -161,7 +164,7 @@ describe('billingStatusView — task 1037: trial with a payment mandate, lapsed,
       trial_ends_at: '2026-10-20T12:00:00Z',
       current_period_end: '2026-10-20T12:00:00Z',
       trial_auto_converts: true,
-    });
+    }, NOW);
     expect(view.badgeKind).toBe('trial');
     expect(view.statusLine).toBe('Trial ends Oct 20, 2026 · continues automatically');
   });
@@ -173,7 +176,7 @@ describe('billingStatusView — task 1037: trial with a payment mandate, lapsed,
         status: 'trialing',
         trial_ends_at: '2026-10-20T12:00:00Z',
         trial_auto_converts,
-      });
+      }, NOW);
       expect(view.statusLine).toBe('Trial ends Oct 20, 2026');
     }
   });
