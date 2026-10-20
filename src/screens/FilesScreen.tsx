@@ -2432,6 +2432,8 @@ export default function FilesScreen() {
                 bytesUploaded: progress.bytesUploaded,
                 bytesTotal: progress.bytesTotal,
                 cryptoBytesPerSec: progress.cryptoBytesPerSec,
+                // Task 2062: the country the server named at init, while the bytes move.
+                place: progress.storageCountry ?? base.place,
               };
             });
           },
@@ -2682,6 +2684,8 @@ export default function FilesScreen() {
                 bytesUploaded: progress.bytesUploaded,
                 bytesTotal: progress.bytesTotal,
                 cryptoBytesPerSec: progress.cryptoBytesPerSec,
+                // Task 2062: the country the server named at init, while the bytes move.
+                place: progress.storageCountry ?? base.place,
               };
             });
           },
@@ -2932,6 +2936,8 @@ export default function FilesScreen() {
                   bytesUploaded: progress.bytesUploaded,
                   bytesTotal: progress.bytesTotal,
                   cryptoBytesPerSec: progress.cryptoBytesPerSec,
+                  // Task 2062: the country the server named at init, while the bytes move.
+                  place: progress.storageCountry ?? base.place,
                 };
               });
             },
