@@ -1,0 +1,87 @@
+bun test v1.3.4 (5eb2145b)
+
+src/lib/regions.test.ts:
+338 | describe('task 2053 strict + unavailable country', () => {
+339 |   test('loadRegionsData reports the refusal with the country name when listed but not selectable', async () => {
+340 |     storageRegionsImpl = async () => [EUROPE, DE, FI_SOON];
+341 |     userRegionImpl = async () => ({ preferred_region: 'fi', region_strict: true, available_regions: [], choices: [] });
+342 |     const data = await loadRegionsData();
+343 |     expect(data.strictRefusal).toEqual({ id: 'fi', name: 'Finland', listed: true });
+                                     ^
+error: expect(received).toEqual(expected)
+
+- {
+-   "id": "fi",
+-   "listed": true,
+-   "name": "Finland",
+- }
++ undefined
+
+- Expected  - 5
++ Received  + 1
+
+      at <anonymous> (/Users/guuslangelaar/code/bb-worktrees/mobile-2053-2055/src/lib/regions.test.ts:343:32)
+(fail) task 2053 strict + unavailable country > loadRegionsData reports the refusal with the country name when listed but not selectable [4.54ms]
+345 | 
+346 |   test('country missing from choices: refusal with a generic or Intl name, listed false', async () => {
+347 |     storageRegionsImpl = async () => [EUROPE, DE];
+348 |     userRegionImpl = async () => ({ preferred_region: 'fi', region_strict: true, available_regions: [], choices: [] });
+349 |     const data = await loadRegionsData();
+350 |     expect(data.strictRefusal?.listed).toBe(false);
+                                             ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: undefined
+
+      at <anonymous> (/Users/guuslangelaar/code/bb-worktrees/mobile-2053-2055/src/lib/regions.test.ts:350:40)
+(fail) task 2053 strict + unavailable country > country missing from choices: refusal with a generic or Intl name, listed false [0.80ms]
+352 |   });
+353 | 
+354 |   test('no refusal when strict is off or the country is available', async () => {
+355 |     storageRegionsImpl = async () => [EUROPE, DE, FI_SOON];
+356 |     userRegionImpl = async () => ({ preferred_region: 'fi', region_strict: false, available_regions: [], choices: [] });
+357 |     expect((await loadRegionsData()).strictRefusal).toBeNull();
+                                                          ^
+error: expect(received).toBeNull()
+
+Received: undefined
+
+      at <anonymous> (/Users/guuslangelaar/code/bb-worktrees/mobile-2053-2055/src/lib/regions.test.ts:357:53)
+(fail) task 2053 strict + unavailable country > no refusal when strict is off or the country is available
+359 |     userRegionImpl = async () => ({ preferred_region: 'fi', region_strict: true, available_regions: [], choices: [] });
+360 |     expect((await loadRegionsData()).strictRefusal).toBeNull();
+361 |   });
+362 | 
+363 |   test('refusal note says uploads are refused and names the country, never "another European data center"', () => {
+364 |     const note = strictRefusalNote({ id: 'fi', name: 'Finland', listed: true });
+                       ^
+TypeError: strictRefusalNote is not a function. (In 'strictRefusalNote({ id: "fi", name: "Finland", listed: !0 })', 'strictRefusalNote' is undefined)
+      at <anonymous> (/Users/guuslangelaar/code/bb-worktrees/mobile-2053-2055/src/lib/regions.test.ts:364:18)
+(fail) task 2053 strict + unavailable country > refusal note says uploads are refused and names the country, never "another European data center" [0.30ms]
+366 |     expect(note.toLowerCase()).toContain('refused');
+367 |     expect(note).not.toContain('another European');
+368 |   });
+369 | 
+370 |   test('allowOthersPayload: listed country keeps its id with strict false; missing sends null', () => {
+371 |     expect(allowOthersPayload({ id: 'fi', name: 'Finland', listed: true })).toEqual({ preferred: 'fi', strict: false });
+                 ^
+TypeError: allowOthersPayload is not a function. (In 'allowOthersPayload({ id: "fi", name: "Finland", listed: !0 })', 'allowOthersPayload' is undefined)
+      at <anonymous> (/Users/guuslangelaar/code/bb-worktrees/mobile-2053-2055/src/lib/regions.test.ts:371:12)
+(fail) task 2053 strict + unavailable country > allowOthersPayload: listed country keeps its id with strict false; missing sends null
+371 |     expect(allowOthersPayload({ id: 'fi', name: 'Finland', listed: true })).toEqual({ preferred: 'fi', strict: false });
+372 |     expect(allowOthersPayload({ id: 'fi', name: 'Finland', listed: false })).toEqual({ preferred: null, strict: false });
+373 |   });
+374 | 
+375 |   test('allowOthers PUTs exactly that payload', async () => {
+376 |     await allowOthers({ id: 'fi', name: 'Finland', listed: true });
+                ^
+TypeError: allowOthers is not a function. (In 'allowOthers({ id: "fi", name: "Finland", listed: !0 })', 'allowOthers' is undefined)
+      at <anonymous> (/Users/guuslangelaar/code/bb-worktrees/mobile-2053-2055/src/lib/regions.test.ts:376:11)
+      at <anonymous> (/Users/guuslangelaar/code/bb-worktrees/mobile-2053-2055/src/lib/regions.test.ts:375:49)
+(fail) task 2053 strict + unavailable country > allowOthers PUTs exactly that payload [0.03ms]
+
+ 37 pass
+ 6 fail
+ 92 expect() calls
+Ran 43 tests across 1 file. [149.00ms]

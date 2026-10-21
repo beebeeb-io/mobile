@@ -84,6 +84,7 @@ import { FileIcon } from '../components/FileIcon';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
+import { knownPoolLocation, learnPoolLocations, unknownPoolKeys } from '../lib/sync-storage-locations';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import { storageLocationLabel, fileStorageCountry } from '../lib/storage-regions';
 import { loadFileStorageLocation } from '../lib/file-storage-location';
@@ -2096,6 +2097,34 @@ export default function FilesScreen() {
     setError(null);
   }, [currentFolder.id]);
 
+  // Task 2055 — sync nodes carry only `storage_pool_id`; the country comes from
+  // GET /files rows of the same file (learned per POOL, see sync-storage-locations).
+  const poolLocationsRef = useRef<Map<string, unknown>>(new Map());
+  const poolLookupTriedRef = useRef<Set<string>>(new Set());
+  const entriesFromNodes = useCallback((nodes: SyncNode[]): FileEntry[] => {
+    return nodes.map((n) => {
+      const entry = syncNodeToFileEntry(n);
+      const loc = knownPoolLocation(poolLocationsRef.current, n);
+      return loc ? ({ ...entry, storage_location: loc } as FileEntry) : entry;
+    });
+  }, []);
+  const resolvePoolLocations = useCallback(async (parentId: string | null, nodes: SyncNode[]) => {
+    const tried = poolLookupTriedRef.current;
+    const keys = unknownPoolKeys(poolLocationsRef.current, nodes).filter((k) => !tried.has(k));
+    if (keys.length === 0) return;
+    keys.forEach((k) => tried.add(k));
+    try {
+      const rows = await listAllFiles(parentId ?? undefined);
+      learnPoolLocations(poolLocationsRef.current, nodes, rows);
+      const fresh = sync.children(parentId).filter((n) => !n.is_trashed);
+      if (fresh.length > 0) {
+        applyFilesForFolder(parentId, entriesFromNodes(fresh), { preserveCachedOnEmpty: true });
+      }
+    } catch {
+      keys.forEach((k) => tried.delete(k)); // retry on the next tree bump
+    }
+  }, [sync, applyFilesForFolder, entriesFromNodes]);
+
   // ------------------------------------------------------------------
   // Fetch files
   // ------------------------------------------------------------------
@@ -2223,12 +2252,13 @@ export default function FilesScreen() {
           folderFetchGenerationRef.current += 1;
           applyFilesForFolder(
             currentFolder.id,
-            liveNodes.map(syncNodeToFileEntry),
+            entriesFromNodes(liveNodes),
             // When the folder is resolved-empty in the tree, don't preserve a
             // stale cache — clear to the real (empty) state.
             { preserveCachedOnEmpty: !folderResolvedInTree },
           );
           lastLoadedFolderRef.current = currentFolder.id;
+          void resolvePoolLocations(currentFolder.id, liveNodes);
           setLoading(false);
           setError(null);
           setHasLoadedOnceTrue();
@@ -2254,9 +2284,10 @@ export default function FilesScreen() {
       folderFetchGenerationRef.current += 1;
       applyFilesForFolder(
         currentFolder.id,
-        liveNodes.map(syncNodeToFileEntry),
+        entriesFromNodes(liveNodes),
         { preserveCachedOnEmpty: true },
       );
+      void resolvePoolLocations(currentFolder.id, liveNodes);
     }
     // Re-derive whenever the tree mutates (treeVersion bumps on every op).
     // eslint-disable-next-line react-hooks/exhaustive-deps

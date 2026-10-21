@@ -83,6 +83,9 @@ import {
   loadRegionsData,
   selectRegion,
   setStrict,
+  allowOthers,
+  strictRefusalNote,
+  type StrictRefusal,
   strictSwitchOnPlatform,
   strictNoticeFor,
   REGION_COMING_SOON,
@@ -725,6 +728,7 @@ export default function SettingsScreen() {
   const [regionSaveFailed, setRegionSaveFailed] = useState(false);
   /** "Only store in <country>" (task 1952): on = a new file never goes to another country. */
   const [regionStrict, setRegionStrict] = useState(false);
+  const [regionStrictRefusal, setRegionStrictRefusal] = useState<StrictRefusal | null>(null);
 
   // Backup per-category stats (sourced from BackupDatabase + .device.json manifest)
   const [photoStats, setPhotoStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
@@ -965,6 +969,7 @@ export default function SettingsScreen() {
     setRegionPreferenceUnknown(data.preferenceLoadFailed);
     setRegionPreferredUnavailable(data.preferredUnavailable);
     setRegionStrict(data.strict);
+    setRegionStrictRefusal(data.strictRefusal);
     setStorageRegion(data.selectedId);
   }, []);
 
@@ -1624,6 +1629,7 @@ export default function SettingsScreen() {
       await selectRegion(row, regionStrict);
       setRegionStrict(row.isCountry && regionStrict);
       setRegionPreferredUnavailable(false);
+      setRegionStrictRefusal(null);
       setRegionPreferenceUnknown(false);
     } catch {
       // The server did not store it: show what is actually stored.
@@ -1634,6 +1640,24 @@ export default function SettingsScreen() {
       setSavingRegion(false);
     }
   }, [savingRegion, storageRegion, regionStrict]);
+
+  /** Task 2053: turn "only store in" off for an unavailable country. */
+  const handleAllowOthers = useCallback(async (refusal: StrictRefusal) => {
+    if (savingRegion) return;
+    setRegionSaveFailed(false);
+    setSavingRegion(true);
+    try {
+      await allowOthers(refusal);
+      setRegionStrict(false);
+      setRegionStrictRefusal(null);
+      setRegionPreferredUnavailable(refusal.listed);
+      if (!refusal.listed) setStorageRegion('europe');
+    } catch {
+      setRegionSaveFailed(true);
+    } finally {
+      setSavingRegion(false);
+    }
+  }, [savingRegion]);
 
   const handleRegionStrictChange = useCallback(async (row: RegionRow, next: boolean) => {
     if (savingRegion) return;
@@ -2610,7 +2634,20 @@ export default function SettingsScreen() {
               />
             </View>
           )}
-          {strictNotice && (
+          {regionStrictRefusal && (
+            <View style={[layout.card, { backgroundColor: surfaces.groupedCell, marginTop: 10 }]}>
+              <ToggleRow
+                label={`Only store in ${regionStrictRefusal.name === 'your chosen country' ? 'your chosen country' : regionStrictRefusal.name}`}
+                subtitle={strictRefusalNote(regionStrictRefusal)}
+                value
+                onValueChange={() => void handleAllowOthers(regionStrictRefusal)}
+                disabled={savingRegion}
+                c={c}
+                testID="region-strict-refusal-switch"
+              />
+            </View>
+          )}
+          {strictNotice && !regionStrictRefusal && (
             <Text
               testID="region-strict-notice"
               style={{ fontSize: 12, color: c.ink3, marginTop: 10, paddingHorizontal: 4 }}
@@ -2619,7 +2656,7 @@ export default function SettingsScreen() {
             </Text>
           )}
           <SectionNote text={REGION_NOTE} c={c} />
-          {regionPreferredUnavailable && (
+          {regionPreferredUnavailable && !regionStrictRefusal && (
             <SectionNote text={REGION_UNAVAILABLE_NOTE} c={c} />
           )}
           {regionSaveFailed && (

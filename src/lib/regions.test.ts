@@ -64,7 +64,7 @@ mock.module('./api', () => ({
   },
 }));
 
-const { buildRegionRows, loadRegionsData, selectRegion, setStrict, effectiveSelection, strictSwitchFor, strictSwitchOnPlatform, strictNoticeFor, STRICT_PLACEMENT_ON_MOBILE } =
+const { buildRegionRows, loadRegionsData, selectRegion, setStrict, effectiveSelection, strictSwitchFor, strictSwitchOnPlatform, strictNoticeFor, STRICT_PLACEMENT_ON_MOBILE, allowOthersPayload, allowOthers, strictRefusalNote } =
   await import('./regions');
 const { parseChoices } = await import('./storage-regions');
 
@@ -329,5 +329,52 @@ describe('task 2050 round 2: strict is hidden on mobile until native backup hand
   test('a stored strict=true is carried (never reset to false) through a country change', async () => {
     await selectRegion(rowsOf(NEW_LIST).find((r) => r.id === 'fi'), true);
     expect(setUserRegionCalls).toEqual([['fi', true]]);
+  });
+});
+
+// ── Task 2053: strict on, pinned country unavailable ─────────────────────────
+const FI_SOON = { ...FI, status: 'coming_soon', selectable: false };
+
+describe('task 2053 strict + unavailable country', () => {
+  test('loadRegionsData reports the refusal with the country name when listed but not selectable', async () => {
+    storageRegionsImpl = async () => [EUROPE, DE, FI_SOON];
+    userRegionImpl = async () => ({ preferred_region: 'fi', region_strict: true, available_regions: [], choices: [] });
+    const data = await loadRegionsData();
+    expect(data.strictRefusal).toEqual({ id: 'fi', name: 'Finland', listed: true });
+  });
+
+  test('country missing from choices: refusal with a generic or Intl name, listed false', async () => {
+    storageRegionsImpl = async () => [EUROPE, DE];
+    userRegionImpl = async () => ({ preferred_region: 'fi', region_strict: true, available_regions: [], choices: [] });
+    const data = await loadRegionsData();
+    expect(data.strictRefusal?.listed).toBe(false);
+    expect(data.strictRefusal?.id).toBe('fi');
+  });
+
+  test('no refusal when strict is off or the country is available', async () => {
+    storageRegionsImpl = async () => [EUROPE, DE, FI_SOON];
+    userRegionImpl = async () => ({ preferred_region: 'fi', region_strict: false, available_regions: [], choices: [] });
+    expect((await loadRegionsData()).strictRefusal).toBeNull();
+    storageRegionsImpl = async () => NEW_LIST;
+    userRegionImpl = async () => ({ preferred_region: 'fi', region_strict: true, available_regions: [], choices: [] });
+    expect((await loadRegionsData()).strictRefusal).toBeNull();
+  });
+
+  test('refusal note says uploads are refused and names the country, never "another European data center"', () => {
+    const note = strictRefusalNote({ id: 'fi', name: 'Finland', listed: true });
+    expect(note).toContain('Finland');
+    expect(note.toLowerCase()).toContain('refused');
+    expect(note).not.toContain('another European');
+  });
+
+  test('allowOthersPayload: listed country keeps its id with strict false; missing sends null', () => {
+    expect(allowOthersPayload({ id: 'fi', name: 'Finland', listed: true })).toEqual({ preferred: 'fi', strict: false });
+    expect(allowOthersPayload({ id: 'fi', name: 'Finland', listed: false })).toEqual({ preferred: null, strict: false });
+  });
+
+  test('allowOthers PUTs exactly that payload', async () => {
+    await allowOthers({ id: 'fi', name: 'Finland', listed: true });
+    await allowOthers({ id: 'fi', name: 'Finland', listed: false });
+    expect(setUserRegionCalls).toEqual([['fi', false], [null, false]]);
   });
 });

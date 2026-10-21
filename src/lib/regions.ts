@@ -21,7 +21,7 @@
  * invents a list).
  */
 import { getStorageRegions, getUserRegion, setUserRegion } from './api';
-import { parseChoices, strictExplanation, strictLabel, type StorageRegionChoice } from './storage-regions';
+import { choiceMatches, parseChoices, strictExplanation, strictLabel, type StorageRegionChoice } from './storage-regions';
 
 export interface RegionRow {
   /** The server id, sent verbatim to `PUT /me/region`. */
@@ -84,10 +84,68 @@ export interface RegionsData {
   selectedId: string | null;
   /** A country is stored but the API does not list it as selectable now. */
   preferredUnavailable: boolean;
+  /**
+   * Task 2053: "only store in" is on but the stored country is unavailable
+   * (not listed, or listed without being selectable). The server REFUSES new
+   * uploads (409 `region_unavailable_strict`); it does not place them elsewhere.
+   */
+  strictRefusal: StrictRefusal | null;
   /** `/me/region` failed, so the current choice is unknown. */
   preferenceLoadFailed: boolean;
   /** Neither the public list nor `/me/region` answered; `rows` is empty. */
   failed: boolean;
+}
+
+/** The pinned country that cannot take files while strict is on (task 2053). */
+export interface StrictRefusal {
+  id: string;
+  /** The list's name, else the platform's own name for a two-letter code, else a generic name. */
+  name: string;
+  /** Still in the server's list (not selectable), as opposed to missing from it. */
+  listed: boolean;
+}
+
+function strictRefusalFor(
+  preferredRegion: string | null,
+  strict: boolean,
+  unavailable: boolean,
+  choices: readonly StorageRegionChoice[],
+): StrictRefusal | null {
+  if (!strict || !unavailable || preferredRegion == null) return null;
+  const id = preferredRegion.trim();
+  const wanted = id.toLowerCase();
+  const hit = choices.find((c) => !c.is_default && choiceMatches(c, wanted));
+  if (hit) return { id, name: hit.name, listed: true };
+  let name: string | null = null;
+  if (/^[a-z]{2}$/.test(wanted)) {
+    try {
+      const n = new Intl.DisplayNames(['en'], { type: 'region' }).of(wanted.toUpperCase());
+      if (n && n.toUpperCase() !== wanted.toUpperCase()) name = n;
+    } catch {
+      /* no region names on this runtime: generic name */
+    }
+  }
+  return { id, name: name ?? 'your chosen country', listed: false };
+}
+
+/** Honest refusal copy: new uploads are refused, naming the country (never "another data center"). */
+export function strictRefusalNote(r: StrictRefusal): string {
+  const where = r.name === 'your chosen country' ? 'Your chosen country' : r.name;
+  return `${where} can't take new files right now, so new uploads are refused until it is back. Turn this off to allow other EU countries.`;
+}
+
+/**
+ * What to PUT when "Allow other EU countries" is used. The server re-saves a
+ * country it still lists with either strict value, but 400s a value missing
+ * from the list: so listed keeps the id, missing sends no preference.
+ */
+export function allowOthersPayload(r: StrictRefusal): { preferred: string | null; strict: false } {
+  return { preferred: r.listed ? r.id : null, strict: false };
+}
+
+export async function allowOthers(r: StrictRefusal) {
+  const p = allowOthersPayload(r);
+  return setUserRegion(p.preferred, p.strict);
 }
 
 /** Fetch the list + the preference. Never throws. */
@@ -108,6 +166,7 @@ export async function loadRegionsData(): Promise<RegionsData> {
       strict: false,
       selectedId: null,
       preferredUnavailable: false,
+      strictRefusal: null,
       preferenceLoadFailed: pref.status === 'rejected',
       failed: true,
     };
@@ -119,12 +178,14 @@ export async function loadRegionsData(): Promise<RegionsData> {
   const strict = pref.status === 'fulfilled' && pref.value.region_strict === true;
   // With an unknown preference (offline / failed) select nothing rather than guess.
   const selectedId = preferenceLoadFailed ? null : effectiveSelection(rows, preferredRegion);
+  const preferredUnavailable = !preferenceLoadFailed && preferredRegion != null && selectedId === null;
   return {
     rows,
     preferredRegion,
     strict,
     selectedId,
-    preferredUnavailable: !preferenceLoadFailed && preferredRegion != null && selectedId === null,
+    preferredUnavailable,
+    strictRefusal: strictRefusalFor(preferredRegion, strict, preferredUnavailable, choices),
     preferenceLoadFailed,
     failed: false,
   };

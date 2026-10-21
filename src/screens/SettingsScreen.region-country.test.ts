@@ -31,4 +31,11 @@ describe('Settings > Data residency (task 2050)', () => {
     const offenders = literals.filter((l) => /\b(city|cities|datacenters?)\b/i.test(l));
     expect(offenders).toEqual([]);
   });
+
+  test('task 2053: strict + unavailable country shows the refusal and an off switch that calls allowOthers', () => {
+    expect(source).toContain('testID="region-strict-refusal-switch"');
+    expect(source).toContain('await allowOthers(refusal);');
+    expect(source).toContain('strictRefusalNote(regionStrictRefusal)');
+    expect(source).toContain('setRegionStrictRefusal(data.strictRefusal);');
+  });
 });
