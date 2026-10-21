@@ -45,3 +45,13 @@ describe('row/grid "Stored in" country (task 1592 item 12, task 2050)', () => {
     expect(source).not.toMatch(/stored in \$\{[a-zA-Z.]*\.city\}/);
   });
 });
+
+describe('sync-derived rows keep the file country (task 2055)', () => {
+  test('both sync derive sites go through the pool-location projection, not the bare node map', () => {
+    expect(source).not.toContain('liveNodes.map(syncNodeToFileEntry)');
+    const uses = source.match(/entriesFromNodes\(liveNodes\)/g) ?? [];
+    expect(uses.length).toBe(2);
+    expect(source).toContain("from '../lib/sync-storage-locations'");
+    expect(source).toContain('resolvePoolLocations(');
+  });
+});
