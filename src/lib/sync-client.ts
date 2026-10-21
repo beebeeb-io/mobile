@@ -167,6 +167,17 @@ interface ESLike {
   addEventListener(type: string, listener: (event: { data?: string }) => void): void;
 }
 
+const RESYNC_DEBOUNCE_MS = 250;
+
+/** Server control frame (task 1987): events were dropped, pull /sync/ops. */
+function isResyncFrame(msg: unknown): boolean {
+  return (
+    typeof msg === 'object' &&
+    msg !== null &&
+    (msg as { type?: unknown }).type === 'resync'
+  );
+}
+
 function createEventSource(url: string, headers: Record<string, string>): ESLike {
   if (Platform.OS === 'web') {
     if (typeof globalThis === 'undefined' || typeof globalThis.EventSource === 'undefined') {
@@ -268,6 +279,8 @@ export class SyncClient {
   private status: ConnectionStatus = 'idle';
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private resyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private catchUpInFlight: Promise<void> | null = null;
   // Task 1686 — reconnect scheduled while the app was backgrounded. The timer
   // is cleared immediately; this flag remembers that a reconnect was DUE so
   // the foreground hook can replay exactly one reconnect (never one per
@@ -536,6 +549,10 @@ export class SyncClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    if (this.resyncTimer) {
+      clearTimeout(this.resyncTimer);
+      this.resyncTimer = null;
+    }
     this.reconnectDeferredWhileBackgrounded = false;
     if (this.appStateSub) {
       this.appStateSub.remove();
@@ -636,6 +653,10 @@ export class SyncClient {
         // documents that "the client can ignore non-sync events". Applying one as
         // an op threw `payload.id` on undefined for every folder the backup
         // reconcile created (1305 — RN 0.86 surfaces the rejection as an error).
+        if (isResyncFrame(msg)) {
+          this.requestCatchUp();
+          return;
+        }
         if (!isSyncOp(msg)) return;
         void this.applyRemoteOp(msg);
       } catch (err) {
@@ -643,16 +664,27 @@ export class SyncClient {
       }
     });
 
-    es.addEventListener('error', () => {
+    // Task 2096 — the server's overflow signal as a NAMED SSE event
+    // (`event: resync`). The same frame as a plain message is handled above.
+    es.addEventListener('resync', () => {
+      this.requestCatchUp();
+    });
+
+    const onStreamEnd = () => {
       // Both EventSource implementations auto-reconnect, but we manage backoff
-      // and token refresh explicitly so closes here are deliberate.
+      // and token refresh explicitly so closes here are deliberate. Task 2096:
+      // a clean server-side end of the stream ('close') must take the same
+      // path as an error — react-native-sse would otherwise silently re-open
+      // it with no catch-up. reconnect() pulls the missed ops first.
       es.close();
       if (this.eventSource === es) {
         this.eventSource = null;
       }
       if (this.destroyed) return;
       this.scheduleReconnect();
-    });
+    };
+    es.addEventListener('error', onStreamEnd);
+    es.addEventListener('close', onStreamEnd);
   }
 
   private scheduleReconnect(): void {
@@ -704,15 +736,40 @@ export class SyncClient {
     if (this.destroyed) return;
     // After a long disconnect, fetch any ops we missed before re-opening
     // the stream — gapless resume.
-    try {
-      const ops = await getSyncOps(this.lastSeq);
-      for (const op of ops) {
-        await this.applyRemoteOp(op);
-      }
-    } catch (err) {
-      console.warn('[SyncClient] reconnect catch-up failed', err);
-    }
+    await this.catchUp('reconnect');
     void this.openStream();
+  }
+
+  /** The /sync/ops cursor pull. Concurrent callers share one in-flight pull. */
+  private catchUp(label: string): Promise<void> {
+    if (this.catchUpInFlight) return this.catchUpInFlight;
+    const run = (async () => {
+      try {
+        const ops = await getSyncOps(this.lastSeq);
+        for (const op of ops) {
+          await this.applyRemoteOp(op);
+        }
+      } catch (err) {
+        console.warn(`[SyncClient] ${label} catch-up failed`, err);
+      }
+    })().finally(() => {
+      this.catchUpInFlight = null;
+    });
+    this.catchUpInFlight = run;
+    return run;
+  }
+
+  /**
+   * Task 2096 — the server dropped events (bus overflow) and sent `resync`.
+   * One debounced catch-up per burst of frames; the stream itself stays open.
+   */
+  private requestCatchUp(): void {
+    if (this.destroyed || this.resyncTimer) return;
+    this.resyncTimer = setTimeout(() => {
+      this.resyncTimer = null;
+      if (this.destroyed) return;
+      void this.catchUp('resync');
+    }, RESYNC_DEBOUNCE_MS);
   }
 
   /**
