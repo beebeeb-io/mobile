@@ -165,26 +165,30 @@ describe('SyncClient catch-up on reconnect / resync (task 2096)', () => {
     expect(getSyncOpsCalls).toBe(1);
   });
 
-  test('a named resync event triggers one catch-up, debounced across a burst', async () => {
+  test('a second open on the same stream (library silent re-open after a clean server end) -> one debounced catch-up', async () => {
     await started();
     withCapturedTimers(() => {
-      lastFakeES!.fire('resync', { data: '{}' });
-      lastFakeES!.fire('resync', { data: '{}' });
-      lastFakeES!.fire('resync', { data: '{}' });
+      lastFakeES!.fire('open');          // first open: nothing to catch up
+    });
+    expect(capturedTimers.length).toBe(0);
+    withCapturedTimers(() => {
+      lastFakeES!.fire('open');          // library re-opened after clean end
+      lastFakeES!.fire('open');
     });
     expect(getSyncOpsCalls).toBe(0);
     await runTimers();
     expect(getSyncOpsCalls).toBe(1);
   });
 
-  test('a message frame {"type":"resync"} triggers one catch-up', async () => {
+  test('legacy guessed shapes are inert: named resync event and {type:resync} message do nothing', async () => {
     await started();
     withCapturedTimers(() => {
-      lastFakeES!.fire('message', { data: JSON.stringify({ type: 'resync' }) });
+      lastFakeES!.fire('resync', { data: '{}' });
       lastFakeES!.fire('message', { data: JSON.stringify({ type: 'resync' }) });
     });
-    await runTimers();
-    expect(getSyncOpsCalls).toBe(1);
+    expect(capturedTimers.length).toBe(0);
+    await drain();
+    expect(getSyncOpsCalls).toBe(0);
   });
 
   test('heartbeats and non-sync notifications do nothing', async () => {
@@ -201,11 +205,11 @@ describe('SyncClient catch-up on reconnect / resync (task 2096)', () => {
     expect(getSyncOpsCalls).toBe(0);
   });
 
-  test('a second resync after the first catch-up ran triggers another catch-up', async () => {
+  test('a later re-open after the first catch-up ran triggers another catch-up', async () => {
     await started();
-    withCapturedTimers(() => lastFakeES!.fire('resync', { data: '{}' }));
+    withCapturedTimers(() => { lastFakeES!.fire('open'); lastFakeES!.fire('open'); });
     await runTimers();
-    withCapturedTimers(() => lastFakeES!.fire('resync', { data: '{}' }));
+    withCapturedTimers(() => lastFakeES!.fire('open'));
     await runTimers();
     expect(getSyncOpsCalls).toBe(2);
   });

@@ -169,15 +169,6 @@ interface ESLike {
 
 const RESYNC_DEBOUNCE_MS = 250;
 
-/** Server control frame (task 1987): events were dropped, pull /sync/ops. */
-function isResyncFrame(msg: unknown): boolean {
-  return (
-    typeof msg === 'object' &&
-    msg !== null &&
-    (msg as { type?: unknown }).type === 'resync'
-  );
-}
-
 function createEventSource(url: string, headers: Record<string, string>): ESLike {
   if (Platform.OS === 'web') {
     if (typeof globalThis === 'undefined' || typeof globalThis.EventSource === 'undefined') {
@@ -566,8 +557,9 @@ export class SyncClient {
       if (this.dirtyParents.size > 0) void this.persistCacheNow();
     }
     if (this.eventSource) {
-      this.eventSource.close();
+      const prev = this.eventSource;
       this.eventSource = null;
+      this.closeStream(prev);
     }
     this.setStatus('idle');
     this.listeners.clear();
@@ -599,8 +591,9 @@ export class SyncClient {
   private async openStream(): Promise<void> {
     if (this.destroyed) return;
     if (this.eventSource) {
-      this.eventSource.close();
+      const prev = this.eventSource;
       this.eventSource = null;
+      this.closeStream(prev);
     }
 
     let token: string;
@@ -633,7 +626,25 @@ export class SyncClient {
     }
     this.eventSource = es;
 
+    let opened = false;
     es.addEventListener('open', () => {
+      // Task 2096 — the server signals "events were dropped, resync" (task
+      // 1987) by ENDING the SSE stream cleanly (HTTP 200, body completes; no
+      // event name, no data frame, Last-Event-ID ignored). react-native-sse
+      // dispatches NOTHING for that: on XHR DONE it silently re-polls after
+      // pollingInterval and fires 'open' AGAIN on the same instance
+      // (node_modules/react-native-sse/src/EventSource.js:117-120 -> 60-63
+      // -> 109-111). A second 'open' on one instance is therefore the only
+      // signal of a clean end; run our own catch-up (debounced, once).
+      // A stream we already closed can still 'open': after an HTTP error the
+      // library schedules its own re-poll AFTER dispatching 'error' (so after
+      // our close()), and that zombie re-open would flip us to 'connected'.
+      if (this.eventSource !== es) {
+        this.closeStream(es);
+        return;
+      }
+      if (opened) this.requestCatchUp();
+      opened = true;
       // Task 1686 — the handshake was accepted AND the stream came up: a
       // long-lived connection from here on resets the ladder (a later drop
       // after real connectivity is a NEW outage, not a continuation). Also
@@ -653,10 +664,6 @@ export class SyncClient {
         // documents that "the client can ignore non-sync events". Applying one as
         // an op threw `payload.id` on undefined for every folder the backup
         // reconcile created (1305 — RN 0.86 surfaces the rejection as an error).
-        if (isResyncFrame(msg)) {
-          this.requestCatchUp();
-          return;
-        }
         if (!isSyncOp(msg)) return;
         void this.applyRemoteOp(msg);
       } catch (err) {
@@ -664,27 +671,31 @@ export class SyncClient {
       }
     });
 
-    // Task 2096 — the server's overflow signal as a NAMED SSE event
-    // (`event: resync`). The same frame as a plain message is handled above.
-    es.addEventListener('resync', () => {
-      this.requestCatchUp();
-    });
-
     const onStreamEnd = () => {
       // Both EventSource implementations auto-reconnect, but we manage backoff
-      // and token refresh explicitly so closes here are deliberate. Task 2096:
-      // a clean server-side end of the stream ('close') must take the same
-      // path as an error — react-native-sse would otherwise silently re-open
-      // it with no catch-up. reconnect() pulls the missed ops first.
-      es.close();
-      if (this.eventSource === es) {
-        this.eventSource = null;
-      }
+      // and token refresh explicitly so closes here are deliberate. A 'close'
+      // we caused ourselves is ignored (selfClosing): react-native-sse dispatches 'close' from its own close(), which we
+      // call ourselves, so acting on it unguarded would re-schedule forever.
+      if (this.selfClosing) return;
+      if (this.eventSource === es) this.eventSource = null;
+      this.closeStream(es);
       if (this.destroyed) return;
+      // reconnect() pulls the missed ops (catch-up) before re-opening.
       this.scheduleReconnect();
     };
     es.addEventListener('error', onStreamEnd);
     es.addEventListener('close', onStreamEnd);
+  }
+
+  /** Our own close(): react-native-sse dispatches 'close' synchronously from it. */
+  private selfClosing = false;
+  private closeStream(es: ESLike): void {
+    this.selfClosing = true;
+    try {
+      es.close();
+    } finally {
+      this.selfClosing = false;
+    }
   }
 
   private scheduleReconnect(): void {
@@ -760,8 +771,9 @@ export class SyncClient {
   }
 
   /**
-   * Task 2096 — the server dropped events (bus overflow) and sent `resync`.
-   * One debounced catch-up per burst of frames; the stream itself stays open.
+   * Task 2096 — the server dropped events and ended the stream cleanly (1987);
+   * the library re-opened it silently. One debounced catch-up per re-open; the
+   * stream itself stays open.
    */
   private requestCatchUp(): void {
     if (this.destroyed || this.resyncTimer) return;
