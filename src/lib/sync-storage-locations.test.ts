@@ -2,7 +2,7 @@
 // Task 2055 — a Drive row built from the sync tree carries only `storage_pool_id`;
 // the country comes from GET /files rows joined to the same node.
 import { describe, expect, test } from 'bun:test';
-import { learnPoolLocations, knownPoolLocation, poolKey, unknownPoolKeys } from './sync-storage-locations';
+import { learnPoolLocations, knownPoolLocation, poolKey, unknownPoolKeys, newPoolLookupState, resolvePoolLocationsShared } from './sync-storage-locations';
 import { fileStorageCountry, storageLocationLabel } from './storage-regions';
 
 const FI = { country: 'Finland', country_code: 'FI' };
@@ -41,5 +41,36 @@ describe('sync-storage-locations (task 2055)', () => {
       node('a', 'pool-fi'), node('b', 'pool-x'), node('c', 'pool-y', 't', { is_folder: true }), node('d', 'pool-z', 't', { is_uploading: true }),
     ]);
     expect(keys).toEqual(['pool-x']);
+  });
+});
+
+describe('shared in-flight pool lookups (PR 188 review)', () => {
+  const loc = FI;
+  const nodeA = { id: 'a', updated_at: 't1', storage_pool_id: 'p1' };
+  const nodeB = { id: 'b', updated_at: 't2', storage_pool_id: 'p1' };
+
+  test('second folder, same pool, while the first lookup is pending: BOTH can re-derive with the country', async () => {
+    const state = newPoolLookupState();
+    let release: (v: any) => void = () => {};
+    let fetches = 0;
+    const fetchA = () => { fetches++; return new Promise((r) => { release = r; }); };
+    const p1 = resolvePoolLocationsShared(state, [nodeA], fetchA);
+    const p2 = resolvePoolLocationsShared(state, [nodeB], () => { fetches++; return Promise.resolve([]); });
+    release([{ id: 'a', updated_at: 't1', storage_location: loc }]);
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(fetches).toBe(1);
+    expect(r1).toBe(true);
+    expect(r2).toBe(true); // second caller waited and must re-derive
+    expect(knownPoolLocation(state.known, nodeA)).toBe(loc);
+    expect(knownPoolLocation(state.known, nodeB)).toBe(loc);
+  });
+
+  test('a failed lookup is not marked tried; the next call retries', async () => {
+    const state = newPoolLookupState();
+    const r1 = await resolvePoolLocationsShared(state, [nodeA], () => Promise.reject(new Error('x')).catch((e) => { throw e; })).catch(() => 'threw');
+    expect(state.tried.has('p1')).toBe(false);
+    const r2 = await resolvePoolLocationsShared(state, [nodeA], () => Promise.resolve([{ id: 'a', updated_at: 't1', storage_location: loc }]));
+    expect(r2).toBe(true);
+    expect(knownPoolLocation(state.known, nodeA)).toBe(loc);
   });
 });

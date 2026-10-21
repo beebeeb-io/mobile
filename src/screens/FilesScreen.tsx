@@ -84,7 +84,7 @@ import { FileIcon } from '../components/FileIcon';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
-import { knownPoolLocation, learnPoolLocations, unknownPoolKeys } from '../lib/sync-storage-locations';
+import { knownPoolLocation, newPoolLookupState, resolvePoolLocationsShared } from '../lib/sync-storage-locations';
 import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
 import { storageLocationLabel, fileStorageCountry } from '../lib/storage-regions';
 import { loadFileStorageLocation } from '../lib/file-storage-location';
@@ -2099,8 +2099,8 @@ export default function FilesScreen() {
 
   // Task 2055 — sync nodes carry only `storage_pool_id`; the country comes from
   // GET /files rows of the same file (learned per POOL, see sync-storage-locations).
-  const poolLocationsRef = useRef<Map<string, unknown>>(new Map());
-  const poolLookupTriedRef = useRef<Set<string>>(new Set());
+  const poolLookupRef = useRef(newPoolLookupState());
+  const poolLocationsRef = useRef(poolLookupRef.current.known);
   const entriesFromNodes = useCallback((nodes: SyncNode[]): FileEntry[] => {
     return nodes.map((n) => {
       const entry = syncNodeToFileEntry(n);
@@ -2109,19 +2109,21 @@ export default function FilesScreen() {
     });
   }, []);
   const resolvePoolLocations = useCallback(async (parentId: string | null, nodes: SyncNode[]) => {
-    const tried = poolLookupTriedRef.current;
-    const keys = unknownPoolKeys(poolLocationsRef.current, nodes).filter((k) => !tried.has(k));
-    if (keys.length === 0) return;
-    keys.forEach((k) => tried.add(k));
     try {
-      const rows = await listAllFiles(parentId ?? undefined);
-      learnPoolLocations(poolLocationsRef.current, nodes, rows);
+      // Callers for a pool already being looked up await the SAME request, then
+      // each re-derives its own folder's rows (PR 188 review).
+      const settled = await resolvePoolLocationsShared(
+        poolLookupRef.current,
+        nodes,
+        () => listAllFiles(parentId ?? undefined),
+      );
+      if (!settled) return;
       const fresh = sync.children(parentId).filter((n) => !n.is_trashed);
       if (fresh.length > 0) {
         applyFilesForFolder(parentId, entriesFromNodes(fresh), { preserveCachedOnEmpty: true });
       }
     } catch {
-      keys.forEach((k) => tried.delete(k)); // retry on the next tree bump
+      // a failed lookup is not marked tried: the next tree bump retries it
     }
   }, [sync, applyFilesForFolder, entriesFromNodes]);
 

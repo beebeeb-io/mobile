@@ -62,3 +62,53 @@ export function unknownPoolKeys(known: ReadonlyMap<string, unknown>, nodes: read
   }
   return [...out];
 }
+
+export interface PoolLookupState {
+  known: Map<string, unknown>;
+  /** Pools whose lookup settled without learning them: not asked again until the tree changes shape. */
+  tried: Set<string>;
+  /** pool key -> the one in-flight lookup every caller for that pool awaits. */
+  inflight: Map<string, Promise<void>>;
+}
+
+export function newPoolLookupState(): PoolLookupState {
+  return { known: new Map(), tried: new Set(), inflight: new Map() };
+}
+
+/**
+ * Resolve the unknown pools of `nodes`. Callers for a pool already being looked
+ * up await that SAME request instead of returning early, so each caller can
+ * re-derive ITS OWN folder's rows once it resolves. Returns true when this call
+ * waited on or ran a lookup (the caller should re-derive its rows); false when
+ * there was nothing to resolve. A pool is marked `tried` only after its lookup
+ * settles; a failed lookup is not marked, so the next tree bump retries it.
+ */
+export async function resolvePoolLocationsShared(
+  state: PoolLookupState,
+  nodes: readonly PoolNode[],
+  fetchRows: () => Promise<readonly LocatedRow[]>,
+): Promise<boolean> {
+  const unknown = unknownPoolKeys(state.known, nodes).filter((k) => !state.tried.has(k));
+  if (unknown.length === 0) return false;
+  const waits: Promise<void>[] = [];
+  const mine = unknown.filter((k) => !state.inflight.has(k));
+  for (const k of unknown) {
+    const p = state.inflight.get(k);
+    if (p) waits.push(p);
+  }
+  if (mine.length > 0) {
+    const run = (async () => {
+      try {
+        const rows = await fetchRows();
+        learnPoolLocations(state.known, nodes, rows);
+        for (const k of mine) if (!state.known.has(k)) state.tried.add(k);
+      } finally {
+        for (const k of mine) state.inflight.delete(k);
+      }
+    })();
+    for (const k of mine) state.inflight.set(k, run);
+    waits.push(run);
+  }
+  const settled = await Promise.allSettled(waits);
+  return settled.some((s) => s.status === 'fulfilled');
+}
