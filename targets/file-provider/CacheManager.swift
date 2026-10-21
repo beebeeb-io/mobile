@@ -374,7 +374,7 @@ final class CacheManager {
     queue.sync {
       executeBindable("UPDATE file_cache SET is_pinned = ? WHERE id = ?") { stmt in
         sqlite3_bind_int(stmt, 1, pinned ? 1 : 0)
-        sqlite3_bind_text(stmt, 2, (id as NSString).utf8String, -1, nil)
+        bindText(stmt, 2, id)
       }
     }
   }
@@ -383,7 +383,7 @@ final class CacheManager {
     queue.sync {
       executeBindable("UPDATE file_cache SET is_materialized = ? WHERE id = ?") { stmt in
         sqlite3_bind_int(stmt, 1, value ? 1 : 0)
-        sqlite3_bind_text(stmt, 2, (id as NSString).utf8String, -1, nil)
+        bindText(stmt, 2, id)
       }
     }
   }
@@ -413,8 +413,8 @@ final class CacheManager {
       executeBindable(
         "INSERT INTO sync_state(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
       ) { stmt in
-        sqlite3_bind_text(stmt, 1, (key as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(stmt, 2, (value as NSString).utf8String, -1, nil)
+        bindText(stmt, 1, key)
+        bindText(stmt, 2, value)
       }
     }
   }
@@ -424,7 +424,7 @@ final class CacheManager {
       var stmt: OpaquePointer?
       defer { sqlite3_finalize(stmt) }
       guard prepare("SELECT value FROM sync_state WHERE key = ?", &stmt) else { return nil }
-      sqlite3_bind_text(stmt, 1, (key as NSString).utf8String, -1, nil)
+      bindText(stmt, 1, key)
       guard sqlite3_step(stmt) == SQLITE_ROW,
             let cstr = sqlite3_column_text(stmt, 0) else { return nil }
       return String(cString: cstr)
@@ -524,7 +524,7 @@ final class CacheManager {
       sync_anchor = excluded.sync_anchor;
     """
     executeBindable(sql) { stmt in
-      sqlite3_bind_text(stmt, 1, (item.id as NSString).utf8String, -1, nil)
+      bindText(stmt, 1, item.id)
       bindNullable(stmt, 2, item.parentId)
       bindNullable(stmt, 3, item.nameEncrypted)
       bindNullable(stmt, 4, item.nameDecrypted)
@@ -558,11 +558,11 @@ final class CacheManager {
     executeBindable(sql) { stmt in
       var index: Int32 = 1
       if let parent {
-        sqlite3_bind_text(stmt, index, (parent as NSString).utf8String, -1, nil)
+        bindText(stmt, index, parent)
         index += 1
       }
       for id in ids.sorted() {
-        sqlite3_bind_text(stmt, index, (id as NSString).utf8String, -1, nil)
+        bindText(stmt, index, id)
         index += 1
       }
     }
@@ -570,7 +570,7 @@ final class CacheManager {
 
   private func _delete(id: String) {
     executeBindable("DELETE FROM file_cache WHERE id = ?") { stmt in
-      sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+      bindText(stmt, 1, id)
     }
   }
 
@@ -578,7 +578,7 @@ final class CacheManager {
     var stmt: OpaquePointer?
     defer { sqlite3_finalize(stmt) }
     guard prepare(rowSelectSql + " WHERE id = ?", &stmt) else { return nil }
-    sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+    bindText(stmt, 1, id)
     guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
     return readRow(stmt)
   }
@@ -595,7 +595,7 @@ final class CacheManager {
     guard prepare(rowSelectSql + where_ + " ORDER BY is_folder DESC, name_decrypted ASC", &stmt) else {
       return []
     }
-    if let parent { sqlite3_bind_text(stmt, 1, (parent as NSString).utf8String, -1, nil) }
+    if let parent { bindText(stmt, 1, parent) }
     var rows: [CachedItem] = []
     while sqlite3_step(stmt) == SQLITE_ROW {
       if let row = readRow(stmt) { rows.append(row) }
@@ -669,6 +669,14 @@ final class CacheManager {
     guard prepare(sql, &stmt) else { return }
     bind(stmt)
     sqlite3_step(stmt)
+  }
+
+  /// Binds text with SQLITE_TRANSIENT so SQLite copies the bytes; a nil
+  /// destructor (SQLITE_STATIC) would keep a pointer into a temporary
+  /// bridged NSString that can be freed before sqlite3_step (task 2038).
+  private func bindText(_ stmt: OpaquePointer?, _ index: Int32, _ value: String) {
+    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    sqlite3_bind_text(stmt, index, value, -1, transient)
   }
 
   private func bindNullable(_ stmt: OpaquePointer?, _ index: Int32, _ value: String?) {
