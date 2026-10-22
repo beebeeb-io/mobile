@@ -55,6 +55,20 @@ export function staticBinds(src: string): string[] {
     .map((c) => `line ${c.line}: ${c.text}`);
 }
 
+const ROOT = join(import.meta.dir, '../..');
+const TARGETS = join(ROOT, 'targets');
+
+/** Every .swift file under a directory, recursively (absolute paths). */
+function swiftFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...swiftFiles(p));
+    else if (e.name.endsWith('.swift')) out.push(p);
+  }
+  return out;
+}
+
 const files = readdirSync(IOS).filter((f) => f.endsWith('.swift'));
 
 describe('round 11 finding 6: no SQLITE_STATIC text/blob bind in the native module', () => {
@@ -69,6 +83,24 @@ describe('round 11 finding 6: no SQLITE_STATIC text/blob bind in the native modu
     expect(offenders).toEqual([]);
     // The guard read real binds (it is not vacuously green).
     expect(checked).toBeGreaterThanOrEqual(10);
+  });
+
+  // Task 2038: the File Provider extension (and any other target) had 11
+  // nil-destructor text binds in CacheManager.swift.
+  test('every sqlite3_bind_text / sqlite3_bind_blob under targets/ copies its bytes', () => {
+    const offenders: string[] = [];
+    let checked = 0;
+    const targetFiles = swiftFiles(TARGETS);
+    for (const f of targetFiles) {
+      const src = readFileSync(f, 'utf8');
+      checked += bindCalls(src).length;
+      for (const o of staticBinds(src)) offenders.push(`${f.slice(ROOT.length + 1)} ${o}`);
+    }
+    expect(offenders).toEqual([]);
+    expect(targetFiles.length).toBeGreaterThan(0);
+    expect(checked).toBeGreaterThanOrEqual(3);
+    const cache = readFileSync(join(TARGETS, 'file-provider/CacheManager.swift'), 'utf8');
+    expect(cache).toMatch(/private func bindText\(_ stmt: OpaquePointer\?, _ index: Int32, _ value: String\) \{\s*let transient = unsafeBitCast\(-1, to: sqlite3_destructor_type\.self\)\s*sqlite3_bind_text\(stmt, index, value, -1, transient\)/);
   });
 
   test('the engine binds text through BackupManifestStore.bindText, the legacy manager through its own', () => {
