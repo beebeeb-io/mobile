@@ -1,15 +1,14 @@
 # beebeeb-io/mobile
 
-Beebeeb for iOS (ships at the September 2026 launch) and Android (post-launch). React Native + Expo.
+Beebeeb for iOS (ships at the September 2026 launch) and Android (post-launch). React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**. This file is evergreen rules only; per-task incident narratives, rulings and corrections live in `docs/runbook/mobile-task-history.md` (topic headings, `#task-NNNN` anchors) — pointers below cite it as `(details: H#…)`.
 
-## Platform status — iOS-first, Android descoped from launch (task 0711)
+## Platform status — iOS-first (task 0711)
 
-**iOS ships at launch. Android does NOT ship September 1; it is post-launch.** The Android crypto module (`modules/beebeeb-crypto/android/src/main/java/expo/modules/beebeebcrypto/BeebeebCryptoModule.kt`) is a **stub** — every native crypto / keychain / OPAQUE call throws `NotLinkedException`, so the app does not function on Android. Making it real is post-launch work (link the Rust `.so` via UniFFI, Android Keystore + BiometricPrompt, device QA) tracked in the post-launch Android task. Do not represent Android as shipping at launch in code comments, docs, or any outward surface. (Android *browsers* run the web app + CLI — that IS fine to say.)
+iOS ships at launch; **Android does NOT ship September 1 — post-launch.** The Android crypto module (`modules/beebeeb-crypto/android/.../BeebeebCryptoModule.kt`) is a **stub** (every native crypto/keychain/OPAQUE call throws `NotLinkedException`); making it real (UniFFI `.so`, Keystore + BiometricPrompt, device QA) is post-launch work. **Do not represent Android as shipping at launch** in code, docs, or any outward surface. (Android *browsers* run the web app + CLI — that IS fine to say.)
 
 ## iOS builds — always build locally on macOS (free)
 
-**Never use `eas build` without `--local` when working on a macOS device.**
-EAS cloud builds cost credits. Local builds are free and just as fast on Apple Silicon.
+**Never use `eas build` without `--local` on a macOS device** (cloud builds cost credits; local is free and just as fast on Apple Silicon). Exception: CI/CD without Xcode. Prereqs: `fastlane`, `xcbeautify` (`brew install`). **Never remove the `ios/.xcode.env` pin `export ENTRY_FILE="src/App.tsx"`** — without it an `eas build --local` staged in a symlinked tmpdir fails "Unable to resolve module …/src/App.tsx" → ARCHIVE FAILED. (details: H#task-0671)
 
 ```bash
 # Build locally (free — runs on this Mac, ~10-15 min)
@@ -23,312 +22,54 @@ eas build --platform ios --profile production --local --output ./build/beebeeb.i
   eas submit --platform ios --path ./build/beebeeb.ipa
 ```
 
-Prerequisites (must be installed):
-- `fastlane` — `brew install fastlane` ✓ already installed
-- `xcbeautify` — `brew install xcbeautify` (cleaner build logs)
-
-Exception: CI/CD environments without Xcode must use cloud builds.
-
-### `eas build --local` "Unable to resolve module …/src/App.tsx" — symlinked-tmpdir fix (task 0671)
-
-`eas build --local` stages the project in a **symlinked tmpdir** (macOS `/tmp`→`/private/tmp`,
-`/var/folders/…/T`→`/private/var/…`). The "Bundle React Native code and images" script computes the
-bundler ENTRY as an **absolute** path (via `expo/scripts/resolveAppEntry … absolute`) only when
-`ENTRY_FILE` is empty; that absolute path keeps the unresolved-symlink form while Metro realpaths its
-projectRoot, so Metro sees the entry *outside* the project root → `Unable to resolve module …/src/App.tsx`
-→ **ARCHIVE FAILED** on any entry. Direct local builds in the real repo dir are unaffected (no symlinked tmpdir).
-**Fix (committed):** `ios/.xcode.env` pins a **relative** entry — `export ENTRY_FILE="src/App.tsx"` —
-which resolves against Metro's realpath'd cwd everywhere. Do not remove it.
-
 ## `expo prebuild` — ALWAYS run the vendored-file restore afterwards (task 1305)
 
-`expo prebuild` (with AND without `--clean`) deletes/overwrites files that config plugins do
-NOT reproduce: `ios/BeebeebCore.xcframework`, `ios/Beebeeb/beebeeb_uniffi.swift`,
-`ios/.xcode.env` (the 0671 ENTRY_FILE pin), `ios/BeebeebWidget/BeebeebWidget.swift`,
-`PrivacyInfo.xcprivacy`. The uniffi-bridge plugin only re-copies the Rust artifacts when
-`../../core` sits next to the project — never true in a worktree or an eas staging dir — so the
-committed copies are the source of truth. Symptoms when you forget: "Undefined symbols
-_ffi_beebeeb_uniffi_*" at link, "Build input file cannot be found: BeebeebWidget.swift", or an
-`eas build --local` that dies with "Unable to resolve module …/src/App.tsx".
+`expo prebuild` (with AND without `--clean`) deletes/overwrites files the config plugins do NOT reproduce: `ios/BeebeebCore.xcframework`, `ios/Beebeeb/beebeeb_uniffi.swift`, `ios/.xcode.env`, `ios/BeebeebWidget/BeebeebWidget.swift`, `PrivacyInfo.xcprivacy` — committed copies are the source of truth. **Treat it like `git clean`: destructive in this tree, never in a tree you did not allocate.** Every extension target is created by its config plugin (`plugins/lib/extension-target.js`) — never by hand in Xcode; plugin mods execute in REVERSE registration order; every Rust-linking target sets its own per-SDK `OTHER_LDFLAGS`; a `PBXBuildFile` belongs to exactly ONE build phase. `--clean` currently DESTROYS the `ProvenanceHeadersTests`/`CoreVectorsKATTests` native test targets (hand-added, no plugin yet) — restore by hand before committing. (details: H#task-1305)
 
 ```sh
 bunx expo prebuild --platform ios --clean --no-install && scripts/restore-vendored-ios.sh
 ```
 
-Since SDK 57 every extension target (FileProvider, Share, Widget) is created by its config
-plugin (`plugins/lib/extension-target.js` is the shared helper) — do not add targets by hand in
-Xcode; a clean prebuild must reproduce the whole project. Config-plugin mods execute in
-**reverse registration order** (the last plugin in app.json runs first), so never rely on one
-plugin seeing another's target: every target that links the Rust core sets its own per-SDK
-`OTHER_LDFLAGS` in `extension-target.js`; `uniffi-bridge` only handles the app target.
-Invariant the helper enforces: a `PBXBuildFile` belongs to exactly ONE build phase — dedupe build
-files per owning target, never globally by fileRef, or `pod install` fails in Xcodeproj's
-`project.save` ("Consistency issue: no parent for object …").
+## iOS 27 UIScene lifecycle (build-213 App Review crash, fixed in 214)
 
-**`expo prebuild --clean` currently DESTROYS the `ProvenanceHeadersTests` and `CoreVectorsKATTests`
-native test targets** (found while verifying the iOS 27 UIScene fix below, 2026-09-26). Both
-targets — plus `ProvenanceHeaders.swift`'s 3rd wiring into them, and the vendored
-`core-vectors.v4.json` — were hand-added to `project.pbxproj` (tasks 1382/1439) with no config
-plugin behind them, unlike every other extension target. A clean prebuild silently drops the whole
-`ios/BeebeebNativeTests/` group and both targets from the regenerated project — `scripts/kat-ios.sh`
-then fails outright (scheme not found) with no warning that anything is missing. `ProvenanceHeaders.swift`'s
-wiring into `BeebeebShare`/`BeebeebFileProvider` (2 of its 3 targets) IS now plugin-owned
-(`CRYPTO_SHARED_FILES` in `withShareExtension.js`/`withFileProvider.js`) — only the
-`ProvenanceHeadersTests`/`CoreVectorsKATTests` XCTest targets themselves remain unfixed. **Until a
-plugin owns them: after any `--clean` prebuild, restore by hand before committing** —
-`git checkout -- ios/Beebeeb.xcodeproj/project.pbxproj ios/BeebeebNativeTests/` reverts the whole
-regenerated project, which also reverts anything else prebuild touched (re-apply those diffs by
-hand — see the SceneDelegate wiring below for exactly this recipe). No task filed yet for the
-proper plugin fix — surfaced here so the next `--clean` prebuild doesn't silently commit the loss.
+Scene lifecycle is plugin-owned (`plugins/scene-lifecycle/withSceneLifecycle.js` + `ios/Beebeeb/SceneDelegate.swift`) — never reintroduce bare `UIWindow(frame:)`/`startReactNative` on AppDelegate. Cold-launch deep links: fold `connectionOptions.urlContexts`/`.userActivities` into the `launchOptions` passed to `factory.startReactNative` — `RCTLinkingManager.getInitialURL()` reads it directly and does NOT fire an event. BGTaskScheduler, remote-notification registration and JS `AppState` privacy-lock were verified unaffected. (details: H#build-213)
 
-## iOS 27 UIScene lifecycle adoption (task: build-213 App Review crash, fixed for build 214)
+## iPad (iPhone compatibility mode) (task 1588)
 
-Build 213 (first build linked against the iOS 27 / Xcode 27 SDK) was killed at launch on every iOS
-27 device: `EXC_BREAKPOINT` in UIKitCore `_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption`,
-called from `-[UIApplication workspace:didCreateScene:withTransitionContext:completion:]` —
-"UIScene life cycle is required for apps built with this SDK." Reproduced identically on a fresh
-`bb-ios27` simulator (iPhone 17 Pro, iOS 27.0 runtime — `xcodebuild -downloadPlatform iOS`, ~8 GB)
-before the fix, confirmed clean after. Neither Expo 57 nor RN 0.86 ship any scene-delegate support
-(`grep -r Scene node_modules/expo/ios node_modules/react-native/Libraries/AppDelegate` — nothing);
-this had to be hand-rolled.
+- **Any top chrome must be laid out from `useSafeAreaInsets().top`, never from a fixed offset or y=0** — `WindowControlsAwareWindow` adds the iPad window-control height (43 pt on an iPad Air 11" M3, 0 on an iPhone) to the safe area.
+- **Driver: AXe, window offset added** — `axe describe-ui` frames are WINDOW coordinates; tap at `x + (820 - windowWidth)/2` (portrait iPad Air 11"). Maestro sees SpringBoard, not the app; out-of-process UI (pickers, share sheet, alerts) is tapped by screenshot coords. An edge swipe on the window's left edge resizes it (to 375 pt) and can empty the accessibility tree until a sim reboot. (details: H#task-1588)
 
-**Fix**: `plugins/scene-lifecycle/withSceneLifecycle.js` (+ `SceneDelegate.swift` alongside it) —
-declares one `UIWindowSceneSessionRoleApplication` scene in Info.plist
-(`UIApplicationSceneManifest`), adds `ios/Beebeeb/SceneDelegate.swift` to the main app target, and
-edits the stock `AppDelegate.swift` template to drop the bare `UIWindow(frame:)` + `startReactNative`
-call (now scene-owned) and the now-unreachable `application(_:open:)` /
-`application(_:continue:restorationHandler:)` overrides. What moved where:
+## Rendering & preview traps
 
-| Was on AppDelegate | Now on SceneDelegate |
-|---|---|
-| `UIWindow(frame:)` + `factory.startReactNative` | `scene(_:willConnectTo:options:)` |
-| `application(_:open:options:)` (beebeeb://, exp+beebeeb://) | `scene(_:openURLContexts:)` |
-| `application(_:continue:restorationHandler:)` (universal links) | `scene(_:continue:)` |
-
-**Cold-launch deep link gotcha** (the one real bug found in testing): `RCTLinkingManager.getInitialURL()`
-— what React Navigation's linking config calls on JS mount to resolve the initial route — reads
-`bridge.launchOptions[.url]` directly; it does NOT fire an event. Posting the open-URL notification
-(`RCTLinkingManager.application(_:open:options:)`) right after `factory.startReactNative` is a
-no-op on cold launch because nothing has registered a JS listener yet — `startReactNative` only
-kicks bridge bring-up off, it doesn't block until `App.tsx` mounts. Confirmed directly: a cold
-`xcrun simctl openurl … beebeeb://shared` landed on the default Files tab instead of Shared until
-`connectionOptions.urlContexts`/`.userActivities` were folded into the `launchOptions` dictionary
-passed to `factory.startReactNative` itself. Everything else stayed on AppDelegate unaffected —
-BGTaskScheduler registration (`BeebeebAppDelegate`, an `ExpoAppDelegateSubscriber` — still fires
-from `didFinishLaunchingWithOptions` regardless of scenes), remote-notification registration/receipt,
-and `AppState`-driven privacy-lock in JS (`RCTAppState` observes `UIApplication`-level notifications,
-which UIKit still posts for a single-scene app) — verified empirically via a Maestro
-Home-key-background → relaunch cycle on both `bb-ios27` and `bb-qa-2`, not just by reading the docs.
-
-**Not verified on simulator**: the Face-ID-gated privacy lock screen itself (`BiometricLockScreen`) —
-enabling it requires a successful biometric prompt, which requires Face ID "Enrolled" via
-Simulator's Features menu (no `simctl` equivalent found); real push delivery is the other standard
-simulator gap. Both are pre-existing simulator limitations, not new from this change.
-
-**`bb-ios27`** — a fourth simulator, `iPhone 17 Pro`, iOS 27.0 runtime (24A434). Kept alongside the
-three `bb-qa-*` sims in the section below since iOS 27 SDK-linkage issues will recur; same "claim
-one per lane" rule applies. Runtime download is the expensive part (~8 GB,
-`xcodebuild -downloadPlatform iOS`) — if it's already vanished (see the 2026-09-16 note below about
-sims disappearing), re-downloading is the only way back, not a quick `simctl create`.
-
-## iPad (iPhone compatibility mode) — window controls + how to drive it (task 1588)
-
-The app is iPhone-only (`supportsTablet: false`); on iPadOS 26+ it runs in a system WINDOW
-(410 pt wide on an iPad Air 11" M3, resizable down to 375 pt) whose close/minimise/tile controls
-sit over the window's top-leading corner. That is how App Review tests it.
-
-- **The plain safe area does not include the window controls.** Before task 1588 every screen
-  title sat under them and the preview's Close button was a dead tap (the tap expanded the window
-  controls). `SceneDelegate.swift`'s `WindowControlsAwareWindow` adds the difference between
-  `.safeArea(cornerAdaptation: .vertical)` and the plain safe area (43 pt on that iPad, 0 on an
-  iPhone) to the root VC's `additionalSafeAreaInsets.top`, so `useSafeAreaInsets().top` already
-  clears them. **Any top chrome must be laid out from `insets.top`, never from a fixed offset or
-  y=0** (the Trash swipe hint was a normal-flow sibling at y=0 — it now lives in the list header).
-- **Driver: AXe, with the window offset added.** Maestro sees the SpringBoard hierarchy, not the
-  app ("Element not found" for ids that exist) — that is the "Maestro taps do nothing on iPad"
-  of task 1557. `axe describe-ui` returns frames in WINDOW coordinates; the window is centred, so
-  tap at `x + (820 - windowWidth)/2` (portrait iPad Air 11"). `axe tap --id` taps the unshifted
-  point and misses. Out-of-process UI (document picker, photo picker, share sheet, system alerts)
-  is not in the tree — tap it by screenshot coordinates. Maestro `setOrientation` reports
-  COMPLETED on iPad but does not rotate; this Xcode has no Simulator.app, so rotation is not
-  drivable here.
-- **An edge swipe starting on the window's left edge resizes the window** (to 375 pt). After
-  that the simulator's accessibility tree once came back empty for every app until a sim reboot.
-
-## react-native-webview paints nothing under a centered parent, iOS 27 (task 1564)
-
-A `<WebView>` whose **direct parent** View sets `justifyContent:'center'`/`alignItems:'center'`
-never paints anything on iOS 27 (Fabric, RN 0.86.3, react-native-webview 13.16.1) — not even its
-own background — **regardless of the WebView's own sizing**: `flex:1`, percentage `width`/`height`,
-and percentage plus an explicit `alignSelf:'stretch'` on the child all fail identically. The same
-child style renders correctly the instant the direct parent's centering is removed. Confirmed by
-an isolated 7-step bisection on a dedicated iOS 27 sim (Release config, `__DEV__=false`) — see task
-1564's Notes for every screenshot. This was the real cause of PR #121's pre-fix `CodeRenderer` blank
-WebView AND the build-215 SVG-preview bug (both were direct children of `PreviewScreen`'s centered
-`previewArea`) — **not** a Fabric registration issue, not the dev-client, and not (solely) upstream
-`react-native-webview#3994`'s missing `backgroundColor` forward (that bug is real and still
-unfixed upstream but doesn't on its own explain a fully opaque HTML body painting nothing).
-
-**Fix pattern**: wrap the WebView in its own plain, non-centered `flex:1` View instead of touching
-`react-native-webview` or changing the shared centered parent (which other children — image/video/
-pdf — may depend on for their own layout). See `PreviewScreen.tsx`'s `svgWebViewWrap` / `DocxRenderer.tsx`'s
-`docxWebViewWrap` for the pattern. **Any new WebView usage inside a `justifyContent`/`alignItems:
-'center'` container needs this wrapper** — `DevicePairingShowScreen`/`ConstellationSendScreen`
-were checked and are fine (already non-centered parents), but this is now a real trap for future code.
-
-**Attempted broadening (task 1569, 2026-09-27) — WRONG, corrected below rather than deleted.** A
-plain `View` using `flex:1` as the direct child of `mediaStage` (the SAME centered parent) rendered
-fully BLANK (no content, no error, no crash) at one point in that task, which looked like the same
-WebView-under-a-centered-parent mechanism above hitting an ordinary View. It is NOT: switching that
-View's style to percentage `width:'100%'/height:'100%'` did not fix the blank area (still blank,
-identically, after the change), and a plain hardcoded `flex:1` colored box placed in the exact same
-JSX slot rendered correctly, filling the parent with no shrink-to-content problem at all. The real
-cause in that task was unrelated — a JPEG byte-extraction bug (`raw-preview.ts`'s
-`findLargestJpegSpan`) handed `<Image>` a genuinely corrupt source, which iOS renders as nothing,
-not an error. **This WebView-specific trap is still real and still applies to WebView** (the
-original repro above stands); it does **not** generalize to ordinary Views/Images the way this note
-previously claimed — see task 1569's `DEVIATIONS.md` entry for the full corrected account. Do not
-cite this section as precedent for a plain-View blank-area bug; check for a bad data source first.
-
-## Preview text-detection: this app's OWN upload-time mime guess can outrank the extension (task 1570)
-
-`PreviewScreen.tsx`'s `isText` decides "confident non-text mime_type, never override by extension"
-using a **too-broad** definition of "confident" for one release: anything that wasn't literally
-generic (`''`/`application/octet-stream`) blocked the extension-based fallback that task 1570 added.
-That broke `sample.sql` specifically — reproduced live on-device, not just in a unit test:
-
-1. Chrome's `File.type` for a `.sql` file is `""` (confirmed directly with a throwaway
-   `<input type=file>` test page — this Mac has no app registering a UTI/mime for `.sql`).
-2. `encrypted-upload.ts` (web) stores `mime_type: file.type || null` → `null` for this file.
-3. On mobile, `FilesScreen.tsx`'s `mimeTypeFor` does `file.mime_type ?? guessMimeType(name)` —
-   the `null` triggers the fallback, and `media.ts`'s `guessMimeType('sample.sql')` (which spreads
-   in `code-text-preview.ts`'s own table) resolves to `'application/sql'` — a **specific-looking**
-   value, substituted **upstream of `PreviewScreen`**, before `isText` ever runs.
-4. `'application/sql'` is neither generic nor `text/`-prefixed, so the OLD "only defer to the
-   extension when mime is generic" gate refused to override it → the file fell to the honest
-   fallback card ("Type: File" / "Download to decrypt") despite `sample.sql`'s extension being
-   exactly the kind of file this task exists to fix.
-
-`.js`/`.sh`/`.rb`/`.py` dodged this by coincidence, not design: this Mac's UTI database DOES
-register real `text/*`-prefixed mimes for those extensions (`text/javascript`, `text/x-sh`,
-`text/x-ruby-script`, `text/x-python-script`), so the browser's own `File.type` short-circuits
-`isText`'s first check and `guessMimeType`'s fallback value is never consulted at all. Extensions
-whose `TEXT_EXTENSION_MIME` value is a bare `application/*` string (not `text/*`) AND whose
-`File.type` a browser leaves empty (`sql`, `mjs`/`cjs`, `bash`/`zsh`, `graphql`) are the exact
-extensions this bites — **test the mime an UPSTREAM guess actually produces, not just `''`/
-`application/octet-stream`, whenever you add a fallback that layers on top of another one.**
-
-**Fix**: gate on an ALLOWLIST-of-exclusions ("is this confidently something ELSE — image/video/
-audio/pdf/zip/archive/office") instead of an ALLOWLIST-of-inclusions ("is this mime literally
-generic") — see `code-text-preview.ts`'s `isConfidentlyNonTextMimeType` / `isTextPreview` doc
-comments for the full account and the regression tests that pin this down.
+- A `<WebView>` whose DIRECT parent sets `justifyContent`/`alignItems:'center'` paints NOTHING on iOS 27, regardless of the WebView's own sizing — wrap it in its own plain non-centered `flex:1` View (`svgWebViewWrap`/`docxWebViewWrap` pattern). WebView-only trap: a blank plain View/Image is usually a bad data source — check that first. (details: H#task-1564, H#task-1569)
+- Preview text detection: test the mime an UPSTREAM guess actually produces, not just `''`/`application/octet-stream`, whenever a fallback layers on top of another one; the gate is an allowlist-of-exclusions (`isConfidentlyNonTextMimeType` in `code-text-preview.ts`). (details: H#task-1570)
 
 ## Worktree `.env` — copy it by hand, or the app silently defaults to production (task 1394)
 
-`git worktree add` does **not** copy the primary checkout's gitignored `.env`
-(`EXPO_PUBLIC_API_URL=http://localhost:3001`). A fresh worktree with no `.env` falls back to the
-app's compiled-in default — **production** — with no error, no crash, and no visual difference in
-the dev-client chrome. The only tell is the Metro/console boot line:
+`git worktree add` does not copy the gitignored `.env`. Before the first simulator run in any new worktree: `cp <primary-checkout>/.env .env` (`EXPO_PUBLIC_API_URL=http://localhost:3001`), then start/RESTART Metro (the URL is inlined at bundle time). Required evidence: the Metro boot line `[Beebeeb] API environment: Local (http://localhost:3001)` — a "wrong password"/"account not found" result against a documented localhost-only QA account is the tell it was missed, not credential drift. (details: H#task-1394)
+## Local simulator QA — environment gotchas on this Mac
 
-```
-[Beebeeb] API environment: Production (https://api.beebeeb.io)   # WRONG — missing .env
-[Beebeeb] API environment: Local (http://localhost:3001)         # correct
-```
+- Node crash `MODULE_NOT_FOUND … restore-node-options.cjs` = cmux's temp `NODE_OPTIONS` shim got GC'd — recreate as a no-op: `echo 'module.exports={};' > "$(printf '%s' "$NODE_OPTIONS" | sed -E 's/.*--require=([^ ]*restore-node-options\.cjs).*/\1/')"`, or prefix node CLIs with `env -u NODE_OPTIONS`.
+- `simctl` hangs forever until Xcode first-launch is completed: a human runs `sudo xcodebuild -runFirstLaunch` once (cannot be headless). Health check: `xcodebuild -checkFirstLaunchStatus` (exit 0 = done, 69 = pending).
+- `cargo run` deadlocks in the nested agent shell — run the binary directly: `cd repos/server && ./target/debug/beebeeb-api`.
+- Local API blob storage is LOCAL FILESYSTEM (`BLOB_STORE=local`, default pool at `BLOB_STORE_PATH`) — upload/download/offline-pin/sharing QA is safe locally; the `S3_*` vars are inert; only push notifications and real-device-only surfaces need TestFlight.
+- Maestro `takeScreenshot` relative paths resolve against Maestro's CWD — write `takeScreenshot: "${EVIDENCE_DIR}/some-name"` and invoke with `-e EVIDENCE_DIR=/abs/path`, or `xcrun simctl io <UDID> screenshot --type=png <abs>.png`.
+- **NEVER tap chrome by coordinate — use a `testID`.** A coordinate tap can pass while testing nothing. Content-relative taps (a file row) OK; chrome-relative not. A Maestro text selector must match the ENTIRE accessible name, and RN `accessibilityLabel` silently REPLACES visible text — read the label in the source; `id:` where you can, a `.*`-anchored regex where you must.
+- `clearState: true` does NOT sign out (master key persists in keychain) — sign out in-app.
+- Local QA account: `qa0688content@beebeeb.io` / `BeebeebQA0688content!` (OPAQUE, seeded; `.claude/skills/beebeeb-test-accounts.md`). (details: H#qa-env-gotchas)
 
-**Before the first simulator run in any new worktree:** `cp <primary-checkout>/.env .env` (or
-write `EXPO_PUBLIC_API_URL=http://localhost:3001` directly), then start/restart Metro (the URL is
-inlined at bundle time, so an already-running Metro needs a restart, not just a reload, to pick up
-a `.env` written after it started). Treat that boot log line as required evidence in the task's
-`## Verification evidence` / Notes — a "wrong password" or "account not found" result against a
-documented localhost-only QA account is a strong signal this was missed, not that the account or
-its credentials actually changed (task 1394 chased a false "password drifted" report for exactly
-this reason before finding the missing `.env`).
+## Simulators — one lane per sim (tasks 1353/1426/1409)
 
-## Local simulator QA — environment gotchas on this Mac (verified 2026-06-29)
+| Sim | UDID | iOS | Device |
+|---|---|---|---|
+| `bb-qa-1310` | `D41C3AA1-D520-4CEF-A286-5F8717A03B7F` | 26.5 | iPhone 17 Pro |
+| `bb-qa-2` | `C44A5FD9-42B4-4334-934C-E4D9C3D76041` | 26.5 | iPhone 17 Pro |
+| `bb-shots` | `B272D461-0765-4890-B08C-C894925919EA` | 26.5 | iPhone 17 Pro Max |
+| `bb-ios27` | `6A2C9171-813B-443E-A19D-B7869D5D0A20` | 27.0 | iPhone 17 Pro |
 
-Running the iOS app on the Simulator for QA hits several env-specific walls. Workarounds:
-
-- **Any node process crashes with `MODULE_NOT_FOUND … internal/preload` / `restore-node-options.cjs`**
-  — `NODE_OPTIONS` is `--require=/var/folders/…/T/cmux-claude-node-options/restore-node-options.cjs`,
-  but cmux's temp shim got garbage-collected from `/var/folders/.../T`, so node can't load the
-  `--require` and crashes on startup (this also fails the Claude **Stop hooks**).
-  **Durable fix:** recreate the shim as a no-op — `echo 'module.exports={};' > "$(printf '%s'
-  "$NODE_OPTIONS" | sed -E 's/.*--require=([^ ]*restore-node-options\.cjs).*/\1/')"` (or just
-  unset `NODE_OPTIONS` in your shell profile). It lives in a temp dir, so it can recur if that dir
-  is cleaned again — a cmux lifecycle issue, not a beebeeb one.
-  **Per-command fallback:** prefix node CLIs with `env -u NODE_OPTIONS` (`eas`, `bunx tsc`, `maestro`).
-- **`simctl` hangs forever (any subcommand)** until Xcode first-launch is completed — it spawns
-  `xcodebuild -runFirstLaunch`, which does a **PackageKit system install** (needs admin/root).
-  **Fix: a human runs `sudo xcodebuild -runFirstLaunch` once** (it cannot be done headlessly — it
-  blocks on `AuthorizationCopyRights`). Non-hanging health check: `xcodebuild -checkFirstLaunchStatus`
-  (exit 0 = done, 69 = pending).
-- **`cargo run` deadlocks** through the nested agent shell (GNU Make jobserver-token deadlock; rustc
-  sits at 0% CPU, no output) — even `CARGO_BUILD_JOBS=4` did not reliably help. **Fix: run the
-  prebuilt binary directly** — `cd repos/server && ./target/debug/beebeeb-api` (the workspace has 4
-  bins, so `cargo run` also needs `--bin beebeeb-api`). For mobile QA a slightly-stale server is fine.
-- **Local API blob storage is LOCAL FILESYSTEM — safe for upload/download QA.** (Corrected
-  2026-08-28; this entry previously claimed local uploads hit the prod Hetzner bucket. That is
-  **wrong** and it wrongly ruled out local content QA for two months.) `repos/server/.env` sets
-  `BLOB_STORE=local`, and `main.rs:1157` (`ensure_dev_local_pool`) idempotently guarantees exactly
-  one ACTIVE `default` pool on disk at `BLOB_STORE_PATH`. Verified against the live dev DB: all 95
-  `storage_pools` rows are `provider=local`, and the default is
-  `file://…/repos/server/data/blobs`. The `S3_*` vars in `.env` are **inert** while
-  `BLOB_STORE=local` — `main.rs:1252` only reads them under `BLOB_STORE=s3`. `live-src`/`live-tgt`
-  are inactive (`is_active=f`) migration placeholders. Upload, download, offline pinning, and
-  sharing are all locally testable; only push notifications and real-device-only surfaces need
-  TestFlight.
-- **Maestro `takeScreenshot`** does NOT drop relative paths — **corrected 2026-09-18** (this line
-  previously claimed it does; that was wrong and nobody had actually watched a run to check).
-  Live-observed twice (task 1428, `e2e/maestro/1428-*.yaml`/`1422-data-residency-capture.yaml`,
-  2026-09-18 11:xx and 14:xx runs on bb-qa-1310): a bare `takeScreenshot: "some-name"` wrote a real
-  `some-name.png` to Maestro's **current working directory** — i.e. wherever `maestro test …` was
-  invoked from, NOT the flow file's directory. So a relative name doesn't vanish, but it also
-  doesn't land anywhere predictable (files ended up scattered in a worktree root, mixed with
-  unrelated source files, easy to lose or accidentally re-commit). **Relative paths resolve
-  against the Maestro cwd — pass `EVIDENCE_DIR`**: write flows as
-  `takeScreenshot: "${EVIDENCE_DIR}/some-name"` and always invoke with
-  `-e EVIDENCE_DIR=/abs/path`, or capture with
-  `xcrun simctl io <UDID> screenshot --type=png <abs>.png` instead.
-- **NEVER tap chrome by coordinate. Use a `testID`.** This file used to advise
-  `point: "x%,y%"` for labels with count badges. That advice caused a real outage of the whole e2e
-  suite: task 1312 moved the tab bar up, and **22 coordinate taps across 9 flows** silently began
-  missing their targets — three flows were red on `main` and nobody knew (task 1324). Worse,
-  `full-app-test` stayed GREEN while asserting nothing, because its blind tap at `12%,95%` landed on
-  a dev-redbox **Dismiss** button. **A coordinate tap can pass while testing nothing.**
-  If an element has no testID, add one — that is cheaper than the flow rotting the next time the
-  layout moves. Content-relative taps (a file row) are acceptable; chrome-relative taps are not.
-- **A Maestro text selector must match the node's ENTIRE accessible name, and React Native's
-  `accessibilityLabel` silently REPLACES the visible text.** So an assertion written from what you
-  can see on screen is a guess. Three flows were broken by this in one day: the theme option reads
-  "Dark" but its label is `"Dark theme"` (plus `", selected"` when active); the tabs read "By me" and
-  "With me" but carry count badges. Use `id:` where you can, and a `.*`-anchored regex where you must
-  (`"Dark theme.*"`). Read the label in the source — do not read the screen.
-- **`clearState: true` does NOT sign out** — the master key persists in the iOS keychain across an
-  app-data clear, so the app auto-restores to the authenticated screen (this is the 0876 restore
-  working). To force the signed-out screen, sign out in-app first.
-- **Local QA account:** `qa0688content@beebeeb.io` / `BeebeebQA0688content!` (OPAQUE, seeded files/
-  photos; see `.claude/skills/beebeeb-test-accounts.md`).
-
-## Simulators — three QA sims, one lane per sim (task 1353, recreated 1426)
-
-One shared simulator serialized every QA lane and caused real collisions (1348/1351 both drove
-`bb-qa-1310` the same morning). There are now **three** sims so lanes can verify in parallel —
-**never share one sim across two lanes; claim one per lane for the session.**
-
-**Every `bb-*` sim and the iOS 26.2 runtime they ran on vanished from this Mac on 2026-09-16**
-(likely an Xcode/runtime update or another session's `simctl delete` — task 1426). Before
-dispatching any sim-based rung, run `xcrun simctl list devices | grep bb-` and confirm all three
-are present — do not assume the table below still matches disk.
-
-- `bb-qa-1310` — `D41C3AA1-D520-4CEF-A286-5F8717A03B7F`, iOS 26.5, iPhone 17 Pro. (recreated 2026-09-16)
-- `bb-qa-2` — `C44A5FD9-42B4-4334-934C-E4D9C3D76041`, iOS 26.5, iPhone 17 Pro. (recreated 2026-09-16)
-- `bb-shots` — `B272D461-0765-4890-B08C-C894925919EA`, iOS 26.5, iPhone 17 Pro Max. (recreated 2026-09-16)
-- `bb-ios27` — `6A2C9171-813B-443E-A19D-B7869D5D0A20`, iOS 27.0, iPhone 17 Pro. (created 2026-09-26,
-  see "iOS 27 UIScene lifecycle adoption" above — the runtime is the expensive part to replace, ~8 GB)
-
-**Dev-client copy procedure (no rebuild).** A new sim can get the dev client by copying the app
-container off an already-built one instead of running `expo run:ios` again:
-
+- **Never share one sim across two lanes; claim one per lane for the session.** Sims have vanished wholesale before — confirm first: `xcrun simctl list devices | grep bb-`. **Always pass `--udid` naming the sim your lane owns.**
+- After ANY native-dependency change, rebuild the dev client once and re-run the copy procedure below against every QA sim before its next lane (a copied container keeps the native modules linked at copy time). (details: H#task-1409)
+- Dev-client copy procedure (no rebuild):
 ```sh
 xcrun simctl create bb-qa-N "iPhone 17 Pro" com.apple.CoreSimulator.SimRuntime.iOS-26-5
 xcrun simctl boot <new-udid>
@@ -338,219 +79,26 @@ xcrun simctl install <new-udid> "$APP"
 xcrun simctl launch <new-udid> io.beebeeb.app
 ```
 
-**After any native-dependency change, refresh EVERY QA sim's dev client before the next lane
-uses it (task 1409).** A sim's copied container keeps whatever native modules were linked into
-the source binary at copy time — it does not pick up a newly added Expo module just because the
-JS bundle changes. Task 1409 was filed exactly this way: `bb-qa-2`'s dev client was still on a
-build from before `expo-glass-effect` (1308c) was added, so `GlassCapsule` → `GlassSurface` →
-`isLiquidGlassAvailable()` threw `Cannot find native module 'ExpoGlassEffect'` and blanked the
-whole unauthenticated tree at LoginScreen mount — not a real production crash (production always
-links the module), but a trap for whichever lane picks up that sim next. After adding, removing,
-or upgrading any native module, rebuild the source dev client once (`expo run:ios` or an EAS
-local build) and re-run the **dev-client copy procedure** above against BOTH `bb-qa-1310` and
-`bb-qa-2` before treating either as ready for QA.
+- Point a dev client at a specific Metro: `xcrun simctl openurl <udid> "beebeeb://expo-development-client/?url=http%3A%2F%2Flocalhost%3A<port>"` — two one-time prompts on a fresh install ("Open in Beebeeb?" alert, then the developer-menu sheet), dismissed headlessly with one-line Maestro `--udid` flows (`tapOn: "Open"` / `tapOn: "Continue"`). **Never `openurl` a deep link into an already-running app** (it can orphan the native view — white screen; terminate first).
+- iOS 27 sims ignore dev-client deep links at cold start — use `xcrun simctl launch <udid> io.beebeeb.app --initialUrl http://127.0.0.1:<port>`, and never `launchApp` inside that Maestro flow. Turn "Tools button" OFF in the dev menu on every Maestro-driven sim — the floating gear at ~(8%, 47%) swallows taps (per-device preference). (details: H#task-1353)
 
-**Stale-bundle / wrong-Metro deep-link refresh.** Point a booted dev client at a specific Metro
-without touching the UI:
+## Maestro (task 1350)
 
-```sh
-xcrun simctl openurl <udid> "beebeeb://expo-development-client/?url=http%3A%2F%2Flocalhost%3A<port>"
-```
+- **One `maestro test` at a time, machine-wide** — the XCUITest driver/CPU is the shared resource, not the simulator; the lead grants it. `xcrun simctl io` screenshots may overlap freely.
+- An idle-but-attached driver on ANY sim poisons new driver bootstraps on ALL of them (one host-level `testmanagerd`): after every run `pgrep -f 'xcodebuild test-without-building'` and kill only your own orphan by PID (verify its `-destination id=`) — **never `pkill -f xcodebuild`**.
+- A tap reports COMPLETED and the screen does not change → it is the DRIVER, not the app (a clean PRE-tap screenshot is the proof). Retry mitigations in `search-test.yaml`/`file-preview-test.yaml`; remove once `maestro --version` is past 2.5.1 (full analysis: `docs/maestro-driver-fault-1360.md`). (details: H#task-1360)
+- `tapOn: "Dismiss menu"` on a `BBActionSheet` scrim can navigate into the wrong screen — a point tap at `50%,15%` dismisses reliably. The row "…" overflow is a NATIVE menu Maestro cannot tap — row swipe RIGHT, or for folders `tapOn: id: "file-row-actions-<id>"` then `sheet-action-<action>`. `UIDocumentPickerViewController` exposes only "Cancel"/keyboard to XCUITest — documents cannot be seeded by automation (`simctl addmedia` rejects non-media).
+- `scrollUntilVisible` with an `id:` can miss an off-screen row — fall back to a `.*`-anchored text regex for the SCROLL only (details: H#task-1352). A stale accessibility bridge after `launchApp` (present-but-still-not-found, ~0% CPU hang): external `xcrun simctl terminate` + `launch` before the flow's `launchApp`. `pressKey: Enter` on the password field submits sign-in. (details: H#task-1350)
 
-**Gotcha — first open on a fresh install raises two one-time prompts, dismissable headlessly via
-Maestro `--udid`.** On a simulator that has never had this URL scheme opened before, `openurl`
-raises iOS's native `Open in "Beebeeb"?` (Cancel/Open) alert instead of connecting directly —
-confirmed on `bb-qa-2`'s first connect (2026-09-02). Dismissing it does **not** need a human at the
-screen — a one-line Maestro flow scoped to that one device with `--udid` does it:
+## QA account & fixtures (task 1356)
 
-```yaml
-# tap-open.yaml
-appId: io.beebeeb.app
----
-- tapOn: "Open"
-```
+`qa0688content@beebeeb.io` holds load-bearing fixtures — never touch/duplicate/delete them: `qa-red/blue/green.png`; `medium-photo.jpeg` (2 MB perf tier); `big-photo.jpeg`; `clip-1080p.mp4` (search fixture); `clip-1080p (3).mp4` (40 MB tier — separate on purpose); `qa-1301-video.mp4` (213 MB); `qa-hevc.mp4`; `qa-video.mp4`; the empty folder `Quarterly Financial Reports And Tax Documents 2026 Archive` (truncation fixture — never rename). Lanes: prefix throwaway uploads with your task id; delete your own at lane end (`bb rm` is reversible); never repurpose a fixture; flag decrypt failures not already documented by tasks 1349/1351. (details: H#task-1356)
 
-```sh
-env -u NODE_OPTIONS maestro --udid <udid> test tap-open.yaml
-```
+## Native signup & onboarding (task 1746)
 
-Once dismissed, the app connects to Metro and immediately shows the dev-client's first-run
-"developer menu" explainer sheet ("This is the developer menu…") — a **second**, separate one-time
-prompt. Dismiss it the same way with a `tapOn: "Continue"` flow. After both, the app is running the
-Metro bundle and the in-app dev menu (Reload / Go home / Tools) responds normally — screenshots
-`docs/_qa-evidence/glass-wave-2/1353-bb-qa-2-connected.png` (the "developer menu" sheet, mid-dismiss)
-and `1353-bb-qa-2-app.png` (dev menu live, `Tools button` toggle visible and ON). Neither prompt
-reappears on that device once dismissed once.
+The app creates accounts natively, driven by `GET /api/v1/onboarding` (spec `docs/specs/2026-10-04-backend-driven-onboarding.md` §5): the server declares steps/numbers/permission, nothing hard-coded. Flow: Welcome → Login/Signup → SignupFlow (email, code, terms, password, phrase, create) → unlock(freshMasterKey), refreshAuth → AccountStateProvider → blocking `AccountOnboardingOverlay` (verify_email, accept_terms, update_required). Pure logic in `src/lib/onboarding/` (tested without mocks); crypto stays in core (`OnboardingBridge.swift` → `beebeeb_core::onboarding`, task 1744; JS holds integer handles; master key never leaves Rust). Contract copy `src/contracts/onboarding/` is byte-identical to `repos/server/contracts/onboarding/`, guarded by `scripts/check-onboarding-contract.sh` (re-vendor with `cp -R` after server changes). **No purchase UI, by construction** (App Store 3.1.3, task 1400; guarded by `no-purchase-ui.test.ts`/`account-summary.test.ts`). Anti-enumeration: the code screen's copy is identical for every address — never add a sentence saying whether an address is new. Recovery phrase screen: `usePreventScreenCapture`, `selectable={false}`, words dropped on leave; Simulator framebuffer capture NOT blocked (device-only). Debug fixture: `beebeeb://dev/onboarding-fixture?name=…` (`off` clears). Native rebuild after any `beebeeb_uniffi.swift`/`BeebeebCore.xcframework` change: `scripts/swift-ci/build-ios-simulator.sh` (unsigned sim build cannot use the Keychain in the Simulator; QA install build: `CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO`; restore `Podfile.lock`/`project.pbxproj` before committing). Two emailed codes needed today (signup + `verify_email`) — a server finding. Metro quirk: a file created after Metro started can report "Unable to resolve module" — restart Metro. (details: H#task-1746)
 
-**Always pass `--udid` naming the sim the lane owns.** A bare `maestro test` picks whatever
-simulator Maestro finds, which can be the WRONG one when two lanes are running — see "one lane per
-sim" above. This is exactly why `bb-qa-1310` must never be touched by a lane that doesn't own it:
-an un-scoped Maestro command is the mechanism that would leak input onto it.
-
-**The expo-dev-client floating "Tools" gear is a tap trap.** It sits at roughly `(8%, 47%)` and
-silently swallows taps in that region (Maestro `tapOn` reports COMPLETED but nothing happens) —
-turn "Tools button" off in the in-app dev menu on each sim you drive with Maestro. It's a per-device
-dev-client preference (not repo state), so it must be set again on any new sim, including a fresh
-`bb-qa-N` created via the copy procedure above.
-
-## Maestro — shared-driver limits, native pickers, and selector gotchas (task 1350)
-
-- **One `maestro test` at a time, machine-wide.** Extra simulators (see "two QA sims" above) do not
-  buy parallel e2e — the XCUITest driver and CPU are the shared resource, not the simulator. Three
-  lanes driving three sims at once took the load average past 40, with taps taking 30-90s and
-  elements reported "not found" that were plainly on screen. Only one lane may hold the Maestro
-  driver at a time, granted by the lead; `xcrun simctl io` screenshots may still overlap freely.
-- **An idle-but-still-attached driver on ANY simulator poisons new driver bootstraps on ALL of
-  them.** `xcodebuild test-without-building` and its `maestro-driver-iosUITests-Runner` arbitrate
-  through one host-level `testmanagerd`, so this is machine-wide, not per-device. Symptom: a brand
-  new run backgrounds the app to the Home Screen before the flow's first assertion, and Maestro
-  reports "found nothing to terminate". Proven by controlled test (2026-09-02): a cold, never-driven
-  sim failed identically until an orphaned driver on a *different* device was killed, then ran clean.
-  After every run, check `pgrep -f 'xcodebuild test-without-building'` and kill only your own
-  orphan by PID (verify its `-destination id=` first) — never `pkill -f xcodebuild`, which takes out
-  other lanes and this Mac's other projects too.
-- **A tap reports COMPLETED and the screen does not change → it is the DRIVER, not the app
-  (task 1360).** The Mac's shared Maestro is 2.5.1 (four months stale; 9 of 15 runs failed vs 15 of
-  15 on 2.10.0 — decision 1361 is the upgrade). Read the failure screenshot first: a clean PRE-tap
-  state is this fault; anything that changed *wrong* is a real bug. Interim mitigation in
-  `search-test.yaml` / `file-preview-test.yaml`: a bounded `repeat…while` that retries the ACTION
-  (never the assertion) keyed on a SAME-RENDER signal, plus a `closedRef` guard where no such
-  signal exists (`preview-close`). The full analysis, the two traps in re-running the comparison,
-  the toggle/effect-timing rules, and the list of covered controls: `docs/maestro-driver-fault-1360.md`.
-  Remove the retries once `maestro --version` is past 2.5.1.
-- **`tapOn: "Dismiss menu"` on `BBActionSheet` can navigate into the wrong screen.** The scrim's
-  accessibility label resolves Maestro's tap to the CENTER of its full-screen bounding box, which
-  lands on whatever row is underneath at that point (observed: it hit a row and navigated into
-  ShareSheetScreen instead of dismissing). A point tap at `50%,15%` — near the top of the screen,
-  above any sheet content — dismisses reliably instead. `maestro hierarchy` shows why the center
-  point is unsafe here: the status bar `[0,0][402,54]` already swallows taps in that band, so the
-  scrim's true dismiss-safe area is smaller than its reported bounding box suggests.
-- **The row "…" overflow menu is a native menu Maestro cannot tap.** `tapOn` reports COMPLETED, the
-  menu stays open, and it blocks all further input until the app is terminated. Its items also carry
-  a leading `", "` in their accessible name. Route to the share sheet with a row swipe RIGHT
-  ("Share <filename>") instead. (2026-10-15, task 1722: on the Files screen `tapOn: id:
-  "file-row-actions-<file id>"` opened the custom `BBActionSheet` for a folder. Its rows are reached
-  by testID `sheet-action-<action>`, e.g. `sheet-action-delete`, then the "Move folder to Trash" alert
-  and "Move to Trash". `assertVisible: "Delete"` timed out while the row was on screen.)
-- **`UIDocumentPickerViewController` exposes only "Cancel" and the system keyboard to XCUITest** —
-  no Recents/Browse rows, independent of file type, so a document cannot be seeded into the app by
-  automation at all (confirmed by hierarchy dump, not just a flaky tap). Workaround: copy the file
-  directly into the simulator's local File Provider storage so it appears under "On My iPhone", then
-  a human finishes with two taps. `xcrun simctl addmedia` rejects anything non-media
-  (`File type unsupported`) so it can't shortcut this for docs.
-- **Never `simctl openurl` a dev-client deep link into an already-running app.** It can orphan the
-  native view — a solid white screen that survives a simulator reboot while JS keeps running
-  underneath. Terminate the app first, then `openurl`.
-- **`scrollUntilVisible` + `tapOn` with an `id:` selector can fail to find a row that is genuinely
-  off-screen, even though the same `id:` resolves fine once the row is already on screen.**
-  Reproduced directly on `dark-mode-test.yaml` (task 1352): from a cold launch, the Appearance
-  control is several screens below the fold (Account/Storage/Backup/Devices render above it), and
-  `scrollUntilVisible: { element: { id: "appearance-dark" } }` failed 3/3 real attempts —
-  `maestro hierarchy` confirmed the `resource-id` was present and correct the whole time, so this
-  isn't a missing/renamed testID. Swapping only the *scroll* target to a `text:` regex
-  (`"Dark theme.*"`, the row's accessibilityLabel) fixed it 3/3, while the `tapOn` and the
-  post-tap `assertVisible` stayed on `id:`. Lesson: prefer `id:` for the tap and the assertion (an
-  `id:` lookup against the CURRENT hierarchy is reliable), but if a `scrollUntilVisible` targeting an
-  `id:` won't find an element you can see is there, fall back to a `.*`-anchored text regex for the
-  scroll only — this is the "regex where you must" case the rule below already describes, not a new
-  exception to it.
-- **A `launchApp` can leave a stale accessibility-bridge attach that makes the very next
-  interaction fail against a screen that is visibly correct.** Symptom: `extendedWaitUntil`/`tapOn`
-  on an element that is plainly on screen (and present in a `maestro hierarchy` dump) times out or
-  hangs — not "element not found because it's covered", but present-and-still-not-found. A full
-  `xcrun simctl terminate <udid> io.beebeeb.app` followed by `xcrun simctl launch <udid>
-  io.beebeeb.app` **before** the flow's own `launchApp` clears it reliably — confirmed directly:
-  a `dark-mode-test.yaml` run hung for 10+ minutes at almost 0% CPU right after `launchApp`, killing
-  it and doing the terminate+launch cycle first made every subsequent run (5 in a row, across three
-  different flows) start clean. `launchApp`'s own relaunch does not fix this on its own; the
-  external `simctl` cycle does.
-- **`pressKey: Enter` on the password field submits the sign-in form reliably** — confirmed
-  directly (`LoginScreen.tsx`: the password `TextInput`, `testID="password-input"`, wires
-  `onSubmitEditing={handleLogin}`) — and is a cleaner alternative to the documented coordinate tap
-  that dismisses the keyboard before tapping `sign-in-button`. In this session's own testing that
-  coordinate tap was reliable every time (5/5 across `login-test.yaml` and
-  `local-qa-signin-unlock.yaml` runs today), so this isn't "the tap is broken" — but if you hit the
-  keyboard-covers-the-button or clears-the-field failure another lane saw, `pressKey: Enter` right
-  after typing the password is the fix, and it's one step instead of two.
-
-## QA account hygiene (task 1356)
-
-The local QA account (`qa0688content@beebeeb.io`) got silted up with lanes' throwaway test data
-and had to be cleaned — 17 files moved to Trash. What's left is a deliberate fixture set: **do not
-touch, duplicate, or delete any of these "because it looks like junk"** — every one below is load-
-bearing for a specific flow, and a fixture with no stated purpose is the first thing a future lane
-deletes by mistake.
-
-- `qa-red.png` / `qa-blue.png` / `qa-green.png` — small photo fixtures for pin, offline, and
-  thumbnail tests.
-- `medium-photo.jpeg` — the 2 MB perf-baseline tier (task 1345).
-- `big-photo.jpeg` — the large photo fixture.
-- `clip-1080p.mp4` — the short video fixture; `search-test.yaml` searches "clip" against this
-  file's exact name.
-- `clip-1080p (3).mp4` — the 40 MB perf-baseline tier (task 1345). A SEPARATE file from
-  `clip-1080p.mp4` above, on purpose: the perf comparison needs the same file run over run, so it
-  can't share a name/identity with the search-test fixture.
-- `qa-1301-video.mp4` — the 213 MB throughput fixture.
-- `qa-hevc.mp4` — HEVC decode coverage.
-- `qa-video.mp4` — a 23 kB fixture for a fast round-trip check.
-- The empty folder named `Quarterly Financial Reports And Tax Documents 2026 Archive` — the
-  absurd length IS the point, it's the truncation/breadcrumb fixture for task 1341. Do not rename
-  or shorten it.
-
-Rules for lanes using this account:
-
-- Prefix any throwaway upload with your task id, so the next cleanup can tell what's safe to trash.
-- Delete your own throwaway uploads at the end of your lane, whether it succeeded or failed —
-  `bb rm <id>` is reversible (Trash, not purge).
-- Never repurpose one of the fixtures above for something else, even temporarily.
-- If a file fails to decrypt and it isn't already documented as broken by tasks 1349/1351, stop
-  and flag it — don't upload past it and mask the failure.
-
-## Native signup and the server-driven onboarding document (task 1746)
-
-The app creates accounts itself again, driven by `GET /api/v1/onboarding` (spec
-`docs/specs/2026-10-04-backend-driven-onboarding.md`, section 5). The server declares the steps, the
-numbers and whether this build may sign up natively; the app renders. Nothing about the order of the
-steps, the password minimum, the code length or the resend wait is hard-coded.
-
-```mermaid
-flowchart LR
-    W["WelcomeScreen (once)"] --> L["LoginScreen"]
-    W --> S["SignupScreen"]
-    L --> S
-    S -->|"pre_account document"| F["SignupFlow: email, code, terms, password, phrase, create"]
-    F -->|"register-finish 201 + session"| A["unlock(freshMasterKey), refreshAuth"]
-    A --> O["AccountStateProvider: account document"]
-    O -->|"blocking step"| V["AccountOnboardingOverlay: verify_email, accept_terms, update_required"]
-    O -->|"working vault"| T["Files + Storage status card (text only)"]
-```
-
-- **Pure logic, no native imports (tested without mocks):** `src/lib/onboarding/` : `types`, `parse`
-  (tolerant parser, spec 5.8), `plan` (step planner), `account-summary` (status text), `account-gate`
-  (gate from capabilities), `account-decision` (document vs legacy `/billing/subscription`),
-  `create-account` (the commit point), `copy` (every user-facing failure sentence), `resend`,
-  `fallback-action`, `breach-step`, `wire`, `ports`.
-- **Crypto stays in core.** `modules/beebeeb-crypto/ios/OnboardingBridge.swift` +
-  `src/BeebeebOnboarding.ts` expose `beebeeb_core::onboarding` (task 1744): password evaluator, the
-  k-anonymity breach check, the signup ceremony. JS holds integer handles. The password, phrase and
-  master key live in Rust memory; the three things that cross the bridge are the phrase words (once,
-  for the phrase screen), the OPAQUE messages, and the new master key bytes (once, into
-  `crypto.unlock(undefined, 'new_account', key)`, then zeroed).
-- **Contract copy:** `src/contracts/onboarding/` is byte-identical to `repos/server/contracts/onboarding/`
-  and guarded by `scripts/check-onboarding-contract.sh` at the workspace root (one byte of drift is
-  red). Re-vendor with `cp -R` after the server contract changes.
-- **No purchase UI, by construction (App Store 3.1.3, task 1400).** `COMPILED_PURCHASE_SURFACES` is
-  empty, the parser never reads `offers`, `AccountStatusCard` has no touchable, server sentences go
-  through `noPurchaseCopy`, `use_web` is text while `WEB_ACCOUNT_LINKS_ENABLED` is off.
-  `src/components/onboarding/no-purchase-ui.test.ts` and `account-summary.test.ts` guard it.
-- **Anti-enumeration:** the code screen's copy is identical for every address. Never add a sentence
-  that says whether an address is new.
-- **The recovery phrase screen** calls `usePreventScreenCapture`, words are `selectable={false}`,
-  and the words are dropped from state when the step is left. The Simulator's framebuffer capture is
-  NOT blocked by it; only a device shows the black frame. That rung stays open until a device run.
-
-### Running it locally (a lane's own API, never the shared :3001)
-
+Local run (a lane's OWN API, never the shared :3001):
 ```sh
 # server worktree .env (debug build): its own DB and port
 BB_PORT=3146  DATABASE_URL=<the dev Postgres URL, pointing at your own database name>
@@ -563,677 +111,89 @@ BB_SIGNUP_TICKET_TTL_SECONDS=60              # floor is 60; default 1800
 #   "[Beebeeb] API environment: Local (http://localhost:3146)"
 ```
 
-A new account needs TWO emailed codes today: the signup code, then (after the account exists) the
-account-stage `verify_email` code, because `register-finish` does not mark the address verified.
-Spec rev 3 does not say so; it is a server finding, not an app choice.
-
-- **Dev fixtures:** in a debug build `beebeeb://dev/onboarding-fixture?name=account.trial_ended.ios`
-  (also `account.trialing_no_card.desktop`, `account.lapsed.ios`, `account.needs_plan.ios`,
-  `account.allowance.ios`; `name=off` clears) renders the real screens from a golden document. The
-  local server cannot produce `trialing_no_card` / `trial_ended` until task 1755 lands.
-- **Native rebuild:** after any `beebeeb_uniffi.swift` / `BeebeebCore.xcframework` change, run
-  `scripts/swift-ci/build-ios-simulator.sh`. Its unsigned build cannot use the Keychain in the
-  Simulator (SecureStore fails, the app falls to the secure-storage panel); for a QA install build
-  the same workspace with `CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO`.
-  `pod install` rewrites `ios/Podfile.lock` and `project.pbxproj` ordering: restore them before
-  committing. The xcframework regenerated for 1746 added 28 `uniffi_beebeeb_uniffi_fn_*` symbols and
-  removed none (symbol diff recorded in the task evidence).
-- **Metro quirk:** a file created after Metro started can be reported "Unable to resolve module";
-  restart Metro.
-- **Maestro quirks found on this task (2.5.1):** `hideKeyboard` fails on a number pad (tap the
-  screen title instead); `eraseText` removes only part of a field (start from a fresh screen);
-  `while read` drops a last line with no trailing newline when you generate flows from a file; the
-  iOS hierarchy has no `clickable` attribute, so "no tappable purchase element" is asserted on ALL
-  text and labels plus the source-level guard; the iOS "Save Password?" sheet after sign-in needs
-  `tapOn: "Not Now"`.
-
-## Stack
-
-React Native + Expo (managed workflow) + TypeScript. Package manager: **bun**.
-
 ## Storage location is a COUNTRY, never a city (task 2050)
 
-Guus, 2026-10-19 (canon `docs/canon/data-residency.md`): the app names countries ("Germany",
-"Finland", "Netherlands (coming soon)") and "Europe", never a city and never the provider.
-- The choice list comes ONLY from the API (`src/lib/regions.ts` over `src/lib/storage-regions.ts`):
-  Europe (default) · live countries · coming-soon countries. PUT carries the item id; "Only store in
-  <country>" is `region_strict` on GET/PUT `/me/region` (PUT replaces the whole choice, so strict is
-  passed again when the country changes). An OLDER server's `kind: "datacenter"` entries are folded
-  into countries by `country_code`; their city is dropped.
-- **Strict is HIDDEN on iOS and Android (Guus 2026-10-19, workspace task 2054).** `STRICT_PLACEMENT_ON_MOBILE` in `src/lib/regions.ts` is the single flag; native `NativeBackupEngine` dead-letters assets on the strict 409. Stored strict=true (from web/desktop) is carried unchanged on a country change and shown as the line "Only store in <country> is on. Change it on the web or desktop app." (`strictNoticeFor`). Do not touch the Swift side here; 2054 does, then flips the flag.
-- Per-file location is `storage_location.country` (`fileStorageCountry`), "Europe" when absent. The
-  deprecated `city` a transition-release server still sends is never read.
-- The 409 `region_unavailable_strict` refusal is worded by country in `friendlyError`
-  (`ApiError.details.country`; the native uploader envelope has no country, so it is read back from
-  the server sentence).
-- `src/lib/no-city-in-copy.guard.test.ts` fails on Falkenstein / Helsinki / Nuremberg / Nuernberg /
-  Ede in non-test source in `src/` and in native UI sources. Test files are excluded on purpose (the
-  old-server contract tests feed a city to prove it is never rendered).
+Canon (Guus, 2026-10-19, `docs/canon/data-residency.md`): the app names countries ("Germany", "Finland", "Netherlands (coming soon)") and "Europe" — never a city, never the provider. The choice list comes ONLY from the API (`src/lib/regions.ts` over `src/lib/storage-regions.ts`); PUT carries the item id; "Only store in <country>" is `region_strict` on GET/PUT `/me/region` (PUT replaces the whole choice). **Strict placement is HIDDEN on mobile (`STRICT_PLACEMENT_ON_MOBILE`; task 2054 owns the Swift side).** Per-file location is `storage_location.country` ("Europe" when absent); the deprecated `city` is never read. Guard: `src/lib/no-city-in-copy.guard.test.ts` fails on city names in non-test source. (details: H#task-2050)
 
 ## Tests — run `bun run test`, NOT `bun test` (task 0877)
+
+`bun run test` isolates each test file in its own process — **every test file must mock every native module it needs itself**; never rely on another file having mocked it. (details: H#task-0877)
 
 ```sh
 bun run test        # correct: per-file process isolation (155 pass / 0 fail)
 bun test            # WRONG: leaky shared registry, reports ~10 phantom failures
 ```
 
-bun 1.3.4 keeps `mock.module()` registrations on a **process-global** registry that is never
-reset between test files, and `mock.restore()` does not undo them. The first file to register a
-specifier wins for the entire run, so two files mocking the same module differently corrupt each
-other — e.g. `api-client-session.test.ts` registers an empty `expo-file-system`, which starves
-`welcome-seed.test.ts` of `cacheDirectory`.
+### Native crypto KAT — `scripts/kat-ios.sh` (task 1382) — LOCAL GATE, NOT CI
 
-`bun run test` invokes `scripts/test-isolated.mjs`, which gives every test file its own process
-(the module-registry-per-file semantics jest has and bun lacks). Consequence for new tests:
-**every test file must mock every native module it needs itself** — never rely on another file
-having mocked it. Two tests were found relying on exactly that when isolation was introduced.
-
-### Native crypto KAT — `scripts/kat-ios.sh` (task 1382, audit item K2) — LOCAL GATE, NOT CI
-
-`ios/BeebeebNativeTests/CoreVectorsKATTests.swift` is a second host-less XCTest target (mirrors
-`ProvenanceHeadersTests`, task 1439 — no app host, no Pods, no Expo) that drives
-`repos/core/test-vectors/vectors.json` (vendored at `ios/BeebeebNativeTests/Vectors/core-vectors.v4.json`,
-sha256-pinned in the test file, with a second check against the sibling `repos/core` checkout when
-one is present next to this repo) through the SAME production UniFFI Swift bindings the app links —
-proving mobile decrypts/derives byte-identically to core, not just that it compiles against it.
-11 of core's 12 vector families are asserted (every family the UniFFI surface exposes); the 12th,
-`envelope_serialization` (`OpaqueEnvelope::to_bytes`/`from_bytes`), has no UniFFI export and is an
-explicit `XCTSkip` naming the gap, not a silent omission.
-
-Run: `scripts/kat-ios.sh` (defaults to sim `bb-qa-2`; serializes under `scripts/coord/with-lock.sh
-ios-build` and retries on lock contention). **This does NOT run in CI** — the mobile repo's GitHub
-Actions workflow runs `typecheck` only (macOS runners are not enabled for Actions-minutes reasons),
-so run this by hand after touching `beebeeb_uniffi.swift`, `BeebeebCore.xcframework`, or
-`repos/core/test-vectors/vectors.json`.
-
-**Regenerated 2026-09-22 (task 1450 [P0]) from `repos/core` main `95da81b`.** The prior binary was
-last regenerated 2026-06-16 — 8 days before core commit `ce16525` raised `derive_master_key`'s
-Argon2id params to the canonical strong set — which made `testMasterKeyFromPassword` genuinely
-fail against the vectors this KAT (task 1382) was checking in on the untampered vector: mobile's
-Argon2id derivation was stale, not tampered data. The free `deriveMasterKey(password:salt:)` UniFFI
-export did not appear reachable from any mobile UI flow (mobile login goes through OPAQUE, a
-separate primitive — see task 1450 for the full grep evidence), so this was not believed to be an
-active prod vulnerability, but the binary was 3+ months / 16 core commits stale regardless. The
-regen is additive-only at the FFI symbol level: 124→127 exported functions, 3 new (Constellation
-transfer crypto, `transfer_derive_key`/`transfer_derive_sas_bytes`/`transfer_sas_to_words`, task
-0855a), 0 removed. All KAT families now pass for real, including `master_key_from_password` — no
-`XCTExpectFailure` wrapper remains in the suite. **After any future regen, re-run this section's
-symbol-diff check (`git diff` the two `beebeeb_uniffiFFI.h` files, or `comm` the sorted
-`uniffi_beebeeb_uniffi_fn_*` symbol lists) before shipping — the 0426 12-symbol-drift lesson.**
+Drives the vendored, sha256-pinned `repos/core/test-vectors/vectors.json` through the SAME production UniFFI bindings the app links; 11 of core's 12 vector families asserted (`envelope_serialization` = explicit `XCTSkip`, not a silent omission). Run `scripts/kat-ios.sh` by hand after touching `beebeeb_uniffi.swift`, `BeebeebCore.xcframework`, or the vectors file — CI runs `typecheck` only. Keep regens additive-only at the FFI level and symbol-diff the two `beebeeb_uniffiFFI.h` files before shipping (the 0426 12-symbol-drift lesson). (details: H#task-1382, H#task-1450)
 
 ## API
 
-Backend at `http://localhost:3001`. Same endpoints as the web client — see `repos/server/CLAUDE.md` for the full API reference.
+Backend at `http://localhost:3001` — same endpoints as web; see `repos/server/CLAUDE.md`. `mobileClientHeaders()` sends `X-Beebeeb-Client: mobile-ios|mobile-android` and, since task 1436, `X-Beebeeb-Client-Version` (from `Constants.expoConfig?.version ?? '1.0.0'`) on the 5 unauthenticated auth-bootstrap calls AND all 3 upload-init call sites (server PR #23 / task 1369). Native `URLRequest` sites (26) all go through `ProvenanceHeaders.apply(to:)` (task 1439) — the ONLY place those header names or the `"mobile-ios"` literal may appear; tested by the standalone `ProvenanceHeadersTests` target: `xcodebuild test -project ios/Beebeeb.xcodeproj -scheme ProvenanceHeadersTests -destination 'id=<sim-udid>'`. (details: H#task-1436)
 
-`mobileClientHeaders()` in `src/lib/api.ts` sends `X-Beebeeb-Client: mobile-ios` / `mobile-android` and, since task 1436, `X-Beebeeb-Client-Version` (from `Constants.expoConfig?.version ?? '1.0.0'`, matching the existing convention in `device-registration.ts`) on the 5 unauthenticated auth-bootstrap calls (signup, login, opaque login-finish, 2FA verify, opaque register-finish) AND on all 3 upload-init call sites (`/api/v1/files/upload/init` ×2, `/api/v1/uploads/init`) — the requests that create the `object_versions` row the server records both on (server PR #23 / task 1369).
+## Design references / Screens / Brand
 
-**Native (Swift) stack — covered as of task 1439.** Every native `URLRequest` construction site (26 sites across `modules/beebeeb-crypto/ios/{NativeManualUploader,NativeBackupEngine,NativeEncryptedBackupUploader,ThumbnailEncryptUpload,ThumbnailService,BeebeebCryptoModule}.swift`, both `ShareUploader.swift`/`FolderFetcher.swift` copies (`ios/BeebeebShare/` + `targets/share-extension/`), and `targets/file-provider/ApiClient.swift`) now goes through a single shared helper, `ProvenanceHeaders.apply(to:)` in `modules/beebeeb-crypto/ios/ProvenanceHeaders.swift` — it is the ONLY place the two header names or the `"mobile-ios"` literal may appear. The main app target picks it up via the `BeebeebCrypto` podspec glob; the Share Extension and File Provider Extension targets reference the same physical file directly in `ios/Beebeeb.xcodeproj/project.pbxproj` (same cross-target pattern as `PlaintextStorageProtection.swift`/`RuntimeTrace.swift`) — there is no per-target duplicate copy of the helper. `Bundle.main` inside each target's own compiled code correctly resolves to that target's own bundle, so each extension reports its own build's version. Unit-tested by the new standalone `ProvenanceHeadersTests` XCTest target (`ios/BeebeebNativeTests/ProvenanceHeadersTests.swift`, no test host, no Pods dependency — run it directly: `xcodebuild test -project ios/Beebeeb.xcodeproj -scheme ProvenanceHeadersTests -destination 'id=<sim-udid>'`).
-
-## Design references
-
-- `../../design/hifi/hifi-ios-app.jsx` — iOS screens (Home, Photos, Preview, Share, Settings, Biometric, Camera backup)
-- `../../design/hifi/hifi-android-app.jsx` — Android screens
-- `../../design/hifi/hifi-mobile-extra.jsx` — Offline, upgrade, share extension, push notifications
-- `../../design/hifi/hifi-mobile-sync.jsx` — Mobile sync features
-
-## Screens
-
-- Files (tab) — pinned folders, recent files
-- Shared (tab) — shared with me
-- Photos (tab) — date grid, auto-backup indicator
-- Settings (tab) — security, backup, app config
-- File preview — PDF/image with actions
-- Share sheet — bottom sheet with link settings
-- Biometric lock — Face ID / fingerprint
-
-## Brand
-
-Same design tokens as web but converted to RGB (OKLCH not supported in React Native). See `src/theme.ts` for the color mapping.
+- `../../design/hifi/hifi-ios-app.jsx` (Home, Photos, Preview, Share, Settings, Biometric, Camera backup) · `hifi-android-app.jsx` · `hifi-mobile-extra.jsx` (offline, upgrade, share extension, push) · `hifi-mobile-sync.jsx`.
+- Tabs: Files, Shared, Photos, Settings; plus file preview, share sheet, biometric lock. Same design tokens as web, converted to RGB (OKLCH unsupported in RN) — `src/theme.ts`.
 
 ## Thumbnails
 
-Thumbnails are WebP format. **Medium (default) is 768px wide at WebP q0.82, ~100 KB target / 128 KB encrypted cap** — generated in `src/lib/thumbnail.ts` via expo-image-manipulator with a degrade ladder in `src/lib/thumbnail-policy.ts` for photos that exceed the byte cap. Small (384px) and large (1280px) variants exist for list-row + preview contexts.
-
-**Native backup path (task 0631).** At backup time the native engine (`NativeBackupEngine.swift`) makes ONE high-quality PhotoKit source fetch (`thumbSourceMaxSize` = 1600px long-edge) per camera-roll photo/video and from it generates BOTH the medium (768px) and large (1280px) thumbnails **plus a blurhash**, via the shared `ThumbnailGenerator` (Rust `resizeForThumbnail` Lanczos3 + Swift `SDWebImageWebPCoder` WebP encode — not `CGImageDestination`). Medium PUTs to `/thumbnail?blurhash=…`, large to `/thumbnail/large`. Server stores these as reserved V1 chunk blobs: **medium = `u32::MAX` → `4294967295.bin`, large = `u32::MAX-2` → `4294967293.bin`** (there is no `thumbnail_large_encrypted` column; `files.has_large_thumbnail` flips true on the large PUT). The native blurhash comes from `BlurHashEncoder.swift` (self-contained woltapp encoder, 4×3 components, byte-identical to the JS `react-native-blurhash`). The legacy degraded-thumbnail regen worker (`ThumbnailService.regenerateThumbnail`, task 0553) also encodes through the same `ThumbnailGenerator.medium` ladder + 128 KB cap.
-
-**Rendering layered (task 0552):**
-
-1. **PhotoKit-first.** If a file has a `localIdentifier` in the camera-roll → PhotoKit serves the thumbnail directly via `PHImageManager.requestImage(for:targetSize:)`. No bandwidth, no decrypt cost, exact-pixel sizing for each tile. The identifier map is fetched from `GET /api/v1/files/photo-backup/identifiers` and cached in `src/lib/local-identifier-map.ts`.
-2. **Encrypted-thumbnail fallback.** For files not in camera roll, the encrypted blob is downloaded + decrypted + cached.
-3. **Blurhash placeholder.** ~25-byte unencrypted blurhash stored alongside the file metadata (`files.blurhash`) renders an instant gradient via `react-native-blurhash` while either pixel source resolves. Removes flash-of-empty-tile during scroll.
-
-Thumbnail downloads use plain `fetch` (NOT `rateLimitedFetch`) because the server has a dedicated thumbnail rate limit tier (50k req/min per user). Cached at `documentDirectory/beebeeb-thumbnails-v3/{fileId}.{variant}.webp` (variant in the filename — important: a list view loading `small` no longer poisons a grid's `medium` lookup). Bulk backfill of degraded legacy thumbnails lives in Settings → Advanced → "Improve thumbnail quality" (task 0553).
-
-Concurrency is managed by the thumbnail loading queue in `src/lib/thumbnail-cache.ts` (max 5 concurrent loads). The Settings → Performance slider controls **download behavior** (Data saver / Balanced / Smooth — when to prefetch encrypted thumbs), not thumbnail size.
+WebP. Medium (default) 768px at q0.82, ~100 KB target / 128 KB encrypted cap (`src/lib/thumbnail.ts`, degrade ladder in `thumbnail-policy.ts`); small 384px, large 1280px. Native backup path (task 0631): ONE PhotoKit source fetch (1600px) per asset → medium + large + blurhash via the shared `ThumbnailGenerator`; server stores them as reserved V1 chunk blobs — medium `4294967295.bin`, large `4294967293.bin`. Rendering ladder (task 0552): PhotoKit-first → encrypted-thumbnail fallback → ~25-byte blurhash placeholder. Downloads use plain `fetch` (not `rateLimitedFetch` — dedicated 50k req/min tier); cached at `documentDirectory/beebeeb-thumbnails-v3/{fileId}.{variant}.webp`; queue max 5 concurrent. (details: H#task-0631, H#task-0553, H#task-0552)
 
 ## Crypto
 
-Consumes `beebeeb-core` via UniFFI-generated Swift/Kotlin bindings. Crypto runs at native speed, not in JS. The master key never leaves Rust/the keychain — Swift holds an opaque `MasterKeyHandle` and all derivation/encryption happens inside core.
+Consumes `beebeeb-core` via UniFFI (generated Swift at `modules/beebeeb-crypto/ios/beebeeb_uniffi.swift`, static libs vendored in `ios/BeebeebCore.xcframework`) — GENERATED ARTIFACTS: regenerate from core's `build-ios.sh`, never hand-edit; template trailing whitespace is expected. The master key never leaves Rust/the keychain.
+- Native backup uploads (`NativeEncryptedBackupUploader.swift`) use `ChunkEncryptorHandle`: `forPush` (not `fromFile`) for in-memory `Data`; `chunkPlan()` sizes (never hardcode a chunk size); `pushChunk` frames PUT directly; `finish()` runs the integrity guard BEFORE `upload/complete`; `upload/init` still sends `size_bytes` = plaintext count. Profiles: `"desktop" | "web" | "mobile" | "backup"`.
+- Manual uploads are native too (task 1310): `encryptedUpload()` routes through `uploadEncryptedFileNative()` whenever the caller passes `masterKeyHandleId`; JS polls `getUploadProgressNative(requestId)` every 150 ms; errors return as a `{"bb_upload_error":true,status,code,message}` envelope. Plaintext never enters the JS heap — **never reintroduce base64 file reads in the upload path.** (details: H#task-1310)
 
-- **Bindings:** the generated Swift lives at `modules/beebeeb-crypto/ios/beebeeb_uniffi.swift` (the BeebeebCrypto pod compiles it as part of the module) and the static libs + C header are vendored in `ios/BeebeebCore.xcframework` (`libbeebeeb_uniffi.a` for device, `libbeebeeb_uniffi_sim_fat.a` for simulator). These are **generated artifacts** — regenerate them from `beebeeb-core`'s `build-ios.sh` (overwrite in place, no `pod install` needed since the podspec globs them) rather than hand-editing. They carry uniffi-bindgen template trailing whitespace; that is expected, not a lint failure to "fix".
+## Vault key ownership (task 1594)
 
-- **Native backup uploads (`NativeEncryptedBackupUploader.swift`)** use the shared streaming primitive `ChunkEncryptorHandle`:
-  - `ChunkEncryptorHandle.forPush(masterKey:, fileId:, fileSize:, profile: "mobile")` — `forPush` (not `fromFile`) because callers hold in-memory `Data`, not a file path.
-  - `chunkPlan()` gives `{chunkSizeBytes, chunkCount}` (derived in core from profile + size — never hardcode a chunk size). Slice the plaintext into plan-sized chunks; `pushChunk(plaintext:)` returns an `EncryptedChunkDto{index, data}` whose `data` is the full `nonce||ct||tag` frame to PUT directly. Then `finish()` runs the integrity guard **before** `upload/complete`.
-  - Wire contract preserved: `upload/init` still sends `size_bytes` = plaintext byte count (the server recomputes stored size from chunks); `chunk_count` comes from the plan.
-  - Profiles are `"desktop" | "web" | "mobile" | "backup"`. The photo/contacts/calendar backup managers call `NativeEncryptedBackupUploader.shared.upload(plaintext:…)`; the HTTP transport is still Swift (URLSession), the encryption is core.
+The keychain master key carries an owner record (`io.beebeeb.master-key-owner`, `src/lib/key-ownership.ts`). On unlock: refuse with no signed-in user; purge key + check + fallback + simulator file + owner BEFORE loading when the owner is someone else; prove the key once per sign-in via `POST /api/v1/auth/verify-recovery-check` (a 400 there is ambiguous, settled by the account's X25519 public key); a recovery phrase is verified the same way before storing. **Never add a key-load path that skips this.** `X-Beebeeb-Expected-User` (server 1554) is sent on authenticated mutations (`src/lib/expected-user.ts`); a 409 `account_mismatch` ends the local session; BackupService stops with `VaultKeyMismatchError`. (details: H#task-1594)
 
-- **Manual uploads are native too (task 1310, `NativeManualUploader.swift`).** `encryptedUpload()` in
-  `src/lib/encrypted-upload.ts` routes through `uploadEncryptedFileNative()` (api.ts) whenever the caller
-  passes `masterKeyHandleId` (FilesScreen, DocumentScanner, ConstellationScanner do). JS keeps the
-  storage-v2 protocol — `planUploadChunksNative(size)` (core `planChunks`, profile `"mobile"`) →
-  `/api/v1/uploads/init` with that plan → resume state → `complete` → encrypted-name patch — and the
-  Swift engine does the rest: `ChunkEncryptorHandle.fromFile` + `nextChunk()` straight from disk,
-  `URLSession.upload(for:from:delegate:)` PUTs with `didSendBodyData` byte-level progress, 429/5xx/network
-  retry with backoff. JS polls `getUploadProgressNative(requestId)` every 150 ms. Errors come back as a
-  `{"bb_upload_error":true,status,code,message}` envelope that `native-upload-bridge.ts` turns back into an
-  `ApiError`. Plaintext never enters the JS heap. The old JS chunk loop (`uploadEncryptedChunked`,
-  base64 round-trips — measured at ~1 s of pure JS per 4 MiB chunk on an M-series Mac) stays only as the
-  fallback for callers without a key handle / servers without v2. Never reintroduce base64 file reads in
-  the upload path.
+## On-disk storage — every new path must be registered (task 0300)
 
-## Vault key ownership (task 1594) — a stored key is only used for its owner
+iOS backs up `Documents/`, `Library/Application Support/`, and App Group containers — NOT `Library/Caches/`. Any path written outside `Caches/` must be registered in `PlaintextStorageProtection.swift` AND mirrored in `PROTECTED_LEAF_NAMES` (`src/lib/plaintext-storage.ts`), or `bun run test` fails. New Swift file: add to `REVIEWED_NATIVE_SOURCES` + call `PlaintextStorageProtection.protect(dir)` after `createDirectory`. New JS cache file: register the leaf name + `notePlaintextPathCreated()` after the write. Prefer `FileSystem.cacheDirectory` for disposables. Verify: `bash scripts/verify-backup-exclusion.sh <sim-udid>`. (details: H#task-0300)
 
-The keychain master key carries an owner record (`io.beebeeb.master-key-owner`, the user id) —
-`src/lib/key-ownership.ts`. `CryptoProvider` gets `userId` from App.tsx and, on a keychain unlock:
-refuses with no signed-in user; purges key + check + fallback + simulator file + owner BEFORE loading
-when the owner is someone else; and proves the key once per sign-in with
-`POST /api/v1/auth/verify-recovery-check` (the stored HMAC check, never the key). A 400 there is
-ambiguous (legacy accounts have no stored check) and is settled by the account's X25519 public key.
-A recovery phrase is verified the same way before it is stored. Never add a key-load path that
-skips this. `X-Beebeeb-Expected-User` (server 1554) is sent on authenticated mutations from
-`src/lib/expected-user.ts`; a 409 `account_mismatch` ends the local session. BackupService stops
-with `VaultKeyMismatchError` instead of creating folders over names it cannot decrypt.
+## Camera-roll backup manifest (tasks 1667/2033/2036)
 
-**Driving a dev client to your own Metro on iOS 27 sims:** deep links (`simctl openurl
-…expo-development-client…`) are ignored at cold start and the launcher auto-loads whatever Metro
-answers on 8081. Use the launch argument instead:
-`xcrun simctl launch <udid> io.beebeeb.app --initialUrl http://127.0.0.1:<port>` (and never
-`launchApp` inside that Maestro flow — it relaunches without the argument).
+`Documents/SQLite/beebeeb-backup.db` — per-account manifest that survives sign-out as a file.
+- **ONE SQLite copy for the manifest (task 2033):** manifest files (`BackupManifestHandle`, `BackupManifestStore`, `ManifestWriteFence`, `NativeBackupEngine`) `import ManifestSQLite` and call `exsqlite3_*`; **never** `import SQLite3`/bare `sqlite3_*` in a manifest file; never pass a connection/statement to a file on the other copy. Every OTHER SQLite file stays on one copy too (File Provider cache + `ThumbnailQueueDB`/`PhotoBackupManager` on the Rust copy). Linkage check: `nm -u` on the manifest `.o` files lists `_exsqlite3_*`, no `_sqlite3_*`. Guard: `src/lib/manifest-single-sqlite-copy.guard.test.ts`.
+- Writers exclude each other: engine `BackupManifestHandle.busyTimeoutMs` (2000 ms) == JS `PRAGMA busy_timeout = MANIFEST_BUSY_TIMEOUT_MS` (the guard checks); never hold a manifest write transaction across a call that waits on the other side.
+- **Never unlink the file under an open handle; never close the JS handle while the engine's connection is open.** Sign-out keeps the JS handle OPEN (purge hold + drain, `peerMayHoldFile`, park instead of close, `pending_reset_deferred`); JS closes it in exactly two places (failed-reset path, `admitJsOpen` on `pending_reset_deferred`). A reset counts only if the WAL was TRUNCATE-checkpointed; JS opens the manifest ONLY through the native gate (`admitBackupManifestJsOpen`, `src/lib/backup-manifest-js-open-gate.ts`); native never closes/checkpoints while JS may hold the file outside the purge hold.
+- Engine handle in `BackupManifestHandle.swift` — the only code that opens/resets/closes/reopens the native connection; `start()`/BG task never run without a handle (`manifestUnavailableReason`, retry 2/4/8/16 then every 30 s). Engine lifecycle is ONE transition (`BackupEngineLifecycle.swift`) — never hold the lock across a keychain/Face ID read; `processBatch` takes the batch slot (`beginBatchProcessing`) before the rebuild gate.
+- **Every manifest write is fenced** (Swift `ManifestWriteFence`; JS `BackupWriteTicket`, `src/lib/backup-write-ticket.ts`): ticket taken BEFORE the slow step, checked as the first statement of the same `dbQueue` block; a new writer without a ticket check fails tests.
+- Server dedupe guarantee: `POST /api/v1/files/photo-backup/check` (task 2036) is the authority — bulk pass over all fresh pending rows + per-batch guard for every fresh row; any failed step defers the WHOLE batch with a backoff (nothing uploads on a failure); a server without `backed_up` fails closed. A mark 404 is "file gone, done" ONLY with the API's own `{"error":"not found"}` body. `backup_pending_marks` kept across sign-out (30-day expiry); `X-Beebeeb-Device-Id` handoff (`BackupDeviceId.swift`) — native NEVER mints a device id.
+- Tests: `scripts/swift-tests/*-test.swift` suite + the `src/lib` guard tests (full list in history). (details: H#task-1667, H#task-2033, H#task-2036)
 
-## On-disk storage — every new path must be registered (task 0300, pre-mortem 12)
+## Files (File Provider extension) (task 1722)
 
-iOS backs up `Documents/`, `Library/Application Support/`, and App Group containers. It does NOT
-back up `Library/Caches/`. Any path this app writes outside `Caches/` must be registered in
-`modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift` AND mirrored in
-`PROTECTED_LEAF_NAMES` in `src/lib/plaintext-storage.ts`, or `bun run test` fails.
-
-- New Swift file touching `.documentDirectory` / `.applicationSupportDirectory`? Add it to
-  `REVIEWED_NATIVE_SOURCES` and call `PlaintextStorageProtection.protect(dir)` after `createDirectory`.
-- New JS cache file? Register the leaf name and call `notePlaintextPathCreated()` after the write.
-- Prefer `FileSystem.cacheDirectory` for anything disposable — the preview path
-  (`src/lib/native-decrypt.ts:43`) is the model.
-- **The `BeebeebFileProvider` extension is a SEPARATE compiled `.appex` target** (`targets/file-provider/`,
-  not part of the `beebeeb-crypto` Expo module/CocoaPods glob) — it needed `PlaintextStorageProtection.swift`
-  hand-added to its own `PBXSourcesBuildPhase` in `ios/Beebeeb.xcodeproj/project.pbxproj` (mirroring how
-  `Constants.swift` is wired there), since `plugins/file-provider/withFileProvider.js`'s `SOURCE_FILES`
-  path template only covers files inside `targets/file-provider/`. **A same-directory Swift file is not
-  automatically available across targets:** `PlaintextStorageProtection.swift` calls
-  `RuntimeTrace.event(...)`, and a real `xcodebuild` failed with "cannot find 'RuntimeTrace' in scope" for
-  the `BeebeebFileProvider` target specifically until `RuntimeTrace.swift` was ALSO added to that target's
-  compiled sources the same way — the main app target didn't need this because its CocoaPods glob
-  (`BeebeebCrypto.podspec`'s `s.source_files = '**/*.{h,m,mm,swift}'`) already picks up every file in the
-  directory. If you add a source file to the extension target that references another same-directory type,
-  add that dependency too, or the extension target alone will fail to compile even though the main app
-  builds fine.
-- Verify with `bash scripts/verify-backup-exclusion.sh <sim-udid>`; the full inventory and the
-  accepted-plaintext rationale live in `docs/0300-plaintext-lifecycle-audit.md`.
-
-## Camera-roll backup manifest — per account, survives sign-out as a file (task 1667)
-
-`Documents/SQLite/beebeeb-backup.db` is open twice: by `NativeBackupEngine` and by
-`BackupDatabase.ts` (expo-sqlite). Never unlink it under those handles: before task 1667 the
-sign-out purge did, the process kept using the deleted inode, and the next cold launch started from
-an empty manifest and uploaded every photo again into the same folder (sim evidence
-`_qa-evidence/1962/sim-dup/`).
-
-- **ONE SQLite copy for the manifest: expo-sqlite's (task 2033, Option A).** Linkage truth:
-  `import SQLite3` in this app does NOT reach the system libsqlite3 (this file used to say so):
-  `ios/BeebeebCore.xcframework`'s `libbeebeeb_uniffi.a` exports a vanilla `sqlite3_*` (SQLite
-  3.46.0, libsqlite3-sys bundled, used by the Rust core's own `fp_cache`; `nm -gU ... | grep
-  _sqlite3_step`) and the linker binds every Swift `sqlite3_*` call to it. expo-sqlite compiles its
-  own copy (`node_modules/expo-sqlite/vendor/sqlite3/sqlite3.c`, 3.50.3, symbols renamed
-  `exsqlite3_*`, in `libExpoSQLite.a`). Until build 240 the engine was on the Rust copy and JS on
-  expo's. Now the manifest files (`BackupManifestHandle`, `BackupManifestStore`,
-  `ManifestWriteFence`, `NativeBackupEngine`) `import ManifestSQLite`
-  (`modules/beebeeb-crypto/ios/ManifestSQLite/module.modulemap` -> expo's vendored `sqlite3.h`;
-  `BeebeebCrypto.podspec` puts it on `SWIFT_INCLUDE_PATHS` and depends on `ExpoSQLite`) and call
-  `exsqlite3_*`, the same code JS runs. Rules: never `import SQLite3` in a manifest file, never
-  call a bare `sqlite3_*` there, never pass a manifest connection or statement to a file on the
-  other copy and never call `BackupManifestStore`/`BackupManifestHandle` helpers from a file that
-  `import SQLite3` (PhotoBackupManager's own `backup.db` used `BackupManifestStore.bindText` until
-  2033: it has its own now). Every OTHER SQLite file stays on one copy too: the File Provider cache
-  (BeebeebCryptoModule, PlaintextStorageProtection, the Rust `fp_cache`, the extension) and
-  `ThumbnailQueueDB`/`PhotoBackupManager` stay on the Rust copy; never move one of their call sites
-  alone. No extension target compiles a manifest file (they do not link ExpoSQLite). Guard:
-  `src/lib/manifest-single-sqlite-copy.guard.test.ts`. Linkage check on a build: `nm -u` on
-  `BeebeebCrypto.build/Objects-normal/arm64/{NativeBackupEngine,BackupManifestStore,BackupManifestHandle}.o`
-  lists `_exsqlite3_*` and no `_sqlite3_*`.
-- **Why (TestFlight 240 launch crash).** With two copies, a copy's first connection asks F_GETLK
-  about the `-shm` DMS byte; F_GETLK never reports same-process locks, so it truncated `-shm` to 3
-  bytes and re-extended it. Since round 10 the JS open gate opens the engine's handle first, so
-  JS's first `migrate` statement truncated the `-shm` the engine had mmapped; an engine read in
-  that window that touched the WAL-index hash (any WAL frames) died with `SIGBUS / cluster_pagein
-  past EOF`. The pair also let both copies hold `BEGIN IMMEDIATE` at once (no writer exclusion),
-  and a close on one copy deleted `-wal`/`-shm` under the other. All three are asserted by
-  `scripts/swift-tests/manifest-shm-two-copies-test.swift` (a/b, d, e; red on 17565132, green
-  since 2033). The runner (`run-swift-tests.sh`) compiles every file that `import ManifestSQLite`
-  with the same module map (`-I`) and links expo's exact amalgamation, built with the podspec's
-  flags; the shm test also links a vanilla copy as the Rust core's stand-in.
-- **Writers now exclude each other: both sides wait (task 2033).** One copy means a write that
-  meets the other side's write transaction gets SQLITE_BUSY instead of interleaving. The engine's
-  connection sets `BackupManifestHandle.busyTimeoutMs` (2000 ms) at open, before its first
-  statement; JS sets `PRAGMA busy_timeout = MANIFEST_BUSY_TIMEOUT_MS` (same value) as the first
-  statement of `BackupDatabase.migrate`. Keep the two equal (the guard checks). Never hold a
-  manifest write transaction across a call that waits on the other side.
-- **Never close the JS handle while the engine's connection is open on the file.** Two SQLite
-  copies in one process cannot see each other's connections: a JS `closeAsync()`
-  concluded it was the last connection and deleted `-wal`/`-shm` under the engine's open handle
-  (simulator, task 1667). Task 2033: with one copy that deletion no longer happens (test (e) of
-  `manifest-shm-two-copies-test.swift`), but this rule and the round 10/12 rules below (the JS
-  purge hold and drain, `peerMayHoldFile`, parking instead of closing, `pending_reset_deferred`)
-  are KEPT unchanged: they also order the reset against JS's reads, no test yet proves each one
-  removable, and a lifecycle change was not worth the risk in the App Store build. Simplifying
-  them is follow-up work, one rule at a time, each with its own failing test first. So an ordinary sign-out keeps the JS handle OPEN (the reset runs through
-  the engine's handle). JS closes it in exactly two places, both after the engine's handle is
-  closed: (1) the failed-reset path: the native reset failed and the engine closed its own handle,
-  then `account-cleanup.ts` calls `closeHandles()` (`closeHandleForStoragePurge`) still under the
-  purge hold, then `finishBackupManifestPurge(closed)`; (2) `admitJsOpen` closes leftover JS
-  connections (`unclosedHandles`) when the native gate answers `pending_reset_deferred`, i.e. a
-  reset is pending and the engine has no connection open. Removing either close breaks that
-  recovery. (Known gap, round 14 follow-up: on a failed reset the ENGINE closes its connection while the JS
-  one is still open, the reverse of this rule; with one copy since 2033 that close no longer
-  removes `-wal`/`-shm`, test (e1).)
-- **Sign-out** (`purgeAllPlaintextCaches` → native `purgePlaintextStorage`): JS holds its database
-  work, handle open (`storage-purge-participants.ts`); native `prepareForStoragePurge()` stops and
-  unbinds the engine, clears `photoBackupParentFolderId`, empties the manifest IN PLACE through its
-  handle (`BackupManifestStore.resetInPlace`), and `PlaintextStorageProtection.purgeAll(preserving:)`
-  keeps that file while removing the rest of `SQLite/`. If the reset fails, the file is still
-  KEPT, never unlinked under the JS handle (see "A reset counts only if the WAL was truncated"
-  below for what happens instead). The `beebeeb_backup_folders` SecureStore cache is cleared too
-  (`backup-folder-cache.ts`). Round 13: the once-per-DEVICE legacy root-backup migration record
-  lives in its own key `beebeeb_backup_legacy_migration` that NO sign-out or deletion clears, and
-  `migrateLegacyRootBackups` moves only items with a legacy marker (a plaintext `name_encrypted`,
-  or the folder id in `beebeeb_photos_folder_id`), never by decrypted name: a user's own root
-  "Photos" folder or contacts.vcf is never moved.
-- **Ownership:** `backup_assets.uploaded_account_id` names the account a row's remote file belongs
-  to. `bindAccount` / every scan run `BackupManifestStore.claim`: rows from before the column are
-  adopted, another account's rows are re-queued. Never trust `status = 'uploaded'` without it.
-- **Server map:** every completed upload is recorded with `POST /api/v1/files/photo-backup/mark`
-  (`X-Beebeeb-Device-Id` = the canonical `getDeviceId()`, handed to native by
-  `setBackupDeviceId` at every launch (BackupProvider mount) and at enable; round 12: before the
-  first launch of a build, native reads the same id from expo-secure-store's keychain item
-  `bb_sync_device_id`, `BackupDeviceId.swift`, and NEVER mints one; round 13: JS's `getDeviceId()`
-  REJECTS (`DeviceIdUnavailableError`) when the keychain read fails, e.g. device locked, and mints
-  only when both keys READ as absent; the handoff, `backup-device-id-handoff.ts`, sends only a read
-  or durably persisted id, and native's `acceptBackupDeviceId` never replaces an existing,
-  different id unless JS says it is durable, logging the refusal); `server_marked_at` tracks it and scans catch up on unmarked rows. A manifest
-  holding nothing the account uploaded is rebuilt from `GET /api/v1/files/photo-backup/identifiers`
-  BEFORE the first upload (`ensureManifestReadyForUploads`, gated in `processBatch`); if that GET
-  fails, no upload starts. The rebuild is only a FAST PATH (round 10): it runs once per account, on
-  the rows present at that moment, from the identifiers map ONLY (round 11: the server leaves
-  trashed files out of it, task 2036). Photos uploaded before the map existed and lost from the manifest
-  are not in the map: they upload once more (content-hash dedup is task 1667 plan item 6).
-- **The dedupe guarantee is the server check (round 10, reworked round 11; `PendingUploadServerCheck.swift`).**
-  Contract (server task 2036, `photo_backup.rs`): `POST /api/v1/files/photo-backup/check` (<= 500 ids
-  per call, per device) EXCLUDES files in the Trash and returns `backed_up:
-  [{local_identifier, file_id}]` (`already_backed_up` stays for old clients and must name the same
-  ids); `GET .../identifiers`, `list_ids` and `stats` exclude trashed files too. A row becomes
-  `uploaded` ONLY when it is in `backed_up`, with that file id (fenced write); every other row
-  uploads. Two passes: a BULK pass over ALL fresh pending rows (no staged file), chunks of 500,
-  before the drain selects a batch (once per drain start / background task, and again after a scan
-  inserted rows; covered "needs backup" rows are kept per account + fence generation for 15 min,
-  `ServerCheckCoverage`, and only keep the NEXT bulk pass from asking again), and the per-batch
-  guard for EVERY fresh row of the batch (round 12: coverage never lets a row skip it,
-  `PendingUploadServerCheck.batchCandidates`; a row re-queued by the JS reconcile or restored from the
-  Trash after the bulk answer uploaded twice in round 11). Any failed step defers the WHOLE batch
-  with a backoff (30 s for a server read or a missing device id, 2..30 s for a write): nothing
-  uploads on a failure. A deferral shows `serverCheckPausedReason` (progress dict, status surfaces,
-  Settings) until a check answers, a stop, or sign-out (round 12). Round 13: every status update
-  (widget, Live Activity, heartbeat) decides its state with that pause (`BackupSurfaceState`):
-  "paused" (or "waitingForAppOpen" without a device id), never "Preparing backup". The server check
-  and its promotion run ONLY inside the batch slot (`processBatch`, and the scan's rebuild gate,
-  round 13), so a hit on a 'staging' / 'uploading' row without a staged file is promoted (it is stale).
-- **A server without `backed_up` (no task 2036) fails closed (round 11).** Nothing is promoted and
-  nothing of the batch uploads (`serverLacksBackedUp`, 30 s backoff), and once that was seen the
-  rebuild fast path applies no identifiers map either. Round 12: that state (`BackedUpSupport`) is
-  reset at sign-out, and while it is set the rebuild sends ONE capability probe `/check` per backoff
-  period (`PendingUploadServerCheck.rebuildFetch`, a non-PhotoKit id), so a deploy of 2036 is picked
-  up in-process; never gate it on a `/check` that runs after the rebuild. Round 13: support is
-  three-state (unknown / supported / lacking); the rebuild applies a map only when it is KNOWN
-  supported, so "unknown" (every launch and sign-in) probes first too: an old server's map, which
-  includes trashed files, is never applied. Logged ONCE per process:
-  `server lacks backed_up (task 2036)`. Task 2036 must be deployed to prod before a build with this
-  reaches TestFlight. Native code has NO liveness read and never calls `GET /api/v1/files/index`
-  (the rule below; `native-backup-manifest-wiring.test.ts` fails on any native caller).
-- **Route 404s (round 5, `PhotoBackupServerResponses.swift`):** the identifiers handler never
-  answers 404, so an identifiers 404 is a failed fetch (the gate defers and retries), never an empty
-  map. A mark 404 is "file gone, done" ONLY with the API's own `ApiError::NotFound` body
-  (`application/json`, exactly `{"error":"not found"}`, server `error.rs`); any other 404 is a
-  failure and the row stays a pending mark. Do not add a "server without the route" path back.
-- **Kept across sign-out (round 2):** `backup_pending_marks` in the same file holds, per account,
-  (user id, PhotoKit local id, server file id, time) for uploads the server's map did not have yet.
-  The reset moves them there in its own transaction; the next sign-in of THAT account promotes
-  them after the server rebuild (`applyPendingMarks`, scoped by account) and the mark catch-up
-  sends them. 30-day expiry for EVERY account, as its own step (round 5): at every sign-in
-  (`confirmMasterKeyHandle`) and bind, before every batch's kept-marks step (ahead of its account
-  count) and at the sign-out reset, so rows of an account that never comes back still go. No name,
-  content, key or hash. Round 13: the engine remembers the account it last unbound
-  (`UnboundAccountMemory`) only until any account binds or JS confirms a different signed-in user;
-  an account-deleted reset discards the marks of the accounts JS NAMES, never a remembered account
-  on top of them (none named and only a remembered account: every mark goes, fail closed). Round 14:
-  uploads IN FLIGHT at sign-out ('staging'/'staged_upload'/'uploading' with a file id and an upload
-  session id) may be complete on the server unrecorded. The sign-out flush asks `GET /files/{id}`
-  for them and marks the complete ones; whatever it does not settle is kept with
-  `needs_resolution = 1` (`keepInFlightUploads`, BEFORE the staged purge clears the ids). Such a
-  row is never promoted as a mark: the account's next sign-in resolves it in the rebuild gate
-  before any upload (`KeptUploadResolution`: complete -> kept mark, else dropped; unreachable ->
-  defer). At a cold start a 403 account_deleted names the stored key's owner
-  (`accountIdForDeletedElsewhere`). Round 15: the keep runs INSIDE every staged purge
-  (`BackupManifestStore.purgeAllStaged`, via `clearAccountAndPurgeStaged`), because the provider
-  unmount's `teardownAllBackup` runs before the signed-out purge, and the Camera Roll toggle-off and
-  the read-only stop never reach `prepareForStoragePurge`; for those the same account's re-enable
-  resolves the row. Only the API's own answer resolves a row
-  (`PhotoBackupServerResponses.existingUpload`): complete = 2xx with `is_uploading` false and not
-  trashed (a trashed file is NOT backed up: dropped and queued); dropped = the API's NotFound 404 or
-  `is_uploading` true; anything else (a non-API 404, an unreadable 2xx, 5xx, 429) defers, and a 429's
-  Retry-After is honoured. Both getMe paths (refreshAuth and the cold launch's `retryGetMe`) name
-  the key owner through `getMeNamingKeyOwner` (`src/lib/cold-start-owner.ts`). JS sign-out first calls
-  `flushBackupServerMarksForSignOut` (before `logout()` revokes the token, ~8 s, no row cap).
-  Round 16: the keep waits up to 2 s for another connection's write lock (temporary busy timeout,
-  restored on return). The mismatch purges keep too, scoped to the rows they clear:
-  `purgeMismatchedStagedAssets` (bindAccount, start, the BG task) through
-  `BackupManifestStore.purgeMismatchedStaged`, and `uploadSingleAsset`'s per-row refusal through
-  `restageMismatchedRow`. `claim` keeps another account's unmarked uploads as marks before it
-  re-queues them. These matter only when the previous account's teardown never ran.
-- **A reset counts only if the WAL was truncated** (`sqlite3_wal_checkpoint_v2` TRUNCATE rc, retried).
-  Round 13: it runs on the engine's long-lived connection and restores that connection's busy
-  timeout and `secure_delete` on every return (`BackupManifestStore.connectionSettings`).
-  JS drains calls already running before the reset (`inFlight` in `BackupDatabase.ts`). On a
-  failed reset the file is still KEPT (never unlinked under the JS handle): native closes its
-  handle and sets `io.beebeeb.backupManifestResetPending`, JS closes its handle, then
-  `finishBackupManifestPurge` resets (or replaces, carrying the kept marks) with no connection
-  open; JS reopens lazily. The flag makes every later open apply the reset first. A replacement file
-  carries `PRAGMA user_version` = `BackupManifestStore.jsSchemaVersion` (round 12; = JS
-  `LEGACY_STATUS_ENUM_MIGRATION_VERSION`), or JS's one-time legacy migration turns live
-  'uploading' rows into 'uploaded' with no file id.
-- **JS opens the manifest only through the native gate (round 10).** `BackupDatabase.openAndMigrate`
-  asks `admitBackupManifestJsOpen(priorHandlesClosed)` (`src/lib/backup-manifest-js-open-gate.ts`,
-  registered by `account-cleanup.ts`; no gate = refuse) before EVERY open. Native applies a reset
-  still pending first, on its own connection with no JS connection open, and admits JS only when none
-  is pending: after `finishBackupManifestPurge` answered `ok: 0`, the next account never reads the
-  previous account's rows. A refusal opens nothing and the next call asks again.
-- **Native never closes or checkpoints while JS may hold the file, outside the purge hold (round 10).**
-  `BackupManifestHandle.peerMayHoldFile` is set when JS is admitted and cleared only when JS confirms
-  every handle closed (the gate with `priorHandlesClosed`, or `finishAfterFailedReset(allowUnlink:
-  true)` under the hold). `finishAfterFailedReset(allowUnlink: false)` (JS's close failed) opens,
-  resets and closes NOTHING (round 12): the reset stays pending until JS confirms its close at the
-  gate. While set, `openIfClosed` does not apply a pending reset
-  (`pending_reset_deferred`, nothing opened) and PARKS a connection it cannot use instead of closing
-  it (a retry reuses it; JS's confirmed close closes it). The two copies are the root cause (task
-  1667 finding 12); until one owner exists, every new close/checkpoint path needs this rule.
-- **The engine's handle lives in `BackupManifestHandle.swift` (round 6).** It is the only code that
-  opens, resets, closes or reopens the native connection; the engine's `db` is a read-only view of it
-  and `swift-db-queue-audit.ts` holds `manifestHandle` to the same dbQueue rule as `db`.
-  `finishBackupManifestPurge` reopens the handle in the same `dbQueue.sync` step as a successful
-  recovery (still inside the JS purge hold), and no open happens between the two halves of a failed
-  sign-out (`purge_in_flight`). An open that cannot open, read, or apply a pending reset keeps NO
-  handle. `start()` and the BG task never run without a handle: `start()` reopens, or stops, publishes
-  `manifestUnavailableReason` (progress dict, status `needsAttention`, Settings) and retries 2, 4, 8,
-  16, then every 30 s; `stop()` and sign-out cancel the retry. Never add a path that leaves `db` nil
-  silently.
-- **Engine lifecycle (rounds 11-12, `BackupEngineLifecycle.swift`).** start/stop/retry/observer/monitor
-  run as ONE transition. Never hold that lock across a keychain or Face ID read: `start()` loads the
-  key in `prepareStartMasterKey()` (outside, `loadMasterKeyUncached`) and `startLocked(prepared:)`
-  re-validates it inside. A background task that set `isRunning` owns the run only until a user
-  start claims it (`claimUserRun`); its exit idles only its own run (`endBackgroundRun`). `stop()`
-  removes the observer and monitor whatever `isRunning` says. `processBatch` takes the batch slot
-  (`beginBatchProcessing`) before the rebuild gate.
-- **Every manifest write is fenced (round 8, `ManifestWriteFence.swift`).** An async producer (scan,
-  photo-library callback, background task, batch, rebuild step, mark record, sign-out flush, chunk
-  PUT) takes a write ticket with `manifestWriteTicket(...)` BEFORE its slow step (PhotoKit fetch,
-  network, encrypt), and each write checks it with `admitsWrite(ticket, ...)` (or a
-  `FencedManifestWrites` function) as the first statement of the SAME `dbQueue` block.
-  `resetForSignOut` advances and seals the fence first, so a late write from before a sign-out is
-  dropped (traced `backup.native.manifest.write_fenced`); only `bindAccount` (a JS-confirmed sign-in)
-  binds it again. Chunk callbacks also match the row's `upload_session_id`. On the JS side every
-  `BackupDatabase` writer takes a `BackupWriteTicket` (`src/lib/backup-write-ticket.ts`: account epoch
-  + storage-purge generation) taken where the caller's work starts. A new writer without a ticket
-  check fails `src/lib/native-backup-write-fence.test.ts` (`swift-write-fence-audit.ts`); an
-  exemption needs a reason in its `EXEMPT` table.
-- **Start, stop and the manifest-open retry are ONE transition (round 11, `BackupEngineLifecycle.swift`).**
-  `start()` = `lifecycle.userStart { startLocked() }`, `stop()` = `lifecycle.userStop { stopLocked() }`;
-  the retry runs `startLocked()` inside `lifecycle.runRetry(token)`, only while the user still wants
-  backup running (`stop()` / `disablePhotoBackup` / sign-out clear it) and no newer retry exists. The
-  photo observer registers through `registerObserverOnce`, the network monitor starts only when none
-  runs (`startMonitorIfNeeded`). The PhotoKit fetch result is stored only through
-  `acceptFetchResult` (stop generation + `Task.isCancelled` + the scan's fence ticket, in the lock
-  every stop takes) and cleared again after the sign-out reset. Never call `startLocked()` /
-  `stopLocked()` outside a transition, and never assign the fetch result directly.
-- **Account-scoped state goes with the sign-out reset.** The scan-insert health lives on
-  `BackupManifestHandle` and `resetForSignOut` clears it (round 11): account A's failed insert must
-  not defer account B's first rebuild. A deletion left pending by an EARLIER process forces "discard
-  every kept mark" even after this process records its own deletions (`activeDiscard`, round 11).
-- **SQLite text/blob binds copy their bytes** (round 11): `BackupManifestStore.bindText`
-  (SQLITE_TRANSIENT), never `(s as NSString).utf8String` with a nil destructor (SQLITE_STATIC keeps a
-  pointer into a temporary). `src/lib/native-sqlite-bind-transient.guard.test.ts` fails on any nil
-  destructor in `modules/beebeeb-crypto/ios`.
-- Tests: `scripts/swift-tests/backup-manifest-store-test.swift` (real SQLite, two connections,
-  lsof), `scripts/swift-tests/{manifest-rebuild-gate,sign-out-mark-flush,photo-backup-route-responses,manifest-reopen,manifest-write-fence,manifest-js-peer,pending-upload-server-check,manifest-account-deletion,backup-engine-lifecycle}-test.swift`,
-  `src/lib/account-cleanup.1667-backup-manifest.test.ts`,
-  `src/lib/native-backup-manifest-wiring.test.ts`, `src/lib/native-backup-write-fence.test.ts`,
-  `src/services/BackupDatabase.1667-write-fence.test.ts`, `src/services/BackupDatabase.1667-js-open-gate.test.ts`,
-  `src/lib/account-cleanup.1667-real-purge-wrapper.test.ts` (round 11: the REAL `purgePlaintextStorage`
-  wrapper propagates a native rejection, so a failed native purge counts as failed),
-  `src/lib/native-sqlite-bind-transient.guard.test.ts`, `scripts/swift-tests/manifest-shm-two-copies-test.swift`,
-  `src/lib/manifest-single-sqlite-copy.guard.test.ts` (task 2033).
-
-
-## Files (File Provider extension) — testing it (task 1722)
-
-- **Behaviour tests run the shipped extension sources.** `src/lib/file-provider-extension-behaviour.test.ts`
-  compiles `targets/file-provider/{FileProviderExtension,FileProviderItem,FileProviderEnumerator,SyncEngine,
-  CachedHandleIdentity,CryptoBridge}.swift` on macOS against in-memory doubles (cache, API, keychain,
-  CryptoKit key fixtures) and drives `fetchContents`, `modifyItem`, `item(for:)`, `enumerator(for:)`
-  per scenario. Add a scenario there before changing extension behaviour; the CI `swift-gate` job runs
-  it with `BB_REQUIRE_NATIVE_SWIFT_HARNESSES=1`. Strings in its `String.raw` Swift must be ASCII (bun
-  rewrites non-ASCII in template literals to `·`, which Swift rejects: write `\u{00B7}`).
-- **The simulator CAN hold the Files Secure Enclave key** (Apple-silicon simulators emulate the
-  Secure Enclave). Correction to the 2026-10-03/14 notes that said the simulator can never load a key
-  in the extension: those builds only provisioned the Files key from `KeychainManager.store/load`,
-  whose DEBUG-simulator branch uses the software key and skips it. Since task 1722 the mount and every
-  unlocked foreground registration provision it from the verified in-memory handle
-  (`resumeFileProviderAuthenticationIfReady`), so on a simulator content opens from Files. What the
-  simulator still cannot show: device passcode/lock behaviour of the key, and jetsam limits.
-- **The Files key has one writer** (review round 2, 2026-10-15). Every write and delete of the Files
-  Secure Enclave key goes through `KeychainManager.syncFileProviderWrappedKey` /
-  `deleteFileProviderKey`: one `NSLock`, the consent rule read before and after the write, and
-  "provisioned" checked by unwrapping (one key under the tag, its blob opens to this vault key).
-  Never call `storeFileProviderWrappedKey` from a new path, and keep "consent off, then delete" in
-  every revoking path. `file-provider-key-policy.test.ts` models several keys under one tag and runs
-  two writers at once; extend it when this lifecycle changes.
-- **modifyItem returns what it does not apply as still pending** (`declinedFields`). Returning `[]`
-  for a `lastUsedDate` change put our nil on disk after every open. Whether iOS then stops sending
-  those fields (the header documents it for macOS 12+) is not yet observed on a simulator or device.
-- **iOS creates a default "Beebeeb" location** (`NSFileProviderDomainDefaultIdentifier`) from install,
-  shown whenever our `io.beebeeb.files` domain is not registered; it answers "Authentication Required"
-  and "Open Beebeeb" only opens the app. Registering our domain marks it `hidden` (it stays in
-  `Domains.plist`); removing ours brings it back within ~100 ms. Decision 1722 Q1 (Guus, 2026-10-15):
-  Files is on by default for a signed-in, unlocked account, so this location shows only while signed
-  out or after Files was turned off. So "signed out, Beebeeb gone from Files" means OUR domain is gone:
-  check fileproviderd's "Removing domain io.beebeeb.files" line and that the location now logs as
-  `io.beebeeb.app.file-provider/N{35}r` ("Trying to build a non-FPFS default domain"), not that the row
-  vanished. A Maestro `assertNotVisible: "Beebeeb"` on Locations fails by design.
-- **Files icon view: tapping a label can start an in-place rename.** In Maestro, switch Files to list
-  view ("…" → List) and tap the row's size/date text, or tap the tile, never the label.
-- **Files content is plaintext in App Group `temp/` only** (review I1, 2026-10-15). Never the File
-  Provider manager's `temporaryDirectoryURL()`: on a simulator it is `<device>/data/tmp`, outside every
-  app container, so no registry entry, protection or sign-out purge reaches it.
-  `src/lib/plaintext-storage.test.ts` fails on any system temp API in `targets/file-provider/`. After a
-  content open on a simulator, `temp/` in the App Group container should be empty again (the system
-  clones and unlinks what it takes).
-- **Folders Files already listed are never listed again** (review M3; iOS ignores signals for any
-  container but the working set). Since round 4 (2026-10-15) the working set carries the root's
-  children PLUS the children of every folder the system has materialized: the cache keeps them as
-  `sync_state` keys `materialized.container.<id>` (written when we list a folder, replaced from
-  `enumeratorForMaterializedItems()` on `materializedItemsDidChange`, epoch-gated, wiped by the
-  sign-out reset), and `SyncEngine.refreshMaterializedContainers` re-fetches those folders at most
-  every 300 s, 8 per pass, oldest first, in its own task. Upgrading from TestFlight 236 or earlier:
-  the first working-set enumeration after the upgrade expires its anchor once (the delivered set
-  grew), iOS re-lists the working set and every materialized folder, and the stale "Encrypted item ·"
-  labels heal on the first materialized refresh that has the key (simulator 2026-10-15: 06:23 upgrade,
-  names healed 06:28:41). Supersedes the round-3 note that they heal only on a later root change.
-  Cost: snapshot anchors have no change journal, so EVERY change in the root or a materialized folder
-  expires the working-set anchor and iOS re-enumerates the working set, the root and each materialized
-  folder (3 rescans in 8 s on the simulator while the app and the extension both wrote the cache). Not paged. Turning Files off and on still
-  rebuilds everything, but on iOS removing the domain deletes every item in it, including files
-  created through Files that have not uploaded yet (`NSFileProviderManager.remove`; the mode that
-  keeps them is macOS-only); the same holds for any `fileProviderDomainSchemaVersion` bump.
-- **The refresh `enumerateItems` starts rarely finishes** (observed 2026-10-15, pre-existing): fileproviderd
-  invalidates an enumerator within ~20-50 ms of the listing, and `invalidate()` cancels `refreshTask`
-  (25 "cancelled" refreshes in about 7 minutes on the simulator). Work that must complete, like the
-  materialized refresh, runs in its own detached task.
-- **The Files key lives in its own keychain group** (Guus Q3, 2026-10-15): `R8352WDJJR.io.beebeeb.files`,
-  entitled to the app and the File Provider only, never the Share extension or the widget
-  (`plugins/file-provider/withFileProvider.js` `APP_KEYCHAIN_ACCESS_GROUPS` / `extensionEntitlementsPlist`,
-  checked by `file-provider-key-access-group.test.ts`). Keep the shared group FIRST in the app's
-  `keychain-access-groups`: an add without `kSecAttrAccessGroup` lands in the first entry, and every
-  existing SecureStore/keychain item expects the shared group. Every Files-key query names the group;
-  a lookup without a group spans all of the process's groups. Items: SE key tag
-  `io.beebeeb.sekey.files.v2`, wrapped blob service `io.beebeeb.masterkey.files.v2`. The first unlock
-  after an upgrade deletes the v1 items from the shared group and provisions v2 (trace
-  `keychain.manager.files_key.legacy_removed`). On a simulator, check it in
-  `<device>/data/Library/Keychains/keychain-2-debug.db`: `keys.atag` and `genp.svce` are SHA-1 of the
-  tag/service, `agrp` is the group (read-only `sqlite3 "file:...?mode=ro"`).
-- **Files is on by default** (Guus Q1/Q2, 2026-10-15; `src/lib/files-mount-default.ts`). The registrar
-  mounts on every unlock unless this account turned Files off in Settings. That off is kept per account
-  in SecureStore (`beebeeb.files-mount-off.v1.<digest>`), NOT AsyncStorage: the sign-out purge deletes
-  `RCTAsyncLocalStorage_V1`, and until the app restarts every AsyncStorage write fails ("Failed to
-  write manifest file"; that bit the first build of this). The one-time upgrade check reads
-  `everMounted`, the App Group schema stamp `io.beebeeb.fileProviderDomainSchema`, which survives
-  sign-out. Read App Group defaults with PlistBuddy (`Print :io.beebeeb.fileProviderDomainSchema`):
-  `plutil -extract` treats the dots in our keys as a key path and reports a present key as absent.
-- **Deleting a simulator after Files was mounted: wait for the purgatory first** (2026-10-15). Sign-out
-  removes the domain, and fileproviderd parks its directory in
-  `<device>/data/Library/Application Support/FileProvider/Purgatory/` as a dataless directory. Shut the
-  sim down while it is still there and `simctl delete` and `simctl erase` fail with EPERM ("data"
-  couldn't be moved), the device stays `isDeleted`, and it can no longer boot to finish the job
-  (`bb-1722-r1`, 57C1B9B7, is stuck that way). Before `simctl shutdown`, check that `Purgatory/` is empty.
+- Behaviour tests run the shipped extension sources (`src/lib/file-provider-extension-behaviour.test.ts`; CI `swift-gate` with `BB_REQUIRE_NATIVE_SWIFT_HARNESSES=1`) — add a scenario there before changing extension behaviour; `String.raw` Swift must be ASCII.
+- The simulator CAN hold the Files Secure Enclave key (Apple-silicon sims emulate it). The key has ONE writer: `KeychainManager.syncFileProviderWrappedKey`/`deleteFileProviderKey` — never call `storeFileProviderWrappedKey` from a new path; keep "consent off, then delete" in every revoking path.
+- Files key group `R8352WDJJR.io.beebeeb.files` (app + File Provider only, never Share/widget); keep the shared group FIRST in `keychain-access-groups`; every Files-key query names the group. Items: SE tag `io.beebeeb.sekey.files.v2`, wrapped blob service `io.beebeeb.masterkey.files.v2`.
+- **Files is on by default** for a signed-in, unlocked account (`src/lib/files-mount-default.ts`); off state in SecureStore `beebeeb.files-mount-off.v1.<digest>`, NOT AsyncStorage (the sign-out purge deletes `RCTAsyncLocalStorage_V1`). iOS shows a default "Beebeeb" location whenever our `io.beebeeb.files` domain is not registered — by design; `assertNotVisible: "Beebeeb"` on Locations fails by design.
+- Files content is plaintext ONLY in App Group `temp/` — never the manager's `temporaryDirectoryURL()` (`plaintext-storage.test.ts` fails on system temp APIs there). Folders already listed are never listed again (working set carries root + materialized children, 300 s refresh). Removing the domain deletes every item in it, including un-uploaded Files-created files. The refresh `enumerateItems` rarely finishes — work that must complete runs in its own detached task.
+- Before `simctl delete`/`erase` after Files was mounted: wait for `…/FileProvider/Purgatory/` to empty (EPERM otherwise). (details: H#task-1722)
 
 ## GET /files/index — only through `file-index-loader.ts` (task 1959)
 
-`src/lib/file-index-loader.ts` is the only caller of `getFileIndex()`; the source guard
-`src/lib/file-index-loader.guard.test.ts` fails on any other caller. Native code (Swift) never
-calls `GET /api/v1/files/index` at all (task 1667 round 11 removed the camera-roll engine's
-liveness read; `native-backup-manifest-wiring.test.ts` fails on a native caller). The server walks the whole
-vault on every call (~2.4 s for a 40k-file vault, hash or not), so the loader coalesces: callers
-that arrive while a request runs share it; for 5 minutes (`FILE_INDEX_REVALIDATE_MS`) after a
-server check, plain callers get the on-disk cache (the sync client writes create / trash / move /
-rename ops through to it; the loader restores the server-only fields the write-through drops, e.g.
-file-request key material and `blurhash`). `force: true` skips the window: pull-to-refresh, the
-Photos bulk-action retry, the Android repair worker, and the backup reconcile, which is itself
-throttled to once per 5 minutes (`RECONCILE_MIN_INTERVAL_MS` in `BackupService.ts`). Before 1959,
-SettingsScreen's `refreshBackupStats` effect (it depends on `backupProgress.completed`) reached the
-reconcile through `getDeviceManifest()` -> `ensureBackupFolders()` once per backed-up item. That
-path, plus a request on every Photos tab focus, is how one 163 MB upload produced 18 index walks
-in 10 minutes. Worst case now: 2 requests per 5 minutes (one reconcile, one plain revalidation),
-plus explicit refreshes, plus one per file that ANOTHER device uploads (below).
-
-**New rows inside the window (1959 round 4).** A file uploaded after the window opened reaches the
-cache only through the sync write-through, whose rows have no `is_media` (the `file_create` op
-carries none, the mime is inside `name_encrypted`, a fresh upload has no thumbnail), so the Photos
-tab dropped it. Own uploads are classified locally by `src/lib/upload-classification.ts`: the JS
-uploaders record the `is_media` they sent (in `finalizeUpload`, before the complete call), and the
-backup engines' uploads are read from `backup_assets.asset_type` (`getBackupMediaFlags`). A new
-file row neither source knows (another device, the share extension, a file request) makes a
-`revalidateUnclassified` caller (Photos, photo-library settings) revalidate once, joined to any
-request in flight; a row the server confirms it does not list is acknowledged so it cannot make
-every focus ask. Measured in `photo-index-source.test.ts`: 50 own uploads with a Photos focus after
-each = 1 request, every photo visible on the next focus; another device's uploads = one request per
-arrival, not per focus. New rows still lack `blurhash`, `storage_location`, `thumbnail_bytes` and
-file-request keys until a server check: the grid shows no blurhash placeholder for them, the info
-sheet fetches the location itself (`file-storage-location.ts`), and a file-request upload is never
-an own upload, so on Photos it always takes the revalidation path.
-
-**Account boundary (1959 round 2).** `src/lib/account-epoch.ts` names the account a piece of async
-work belongs to: a generation that `setToken()` / `clearToken()` (and `clearCachedFileIndex()`)
-advance synchronously, plus the unlocked key's account id (a null id while locked is not a
-different account). The loader only lets a caller join a request of its own epoch, and a request
-whose epoch is stale when it settles rejects with `StaleAccountError` for all its waiters: it
-never hands rows to another account and never writes the cache. The backup reconcile captures the
-epoch at start and calls `live()` after every await before it reads or prunes local state; its
-in-flight join and throttle are per epoch. Cache writes and clears run through one queue in
-`file-index-cache.ts`, and a write carrying an `epoch` is dropped when that account is gone (the
-sync client passes the epoch it was created under, so its `stop()` flush after sign-out writes
-nothing). Treat `StaleAccountError` as "discard silently": no error UI, no fallback request.
-Anything new that holds account data across an await follows the same pattern.
+`src/lib/file-index-loader.ts` is the only caller of `getFileIndex()` (`file-index-loader.guard.test.ts`); native never calls `GET /api/v1/files/index` (~2.4 s/call on a 40k vault). The loader coalesces callers and serves the on-disk cache for 5 minutes after a server check (`FILE_INDEX_REVALIDATE_MS`); `force: true` skips; the reconcile is throttled to once per 5 min. Own uploads are classified locally (`upload-classification.ts` / `backup_assets.asset_type`); a row no source knows makes a `revalidateUnclassified` caller revalidate once. Account boundary: `src/lib/account-epoch.ts` — a stale-epoch request rejects with `StaleAccountError` (discard silently: no error UI, no fallback). (details: H#task-1959)
 
 ## Bottom sheets — one primitive (task 1586)
 
-Every partial-height sheet renders through `src/components/sheet/BottomSheet.tsx` (+
-`BottomSheetScrollView` for its content): full width, bottom attached, top corners
-`GLASS_RADII.sheet`, home-indicator inset inside, draggable handle/header with detents
-(`src/lib/sheet-detents.ts`: half / default 72 % / large 90 %), fling-to-dismiss, scroll hand-over
-at the top, VoiceOver-adjustable handle. RN Animated (native driver) + gesture-handler; no
-Reanimated. Inside an RN `Modal`, wrap it in a `GestureHandlerRootView` (see `TrustDetailsSheet`).
-A routed sheet (`ShareSheet`) uses `animation: 'none'` and pops in `onDismissed`.
-`src/components/sheet/sheet-sweep.test.ts` fails if a sheet style floats inset again. Exceptions
-are listed in DEVIATIONS.md → "Task 1586".
+Every partial-height sheet renders through `src/components/sheet/BottomSheet.tsx` (+`BottomSheetScrollView`): full width, bottom attached, `GLASS_RADII.sheet` top corners, detents (`src/lib/sheet-detents.ts`: half / 72 % / 90 %), fling-to-dismiss, scroll hand-over; RN Animated + gesture-handler, no Reanimated; inside an RN `Modal` wrap in `GestureHandlerRootView`; a routed sheet (`ShareSheet`) uses `animation: 'none'` and pops in `onDismissed`. `sheet-sweep.test.ts` fails if a sheet floats inset again. Exceptions: DEVIATIONS.md → "Task 1586".
 
 ## iOS app compile gate — `ios-build` CI job (task 1669)
 
-`.github/workflows/ci.yml` job `ios-build` (macos-latest, free: public repo) runs
-`scripts/swift-ci/build-ios-simulator.sh`: `bun install`, `pod install`, then an unsigned
-`xcodebuild` of the `Beebeeb` scheme for the iOS simulator. It is the only thing that compiles
-`modules/beebeeb-crypto/ios/*.swift` (NativeBackupEngine, BeebeebAppDelegate, ...) before a
-TestFlight build; the Linux dev containers have no Swift compiler. The script asserts
-`BUILD SUCCEEDED` x1, 0 `: error:` lines and that `NativeBackupEngine.swift` /
-`BeebeebAppDelegate.swift` were actually compiled (a build that never touched them is a RED).
-Two source-text guards cover what the compiler cannot: `src/lib/app-delegate-launch-guard.test.ts`
-(neither launch entry point, `didFinishLaunching` or `handleEventsForBackgroundURLSession`, touches
-`NativeBackupEngine.shared` on the main thread; the background-session completion handler is stashed
-first and the engine is constructed in a `DispatchQueue.global` hop) and
-`src/lib/native-backup-engine-db-queue.test.ts` (every `db` access is on `dbQueue`, any call receiver
-counts, a `Task` / other-queue hop inside a `dbQueue` closure does not; `openDatabase()` is enqueued
-directly from `init()`).
-
-The unit suite itself runs in CI as job `unit-tests` (ubuntu-latest): `scripts/ci/unit-suite.sh` runs
-`bun run test` and fails unless the truth line `isolated: N pass, 0 fail across F files` appears once
-with N > 0 and exit code 0; `scripts/ci/unit-suite.sh --self-test` proves the gate goes red on each bad
-shape.
-
-Photo pager resource bounds (task 1669): image and RAW pages keep their full-resolution resource for the
-current page +-1 (`PHOTO_PAGE_LOAD_RADIUS`, at most 3 pages, matches `windowSize={3}`); a video page holds
-its AVPlayer only while it is the CURRENT page, or while it is in Picture in Picture (expo-video's
-`onPictureInPictureStart` / `Stop`). `PreviewScreen.photo-page-resources.test.tsx` renders the real
-`PhotoPage` and asserts these bounds.
+`.github/workflows/ci.yml` job `ios-build` (macos-latest, free) runs `scripts/swift-ci/build-ios-simulator.sh` (`bun install`, `pod install`, unsigned `xcodebuild` of the `Beebeeb` scheme) — the only thing that compiles `modules/beebeeb-crypto/ios/*.swift` before a TestFlight build; asserts `BUILD SUCCEEDED` ×1, 0 `: error:` lines, and that `NativeBackupEngine.swift`/`BeebeebAppDelegate.swift` were actually compiled. Guards: `src/lib/app-delegate-launch-guard.test.ts`, `src/lib/native-backup-engine-db-queue.test.ts`. Unit suite = job `unit-tests` (`scripts/ci/unit-suite.sh`, requires the truth line `isolated: N pass, 0 fail across F files`; `--self-test` proves the gate goes red).
 
 ## How we work (evidence, design, done, parallel agents)
 
-The full rules live in the workspace `CLAUDE.md` → "How we work" (also summarised in the workspace `AGENTS.md`). Read them; they apply here. The repo-specific instantiation:
-
-- **The count-shaped truth line:** `bun run test 2>&1 | tee /tmp/bb-mobile-test.log` must end in
-  `isolated: N pass, 0 fail across F files` — assert N (as of 2026-09-12: 272 across 35) not the word
-  "ok". `bunx tsc --noEmit; echo exit=$?` — assert the exit code, not silence. For Maestro, the
-  per-flow lines of `run-all.yaml` are the evidence, pasted into the task file; a flow that reports
-  COMPLETED against an unchanged screenshot is the driver fault documented above, not a pass.
-- **Simulators by UDID, always** (`bb-qa-1310` / `bb-qa-2` above), `--udid` on every Maestro call.
-  Maestro is one driver machine-wide — that IS the build semaphore here; the lead grants it.
-- **Design before code:** `design/ios26-canvas/` + `DEVIATIONS.md`. A ruling from Guus supersedes the
-  canvas (precedent 1357) — the DEVIATIONS.md line rides the same commit as the code.
-- **Done means the declared rung ran.** `tsc` + `bun run test` never close a simulator, Maestro, or
-  device rung; a Linux session parks the task in `in-review/` naming the open rungs.
-- **`expo prebuild` is a destructive command in this tree** (see the vendored-restore rule above) —
-  treat it like `git clean`: never in a tree you did not allocate.
+Full rules: workspace `CLAUDE.md` → "How we work" (also in workspace `AGENTS.md`). Repo-specific: truth line `bun run test 2>&1 | tee /tmp/bb-mobile-test.log` must end `isolated: N pass, 0 fail across F files` — assert N (2026-09-12: 272 across 35), not the word "ok"; `bunx tsc --noEmit; echo exit=$?` — assert the exit code, not silence. Maestro evidence = the per-flow lines of `run-all.yaml`, pasted into the task file; COMPLETED against an unchanged screenshot is the driver fault, not a pass. Simulators by UDID, always. Design before code: `design/ios26-canvas/` + `DEVIATIONS.md`; a ruling from Guus supersedes the canvas (precedent 1357); the DEVIATIONS.md line rides the same commit as the code. Done means the declared rung ran — `tsc` + `bun run test` never close a simulator, Maestro, or device rung; a Linux session parks the task in `in-review/` naming the open rungs.
 
 ## Graphify
 
-This repo has a knowledge graph at graphify-out/.
-- Before exploring code, read graphify-out/GRAPH_REPORT.md for module structure and relationships
-- After modifying code, run `graphify update .` and commit the updated graphify-out/
-- The graph tracks modules, functions, types, and their relationships (calls, imports, inherits)
-- Use `graphify query "<question>"` to ask questions about the codebase
-- Use `graphify path "<A>" "<B>"` to find connections between two concepts
+Knowledge graph at `graphify-out/`: read `GRAPH_REPORT.md` before exploring code; run `graphify update .` after modifying code and commit `graphify-out/`; `graphify query "<question>"`; `graphify path "<A>" "<B>"`.
 
 ## Keep shared docs in sync
 
