@@ -5,31 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1] - 2026-10-02
-
 ## [Unreleased]
 
-### Added
-- Nothing yet.
+## [1.0.1] - 2026-10-24
 
 ### Changed
-- Nothing yet.
+- Storage locations are shown by country, including the location selected for an upload. Unavailable locations have a clear refusal state.
+- Sharing produces one complete encrypted link with its decryption key embedded.
 
 ### Fixed
-- The app stays cool when left open: background sync and backup checks pause while the app is locked or in the background, and reconnect attempts back off instead of hammering the network.
-- Uploads are sturdier: only one upload loop runs at a time (a second pick is queued behind the running one with an honest notice), progress updates are throttled, thumbnails load through a bounded queue, and Resume is offered only when a resume can actually run.
-- New uploads stay visible in Files while they run; previews close properly with a tap or swipe-down even right after a fresh upload.
-- Photo library permission is re-asked cleanly after a denial instead of looping.
+- Fixed a startup crash caused by duplicate camera-roll manifest storage in recent TestFlight builds.
+- Photo backup checks the server before uploading duplicates, keeps its history scoped to the account across sign-out, and updates the displayed count after backup is turned off and on.
+- File changes catch up after a live connection closes or requests a resync; repeated file-index loads share one request.
+- Busy uploads respect the server's retry delay.
+- Background sync and backup checks pause while the app is locked or in the background, and reconnect attempts back off.
+- Only one upload loop runs at a time, progress updates are throttled, thumbnails use a bounded queue, and Resume is offered only when a resume can run.
+- New uploads stay visible in the file browser. Preview controls remain accessible, and closing a video preview cancels its background work.
+- Photo library permission is requested cleanly after a denial.
 - Fixed a header fade glitch in light mode.
-- Sharing always produces one complete link now — the decryption key is embedded in the link. The old split presentation is gone.
-- Sign-in failures show plain, honest messages instead of raw technical error text.
-- After an email password reset, your vault re-arms automatically on devices that already hold it. On a fresh device you land on a clear "Vault locked" screen and unlock with your 12-word phrase.
-
-### Removed
-- Nothing yet.
-
-### Security
-- Nothing yet.
+- Sign-in failures show plain messages instead of raw technical errors.
+- After an email password reset, devices that already hold the vault key re-arm automatically. A fresh device shows a clear "Vault locked" screen and asks for the 12-word recovery phrase.
 
 ## [1.0.0] - 2026-05-13
 
