@@ -10,12 +10,12 @@ final class ApiClient {
 
   private let session: URLSession
 
-  private init() {
+  init(session: URLSession? = nil) {
     let cfg = URLSessionConfiguration.default
     cfg.timeoutIntervalForRequest = 60
     cfg.timeoutIntervalForResource = 600
     cfg.httpMaximumConnectionsPerHost = 4
-    self.session = URLSession(configuration: cfg)
+    self.session = session ?? URLSession(configuration: cfg)
     // App Group UserDefaults handle is no longer needed — session token
     // and baseUrl moved to the shared Keychain (task 0447).
   }
@@ -57,6 +57,7 @@ final class ApiClient {
 
   struct ListResponse: Decodable {
     let files: [FileEntryDto]
+    let next_cursor: String?
   }
 
   struct UploadResponseDto: Decodable {
@@ -79,14 +80,28 @@ final class ApiClient {
 
   /// List the children of `parentId`. Pass `nil` for the root.
   func listFiles(parentId: String?) async throws -> [FileEntryDto] {
-    var components = URLComponents(url: baseUrl.appendingPathComponent("/api/v1/files"), resolvingAgainstBaseURL: false)!
-    if let parentId {
-      components.queryItems = [URLQueryItem(name: "parent_id", value: parentId)]
-    }
-    let request = try authedRequest(url: components.url!, method: "GET")
-    let (data, response) = try await session.data(for: request)
-    try validate(response, data)
-    return try JSONDecoder().decode(ListResponse.self, from: data).files
+    var entries: [FileEntryDto] = []
+    var cursor: String?
+    var seenCursors = Set<String>()
+    repeat {
+      try Task.checkCancellation()
+      var components = URLComponents(url: baseUrl.appendingPathComponent("/api/v1/files"), resolvingAgainstBaseURL: false)!
+      var query: [URLQueryItem] = []
+      if let parentId { query.append(URLQueryItem(name: "parent_id", value: parentId)) }
+      if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+      components.queryItems = query.isEmpty ? nil : query
+      let request = try authedRequest(url: components.url!, method: "GET")
+      let (data, response) = try await session.data(for: request)
+      try validate(response, data)
+      let page = try JSONDecoder().decode(ListResponse.self, from: data)
+      entries.append(contentsOf: page.files)
+      cursor = page.next_cursor
+      if let cursor, !seenCursors.insert(cursor).inserted {
+        // Never publish a partial listing to replaceChildren's prune.
+        throw ApiError.invalidResponse
+      }
+    } while cursor != nil
+    return entries
   }
 
   /// Download the encrypted chunk stream for a file into a temporary file.
