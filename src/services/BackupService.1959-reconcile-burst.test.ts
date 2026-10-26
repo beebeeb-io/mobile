@@ -19,6 +19,10 @@
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 
+// Task 2233: this service now reads installed app identity through appVersion().
+mock.module('expo-constants', () => ({ default: { expoConfig: { version: '0.9.0' } } }));
+mock.module('expo-application', () => ({ nativeApplicationVersion: '1.0.1', nativeBuildVersion: '8' }));
+
 type Entry = { id: string; parent_id: string | null; is_folder: boolean; name_encrypted: string; created_at: string; updated_at?: string; size_bytes?: number; chunk_count?: number };
 
 const listings = new Map<string, Entry[]>();

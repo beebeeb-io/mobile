@@ -38,10 +38,10 @@ mock.module('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
-// No `version` on expoConfig here — proves the '1.0.0' fallback (matching
-// device-registration.ts's existing convention) rather than a crash/undefined.
+// Installed binary wins over stale embedded config (task 2233 item 10).
+mock.module('expo-application', () => ({ nativeApplicationVersion: '1.0.1', nativeBuildVersion: '8' }));
 mock.module('expo-constants', () => ({
-  default: { expoConfig: { extra: { apiUrl: 'https://api.test' } } },
+  default: { expoConfig: { version: '1.0.0', extra: { apiUrl: 'https://api.test' } } },
 }));
 
 mock.module('expo-secure-store', () => ({
@@ -128,7 +128,7 @@ describe('writer-provenance headers on auth-bootstrap calls (1436)', () => {
     expect(headerValue(fetchCalls[0].init, 'X-Beebeeb-Client')).toBe('mobile-ios');
     // No version in the mocked expoConfig -> falls back to '1.0.0', proving
     // the fallback path (not just the happy path where it's configured).
-    expect(headerValue(fetchCalls[0].init, 'X-Beebeeb-Client-Version')).toBe('1.0.0');
+    expect(headerValue(fetchCalls[0].init, 'X-Beebeeb-Client-Version')).toBe('1.0.1');
   });
 });
 
@@ -159,6 +159,6 @@ describe('writer-provenance headers on upload-init calls (1436 — the actual ga
     const initCall = fetchCalls.find((c) => c.url.includes('/api/v1/uploads/init'));
     expect(initCall).toBeDefined();
     expect(headerValue(initCall!.init, 'X-Beebeeb-Client')).toBe('mobile-ios');
-    expect(headerValue(initCall!.init, 'X-Beebeeb-Client-Version')).toBe('1.0.0');
+    expect(headerValue(initCall!.init, 'X-Beebeeb-Client-Version')).toBe('1.0.1');
   });
 });

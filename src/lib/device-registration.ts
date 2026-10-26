@@ -1,3 +1,4 @@
+import { appVersion } from './app-version';
 /**
  * Device registration — registers this mobile device with the Beebeeb
  * clients API on every successful login/startup.
@@ -56,7 +57,7 @@ export async function registerDevice(): Promise<string | null> {
       (Platform.OS === 'ios' ? 'iPhone' : 'Android');
 
     const platform = Platform.OS === 'ios' ? 'ios' : 'android';
-    const bbVersion = Constants.expoConfig?.version ?? '1.0.0';
+    const bbVersion = appVersion().version;
 
     // Try to get the Expo push token for the push_token field.
     // We import lazily because expo-notifications may not be available.

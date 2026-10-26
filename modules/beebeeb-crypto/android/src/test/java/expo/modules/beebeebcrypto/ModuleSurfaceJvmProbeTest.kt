@@ -11,6 +11,14 @@ import org.junit.Test
 class ModuleSurfaceJvmProbeTest {
 
   @Test
+  fun exposesFileRequestSurface() {
+    val def = BeebeebCryptoModule().definition()
+    for (name in listOf("createRequestKeypairWithHandle", "unwrapRequestPrivateWithHandle", "openRequestUpload")) {
+      assertTrue("Android must expose $name (task 2233 item 9)", def.asyncFunctions.containsKey(name))
+    }
+  }
+
+  @Test
   fun exposesDownloadAndDecryptFileNative() {
     val def = BeebeebCryptoModule().definition()
     assertTrue(

@@ -34,6 +34,9 @@ import uniffi.beebeeb_uniffi.opaqueLoginStart
 import uniffi.beebeeb_uniffi.opaqueRegistrationFinish
 import uniffi.beebeeb_uniffi.opaqueRegistrationStart
 import uniffi.beebeeb_uniffi.recoverFromPhrase
+import uniffi.beebeeb_uniffi.openRequestUpload
+import uniffi.beebeeb_uniffi.unwrapRequestPrivate
+import uniffi.beebeeb_uniffi.wrapRequestPrivate
 import uniffi.beebeeb_uniffi.x25519SharedSecret
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -763,6 +766,36 @@ class BeebeebCryptoModule : Module() {
 
     AsyncFunction("deriveShareKey") { sharedSecret: ByteArray, fileId: ByteArray ->
       deriveShareKey(sharedSecret, fileId)
+    }
+
+    // File requests: same core calls and empty HKDF context as iOS (decision 0651).
+    // Neither the master key nor the new request private key crosses to JS.
+    AsyncFunction("createRequestKeypairWithHandle") { handleId: Int ->
+      val master = handles.get(handleId).exportForKeychain()
+      val privateKey = ByteArray(32)
+      try {
+        SecureRandom().nextBytes(privateKey)
+        val publicKey = deriveX25519Public(privateKey)
+        val wrapped = wrapRequestPrivate(master, ByteArray(0), privateKey)
+        mapOf("publicKey" to publicKey, "wrapped" to wrapped.wrapped, "nonce" to wrapped.nonce)
+      } finally {
+        privateKey.fill(0)
+        master.fill(0)
+      }
+    }
+
+    AsyncFunction("unwrapRequestPrivateWithHandle") { handleId: Int, wrapped: ByteArray, nonce: ByteArray ->
+      val master = handles.get(handleId).exportForKeychain()
+      try {
+        // The request resolver owns this returned buffer and zeroes it on vault lock.
+        unwrapRequestPrivate(master, ByteArray(0), wrapped, nonce)
+      } finally {
+        master.fill(0)
+      }
+    }
+
+    AsyncFunction("openRequestUpload") { privateKey: ByteArray, ephemeralPublicKey: ByteArray, wrappedKey: ByteArray ->
+      openRequestUpload(privateKey, ephemeralPublicKey, ByteArray(0), wrappedKey)
     }
 
     // ─────────────────────────────── chunk / metadata AEAD ───────────────────

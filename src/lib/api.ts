@@ -1,3 +1,4 @@
+import { appVersion } from './app-version';
 /**
  * Beebeeb API client.
  *
@@ -634,9 +635,9 @@ async function headers(auth = true, extra?: Record<string, string>): Promise<Req
 
 // Writer-provenance (task 1436, the mobile half of 1392): the app version the
 // server records on every object_versions row it writes (server PR #23 / task
-// 1369). Mirrors the existing Constants.expoConfig?.version usage in
+// 1369). Uses the installed binary version, shared with
 // device-registration.ts / SettingsScreen.tsx — no new dependency.
-const MOBILE_CLIENT_VERSION = Constants.expoConfig?.version ?? '1.0.0';
+const MOBILE_CLIENT_VERSION = appVersion().version;
 
 /**
  * Task 1578 (for 1580): `X-Beebeeb-Device-Id` on upload init + complete, so the

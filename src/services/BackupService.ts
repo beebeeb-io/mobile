@@ -1,3 +1,4 @@
+import { appVersion } from '../lib/app-version';
 /**
  * BackupService — manages the backup folder hierarchy and the per-device
  * `.device.json` manifest.
@@ -189,7 +190,6 @@ const LEGACY_PHOTOS_FOLDER_ID_KEY = 'beebeeb_photos_folder_id';
 const LEGACY_ROOT_NAMES = { photosFolder: 'Photos', contacts: 'contacts.vcf', calendar: 'calendar.ics' } as const;
 const MANIFEST_FILENAME = '.device.json';
 const MANIFEST_VERSION = 1;
-const APP_VERSION = '1.0.0';
 const FALLBACK_CHUNK_SIZE = 4 * 1024 * 1024;
 const NONCE_LENGTH = 12;
 const GCM_TAG_LENGTH = 16;
@@ -284,7 +284,7 @@ async function getDeviceInfo(): Promise<DeviceInfo> {
     device_name: deviceName(),
     device_model: Device.modelName ?? 'Unknown Model',
     os_version: `${Device.osName ?? Platform.OS} ${Device.osVersion ?? ''}`.trim(),
-    app_version: APP_VERSION,
+    app_version: appVersion().version,
   };
 }
 
