@@ -4,6 +4,16 @@ Per the workspace `CLAUDE.md` → "How we work" → "Design before code": where 
 design artefact and the shipped code disagree, the deviation is recorded HERE,
 in the same commit as the code, with the ruling that caused it.
 
+## Full-speed L2 — Settings categories (2026-10-26)
+
+**Design:** workspace `docs/superpowers/specs/2026-10-26-settings-ia-design.md` and its delivery plan, written before implementation. This supersedes the single long settings page and generic Advanced grouping.
+
+**Ruling:** Guus requested clearer categories and removal of confusing duplicates; full-speed program §5.6 item 5 explicitly allows implementation after the design PR without waiting for approval. Publication is blocked by the session's network/approval policy; the docs branch and client branch are prepared locally for the lead.
+
+**Changes:** eight category entries; distinct account/device notifications; backup albums versus folders displayed in Photos; photo loading and quality under Backups & files; diagnostics under development-only Help; thumbnail-quality entry limited to iOS because Android has no consumer for its saved value; platform-neutral biometric/system-settings/rating labels. Existing routes, keys, consent, iOS purchase restrictions and storage-country capability gates remain.
+
+**Verification:** targeted isolated unit tests and TypeScript, with evidence recorded in the workspace delivery plan. Maestro flows are updated but not run: program §5.4 reserves runtime checks for the release window.
+
 ## Task 2050 — Storage location by COUNTRY, never city (supersedes the 1919 datacenter rows)
 
 **Design:** no `design/ios26-canvas/` artboard covers Settings > Data residency, the per-file

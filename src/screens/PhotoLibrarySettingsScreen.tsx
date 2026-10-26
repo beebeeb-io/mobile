@@ -195,7 +195,7 @@ export default function PhotoLibrarySettingsScreen() {
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconButton}>
           <Ionicons name="chevron-back" size={24} color={c.ink} />
         </TouchableOpacity>
-        <Text style={[styles.title, { color: c.ink }]}>Folders in Photos</Text>
+        <Text style={[styles.title, { color: c.ink }]}>Folders shown in Photos</Text>
         <View style={styles.iconButton} />
       </View>
 
@@ -210,6 +210,10 @@ export default function PhotoLibrarySettingsScreen() {
           {folders.length > 0 && folders.every((f) => f.isProtected)
             ? 'These folders hold your phone backup, so they always show in Photos.'
             : 'Choose which folders appear in Photos. Folders that hold your phone backup always show. Turn off folders like album artwork you do not want mixed in.'}
+        </Text>
+
+        <Text style={[styles.body, { color: c.ink3 }]}>
+          This only changes what you see in Photos. It does not change which albums are backed up or remove any files.
         </Text>
 
         {loading ? (

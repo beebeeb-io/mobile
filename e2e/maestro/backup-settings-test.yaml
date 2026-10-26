@@ -27,6 +27,10 @@ appId: io.beebeeb.app
     visible: "Settings"
     timeout: 5000
 
+# Open the shared backup category before finding its controls
+- tapOn:
+    id: "settings-category-backups"
+
 # Scroll to the Backup section
 - scrollUntilVisible:
     element:

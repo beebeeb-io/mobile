@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   RefreshControl,
   Platform,
   ScrollView,
@@ -9,17 +8,14 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { RootStackParamList } from '../App';
-import { getNativeBackupDiagnostics, BeebeebThumbnails, type QueueStats } from '../../modules/beebeeb-crypto';
-import { useCrypto } from '../lib/crypto-context';
+import { BeebeebThumbnails, type QueueStats } from '../../modules/beebeeb-crypto';
 import { useTheme } from '../lib/theme-context';
-import { formatRuntimeTraceJsonl, getRuntimeTraceSnapshot, recordRuntimeTrace } from '../lib/runtime-trace';
 import { loadFileIndex } from '../lib/file-index-loader';
 import { formatBytes } from '../lib/format';
 import {
@@ -34,7 +30,6 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 const PROFILES: PerformanceStorageProfile[] = ['light', 'balanced', 'smooth'];
 
-
 function profileCopy(profile: PerformanceStorageProfile): string {
   if (profile === 'light') return 'Loads remote thumbnails only when they scroll into view.';
   if (profile === 'smooth') return 'Prefetches normal thumbnails and opens photos with a larger preview thumbnail.';
@@ -45,11 +40,9 @@ export default function AdvancedSettingsScreen() {
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
   const { colors: c } = useTheme();
-  const { getUnlockDiagnostics } = useCrypto();
   const [profile, setProfile] = useState<PerformanceStorageProfile>('balanced');
   const [fileCount, setFileCount] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
-  const [copiedDiagnostics, setCopiedDiagnostics] = useState(false);
   const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
 
   const estimate = useMemo(() => estimatePerformanceStorage(fileCount, profile), [fileCount, profile]);
@@ -87,22 +80,6 @@ export default function AdvancedSettingsScreen() {
     await setPerformanceStorageSettings({ profile: next });
   }, []);
 
-  const copyDiagnostics = useCallback(async () => {
-    recordRuntimeTrace('advanced.diagnostics.copy_request');
-    const payload = {
-      generatedAt: new Date().toISOString(),
-      platform: Platform.OS,
-      vault: getUnlockDiagnostics(),
-      backup: await getNativeBackupDiagnostics().catch((error) => ({
-        error: error instanceof Error ? error.message : String(error),
-      })),
-      runtimeTrace: getRuntimeTraceSnapshot(),
-      runtimeTraceJsonl: formatRuntimeTraceJsonl(),
-    };
-    await Clipboard.setStringAsync(JSON.stringify(payload, null, 2));
-    setCopiedDiagnostics(true);
-    setTimeout(() => setCopiedDiagnostics(false), 1800);
-  }, [getUnlockDiagnostics]);
 
   return (
     <View style={[styles.root, { backgroundColor: c.paper }]}>
@@ -110,7 +87,7 @@ export default function AdvancedSettingsScreen() {
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconButton}>
           <Ionicons name="chevron-back" size={24} color={c.ink} />
         </TouchableOpacity>
-        <Text style={[styles.title, { color: c.ink }]}>Advanced</Text>
+        <Text style={[styles.title, { color: c.ink }]}>Photo loading & quality</Text>
         <View style={styles.iconButton} />
       </View>
 
@@ -119,7 +96,7 @@ export default function AdvancedSettingsScreen() {
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={c.amber} />}
       >
-        <Text style={[styles.sectionTitle, { color: c.ink3 }]}>Performance & Storage</Text>
+        <Text style={[styles.sectionTitle, { color: c.ink3 }]}>Photo loading</Text>
         <View style={[styles.card, { backgroundColor: c.paper2, borderColor: c.line }]}>
           <View style={styles.segment}>
             {PROFILES.map((item) => {
@@ -140,7 +117,7 @@ export default function AdvancedSettingsScreen() {
               );
             })}
           </View>
-          <Text style={[styles.body, { color: c.ink2 }]}>{profileCopy(profile)}</Text>
+          <Text style={[styles.body, { color: c.ink2 }]}>{profileCopy(profile)} This changes loading speed and local storage use, not the quality of your original photos.</Text>
           <View style={[styles.estimateBox, { backgroundColor: c.paper, borderColor: c.line }]}>
             <Text style={[styles.estimateLabel, { color: c.ink3 }]}>Estimated local cache</Text>
             <Text style={[styles.estimateValue, { color: c.ink }]}>{formatBytes(estimate.estimatedBytes)}</Text>
@@ -150,6 +127,7 @@ export default function AdvancedSettingsScreen() {
           </View>
         </View>
 
+        {Platform.OS === 'ios' ? <>
         {/* ── Photos ────────────────────────────────────────────────────── */}
         <Text style={[styles.sectionTitle, { color: c.ink3 }]}>Photos</Text>
         <TouchableOpacity
@@ -163,11 +141,11 @@ export default function AdvancedSettingsScreen() {
             <Ionicons name="chevron-forward" size={18} color={c.ink3} />
           </View>
           <Text style={[styles.rowSub, { color: c.ink3 }]}>
-            {Platform.OS === 'ios'
-              ? 'Choose how sharp your saved thumbnails should be. Apply to existing photos.'
-              : 'Thumbnail regeneration is available on iOS in this version.'}
+            Choose how sharp your saved thumbnails should be. Apply to existing photos.
           </Text>
         </TouchableOpacity>
+
+        </> : null}
 
         {queueStats && (queueStats.pending + queueStats.running + queueStats.failedRetry > 0) ? (
           <TouchableOpacity
@@ -185,36 +163,6 @@ export default function AdvancedSettingsScreen() {
           </TouchableOpacity>
         ) : null}
 
-        {__DEV__ ? (
-          <>
-            <Text style={[styles.sectionTitle, { color: c.ink3 }]}>Diagnostics</Text>
-            <View style={[styles.card, { backgroundColor: c.paper2, borderColor: c.line }]}>
-              <Text style={[styles.body, { color: c.ink2 }]}>
-                Export the current vault and backup snapshot for debugging.
-              </Text>
-              <TouchableOpacity
-                onPress={copyDiagnostics}
-                style={[styles.secondaryButton, { borderColor: c.line, backgroundColor: c.paper }]}
-                accessibilityLabel="Copy backup diagnostics"
-                accessibilityRole="button"
-              >
-                <Text style={[styles.secondaryButtonText, { color: c.ink }]}>
-                  {copiedDiagnostics ? 'Copied diagnostics' : 'Copy diagnostics JSON'}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => navigation.navigate('GlassGallery')}
-                style={[styles.secondaryButton, { borderColor: c.line, backgroundColor: c.paper }]}
-                accessibilityLabel="Open the glass primitives gallery"
-                accessibilityRole="button"
-              >
-                <Text style={[styles.secondaryButtonText, { color: c.ink }]}>
-                  Glass primitives gallery
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </>
-        ) : null}
       </ScrollView>
     </View>
   );
@@ -246,6 +194,4 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   rowTitle: { fontSize: 15, fontWeight: '800' },
   rowSub: { fontSize: 12, lineHeight: 17 },
-  secondaryButton: { minHeight: 46, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  secondaryButtonText: { fontSize: 14, fontWeight: '800' },
 });
