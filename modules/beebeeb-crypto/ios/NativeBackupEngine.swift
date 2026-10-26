@@ -3872,13 +3872,14 @@ final class NativeBackupEngine: NSObject {
       //
       //    Videos stream straight from disk via `fromFile` so a multi-GB clip
       //    never enters RAM; photos use the in-memory `forPush` path. A video
-      //    not backed by a readable on-disk AVURLAsset (e.g. a composition)
-      //    falls through to the in-memory path — unchanged from before.
+      //    composition is first exported to a protected temporary file (0677).
+      //    Only photos use the in-memory path.
       let resolvedUti: String
       let resolvedOriginalSize: Int
 
-      if asset.assetType == "video",
-         let videoSource = try await fetchVideoFileSource(localId: asset.localAssetId) {
+      if asset.assetType == "video" {
+        let videoSource = try await fetchVideoFileSource(localId: asset.localAssetId)
+        defer { videoSource.cleanup() }
         resolvedUti = videoSource.uti
         resolvedOriginalSize = videoSource.sizeBytes
         guard canStageEncryptedAsset(plaintextBytes: Int64(resolvedOriginalSize)) else {
@@ -3912,7 +3913,7 @@ final class NativeBackupEngine: NSObject {
         }
         guard completed else { return false }
       } else {
-        // In-memory path: photos, and any video without a streamable file URL.
+        // In-memory path: photos only.
         let (data, uti) = try await fetchAssetData(localId: asset.localAssetId)
         guard canStageEncryptedAsset(plaintextBytes: Int64(data.count)) else {
           dbQueue.sync {
@@ -4903,10 +4904,6 @@ final class NativeBackupEngine: NSObject {
       throw BackupError.assetNotFound
     }
 
-    if phAsset.mediaType == .video {
-      return try await fetchVideoData(phAsset: phAsset)
-    }
-
     return try await withCheckedThrowingContinuation { continuation in
       let options = PHImageRequestOptions()
       options.version = .original
@@ -4927,87 +4924,27 @@ final class NativeBackupEngine: NSObject {
     }
   }
 
-  private func fetchVideoData(phAsset: PHAsset) async throws -> (Data, String) {
-    return try await withCheckedThrowingContinuation { continuation in
-      let options = PHVideoRequestOptions()
-      options.version = .original
-      options.isNetworkAccessAllowed = true
-
-      PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { avAsset, _, info in
-        Self.phkitCallbackQueue.async {
-          guard let urlAsset = avAsset as? AVURLAsset else {
-            continuation.resume(throwing: BackupError.assetLoadFailed)
-            return
-          }
-
-          do {
-            let data = try Data(contentsOf: urlAsset.url)
-            let uti = urlAsset.url.pathExtension == "mov" ? "com.apple.quicktime-movie" : "public.mpeg-4"
-            continuation.resume(returning: (data, uti))
-          } catch {
-            continuation.resume(throwing: error)
-          }
-        }
-      }
-    }
-  }
-
-  /// A streamable on-disk source for a camera-roll video. Holds the `AVURLAsset`
-  /// so its backing file URL stays valid for the entire `fromFile` pull loop
-  /// (task 0672 — the video is encrypted directly from disk, never read into
-  /// RAM).
-  private struct StagedVideoSource {
-    let asset: AVURLAsset  // retained to keep `url` valid across the loop
-    let url: URL
-    let uti: String
-    let sizeBytes: Int
-  }
-
-  /// Resolve a readable on-disk file URL for a video PHAsset, for streaming
-  /// encryption via `ChunkEncryptorHandle.fromFile`. Returns nil for videos not
-  /// backed by a readable on-disk `AVURLAsset` (e.g. compositions / slo-mo), in
-  /// which case the caller falls back to the in-memory path — the same outcome
-  /// as before task 0672. Throws `assetNotFound` if the asset is gone.
-  private func fetchVideoFileSource(localId: String) async throws -> StagedVideoSource? {
+  /// Resolve the original file or export a composition to disk, never to Data.
+  private func fetchVideoFileSource(localId: String) async throws -> BackupVideoFileSource {
     let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [localId], options: nil)
-    guard let phAsset = fetchResult.firstObject else {
+    guard let phAsset = fetchResult.firstObject, phAsset.mediaType == .video else {
       throw BackupError.assetNotFound
     }
-    guard phAsset.mediaType == .video else { return nil }
-
-    return try await withCheckedThrowingContinuation { continuation in
+    let (asset, mix): (AVAsset, AVAudioMix?) = try await withCheckedThrowingContinuation { continuation in
       let options = PHVideoRequestOptions()
       options.version = .original
       options.isNetworkAccessAllowed = true
-
-      PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { avAsset, _, info in
+      PHImageManager.default().requestAVAsset(forVideo: phAsset, options: options) { asset, mix, info in
         Self.phkitCallbackQueue.async {
-          if let error = info?[PHImageErrorKey] as? Error {
-            continuation.resume(throwing: error)
-            return
-          }
-          guard let urlAsset = avAsset as? AVURLAsset, self.readableRegularFile(urlAsset.url) else {
-            // Composition / non-URL-backed asset — fall back to the in-memory path.
-            continuation.resume(returning: nil)
-            return
-          }
-          let size = (try? urlAsset.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-          guard size > 0 else {
-            continuation.resume(returning: nil)
-            return
-          }
-          let uti = urlAsset.url.pathExtension.lowercased() == "mov"
-            ? "com.apple.quicktime-movie"
-            : "public.mpeg-4"
-          continuation.resume(returning: StagedVideoSource(
-            asset: urlAsset,
-            url: urlAsset.url,
-            uti: uti,
-            sizeBytes: size
-          ))
+          if let error = info?[PHImageErrorKey] as? Error { continuation.resume(throwing: error) }
+          else if let asset { continuation.resume(returning: (asset, mix)) }
+          else { continuation.resume(throwing: BackupError.assetLoadFailed) }
         }
       }
     }
+    let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("beebeeb-photokit-cache", isDirectory: true)
+    return try await BackupVideoFileSource.resolve(asset: asset, audioMix: mix, exportDirectory: directory)
   }
 
   // MARK: - API Calls (metadata session — standard URLSession, not background)

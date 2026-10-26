@@ -18,7 +18,7 @@ backups. A backup that captures plaintext is permanently outside Beebeeb's contr
 | Path | Contents | Source | Backed up before | Now |
 | --- | --- | --- | --- | --- |
 | `Documents/beebeeb-thumbnails-v3/` | Decrypted thumbnail WebP bytes | `modules/beebeeb-crypto/ios/ThumbnailService.swift:305-310`, `src/lib/thumbnail-cache.ts:26` | Yes — plaintext images | Excluded + `CompleteUntilFirstUserAuthentication` (creation-site call + launch `hardenAll()`) |
-| `Documents/beebeeb-photokit-cache/` | Decrypted PhotoKit PNG renders | `modules/beebeeb-crypto/ios/PhotoKitResolver.swift:16-21,80` | Yes — plaintext images | Excluded + protected (creation-site call + launch `hardenAll()`) |
+| `Documents/beebeeb-photokit-cache/` | Decrypted PhotoKit PNG renders and transient composition-video exports | `modules/beebeeb-crypto/ios/PhotoKitResolver.swift:16-21,80` | Yes — plaintext images | Excluded + protected (creation-site call + launch `hardenAll()`) |
 | `Documents/beebeeb-name-cache-v1.json` | Decrypted file names + mime | `src/lib/name-cache.ts:1-14,30` | Yes — plaintext metadata | Excluded + protected (JS write triggers `notePlaintextPathCreated()` + launch `hardenAll()`) |
 | `Documents/beebeeb-file-index-cache-v1.json` | File index rows; names remain ciphertext (`name_encrypted`) | `src/lib/file-index-cache.ts:6,10-12` | Yes — ids/sizes only | Excluded + protected |
 | `Documents/local-id-map.json` | fileId to PHAsset localIdentifier map | `src/lib/local-identifier-map.ts:59,262` | Yes — metadata | Excluded + protected (JS write triggers `notePlaintextPathCreated()` + launch `hardenAll()`) |
