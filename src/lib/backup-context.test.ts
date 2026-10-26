@@ -977,3 +977,20 @@ describe('syncBackupDeviceIdToNative (task 1667)', () => {
     expect(seen).toEqual([]);
   });
 });
+
+test('a refusal tick does not resume after its owner stops while fetching', async () => {
+  let resolve;
+  let current = true;
+  let resumed = 0;
+  const result = runAccountRefusalPollTick({
+    fetchSubscription: () => new Promise(r => { resolve = r; }),
+    isCurrent: () => current,
+    getIsPhotoBackupEnabled: () => true,
+    onUnblocked: () => { resumed++; },
+    resumeCameraBackup: async () => { resumed++; },
+  });
+  current = false;
+  resolve(null);
+  expect(await result).toEqual({resumed: false, shouldStopPolling: false});
+  expect(resumed).toBe(0);
+});

@@ -1076,3 +1076,6 @@ Task 0677: non-file-backed PhotoKit videos export to a temporary flat QuickTime 
 
 ## Mobile PR #202 review fix (Guus, 2026-10-26)
 Sweep abandoned backup-video exports at backup batch startup. Serialize export reservation, cleanup and sweeping with one lock; keep reserved paths active through export and encryption, removing only unreserved regular backup-video movie files. Preserve original PhotoKit URLs and unrelated files. Verification: fail-first isolated Swift harness, isolated unit runner, Swift parse/compile, bunx tsc --noEmit. Owner: Codex, fs-l1fix-202; lead merges.
+
+## Full-speed L1 — account-refusal poll backoff (2026-10-26)
+Task 1661: while backup is refused, retry after 15/30/60 seconds (60-second cap), pause timers in background, and recheck immediately on foreground. Serialize ticks and discard a response after the effect is stopped/backgrounded. Resume once on the first unblocked response, preserving the existing 1605 account-state decision and per-account backup preference contract.
