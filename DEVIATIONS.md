@@ -1169,3 +1169,7 @@ Implement the existing 0670/0717 contract: only HTTP 403 with typed error object
 A typed file-limit pause stops new batch/asset admissions while existing staged work remains intact. Keep a dedicated lock-protected reason across progress/status refreshes; clear it on an explicit retry or account purge. Verification: scheduling and native status regressions fail first, then isolated suite and TypeScript.
 
 Validation also carries the active-export directory-alias repair from mobile PR 203 (e6215eb): the native recovery test fails without it on this host. Graphify update in PR 203 refused to replace its larger existing graph; generated partial output was removed.
+
+## Tasks 1962 / 0717 — session lifetime hardening (2026-10-26, L1, local security hold)
+
+Existing account-boundary contracts: a SecureStore read crossing a session generation returns no token; explicit vault lock and provider disposal clear the app-wide native key cache independently of remaining handle references. Expose the existing native clear primitive through the bridge, without deleting the persisted key. Biometric lock keeps its existing warm-vault contract. Android native implementation is L3-owned; its older bridge safely omits the optional method. No crypto format change. Keep this commit local for coordinated security release and L9 review.

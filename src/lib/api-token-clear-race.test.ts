@@ -18,6 +18,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test';
 const store = new Map<string, string>();
 let mirrorGate: Promise<void> | null = null;
 let deleteGate: Promise<void> | null = null;
+let readGate: Promise<void> | null = null;
 
 mock.module('@react-native-async-storage/async-storage', () => ({
   default: {
@@ -32,7 +33,11 @@ mock.module('expo-constants', () => ({
   default: { expoConfig: { extra: { apiUrl: 'https://api.test' } } },
 }));
 mock.module('expo-secure-store', () => ({
-  getItemAsync: async (key: string) => store.get(key) ?? null,
+  getItemAsync: async (key: string) => {
+    const value = store.get(key) ?? null;
+    if (readGate) await readGate;
+    return value;
+  },
   setItemAsync: async (key: string, value: string) => { store.set(key, value); },
   deleteItemAsync: async (key: string) => {
     if (deleteGate && key === 'beebeeb_session_token') await deleteGate;
@@ -70,6 +75,7 @@ beforeEach(() => {
   store.clear();
   mirrorGate = null;
   deleteGate = null;
+  readGate = null;
 });
 
 describe('clearToken / getToken race (1962 Bug 2)', () => {
@@ -126,4 +132,18 @@ describe('clearToken / getToken race (1962 Bug 2)', () => {
     await setToken('new-token');
     expect(await getToken()).toBe('new-token');
   });
+});
+
+test('a store read begun before sign-out never returns the signed-out token', async () => {
+  store.set(TOKEN_KEY, 'old-token');
+  const { getToken, clearToken, setToken } = await loadFreshApi();
+  let finishRead!: () => void;
+  readGate = new Promise<void>((resolve) => { finishRead = resolve; });
+  const reading = getToken();
+  await Promise.resolve();
+  await clearToken();
+  await setToken('new-token');
+  finishRead();
+  expect(await reading).toBeNull();
+  expect(await getToken()).toBe('new-token');
 });
