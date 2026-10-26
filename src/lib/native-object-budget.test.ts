@@ -64,3 +64,48 @@ print("budget classifier: 4 assertions passed, 0 failed")`);
   execFileSync('swiftc', ['-module-cache-path',join(dir,'modules'),join(ios,'AccountRefusalDetection.swift'),join(dir,'main.swift'),'-o',join(dir,'classifier')], {timeout:60000});
   expect(execFileSync(join(dir,'classifier'), [], {encoding:'utf8'})).toContain('4 assertions passed, 0 failed');
 }, 90000);
+
+test('file-limit pause stops both batch scheduling loops and queued asset admission', () => {
+  const source = readFileSync(join(ios, 'NativeBackupEngine.swift'), 'utf8');
+  const batch = source.slice(source.indexOf('  func processBatch('), source.indexOf('  func resetRetryExhaustedUploadsForManualRun('));
+  const loops = batch.split('\n').filter(line => line.includes('while ') && line.includes('pending.count'));
+  expect(loops).toHaveLength(2);
+  for (const loop of loops) expect(loop).toContain('!isPaused');
+  const upload = source.slice(source.indexOf('  private func uploadSingleAsset('));
+  expect(upload.match(/guard isRunning[^\n]+/)![0]).toContain('!isPaused');
+});
+
+nativeTest('file-limit reason survives repeated progress/status decisions', () => {
+  const source = readFileSync(join(ios, 'NativeBackupEngine.swift'), 'utf8');
+  const start = source.indexOf('  private func backupState(');
+  const method = source.slice(start, source.indexOf('  private func makeBackupStatusPayload', start));
+  const surface = readFileSync(join(ios, 'BackupSurfaceState.swift'), 'utf8').split('\nextension ServerCheckPause')[0];
+  const dir = mkdtempSync(join(tmpdir(), 'bb-budget-surface-'));
+  writeFileSync(join(dir, 'Surface.swift'), surface);
+  writeFileSync(join(dir, 'main.swift'), `import Foundation
+final class Fixture {
+ var fileLimitStopReason: String? = "File limit reached"
+ var manifestUnavailableStopReason: String? = nil
+ var serverCheckPauseSurface: BackupSurfaceState.State? = nil
+ var isPaused = true
+ var isRunning = true
+ var failedAssets = 1
+ var inProgressAssets = 0
+ var totalAssets = 12
+ struct Breakdown { var uploading = 0 }
+ func backupWorkBreakdown() -> Breakdown { Breakdown() }
+ func canExecuteBackupWorkNow() -> Bool { true }
+ ${method}
+ func run() {
+   for _ in 0..<3 {
+     precondition(backupState(pending: 11).reason == "File limit reached", "file-limit reason lost on progress poll")
+   }
+   isPaused = false
+   precondition(backupState(pending: 11).reason != "File limit reached", "stale refusal after resume")
+ }
+}
+Fixture().run()
+print("file-limit surface: 4 assertions passed, 0 failed")`);
+  execFileSync('swiftc', ['-module-cache-path',join(dir,'modules'),join(dir,'Surface.swift'),join(dir,'main.swift'),'-o',join(dir,'surface')], {timeout:60000});
+  expect(execFileSync(join(dir,'surface'), [], {encoding:'utf8'})).toContain('4 assertions passed, 0 failed');
+}, 90000);

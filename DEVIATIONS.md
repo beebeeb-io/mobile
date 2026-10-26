@@ -1164,3 +1164,8 @@ The CI gate rejected an unregistered empty-preview-frame driver (21/22 drivers),
 ## Task 0717 — native file-count refusal (2026-10-26, L1)
 
 Implement the existing 0670/0717 contract: only HTTP 403 with typed error object_budget_exceeded is permanent. Preserve staged ciphertext and queue identity, set that asset at the automatic retry limit immediately, and pause the run. Existing manual Back up now resets retry-exhausted rows after the user frees capacity. Use the JS path's existing authored copy, not a raw server response. Ordinary auth/network/storage failures retain their current retry behavior. No billing subscription poll is added because subscription byte quota does not measure the object budget.
+
+## PR 207 review: file-limit pause (2026-10-26)
+A typed file-limit pause stops new batch/asset admissions while existing staged work remains intact. Keep a dedicated lock-protected reason across progress/status refreshes; clear it on an explicit retry or account purge. Verification: scheduling and native status regressions fail first, then isolated suite and TypeScript.
+
+Validation also carries the active-export directory-alias repair from mobile PR 203 (e6215eb): the native recovery test fails without it on this host. Graphify update in PR 203 refused to replace its larger existing graph; generated partial output was removed.
