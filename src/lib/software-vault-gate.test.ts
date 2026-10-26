@@ -59,6 +59,7 @@ mock.module('react-native', () => ({
 // invoked by usesSoftwareVaultFallback() or SIMULATOR_MASTER_KEY_FILE — both
 // are plain top-level values — so every stub below is a no-op.
 mock.module('../../modules/beebeeb-crypto', () => ({
+  clearCachedMasterKey: () => undefined,
   computeRecoveryCheck: () => undefined,
   confirmMasterKeyHandle: () => undefined,
   createMasterKeyHandle: () => undefined,
