@@ -117,7 +117,7 @@ public enum PlaintextStorageProtection {
       Entry(url: support.appendingPathComponent("NativeBackupStaging", isDirectory: true),
             kind: .directory, contains: "staged .enc backup chunks awaiting upload"),
       Entry(url: support.appendingPathComponent("Beebeeb", isDirectory: true),
-            kind: .directory, contains: "legacy camera-roll backup.db (retained for upgrade purge)"),
+            kind: .directory, contains: "legacy camera-roll backup.db (retained for migration purge)"),
       Entry(url: support.appendingPathComponent(bundleId, isDirectory: true)
               .appendingPathComponent("RCTAsyncLocalStorage_V1", isDirectory: true),
             kind: .directory, contains: "AsyncStorage key-value store"),

@@ -10,13 +10,24 @@ struct BackupVideoFileSource {
   let ownsFile: Bool
 
   private static let exportLock = NSLock()
-  private static var activeExportURLs = Set<URL>()
+  private static var activeExportURLs = Set<String>()
+
+  // Foundation can enumerate /private/tmp as /tmp even after URL symlink
+  // resolution. Resolve the existing parent with POSIX so a reservation made
+  // before the output exists has the same identity as the enumerated file.
+  private static func exportIdentity(_ url: URL) -> String {
+    guard let parent = realpath(url.deletingLastPathComponent().path, nil) else {
+      return url.standardizedFileURL.path
+    }
+    defer { free(parent) }
+    return String(cString: parent) + "/" + url.lastPathComponent
+  }
 
   static func reserveExportURL(in directory: URL, fileExtension: String) -> URL {
     exportLock.lock()
     defer { exportLock.unlock() }
     let url = directory.appendingPathComponent("backup-video-\(UUID().uuidString).\(fileExtension)")
-    activeExportURLs.insert(url.standardizedFileURL)
+    activeExportURLs.insert(exportIdentity(url))
     return url
   }
 
@@ -31,7 +42,7 @@ struct BackupVideoFileSource {
     for url in urls {
       guard url.lastPathComponent.hasPrefix("backup-video-"),
             ["mov", "mp4"].contains(url.pathExtension.lowercased()),
-            !activeExportURLs.contains(url.standardizedFileURL),
+            !activeExportURLs.contains(exportIdentity(url)),
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
             values.isRegularFile == true, values.isSymbolicLink != true else { continue }
       try? FileManager.default.removeItem(at: url)
@@ -43,7 +54,7 @@ struct BackupVideoFileSource {
     Self.exportLock.lock()
     defer { Self.exportLock.unlock() }
     try? FileManager.default.removeItem(at: url)
-    Self.activeExportURLs.remove(url.standardizedFileURL)
+    Self.activeExportURLs.remove(Self.exportIdentity(url))
   }
 
   static func resolve(

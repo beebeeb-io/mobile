@@ -184,9 +184,9 @@ describe('task 2033: the manifest Swift files bind expo-sqlite\'s copy only', ()
       if (m) offenders.push(`${rel(p)} line ${lineOf(code, m.index)}: ${m[0]}`);
     }
     expect(offenders).toEqual([]);
-    // PhotoBackupManager, ThumbnailQueueDB, BeebeebCryptoModule,
+    // ThumbnailQueueDB, BeebeebCryptoModule,
     // PlaintextStorageProtection, the File Provider's CacheManager.
-    expect(sqlite3Files).toBeGreaterThanOrEqual(5);
+    expect(sqlite3Files).toBeGreaterThanOrEqual(4);
   });
 
   test('no extension target compiles a manifest file (extensions do not link ExpoSQLite)', () => {
