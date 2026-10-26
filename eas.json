@@ -41,6 +41,13 @@
         "EXPO_NO_OTA_UPDATES": "1",
         "EXPO_PUBLIC_BEEBEEB_RUNTIME_TRACE": "1"
       }
+    },
+    "production-local": {
+      "extends": "production",
+      "credentialsSource": "local",
+      "android": {
+        "buildType": "app-bundle"
+      }
     }
   },
   "submit": {
