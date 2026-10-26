@@ -1112,3 +1112,7 @@ Review pass (solo, separate from writer): repaired the full-source cache-hit bra
 ## Task 0560 — native pinch release (2026-10-26, L1)
 
 Use the task's recorded native requirement: freeze layout while the pinch is active, commit one anchored column change under a short cross-dissolve on release, and leave the grid visible on cancellation. The React Native fallback already does this; it does not fix iOS. Plan: first capture the native handler's active/release/cancel transitions in a Swift harness, then replace only the live-pinch scheduling path, remove its now-unused display-link fields/helpers, and preserve thumbnail deferral, column thresholds, anchor math, selection and perf counters. No new dependencies. Physical gesture fidelity is a deferred release rung.
+
+Full-speed changed-file cleanup writer plan: regression already4/0. Remove the pinch test's obsolete live-pinch fixture branches/fields now that the RED baseline is captured; require exact current method markers. Preserve UIKit boundary stubs and five behavioral assertions. Do not delete unrelated PhotoGridLayout transition machinery without layout coverage.
+
+Cleanup review pass (solo): test-only7 obsolete fixture lines and two legacy method-selection fallbacks removed; exact method markers checked. Native pinch1 passed/0failed (5 native assertions); earlier photo-grid3/0 unchanged. No production edit or dependencies; original RED remains l1-pinch-red.log. Deeper unused UIKit transitions deferred pending geometry coverage.
