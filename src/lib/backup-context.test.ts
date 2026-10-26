@@ -990,7 +990,7 @@ test('a refusal tick does not resume after its owner stops while fetching', asyn
     resumeCameraBackup: async () => { resumed++; },
   });
   current = false;
-  resolve(null);
+  resolve(PAID_SUB);
   expect(await result).toEqual({resumed: false, shouldStopPolling: false});
   expect(resumed).toBe(0);
 });
