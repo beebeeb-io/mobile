@@ -164,6 +164,7 @@ const cryptoMock = {
     if (phrase === PHRASE_OTHER) return { masterKey: new Uint8Array(KEY_OTHER) };
     throw new Error('invalid phrase');
   },
+  clearCachedMasterKey: async () => {},
   releaseHandle: async (h: number) => { calls.released.push(h); handles.delete(h); },
   replaceKeychainAccessControl: async () => true,
   replaceKeychainAccessControlFromHandle: async () => true,

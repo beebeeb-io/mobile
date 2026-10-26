@@ -91,6 +91,7 @@ const calls = {
   fallbackReads: 0,
   released: [] as number[],
   deleteKeychain: 0,
+  clearCache: 0,
   verify: [] as string[],
   backfill: [] as string[],
   // Task 1594 round 4 (F4): every handle id `confirmMasterKeyHandle` was
@@ -219,6 +220,7 @@ const cryptoMock = {
     if (phrase === PHRASE_B) return { masterKey: new Uint8Array(KEY_B) };
     throw new Error('invalid phrase');
   },
+  clearCachedMasterKey: async () => { calls.clearCache += 1; },
   releaseHandle: async (h: number) => { calls.released.push(h); handles.delete(h); },
   replaceKeychainAccessControl: async () => true,
   replaceKeychainAccessControlFromHandle: async () => true,
@@ -337,6 +339,7 @@ beforeEach(() => {
   calls.fallbackReads = 0;
   calls.released = [];
   calls.deleteKeychain = 0;
+  calls.clearCache = 0;
   calls.verify = [];
   calls.backfill = [];
   calls.confirmed = [];
@@ -945,4 +948,27 @@ describe('1594 round 6 (reviewer follow-up, crypto-context.tsx confirmMasterKeyH
 
     expect(traceCalls.find((t) => t.name === 'vault.key_ownership.confirm_handle_failed')).toBeUndefined();
   });
+});
+
+test('manual lock clears the bridge cache even without a provider handle', () => {
+  const render = mountProvider(USER_A);
+  render().lock();
+  expect(calls.clearCache).toBe(1);
+});
+
+test('manual lock clears the bridge cache while another native handle remains', async () => {
+  server.sessionUser = USER_A;
+  const render = mountProvider(USER_A);
+  await render().unlock(PHRASE_A);
+  handles.set(9000, new Uint8Array(KEY_A));
+  render().lock();
+  expect(handles.has(9000)).toBe(true);
+  expect(calls.clearCache).toBe(1);
+});
+
+test('sign-out provider disposal clears the bridge cache without a provider handle', () => {
+  const render = mountProvider(USER_A);
+  render();
+  render.unmount();
+  expect(calls.clearCache).toBe(1);
 });

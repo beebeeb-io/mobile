@@ -2998,6 +2998,10 @@ public class BeebeebCryptoModule: Module {
       return try master.computeRecoveryCheck()
     }
 
+    AsyncFunction("clearCachedMasterKey") { () in
+      BeebeebCryptoBridge.clearCachedMasterKey()
+    }
+
     AsyncFunction("releaseHandle") { [self] (handleId: Int) in
       self.cancelAllPreviewStreams()
       self.masterKeyHandles.removeValue(forKey: handleId)

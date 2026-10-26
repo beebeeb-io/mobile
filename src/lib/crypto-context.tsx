@@ -21,6 +21,7 @@ import {
   logDiagnostic,
   recoverFromPhrase,
   releaseHandle,
+  clearCachedMasterKey,
   replaceKeychainAccessControl,
   replaceKeychainAccessControlFromHandle,
   storeKeyInKeychain,
@@ -764,6 +765,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
       // for THIS instance (which cannot see disposedRef — it is a bare
       // module function) sees it has gone stale the next time it checks.
       bumpVaultGeneration()
+      void clearCachedMasterKey().catch(() => {})
       if (masterKeyHandleId.current != null) {
         void releaseHandle(masterKeyHandleId.current).catch(() => {})
         masterKeyHandleId.current = null
@@ -1236,6 +1238,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
   }, [unlockAttempted])
 
   const lock = useCallback(() => {
+    void clearCachedMasterKey().catch(() => {})
     recordRuntimeTrace('vault.lock.request', {
       hadHandle: masterKeyHandleId.current != null,
     })

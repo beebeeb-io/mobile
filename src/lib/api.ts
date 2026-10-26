@@ -172,9 +172,8 @@ export async function getToken(): Promise<string | null> {
   if (tokenClearsPending > 0) return null;
   const generationAtStart = sessionGeneration;
   const token = await tokenStore.get(TOKEN_KEY);
-  if (generationAtStart === sessionGeneration) {
-    cachedToken = token;
-  }
+  if (generationAtStart !== sessionGeneration || tokenClearsPending > 0) return null;
+  cachedToken = token;
   return token;
 }
 

@@ -125,7 +125,9 @@ describe('session generation guards', () => {
     await setToken('new-token');
     resolveOldRead('old-token');
 
-    expect(await staleRead).toBe('old-token');
+    // Task 2234 (1962 Bug 2): a read that crossed a session-generation bump
+    // now returns nothing at all, not just "must not overwrite the cache".
+    expect(await staleRead).toBeNull();
     expect(await getToken()).toBe('new-token');
     expect(store.get(TOKEN_KEY)).toBe('new-token');
   });

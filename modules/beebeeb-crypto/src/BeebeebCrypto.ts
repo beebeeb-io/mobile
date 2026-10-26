@@ -728,6 +728,12 @@ export async function handleComputeRecoveryCheck(handleId: number): Promise<Uint
   return coerceBytes(await BeebeebCryptoModule.handleComputeRecoveryCheck(handleId))
 }
 
+/** Clear the app-wide key cache independently of handle reference counts. */
+export async function clearCachedMasterKey(): Promise<void> {
+  if (typeof BeebeebCryptoModule.clearCachedMasterKey !== 'function') return
+  return BeebeebCryptoModule.clearCachedMasterKey()
+}
+
 /**
  * Release a master key handle from native memory. Call this when
  * locking the vault to ensure key material is freed.
