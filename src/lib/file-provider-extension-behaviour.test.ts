@@ -299,37 +299,40 @@ final class ApiClient {
 
   var listings: [String: Result<[FileEntryDto], Error>] = [:]
   var downloadResult: Result<DownloadedEncryptedFile, Error> = .failure(ApiError.invalidResponse)
-  private(set) var calls: [String] = []
+  private let callsLock = NSLock()
+  private var recordedCalls: [String] = []
+  var calls: [String] { callsLock.lock(); defer { callsLock.unlock() }; return recordedCalls }
+  private func record(_ call: String) { callsLock.lock(); recordedCalls.append(call); callsLock.unlock() }
   private(set) var patchedNames: [String?] = []
 
-  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); calls = []; patchedNames = [] }
+  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); callsLock.lock(); recordedCalls = []; callsLock.unlock(); patchedNames = [] }
   func count(_ prefix: String) -> Int { calls.filter { $0.hasPrefix(prefix) }.count }
 
   func listFiles(parentId: String?) async throws -> [FileEntryDto] {
-    calls.append("list \(parentId ?? "root")")
+    record("list \(parentId ?? "root")")
     return try (listings[parentId ?? "root"] ?? .success([])).get()
   }
   func downloadEncrypted(fileId: String) async throws -> DownloadedEncryptedFile {
-    calls.append("download \(fileId)")
+    record("download \(fileId)")
     return try downloadResult.get()
   }
   func patchFile(fileId: String, nameEncrypted: String? = nil, parentId: String? = nil, expectedUser: String?) async throws -> FileEntryDto {
-    calls.append("patch \(fileId) parent=\(parentId ?? "root")")
+    record("patch \(fileId) parent=\(parentId ?? "root")")
     patchedNames.append(nameEncrypted)
     return FileEntryDto(id: fileId, parent_id: parentId, name_encrypted: nameEncrypted, name_nonce: nil, mime_type: nil,
                         size_bytes: 0, is_folder: false, chunk_count: 1, created_at: nil, updated_at: "2026-10-14T00:00:00Z")
   }
-  func deleteFile(fileId: String, expectedUser: String?) async throws { calls.append("delete \(fileId)") }
+  func deleteFile(fileId: String, expectedUser: String?) async throws { record("delete \(fileId)") }
   func initUploadV2(fileId: String, nameEncrypted: String, fileSizeBytes: Int64, mimeType: String?, parentId: String?,
                     isMedia: Bool, chunkSizeBytes: Int, chunkCount: Int, expectedUser: String?) async throws -> UploadV2InitResponse {
-    calls.append("upload-init \(fileId)")
+    record("upload-init \(fileId)")
     return UploadV2InitResponse(file_id: fileId, upload_session_id: "session", chunk_size_bytes: chunkSizeBytes, chunk_count: chunkCount)
   }
   func uploadChunkV2(uploadSessionId: String, index: Int, encryptedChunk: Data, expectedUser: String?) async throws {
-    calls.append("upload-chunk \(index)")
+    record("upload-chunk \(index)")
   }
   func completeUploadV2(uploadSessionId: String, expectedUser: String?) async throws -> UploadResponseDto {
-    calls.append("upload-complete")
+    record("upload-complete")
     return UploadResponseDto(id: "uploaded", name_encrypted: nil, size_bytes: 0, chunk_count: 1, created_at: nil, updated_at: nil)
   }
 }
@@ -1002,14 +1005,59 @@ func materializedSetFollowsTheSystem() async {
   soft(shrunk, "a folder made dataless again leaves the set, got \(CacheManager.shared.materializedContainerIds())")
 }
 
-func listWorkingSetNames() async -> [String] {
+// Task 2215: observe completion, not intermediate cache writes or unrelated signals.
+// The deadline resolves independently of the refresh, so a broken pass fails here rather
+// than hanging until Bun's outer timeout. No retry or scheduler-dependent settling sleep.
+actor RefreshCompletions {
+  private var completed = 0
+  private var waiters: [UUID: (Int, CheckedContinuation<Bool, Never>)] = [:]
+
+  func finish() {
+    completed += 1
+    for (id, waiter) in waiters where waiter.0 <= completed {
+      waiters.removeValue(forKey: id)
+      waiter.1.resume(returning: true)
+    }
+  }
+
+  func wait(for target: Int, timeout: TimeInterval = 6) async -> Bool {
+    if completed >= target { return true }
+    let id = UUID()
+    return await withCheckedContinuation { continuation in
+      waiters[id] = (target, continuation)
+      DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+        Task { await self.expire(id) }
+      }
+    }
+  }
+
+  private func expire(_ id: UUID) {
+    waiters.removeValue(forKey: id)?.1.resume(returning: false)
+  }
+}
+
+struct ObservedWorkingSetRefresher: FileProviderContainerRefreshing {
+  let completions = RefreshCompletions()
+  func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome {
+    await SyncEngine.refreshContainer(containerId: containerId)
+  }
+  func refreshMaterializedContainers() async {
+    _ = await SyncEngine.refreshMaterializedContainers()
+    await completions.finish()
+  }
+  func waitForPass(_ number: Int) async {
+    let finished = await completions.wait(for: number)
+    if !finished { check(false, "materialized refresh pass \(number) missed its deadline") }
+  }
+}
+
+func listWorkingSetNames(_ enumerator: FileProviderEnumerator) async -> [String] {
   let observer = ListingObserver()
-  let enumerator = FileProviderEnumerator(containerIdentifier: .workingSet)
   enumerator.enumerateItems(for: observer, startingAt: NSFileProviderPage(Data()))
-  _ = await withCheckedContinuation { continuation in
+  let finished = await withCheckedContinuation { continuation in
     DispatchQueue.global().async { continuation.resume(returning: observer.wait()) }
   }
-  enumerator.invalidate()
+  if !finished { check(false, "working-set listing missed its deadline") }
   return observer.items.map(\.filename).sorted()
 }
 
@@ -1021,41 +1069,50 @@ func staleMaterializedFoldersAreRefreshed() async {
   CacheManager.shared.rows["t1"] = row("t1", parent: "F", name: nil, encrypted: encryptedName("t1", "2026 return.pdf"))
   CacheManager.shared.rows["G"] = row("G", name: "Photos", folder: true)
   CacheManager.shared.rows["g1"] = row("g1", parent: "G", name: nil, encrypted: encryptedName("g1", "beach.jpg"))
+  // A working-set listing also refreshes root. Keep its folders intact: the default empty
+  // response otherwise deletes F/G and can expire the anchor independently of the name fix.
+  ApiClient.shared.listings["root"] = .success([
+    dto("F", parent: nil, name: "Taxes", folder: true),
+    dto("G", parent: nil, name: "Photos", folder: true),
+  ])
   ApiClient.shared.listings["F"] = .success([dto("t1", parent: "F", name: encryptedName("t1", "2026 return.pdf"))])
   ApiClient.shared.listings["G"] = .success([dto("g1", parent: "G", name: encryptedName("g1", "beach.jpg"))])
   NSFileProviderManager.setMaterialized(materializedItems(["F", "root"]))
-  let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
-  _ = callMaterializedItemsDidChange(ext)
-  _ = await waitUntil { CacheManager.shared.materializedContainerIds() == ["F"] }
+  // Callback scheduling is covered by materializedSetFollowsTheSystem. Await setup itself.
+  _ = await MaterializedSetTracker.shared.syncNow()
   soft(CacheManager.shared.materializedContainerIds() == ["F"], "setup: F is materialized, got \(CacheManager.shared.materializedContainerIds())")
-  let before = await listWorkingSetNames()
-  soft(before.contains("Encrypted item \u{00B7} t1"), "before: the working set carries F's cached row, got \(before)")
 
-  let ws = FileProviderEnumerator(containerIdentifier: .workingSet)
-  var anchor: NSFileProviderSyncAnchor?
-  ws.currentSyncAnchor { anchor = $0 }
-  ws.enumerateChanges(for: ChangeObserver(), from: anchor!)
-  let listed = await waitUntil { ApiClient.shared.count("list F") == 1 }
-  soft(listed, "the stale materialized folder is listed again, calls \(ApiClient.shared.calls)")
-  let named = await waitUntil { CacheManager.shared.item(id: "t1").map { FileProviderItem(cached: $0).filename } == "2026 return.pdf" }
-  soft(named, "its TestFlight 236 row gets its real name")
-  soft(ApiClient.shared.count("list G") == 0, "a folder Files never listed is not refreshed, calls \(ApiClient.shared.calls)")
-  let after = await listWorkingSetNames()
-  soft(after.contains("2026 return.pdf") && !after.contains("beach.jpg"), "the working set now carries the real name and nothing from G, got \(after)")
-  let invalidated = await waitUntil {
-    var current: NSFileProviderSyncAnchor?
-    ws.currentSyncAnchor { current = $0 }
-    return current != anchor
+  let refresher = ObservedWorkingSetRefresher()
+  func workingSet() -> FileProviderEnumerator {
+    FileProviderEnumerator(containerIdentifier: .workingSet, cache: CacheManager.shared, refresher: refresher)
   }
-  soft(invalidated, "the refresh invalidates the prior working-set anchor")
+  let ws = workingSet()
+  var anchor: NSFileProviderSyncAnchor?
+  // Capture BEFORE enumerateItems starts the detached refresh. Capturing after it returned
+  // raced the name update and sometimes compared the refreshed anchor to itself.
+  ws.currentSyncAnchor { anchor = $0 }
+  let before = await listWorkingSetNames(ws)
+  soft(before.contains("Encrypted item \u{00B7} t1"), "before: the working set carries F's cached row, got \(before)")
+  await refresher.waitForPass(1)
+  soft(ApiClient.shared.count("list F") == 1, "the stale materialized folder is listed again, calls \(ApiClient.shared.calls)")
+  soft(CacheManager.shared.item(id: "t1").map { FileProviderItem(cached: $0).filename } == "2026 return.pdf", "its TestFlight 236 row gets its real name")
+  soft(ApiClient.shared.count("list G") == 0, "a folder Files never listed is not refreshed, calls \(ApiClient.shared.calls)")
+  let currentWS = workingSet()
+  let after = await listWorkingSetNames(currentWS)
+  await refresher.waitForPass(2)
+  soft(after.contains("2026 return.pdf") && !after.contains("beach.jpg"), "the working set now carries the real name and nothing from G, got \(after)")
+  var current: NSFileProviderSyncAnchor?
+  currentWS.currentSyncAnchor { current = $0 }
+  soft(current != anchor, "the refresh invalidates the prior working-set anchor")
   let changed = ChangeObserver()
   ws.enumerateChanges(for: changed, from: anchor!)
+  await refresher.waitForPass(3)
   soft(isProviderError(changed.error, .syncAnchorExpired), "Files is told the working set changed, got \(describe(changed.error))")
-  let signalled = await waitUntil { NSFileProviderManager.signals.contains(NSFileProviderItemIdentifier.workingSet.rawValue) }
-  soft(signalled, "the refresh signalled the working set, got \(NSFileProviderManager.signals)")
+  soft(NSFileProviderManager.signals.contains("F") && NSFileProviderManager.signals.contains(NSFileProviderItemIdentifier.workingSet.rawValue), "the refresh signalled F and the working set, got \(NSFileProviderManager.signals)")
   let listCount = ApiClient.shared.count("list F")
   ws.enumerateChanges(for: ChangeObserver(), from: anchor!)
-  try? await Task.sleep(nanoseconds: 400_000_000)
+  await refresher.waitForPass(4)
+  currentWS.invalidate()
   soft(ApiClient.shared.count("list F") == listCount, "a folder refreshed a moment ago is not listed again (no loop), got \(ApiClient.shared.count("list F"))")
   ws.invalidate()
 }
