@@ -355,6 +355,31 @@ function ensureTargetDependency(project, appTarget, extensionTarget, spec) {
   appTarget.target.dependencies.push({ value: dependencyUuid, comment: spec.name });
 }
 
+/** Keep shared UniFFI sources in the app navigator group, with per-target build files. */
+function normalizeUniffiGroup(project) {
+  const objects = project.hash.project.objects;
+  const refs = new Set(Object.entries(objects.PBXFileReference || {})
+    .filter(([id, file]) => typeof file === 'object' &&
+      file.path?.replaceAll('"', '') === 'Beebeeb/beebeeb_uniffi.swift')
+    .map(([id]) => id));
+  if (!refs.size) return;
+  const groups = Object.values(objects.PBXGroup || {}).filter(group => typeof group === 'object');
+  const appGroup = groups.find(group => group.name?.replaceAll('"', '') === 'Beebeeb' &&
+    group.children?.some(child => refs.has(child.value)));
+  if (!appGroup) throw new Error('UniFFI app navigator group is missing');
+  const canonical = appGroup.children.find(child => refs.has(child.value)).value;
+  for (const group of groups) group.children = (group.children || []).filter(child => !refs.has(child.value));
+  appGroup.children.push({ value: canonical, comment: 'beebeeb_uniffi.swift' });
+  for (const file of Object.values(objects.PBXBuildFile || {})) {
+    if (typeof file === 'object' && refs.has(file.fileRef)) file.fileRef = canonical;
+  }
+  for (const ref of refs) {
+    if (ref === canonical) continue;
+    delete objects.PBXFileReference[ref];
+    delete objects.PBXFileReference[`${ref}_comment`];
+  }
+}
+
 /**
  * Ensure the extension target described by `spec` exists in `project`, with its
  * sources, (optional) uniffi bindings + Rust framework link, an "Embed App
@@ -362,6 +387,7 @@ function ensureTargetDependency(project, appTarget, extensionTarget, spec) {
  * Idempotent: safe on both a clean and an already-wired project.
  */
 function ensureExtensionTarget(project, spec) {
+  if (spec.includeUniffiBindings) normalizeUniffiGroup(project);
   const sourceFiles = spec.sources.map((s) => ({ ...s, fileType: 'sourcecode.swift', buildPhase: 'PBXSourcesBuildPhase' }));
   const groupFiles = [
     ...sourceFiles,
@@ -432,6 +458,7 @@ function ensureExtensionTarget(project, spec) {
   embedPhase.name = '"Embed App Extensions"';
 
   ensureTargetDependency(project, appTarget, extensionTarget, spec);
+  if (spec.includeUniffiBindings) normalizeUniffiGroup(project);
   return extensionTarget;
 }
 
@@ -456,4 +483,4 @@ function linkRustFramework(project, target) {
   ensureBuildPhase(project, target.target, 'PBXFrameworksBuildPhase', 'Frameworks', [buildFile]);
 }
 
-module.exports = { ensureExtensionTarget, linkRustFramework };
+module.exports = { ensureExtensionTarget, linkRustFramework, normalizeUniffiGroup };
