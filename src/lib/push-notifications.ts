@@ -103,6 +103,16 @@ export async function registerForPushNotifications(
     const optedOut = await SecureStore.getItemAsync(NOTIFICATIONS_OPT_OUT_KEY).catch(() => null);
     if (optedOut === 'true') return;
 
+    // Android 13+ needs a channel before the notification permission prompt
+    // and token request. Use Expo/FCM's default channel for server pushes
+    // without an explicit channelId. Recreating it preserves OS user settings.
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'Beebeeb',
+        importance: Notifications.AndroidImportance.DEFAULT,
+      });
+    }
+
     const { status: existing } = await Notifications.getPermissionsAsync();
     let final = existing;
 
