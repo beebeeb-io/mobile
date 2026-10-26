@@ -20,7 +20,7 @@ import Security
 ///
 /// Protection class is `.completeUntilFirstUserAuthentication`, NOT `.complete`:
 /// `NativeBackupEngine` uploads from a background URLSession and
-/// `PhotoBackupManager` runs on PHKit callbacks, both of which must read these
+/// `NativeBackupEngine` runs on PHKit callbacks, both of which must read these
 /// paths while the device is locked.
 public enum PlaintextStorageProtection {
   public enum Kind: Sendable {
@@ -117,7 +117,7 @@ public enum PlaintextStorageProtection {
       Entry(url: support.appendingPathComponent("NativeBackupStaging", isDirectory: true),
             kind: .directory, contains: "staged .enc backup chunks awaiting upload"),
       Entry(url: support.appendingPathComponent("Beebeeb", isDirectory: true),
-            kind: .directory, contains: "PhotoBackupManager backup.db"),
+            kind: .directory, contains: "legacy camera-roll backup.db (retained for upgrade purge)"),
       Entry(url: support.appendingPathComponent(bundleId, isDirectory: true)
               .appendingPathComponent("RCTAsyncLocalStorage_V1", isDirectory: true),
             kind: .directory, contains: "AsyncStorage key-value store"),

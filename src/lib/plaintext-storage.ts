@@ -92,7 +92,6 @@ export const REVIEWED_NATIVE_SOURCES = [
   'BeebeebCryptoModule.swift',
   'NativeBackupEngine.swift',
   'PendingSharesAccess.swift',
-  'PhotoBackupManager.swift',
   'PhotoKitResolver.swift',
   'PlaintextStorageProtection.swift',
   'ThumbnailQueueDB.swift',

@@ -738,7 +738,7 @@ final class NativeBackupEngine: NSObject {
   // Hop here as the first line of every PhotoKit completion so the body — which
   // can do heavy work like `Data(contentsOf:)` for videos or
   // `continuation.resume` into an async context — never blocks main. Mirrors
-  // `PhotoBackupManager.phkitCallbackQueue` (task 0440); sibling queue here
+  // the retired camera-roll callback queue (task 0440); the live queue here
   // rather than cross-class reference to avoid type coupling (task 0443).
   private static let phkitCallbackQueue = DispatchQueue(
     label: "io.beebeeb.backup.engine.phkit-callback",

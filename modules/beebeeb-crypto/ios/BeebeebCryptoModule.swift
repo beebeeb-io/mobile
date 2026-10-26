@@ -48,7 +48,7 @@ private let fileProviderEnumeratorStatePrefix = "io.beebeeb.fileProvider.enumera
 
 // PHKit picks its own callback queue (often main when the app is foregrounded).
 // Hop here as the first line of every PhotoKit completion so the work in the
-// closure body never blocks main, consistent with PhotoBackupManager.
+// closure body never blocks main, consistent with the native backup engine.
 private let beebeebCryptoPHKitCallbackQueue = DispatchQueue(
   label: "io.beebeeb.crypto.phkit-callback",
   qos: .utility
@@ -3959,7 +3959,6 @@ public class BeebeebCryptoModule: Module {
       ])
       switch category {
       case "camera_roll":
-        PhotoBackupManager.shared.configure(parentFolderId: parentFolderId)
         NativeBackupEngine.shared.parentFolderId = parentFolderId
       case "contacts":
         ContactsBackupManager.shared.configure(parentFolderId: parentFolderId)
