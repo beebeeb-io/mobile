@@ -1,6 +1,7 @@
 const { withXcodeProject, withEntitlementsPlist, withInfoPlist } = require('@expo/config-plugins');
 const path = require('path');
 const fs = require('fs');
+const { normalizeUniffiGroup } = require('../lib/extension-target');
 
 const EXTENSION_NAME = 'BeebeebFileProvider';
 const EXTENSION_BUNDLE_ID = 'io.beebeeb.app.file-provider';
@@ -626,7 +627,9 @@ function withFileProvider(config) {
     // Create entitlements for the extension
     fs.writeFileSync(path.join(extDir, `${EXTENSION_NAME}.entitlements`), extensionEntitlementsPlist());
 
+    normalizeUniffiGroup(project);
     ensureExtensionWiring(project);
+    normalizeUniffiGroup(project);
     console.log(`[FileProvider] Wired '${EXTENSION_NAME}' target and refreshed ${extDir}`);
 
     return config;

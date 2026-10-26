@@ -1144,3 +1144,11 @@ Review pass: live NativeBackupEngine uses the same io.beebeeb.photoBackupParentF
 
 ## PR 209 review: retain live SQLite coverage (2026-10-26)
 The manager deletion retires only its own assertions: keep transient binds and manifest isolation checks on the live engine/store and four remaining SQLite3 files. Replace the internal comment “upgrade purge” with “migration purge” to avoid purchase vocabulary. Existing targeted guards reproduce all three failures before repair. Verification: those guards, isolated suite, and TypeScript. Also carry the native active-export alias repair from PR 203/e6215eb; Graphify refresh there refused an incomplete replacement graph.
+## Tasks 0681/0722 — UniFFI Xcode group membership (2026-10-26, L1)
+
+Plan: lock the app/share/File Provider source-phase memberships and repeat-run idempotence in a parsed-project plugin test before changing wiring. Normalize only references to Beebeeb/beebeeb_uniffi.swift into its existing app navigator group, reusing that file reference in each target's separate build-file object. Remove duplicate navigator memberships without changing build settings or framework links. Preserve all target compilation memberships. Regenerate the committed project with that same helper; full signed linkage is the lead's release rung.
+
+Review pass: original plugin fixture was RED (0/1, 3 navigator groups). The first normalizer ordering also caught an unwanted fifth source membership; normalize before and after wiring and remove obsolete aliases. Final 3 passed / 0 failed across project behavior and both plugin-source lists; project behavior covers a seeded legacy alias and two plugin runs, all 4 build memberships retained. TypeScript, JavaScript syntax and diff checks exit 0. Full clean-prebuild/signed-linkage remains deferred.
+
+## PR 210 validation (2026-10-26)
+The original Swift gate log fails in the known task-1722 stale materialized-folder harness, not in compilation. Rebase preserves both deviation histories. Carry PR 203/e6215eb active-export alias repair for the existing native recovery test; verify isolated suite and TypeScript, then inspect fresh CI. No unresolved review threads at inspection. Graphify refresh in PR 203 refused its partial replacement graph.
