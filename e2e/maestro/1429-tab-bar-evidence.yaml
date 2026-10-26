@@ -9,8 +9,7 @@ appId: io.beebeeb.app
 # Guus to judge whether the idle card should exist at all.
 #
 # Local QA account ONLY (qa0688content@beebeeb.io, seeded, localhost API) —
-# never the prod demo account (login-flow.yaml's demo@beebeeb.io is NOT
-# used here on purpose).
+# never a production demo account.
 #
 # One bounded attempt per the lead's driver-gap window. If any step times
 # out, STOP — do not retry blind; the failure screenshot is more useful
@@ -26,8 +25,8 @@ appId: io.beebeeb.app
 
 # If a prior session left the app signed in (any account), sign out first
 # so this flow always starts from the same known state. Pattern from
-# login-flow.yaml, index 1 because "Sign out" appears twice — the row and
-# the native Alert's confirm button.
+# an older bootstrap. This historical capture recipe needs its selectors
+# rechecked in the release batch; run-all uses the maintained login-test.yaml.
 - runFlow:
     when:
       visible: "Drive"
