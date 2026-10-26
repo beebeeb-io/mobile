@@ -68,7 +68,11 @@ export async function registerDevice(): Promise<string | null> {
       const projectId =
         Constants.expoConfig?.extra?.eas?.projectId ??
         (Constants as { easConfig?: { projectId?: string } }).easConfig?.projectId;
-      if (projectId && Device.isDevice) {
+      // Android push registration runs after this device is registered
+      // (App.tsx). It owns opt-out, channel creation and permission requests,
+      // then links the token to this server device ID. Asking here bypasses
+      // those steps and can precede Android 13's required channel setup.
+      if (Platform.OS !== 'android' && projectId && Device.isDevice) {
         const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
         pushToken = tokenData.data;
       }
