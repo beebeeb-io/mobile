@@ -34,6 +34,7 @@ import {
   type PanGestureHandlerStateChangeEvent,
 } from 'react-native-gesture-handler';
 import { WebView } from 'react-native-webview';
+import { isolatePreviewHtml, staticPreviewWebViewProps } from '../lib/preview-html-policy';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import NetInfo from '@react-native-community/netinfo';
 import { Ionicons } from '@expo/vector-icons';
@@ -5357,8 +5358,8 @@ export default function PreviewScreen() {
             <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
               <View style={styles.svgWebViewWrap}>
                 <WebView
-                  originWhitelist={['*']}
-                  source={{ html: wrappedSvgHtml }}
+                  {...staticPreviewWebViewProps}
+                  source={{ html: isolatePreviewHtml(wrappedSvgHtml) }}
                   style={styles.svgWebView}
                   scalesPageToFit
                   showsHorizontalScrollIndicator={false}
@@ -5677,14 +5678,9 @@ export default function PreviewScreen() {
                 </ScrollView>
               ) : (
                 <WebView
-                  originWhitelist={['*']}
-                  source={{ html: htmlContent }}
+                  {...staticPreviewWebViewProps}
+                  source={{ html: isolatePreviewHtml(htmlContent) }}
                   style={[styles.htmlWebView, { backgroundColor: c.paper }]}
-                  // Sandbox: keep external network requests off so encrypted
-                  // assets can't accidentally leak through embedded URLs.
-                  // (HTML may include <img src="https://..."> tags.)
-                  javaScriptEnabled={false}
-                  domStorageEnabled={false}
                 />
               )}
             </View>
