@@ -3685,6 +3685,7 @@ export async function opaqueLoginFinish(
 export async function completeTwoFactor(
   partialToken: string,
   code: string,
+  codeKind: 'authenticator' | 'backup' = 'authenticator',
 ): Promise<{ sessionToken: string }> {
   let data: { user_id: string; session_token: string; salt?: string };
   try {
@@ -3700,7 +3701,8 @@ export async function completeTwoFactor(
     // ("Wrong email or password."). Here a 401 means the TOTP/backup code was
     // wrong or expired — surface code-specific copy for the 2FA screen.
     if (err instanceof ApiError && err.status === 401) {
-      throw new ApiError(401, 'Incorrect or expired code. Try again.');
+      const label = codeKind === 'backup' ? 'Backup code' : 'Authenticator code';
+      throw new ApiError(401, `${label} was not accepted. Try again, or sign in again if this challenge expired.`);
     }
     throw err;
   }

@@ -95,6 +95,7 @@ import {
 } from '../lib/photo-viewer-window';
 import { InfoSheet } from '../components/preview/InfoSheet';
 import { PreviewBottomBar } from '../components/preview/PreviewBottomBar';
+import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { formatBytes as formatSize } from '../lib/format';
 import { PARTIAL_DECRYPT_MESSAGE, STILL_UPLOADING_MESSAGE, previewLoadErrorMessage } from '../lib/preview-load-error';
@@ -504,6 +505,9 @@ interface PhotoPageEntry {
   storage_pool_id?: string | null;
   thumbnail_uri?: string | null;
   local_asset_id?: string | null;
+  has_thumbnail?: boolean;
+  thumbnail_bytes?: number | null;
+  is_request_upload?: boolean;
 }
 
 type PhotoLoadStage = 'checking' | 'downloading' | 'decrypting' | 'caching';
@@ -821,6 +825,17 @@ async function loadDecryptedPhotoForViewer(
   const isVideo = !!entry.mime_type?.startsWith('video/');
   const category: Category = isVideo ? 'video' : 'image';
   const cacheExt = mediaCacheExtension(entry.mime_type, category);
+  const repairLocalSource = (uri: string, knownMissing = false) => {
+    maybeSelfRepairThumbnailFromLocalFile({
+      fileId: entry.id,
+      localPlaintextUri: uri,
+      mimeType: entry.mime_type ?? (isVideo ? 'video/mp4' : 'image/jpeg'),
+      hasServerThumbnail: knownMissing ? false : entry.has_thumbnail,
+      serverThumbnailBytes: entry.thumbnail_bytes,
+      isRequestUpload: entry.is_request_upload,
+      getFileKeyBytes,
+    });
+  };
   const startedAt = Date.now();
   recordRuntimeTrace('preview.photo_page.load_start', {
     fileId: entry.id,
@@ -847,6 +862,7 @@ async function loadDecryptedPhotoForViewer(
         cacheExt,
         elapsedMs: Date.now() - startedAt,
       });
+      repairLocalSource(cached);
       return { uri: cached, kind: 'original' };
     }
     recordRuntimeTrace('preview.photo_page.cache_miss', {
@@ -986,20 +1002,9 @@ async function loadDecryptedPhotoForViewer(
       cacheExt,
       elapsedMs: Date.now() - startedAt,
     });
-    if (autoOriginalFallback) {
-      // 1286 — the plaintext original is now in the preview cache and we have just PROVEN the
-      // server thumbnail is missing (the thumbnail fetch above returned empty — no probing,
-      // honoring 0883's no-storm contract). Generate + upload the thumbnail from these bytes so
-      // the grid stops being blank everywhere. Fire-and-forget; never blocks or throws. Scoped
-      // to the image auto-fallback only — video decrypt-completion regen stays untouched (1203).
-      maybeSelfRepairThumbnailFromLocalFile({
-        fileId: entry.id,
-        localPlaintextUri: cachedUri,
-        mimeType: entry.mime_type ?? 'image/jpeg',
-        hasServerThumbnail: false,
-        getFileKeyBytes,
-      });
-    }
+    // The full source is already local. Upgrade only known degraded/missing
+    // thumbnails; thumbnail-only opens above never fetch an original for repair.
+    repairLocalSource(cachedUri, autoOriginalFallback);
     return { uri: cachedUri, kind: 'original' };
   })();
 
@@ -2113,6 +2118,7 @@ export default function PreviewScreen() {
     initialPhotoIndex,
     performanceStorageProfile: routePerformanceStorageProfile,
     hasThumbnail,
+    thumbnailBytes,
     fileRequestId,
     senderEphemeralPubkey,
     wrappedContentKey,
@@ -2271,7 +2277,8 @@ export default function PreviewScreen() {
   const [performanceStorageProfile, setPerformanceStorageProfile] = useState<PerformanceStorageProfile>(() => (
     normalizePerformanceStorageProfile(routePerformanceStorageProfile)
   ));
-  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [preparingExport, setPreparingExport] = useState(false);
+  const exportProgressRef = useRef<ExportProgressBannerHandle>(null);
   const [optionsVisible, setOptionsVisible] = useState(false);
   const [originalPhotoRequest, setOriginalPhotoRequest] = useState<{ fileId: string; nonce: number } | null>(null);
 
@@ -3167,6 +3174,7 @@ export default function PreviewScreen() {
   const fetchAndDecrypt = useCallback(async (options: {
     signal?: AbortSignal;
     onStreamProgress?: (pct: number) => void;
+    onExportProgress?: (event: PreviewLoadProgressEvent) => void;
   } = {}): Promise<string> => {
     throwIfPreviewAborted(options.signal);
     // Task 1539 (finding 1, P0): every single-file decrypt path funnels
@@ -3242,7 +3250,8 @@ export default function PreviewScreen() {
             handleId,
             {
               onProgress: (event) => {
-                applyNativeProgress(event, setLoadProgress);
+                if (options.onExportProgress) options.onExportProgress(event);
+                else applyNativeProgress(event, setLoadProgress);
                 const pct = streamBufferPctFromEvent(event);
                 if (pct !== undefined) {
                   setStreamBufferPct(pct);
@@ -3274,7 +3283,7 @@ export default function PreviewScreen() {
         elapsedMs: Date.now() - startedAt,
       });
       // 0883 — auto self-repair: the full plaintext is now on disk. If this is
-      // an OWNER media file the server has no thumbnail for, generate + upload
+      // an OWNER media file has a missing or degraded thumbnail, generate + upload
       // one from the bytes we just decrypted (fire-and-forget, never blocks the
       // open). Gated entirely inside the helper; we only feed it owner context.
       // hasThumbnail describes the *opened* file only — for swiped photos
@@ -3286,6 +3295,7 @@ export default function PreviewScreen() {
           currentMimeType ??
           (category === 'image' ? 'image/jpeg' : category === 'video' ? 'video/mp4' : null),
         hasServerThumbnail: currentFileId === fileId ? hasThumbnail : undefined,
+        serverThumbnailBytes: currentFileId === fileId ? thumbnailBytes : undefined,
         isRequestUpload: !!requestFileFields && currentFileId === fileId,
         getFileKeyBytes,
       });
@@ -3305,6 +3315,7 @@ export default function PreviewScreen() {
     currentSizeBytes,
     fileId,
     hasThumbnail,
+    thumbnailBytes,
     showToast,
     requestFileFields,
     getFileKeyBytes,
@@ -3314,7 +3325,7 @@ export default function PreviewScreen() {
     reloadNonce,
   ]);
 
-  const getExportUri = useCallback(async (signal?: AbortSignal): Promise<ExportUriResult> => {
+  const getExportUri = useCallback(async (signal?: AbortSignal, onExportProgress?: (event: PreviewLoadProgressEvent) => void): Promise<ExportUriResult> => {
     return resolvePreviewExportUri({
       isImage,
       imageUri,
@@ -3325,7 +3336,7 @@ export default function PreviewScreen() {
       videoExtension: previewDecryptExtension(currentMimeType, currentFileName),
       isPdf,
       pdfUri,
-      fetchAndDecrypt: () => fetchAndDecrypt({ signal }),
+      fetchAndDecrypt: () => fetchAndDecrypt({ signal, onExportProgress }),
       materializeStreamVideoForExport: materializeVideoPreviewForExport,
       signal,
     });
@@ -4038,7 +4049,7 @@ export default function PreviewScreen() {
 
     setDownloading(true);
     setDownloadProgress(0);
-    setExportStatus('Preparing export options...');
+    setPreparingExport(true);
 
     try {
       const token = await getToken();
@@ -4047,19 +4058,16 @@ export default function PreviewScreen() {
         return;
       }
 
-      setExportStatus('Preparing a decrypted copy on this device...');
-      const { uri: shareUri, reusedPreview, release } = await getExportUri(exportController.signal);
+      const { uri: shareUri, release } = await getExportUri(exportController.signal, (event) => {
+        exportProgressRef.current?.setProgress(event);
+      });
       releaseExportCopy = release ?? null;
-      setExportStatus(
-        reusedPreview
-          ? 'Using the decrypted preview already on this device...'
-          : 'Decrypting locally before export...',
-      );
+
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
-        setExportStatus('Opening iOS export options...');
+        setPreparingExport(false);
         await Sharing.shareAsync(shareUri, {
           mimeType: currentMimeType ?? 'application/octet-stream',
           dialogTitle: previewFileName,
@@ -4078,7 +4086,7 @@ export default function PreviewScreen() {
       }
       setDownloading(false);
       setDownloadProgress(0);
-      setExportStatus(null);
+      setPreparingExport(false);
     }
   }, [category, currentFileId, currentMimeType, getExportUri, previewFileName]);
 
@@ -4499,6 +4507,12 @@ export default function PreviewScreen() {
       sizeBytes={currentSizeBytes}
     />
   );
+
+  const exportProgressOverlay = preparingExport ? (
+    <View style={[styles.exportProgressOverlay, { bottom: Math.max(insets.bottom, 16) + 76 }]} pointerEvents="none" testID="preview-export-progress">
+      <ExportProgressBanner ref={exportProgressRef} name={previewFileName} />
+    </View>
+  ) : null;
 
   if (isMediaPreview) {
     // When a photo list is provided, show a horizontal swipeable pager
@@ -4956,6 +4970,7 @@ export default function PreviewScreen() {
           extraRows={buildInfoSheetRows(mediaDetailsRows)}
           focus={infoFocus}
         />
+        {exportProgressOverlay}
         <PreviewOptionsPopover
           visible={optionsVisible}
           filename={previewFileName}
@@ -5225,6 +5240,7 @@ export default function PreviewScreen() {
           branch's matching removal note); the lock now lives in the header
           subtitle above. */}
 
+      {exportProgressOverlay}
       <PreviewOptionsPopover
         visible={optionsVisible}
         filename={previewFileName}
@@ -6655,6 +6671,12 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     maxWidth: '60%',
     textAlign: 'right',
+  },
+  exportProgressOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    zIndex: 30,
   },
   // ---- Download bar ----
   downloadBar: {

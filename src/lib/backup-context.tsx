@@ -20,6 +20,7 @@ import {
   setPhotoBackupIncludeVideos,
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
+import { startAccountRefusalPoll } from './account-refusal-poll';
 import { syncBackupDeviceIdToNative } from './backup-device-id-handoff';
 import { ensureBackupFolders, reconcileDerivedStateAgainstServer, type BackupCategory } from '../services/BackupService';
 import { isVaultKeyMismatchError } from '../services/vault-key-mismatch';
@@ -45,12 +46,6 @@ const BACKUP_INCLUDE_VIDEOS_KEY = 'beebeeb_camera_include_videos';
 const BACKUP_WIFI_ONLY_KEY = 'beebeeb_camera_wifi_only';
 const BACKUP_BG_UPLOAD_KEY = 'beebeeb_camera_bg_upload';
 const SESSION_TOKEN_KEY = 'beebeeb_session_token';
-// Task 1605 review round 3 (P1): how often to re-check the account with the
-// server while native reports `accountRefusalReason` — see
-// `runAccountRefusalPollTick` below. Bounded: the effect that drives this
-// only runs at all while that reason is set, and stops itself the instant a
-// tick reports the account unblocked.
-const ACCOUNT_REFUSAL_POLL_MS = 15_000;
 // Records which user id has already claimed the pre-1443 device-global
 // preference values during the one-time migration below. See
 // migrateLegacyBackupPrefs.
@@ -535,6 +530,7 @@ export function accountRefusalResumeGate(sub: Parameters<typeof decideAccountRef
 
 export interface AccountRefusalPollTickDeps {
   fetchSubscription: () => Promise<Subscription | null>;
+  isCurrent?: () => boolean;
   getIsPhotoBackupEnabled: () => boolean;
   /** Mirror the freshly-resolved gate into the shared state (module-level copy + the canonical provider) — fired once, only on the tick that finds the account unblocked. */
   onUnblocked: (gate: AccountGate) => void;
@@ -554,9 +550,8 @@ export interface AccountRefusalPollTickResult {
  * Extracted as a pure async function — same rationale as
  * `decideAccountRefusalResume` above — so "resume called exactly once" and
  * "polling stops once cleared" are testable as a plain sequence of calls,
- * with no `setInterval`/`useEffect` involved. The component's own effect is
- * a thin `setInterval` + `AppState` driver that calls this once per tick and
- * clears its own interval when `shouldStopPolling` comes back true.
+ * independently of the scheduler. The component supplies a lifetime/visibility
+ * check so a stale subscription response cannot resume a stopped effect.
  */
 export async function runAccountRefusalPollTick(
   deps: AccountRefusalPollTickDeps,
@@ -567,6 +562,7 @@ export async function runAccountRefusalPollTick(
   } catch {
     return { resumed: false, shouldStopPolling: false }; // best-effort — next tick retries
   }
+  if (deps.isCurrent && !deps.isCurrent()) return { resumed: false, shouldStopPolling: false };
   const decision = decideAccountRefusalResume(sub, deps.getIsPhotoBackupEnabled());
   if (!decision.unblocked) return { resumed: false, shouldStopPolling: false };
   deps.onUnblocked(accountRefusalResumeGate(sub));
@@ -968,30 +964,17 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // clears — see `runAccountRefusalPollTick`'s doc comment above for why
   // this is needed at all (the trial-cap refusal never moves
   // `accountGate.kind`, so the mount/warm-up effect above has nothing to
-  // react to for it). Bounded: only runs while BOTH photo backup is enabled
-  // AND native has a refusal reason set; a tick that finds the account
-  // unblocked clears its own interval immediately (`shouldStopPolling`), and
-  // the whole effect tears down the instant either dependency goes false —
-  // this is never a standing poll.
+  // react to for it). Task 1661: retry at 15/30/60 seconds while foregrounded,
+  // stop at the first unblocked tick, and recheck immediately on foreground.
   useEffect(() => {
     if (!userId || Platform.OS === 'web') return;
     if (!isPhotoBackupEnabled || !accountRefusalReason) return;
 
     let stopped = false;
-    let intervalId: ReturnType<typeof setInterval> | null = null;
-
-    const tick = async () => {
-      if (stopped) return;
-      // Task 1686 (iOS idle heat) — skip network work while the app is
-      // backgrounded/locked ('background' and 'inactive'). The foreground
-      // 15 s semantics are unchanged (the interval itself keeps running so
-      // the resume path and the effect contract stay identical); only the
-      // per-tick fetch is gated on visibility. A tick that returns early
-      // must NOT stop the poll — the account may unblock while backgrounded
-      // and the next foreground tick (below) catches it immediately.
-      if (shouldPauseBackupPolls(appStateRef.current)) return;
+    const poll = startAccountRefusalPoll(async () => {
       const result = await runAccountRefusalPollTick({
         fetchSubscription: getSubscription,
+        isCurrent: () => !stopped && !shouldPauseBackupPolls(appStateRef.current),
         getIsPhotoBackupEnabled: () => isPhotoBackupEnabled,
         onUnblocked: (gate) => {
           setCurrentAccountGate(gate);
@@ -1014,24 +997,15 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
           await refreshNativeProgress().catch(() => {});
         },
       });
-      if (result.shouldStopPolling && intervalId) {
-        clearInterval(intervalId);
-        intervalId = null;
-      }
-    };
-
-    void tick();
-    intervalId = setInterval(() => { void tick(); }, ACCOUNT_REFUSAL_POLL_MS);
-    const refusalSub = AppState.addEventListener('change', (next) => {
-      // Task 1686: on foreground, refresh appStateRef FIRST so the next tick
-      // is unpaused, then tick immediately (preserves the pre-existing
-      // foreground-refresh behavior for active users).
+      return result;
+    }, !shouldPauseBackupPolls(appStateRef.current));
+    const refusalSub = AppState.addEventListener('change', next => {
       appStateRef.current = next;
-      if (next === 'active') void tick();
+      poll.setActive(!shouldPauseBackupPolls(next));
     });
     return () => {
       stopped = true;
-      if (intervalId) clearInterval(intervalId);
+      poll.stop();
       refusalSub.remove();
     };
   }, [userId, isPhotoBackupEnabled, accountRefusalReason, refreshAccountState, enableNativeBackup, refreshNativeProgress]);
