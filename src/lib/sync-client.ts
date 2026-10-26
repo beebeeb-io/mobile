@@ -69,7 +69,7 @@ export interface PendingOp {
 }
 
 interface SyncEvent {
-  type: 'snapshot' | 'op' | 'status' | 'error';
+  type: 'snapshot' | 'ready' | 'op' | 'status' | 'error';
   status?: ConnectionStatus;
   error?: Error;
   op?: SyncOp;
@@ -289,6 +289,9 @@ export class SyncClient {
   private lastOpenAttemptGotStreamToken = false;
   private listeners = new Set<Listener>();
   private started = false;
+  // Startup can replay ops yet still require a snapshot (e.g. a restored
+  // tombstone). Until the complete base is known, preserve the old checkpoint.
+  private startupComplete = false;
   private destroyed = false;
   // Write-through persistence (debounced). `cachePersistTimer` coalesces a burst
   // of remote ops; `dirtyParents` accumulates the parent folders whose listing
@@ -402,6 +405,7 @@ export class SyncClient {
   async start(): Promise<void> {
     if (this.started || this.destroyed) return;
     this.started = true;
+    this.startupComplete = false;
     this.setStatus('connecting');
 
       // Task 1686 — replay a reconnect that came due while the app was
@@ -470,6 +474,7 @@ export class SyncClient {
 
           let needsSnapshot = !seededFromCache;
           if (cachedIndex && seededFromCache) {
+            this.tree.clear();
             this.seedTreeFromCachedIndex(cachedIndex.files);
             this.lastSeq = cachedIndex.seq!;
             const ops = await getSyncOps(this.lastSeq);
@@ -490,6 +495,10 @@ export class SyncClient {
         }
       }
 
+      this.startupComplete = true;
+      if (this.dirtyParents.size > 0) this.scheduleCachePersist();
+      // The provider's original start promise may already have rejected.
+      this.emit({ type: 'ready' });
       void this.openStream();
 
       // Flush any locally-queued ops from a prior session.
@@ -896,6 +905,9 @@ export class SyncClient {
   }
 
   private async persistCacheNow(): Promise<void> {
+    // Also covers the stop() flush after a failed startup. Leave dirty parents
+    // queued so a successful retry can publish the recovered complete tree.
+    if (!this.startupComplete) return;
     const seq = this.lastSeq;
     const parents = this.dirtyParents;
     this.dirtyParents = new Set<string | null>();

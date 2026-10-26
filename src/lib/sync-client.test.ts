@@ -17,7 +17,7 @@
 // The fix seeds the tree from the on-disk file-index cache (the last
 // known-good FULL listing) before replaying catch-up ops, so ops land on a
 // real base instead of nothing.
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 
 // ---------------------------------------------------------------------------
 // Mocks — sync-client.ts's dependencies. Every test file must mock every
@@ -498,4 +498,73 @@ describe('SyncClient with an unreadable device id (task 1667 round 13)', () => {
     expect(getSyncOpsCalls).toEqual([5]); expect(getSnapshotCalls).toBe(0);
     expect(client.getNode('file-1')?.size_bytes).toBe(9);
   });
+});
+
+// PR #199: failed startup must preserve the complete cache across its debounce.
+test('failed restore snapshot cannot stamp an incomplete tree before retry', async () => {
+  secureStore.set('bb_sync_last_seq', '5');
+  cachedIndex = { hash: 'complete', storedAt: Date.now(), seq: 5, files: [fileEntry({ id: 'old-1' })] };
+  getSyncOpsImpl = async (since) => since < 6 ? [
+    { seq_id: 6, op_type: 'file_restore', payload: { id: 'restored-1' } },
+  ] : [];
+  getSnapshotImpl = async () => { throw new Error('snapshot temporarily unavailable'); };
+  const client = new SyncClient();
+  try {
+    await expect(client.start()).rejects.toThrow('snapshot temporarily unavailable');
+    // Longer than the 800ms cache debounce, shorter than the reconnect floor.
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(savedIndexCalls).toHaveLength(0);
+    getSnapshotImpl = async () => ({ seq_id: 6, nodes: [syncNode({ id: 'old-1' }), syncNode({ id: 'restored-1' })] });
+    await client.reconnect();
+    expect(getSnapshotCalls).toBe(2);
+    expect(getSyncOpsCalls).toEqual([5, 5]);
+    expect(client.getNode('restored-1')).toBeDefined();
+    await client.persistCacheNow();
+    expect(savedIndexCalls.at(-1)?.seq).toBe(6);
+    expect(savedIndexCalls.at(-1)?.files.map((file) => file.id).sort()).toEqual(['old-1', 'restored-1']);
+  } finally { client.stop(); }
+});
+
+const signedInUser = { id: 'user-1' };
+mock.module('./auth', () => ({ useAuth: () => ({ user: signedInUser }) }));
+mock.module('./delete-cascade', () => ({ onFilesDeleted: async () => {} }));
+
+test('SyncProvider becomes ready after its rejected startup recovers without a snapshot', async () => {
+  const React = await import('react');
+  const { default: TestRenderer, act } = await import('react-test-renderer');
+  const { SyncProvider, useSync } = await import('./sync-context');
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  secureStore.set('bb_sync_last_seq', '5');
+  cachedIndex = { hash: 'complete', storedAt: Date.now(), seq: 5, files: [fileEntry()] };
+  let attempts = 0;
+  getSyncOpsImpl = async () => {
+    if (++attempts === 1) throw new Error('temporary catch-up failure');
+    return [];
+  };
+  let latest;
+  let client;
+  const realStart = SyncClient.prototype.start;
+  const start = spyOn(SyncClient.prototype, 'start').mockImplementation(function () {
+    client = this;
+    return realStart.call(this);
+  });
+  function Consumer() { latest = useSync(); return null; }
+  let renderer;
+  try {
+    await act(async () => {
+      renderer = TestRenderer.create(React.createElement(SyncProvider, null, React.createElement(Consumer)));
+    });
+    expect(latest.ready).toBe(false);
+    expect(latest.error?.message).toBe('temporary catch-up failure');
+    await act(async () => { await client.reconnect(); });
+    expect(getSyncOpsCalls).toEqual([5, 5]);
+    expect(getSnapshotCalls).toBe(0);
+    expect(latest.ready).toBe(true);
+    expect(latest.loading).toBe(false);
+    expect(latest.error).toBeNull();
+    expect(latest.allNodes()).toHaveLength(1);
+  } finally {
+    await act(async () => { renderer?.unmount(); });
+    start.mockRestore();
+  }
 });
