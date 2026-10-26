@@ -1213,3 +1213,73 @@ inherit BottomSheet's inset; document preview children inherit the parent chrome
 inset. Decorative fills, thumbnail badges and captions inside already-bounded
 content are not window/tab anchors. No unrelated settings or scroll padding
 redesign is intended.
+
+### 2233 item 1 measurement contract (before profiling)
+
+Measure the Android fallback grid with the existing local QA content account,
+three matched runs per version, unchanged file set, cache state and gestures.
+Use gfxinfo frame totals/jank and actual Image onLoad runtime timestamps from
+Photos focus for time-to-first-thumbnail. Add an Android-development-only
+Image onLoad trace; iOS gets no handler and release builds do no extra work.
+Only change performance behavior after a device baseline identifies the cause.
+
+Item 1 profiling finding and ruling, before repair: a warm-cache Android Photos
+run made 274 thumbnail-hook requests for 155 distinct IDs. Metadata decryption
+changes mimeType after initial rendering; the real-hook regression reproduces
+a second cache read and URI reset for a remote-only tile. RED: 3 pass / 1 fail,
+expected one cache read, observed two (`r3/1-metadata-red.log`). MIME is needed
+only to create a local-asset thumbnail, not to read/download a remote thumbnail.
+For Android remote-only entries, normalize the effect's MIME dependency to null;
+retain the existing dependency for local assets and every iOS call. Disabling a
+tile still clears its URI (locked tiles included), and file changes still reload.
+Do not tune FlatList batch/window values or change iOS rendering.
+
+Item 1 second measured experiment, before tuning: MIME-only repair produced
+TTF 871/1408/646 ms (median 871) and jank 73.23/79.92/83.00%; the stable baseline
+TTF was 548/760/872 ms (median 760), jank 80.33/92.62/87.50%. Loading is not
+consistently better. First cache hit precedes first Image load by 457/550 ms
+in two after runs; Android mounts 12 list rows (including offscreen tiles) and
+batches eight more at a time. Test an Android-only 8 initial rows / 4 per batch /
+3 viewport window, leaving 80ms batching and all iOS values unchanged. RED:
+1 pass / 2 fail (`r3/1-window-red.log`). Run the same three measurements; retain
+only if the combined result improves, and report residual emulator jank honestly.
+
+Window experiment rejected: three runs gave TTF 1000/1019/589 ms (median 1000),
+jank 78.60/75.71/56.92% (median 75.71%). Restore the original 12/8/5 grid settings;
+preserve the experiment patch/test/logs outside the repo under r3/. No window
+change will ship. The installed react-native-blurhash 2.1.3 native view defaults
+`decodeAsync=false` and calls its decoder synchronously from updateBlurhash;
+ThumbnailImage passes no override. Its official README recommends decodeAsync
+for stutters in large lists (https://github.com/mrousavy/react-native-blurhash#asynchronous-decoding).
+Before repair: real-component RED 2 pass / 1 fail, expected Android decodeAsync
+true, received undefined (`r3/1-blurhash-red.log`). Enable that existing prop only
+on Android; leave iOS undefined, preserve placeholder resolution/colors and
+keep the original virtualization settings. Re-run the same three measurements.
+
+Measurement correction (instrument audit): the early baseline used 181 cache
+files, while later experiments accumulated 193 then 203. Earlier before/after
+comparisons above remain visible but are provisional and must not be used as
+the final evidence. Repeat both versions against one 203-file warm-cache
+snapshot. Force-stop only the app before each run; remove only cache additions
+created after the snapshot and assert every retained thumbnail's SHA256 matches.
+The baseline keeps the identical Image onLoad trace but neither performance
+repair. The final version restores both repairs and the original list settings.
+Record per-run cache content digests, 247 media rows, gestures and gfxinfo counts.
+
+Async-decoder experiment rejected: fixed-cache medians were 704 -> 1190ms TTF,
+77.54 -> 97.52% jank and 133 -> 500ms p95. Host load was 53.96-68.16 during the
+after window, and cached-index reading stalled 8741ms in one run. Contention is
+a possible confound, not a proven explanation or permission to discard bad data.
+Remove the async prop/test from the shipping diff; preserve the rejected source,
+test, bundle receipt and raw measurements in r3. Retain only the real-hook-proven
+remote MIME reload repair and Android-dev timing trace. Measure that final source
+against the same 203-file cache; performance closure requires a quiet host or
+OnePlus run. No decoder/window tuning ships on this inconclusive evidence.
+
+Final-source fixed-cache result: three runs per version, 247 rows and the same
+203 SHA256-verified cache entries. Observed medians TTF 704 -> 608ms, jank
+77.54 -> 73.36%, p95 133 -> 105ms; aggregate janky/total 592/780 -> 610/861.
+After host load averages 20.76/21.06/17.78 remain uncontrolled, so these are
+observations, not causal improvement or OnePlus proof. Remote MIME reload repair
+ships with its red-first hook guard; quiet-host/OnePlus performance closure stays
+open. Final measurements and rejected candidates are preserved under r3/.
