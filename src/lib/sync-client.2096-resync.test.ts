@@ -67,6 +67,7 @@ mock.module('react-native-sse', () => ({
 
 let getStreamTokenCalls = 0;
 let getSyncOpsCalls = 0;
+let getSyncOpsImpl = async () => [];
 mock.module('./api', () => ({
   getApiUrl: () => 'https://api.test',
   getToken: async () => 'session-token',
@@ -76,7 +77,7 @@ mock.module('./api', () => ({
   },
   submitSyncOps: async () => ({ applied: [], rejected: [] }),
   getSnapshot: async () => ({ seq_id: 0, nodes: [] }),
-  getSyncOps: async () => { getSyncOpsCalls += 1; return []; },
+  getSyncOps: async () => { getSyncOpsCalls += 1; return getSyncOpsImpl(); },
 }));
 
 mock.module('./file-index-cache', () => ({
@@ -134,6 +135,7 @@ describe('SyncClient catch-up on reconnect / resync (task 2096)', () => {
     secureStore.clear();
     getStreamTokenCalls = 0;
     getSyncOpsCalls = 0;
+    getSyncOpsImpl = async () => [];
     appStateListeners.clear();
     lastFakeES = null;
     currentState = 'active';
@@ -213,4 +215,16 @@ describe('SyncClient catch-up on reconnect / resync (task 2096)', () => {
     await runTimers();
     expect(getSyncOpsCalls).toBe(2);
   });
+});
+
+ test('live ops wait behind catch-up so their higher cursor cannot skip missed ops', async () => {
+  const client = await started();
+  let resolve;
+  getSyncOpsImpl = () => new Promise(r => { resolve = r; });
+  const catchingUp = (client as any).catchUp('test'); await drain();
+  const op = (seq_id, id) => ({seq_id,op_type:'file_create',payload:{id,name_encrypted:'enc'},created_at:'2026-10-26T00:00:00Z'});
+  lastFakeES!.fire('message',{data:JSON.stringify(op(2,'live'))}); await drain();
+  resolve([op(1,'missed')]); await catchingUp; await drain();
+  expect(client.getAllNodes().map(x=>x.id).sort()).toEqual(['live','missed']);
+  expect(client.getLastSeq()).toBe(2); client.stop();
 });

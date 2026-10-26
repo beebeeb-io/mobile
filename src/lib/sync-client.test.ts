@@ -17,7 +17,7 @@
 // The fix seeds the tree from the on-disk file-index cache (the last
 // known-good FULL listing) before replaying catch-up ops, so ops land on a
 // real base instead of nothing.
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 
 // ---------------------------------------------------------------------------
 // Mocks — sync-client.ts's dependencies. Every test file must mock every
@@ -237,7 +237,65 @@ describe('SyncClient catch-up (task 1302)', () => {
 
   // --- Codex review on PR #103 (two P1s) ---------------------------------
 
-  test('does NOT seed from a cache whose cursor is behind lastSeq — the cache write is debounced ~800ms behind the synchronous lastSeq persist, so a kill mid-debounce can leave the cache stale', async () => {
+  test('startup failures back off until the stream successfully opens', async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const timers: Array<{ fn: () => void; ms: number }> = [];
+    globalThis.setTimeout = ((fn, ms) => {
+      timers.push({ fn, ms });
+      return timers.length;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = (() => {}) as typeof clearTimeout;
+    const client = new SyncClient();
+    try {
+      getSnapshotImpl = async () => { throw new Error('outage'); };
+      await expect(client.start()).rejects.toThrow('outage');
+      const delays = [timers[0].ms];
+      for (let cycle = 0; cycle < 2; cycle++) {
+        timers[cycle].fn();
+        for (let tick = 0; tick < 100 && timers.length < cycle + 2; tick++) await Promise.resolve();
+        expect(timers.length).toBe(cycle + 2);
+        delays.push(timers[cycle + 1].ms);
+      }
+      expect(getSnapshotCalls).toBe(3);
+      expect(delays[0]).toBeGreaterThanOrEqual(1200);
+      expect(delays[0]).toBeLessThanOrEqual(1800);
+      expect(delays[1]).toBeGreaterThanOrEqual(2400);
+      expect(delays[1]).toBeLessThanOrEqual(3600);
+      expect(delays[2]).toBeGreaterThanOrEqual(4800);
+      expect(delays[2]).toBeLessThanOrEqual(7200);
+    } finally {
+      client.stop();
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+    }
+  });
+
+  test('rebuild applies a pending create echo missing from the older cache', async () => {
+    secureStore.set('bb_sync_last_seq', '6');
+    secureStore.set('bb_sync_pending_ops', JSON.stringify([{
+      client_op_id: 'pending-create', op_type: 'file_create',
+      payload: { id: 'new-1', name_encrypted: 'enc-new-1' },
+    }]));
+    cachedIndex = { hash: 'old', storedAt: Date.now(), seq: 5, files: [fileEntry({ id: 'old-1' })] };
+    getSyncOpsImpl = async () => [{
+      seq_id: 7, client_op_id: 'pending-create', op_type: 'file_create',
+      payload: { id: 'new-1', name_encrypted: 'enc-new-1' },
+    }];
+    const client = new SyncClient();
+    try {
+      await client.start();
+      expect(client.getAllNodes().map(n => n.id).sort()).toEqual(['new-1', 'old-1']);
+      expect(getSyncOpsCalls).toEqual([5]);
+      expect(secureStore.get('bb_sync_last_seq')).toBe('7');
+      expect(JSON.parse(secureStore.get('bb_sync_pending_ops')!)).toEqual([]);
+      expect(getSnapshotCalls).toBe(0);
+    } finally {
+      client.stop();
+    }
+  });
+
+  test('replays the debounce gap from the stamped cache cursor without losing an already-checkpointed create', async () => {
     secureStore.set('bb_sync_last_seq', '6');
     cachedIndex = {
       hash: 'stale-cursor-hash',
@@ -253,10 +311,10 @@ describe('SyncClient catch-up (task 1302)', () => {
       ],
     };
     // getSyncOps(6) only returns ops AFTER 6 — 'mid-1' (seq 5) is already
-    // "consumed" per lastSeq bookkeeping and is NEVER re-sent. If seeding
-    // from the stale cache were allowed anyway, 'mid-1' would be silently,
-    // permanently missing from the tree.
-    getSyncOpsImpl = async () => [];
+    // Re-request from the stamped cache cursor so the gap is replayed.
+    getSyncOpsImpl = async (since) => since < 5 ? [
+      { seq_id: 5, op_type: 'file_create', payload: { id: 'mid-1', name_encrypted: 'enc-mid-1' } },
+    ] : [];
     getSnapshotImpl = async () => ({
       seq_id: 6,
       nodes: [syncNode({ id: 'old-1' }), syncNode({ id: 'old-2' }), syncNode({ id: 'mid-1' })],
@@ -265,10 +323,9 @@ describe('SyncClient catch-up (task 1302)', () => {
     const client = new SyncClient();
     await client.start();
 
-    // Treated exactly like "no cache" — always an authoritative snapshot,
-    // never an unsafe ops-only reconstruction off a stale base.
-    expect(getSnapshotCalls).toBe(1);
-    expect(getSyncOpsCalls).toEqual([]);
+    // Task 1990: replay from the cache's cursor, rather than skipping the gap.
+    expect(getSnapshotCalls).toBe(0);
+    expect(getSyncOpsCalls).toEqual([4]);
     const ids = client.getAllNodes().map((n: { id: string }) => n.id).sort();
     expect(ids).toEqual(['mid-1', 'old-1', 'old-2']);
   });
@@ -471,4 +528,101 @@ describe('SyncClient with an unreadable device id (task 1667 round 13)', () => {
       getDeviceIdImpl = async () => 'device-1';
     }
   });
+});
+
+ describe('1990 sync cursor persistence', () => {
+  test('metadata-only remote updates persist a matching cache and avoid a cold snapshot', async () => {
+    secureStore.set('bb_sync_last_seq', '5');
+    cachedIndex = { hash: 'h', storedAt: 1, seq: 5, files: [fileEntry()] };
+    getSyncOpsImpl = async (since) => since < 6 ? [{ seq_id: 6, op_type: 'file_update', payload: { id: 'file-1', size_bytes: 999 } }] : [];
+    const first = new SyncClient(); await first.start(); first.stop();
+    for (let i=0;i<40;i++) await Promise.resolve();
+    const saved = savedIndexCalls.at(-1);
+    expect(saved?.seq).toBe(6);
+    expect(saved?.files[0].size_bytes).toBe(999);
+    cachedIndex = saved;
+    const second = new SyncClient(); await second.start(); second.stop();
+    expect(getSnapshotCalls).toBe(0);
+  });
+  test('a stamped empty tree is a valid returning-device cache', async () => {
+    secureStore.set('bb_sync_last_seq', '5'); cachedIndex = { hash:'h', storedAt:1, seq:5, files:[] };
+    const client = new SyncClient(); await client.start(); client.stop();
+    expect(getSnapshotCalls).toBe(0); expect(client.getAllNodes()).toEqual([]);
+  });
+  test('a debounce gap replays from the cached cursor instead of taking a snapshot', async () => {
+    secureStore.set('bb_sync_last_seq', '6'); cachedIndex = { hash:'h', storedAt:1, seq:5, files:[fileEntry()] };
+    getSyncOpsImpl = async () => [{seq_id:6,op_type:'file_update',payload:{id:'file-1',size_bytes:9}}];
+    const client = new SyncClient(); await client.start(); client.stop();
+    expect(getSyncOpsCalls).toEqual([5]); expect(getSnapshotCalls).toBe(0);
+    expect(client.getNode('file-1')?.size_bytes).toBe(9);
+  });
+});
+
+// PR #199: failed startup must preserve the complete cache across its debounce.
+test('failed restore snapshot cannot stamp an incomplete tree before retry', async () => {
+  secureStore.set('bb_sync_last_seq', '5');
+  cachedIndex = { hash: 'complete', storedAt: Date.now(), seq: 5, files: [fileEntry({ id: 'old-1' })] };
+  getSyncOpsImpl = async (since) => since < 6 ? [
+    { seq_id: 6, op_type: 'file_restore', payload: { id: 'restored-1' } },
+  ] : [];
+  getSnapshotImpl = async () => { throw new Error('snapshot temporarily unavailable'); };
+  const client = new SyncClient();
+  try {
+    await expect(client.start()).rejects.toThrow('snapshot temporarily unavailable');
+    // Longer than the 800ms cache debounce, shorter than the reconnect floor.
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(savedIndexCalls).toHaveLength(0);
+    getSnapshotImpl = async () => ({ seq_id: 6, nodes: [syncNode({ id: 'old-1' }), syncNode({ id: 'restored-1' })] });
+    await client.reconnect();
+    expect(getSnapshotCalls).toBe(2);
+    expect(getSyncOpsCalls).toEqual([5, 5]);
+    expect(client.getNode('restored-1')).toBeDefined();
+    await client.persistCacheNow();
+    expect(savedIndexCalls.at(-1)?.seq).toBe(6);
+    expect(savedIndexCalls.at(-1)?.files.map((file) => file.id).sort()).toEqual(['old-1', 'restored-1']);
+  } finally { client.stop(); }
+});
+
+const signedInUser = { id: 'user-1' };
+mock.module('./auth', () => ({ useAuth: () => ({ user: signedInUser }) }));
+mock.module('./delete-cascade', () => ({ onFilesDeleted: async () => {} }));
+
+test('SyncProvider becomes ready after its rejected startup recovers without a snapshot', async () => {
+  const React = await import('react');
+  const { default: TestRenderer, act } = await import('react-test-renderer');
+  const { SyncProvider, useSync } = await import('./sync-context');
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  secureStore.set('bb_sync_last_seq', '5');
+  cachedIndex = { hash: 'complete', storedAt: Date.now(), seq: 5, files: [fileEntry()] };
+  let attempts = 0;
+  getSyncOpsImpl = async () => {
+    if (++attempts === 1) throw new Error('temporary catch-up failure');
+    return [];
+  };
+  let latest;
+  let client;
+  const realStart = SyncClient.prototype.start;
+  const start = spyOn(SyncClient.prototype, 'start').mockImplementation(function () {
+    client = this;
+    return realStart.call(this);
+  });
+  function Consumer() { latest = useSync(); return null; }
+  let renderer;
+  try {
+    await act(async () => {
+      renderer = TestRenderer.create(React.createElement(SyncProvider, null, React.createElement(Consumer)));
+    });
+    expect(latest.ready).toBe(false);
+    expect(latest.error?.message).toBe('temporary catch-up failure');
+    await act(async () => { await client.reconnect(); });
+    expect(getSyncOpsCalls).toEqual([5, 5]);
+    expect(getSnapshotCalls).toBe(0);
+    expect(latest.ready).toBe(true);
+    expect(latest.loading).toBe(false);
+    expect(latest.error).toBeNull();
+    expect(latest.allNodes()).toHaveLength(1);
+  } finally {
+    await act(async () => { renderer?.unmount(); });
+    start.mockRestore();
+  }
 });

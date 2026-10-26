@@ -69,7 +69,7 @@ export interface PendingOp {
 }
 
 interface SyncEvent {
-  type: 'snapshot' | 'op' | 'status' | 'error';
+  type: 'snapshot' | 'ready' | 'op' | 'status' | 'error';
   status?: ConnectionStatus;
   error?: Error;
   op?: SyncOp;
@@ -271,7 +271,8 @@ export class SyncClient {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
-  private catchUpInFlight: Promise<void> | null = null;
+  private catchUpInFlight: Promise<boolean> | null = null;
+  private catchUpStreamOps: SyncOp[] | null = null;
   // Task 1686 — reconnect scheduled while the app was backgrounded. The timer
   // is cleared immediately; this flag remembers that a reconnect was DUE so
   // the foreground hook can replay exactly one reconnect (never one per
@@ -280,14 +281,11 @@ export class SyncClient {
   // Task 1686 — the AppState listener registered in start(); removed in stop()
   // so a stopped client never leaks it.
   private appStateSub: { remove(): void } | null = null;
-  // Task 1686 — true once openStream() has fetched a stream token for the
-  // current reconnect cycle without the stream staying up. A reconnect whose
-  // stream dies before any op arrived (i.e. a failed/flapping handshake)
-  // keeps the attempts counter climbing instead of resetting, so a flapping
-  // stream backs off instead of spinning at the 1.5 s floor.
-  private lastOpenAttemptGotStreamToken = false;
   private listeners = new Set<Listener>();
   private started = false;
+  // Startup can replay ops yet still require a snapshot (e.g. a restored
+  // tombstone). Until the complete base is known, preserve the old checkpoint.
+  private startupComplete = false;
   private destroyed = false;
   // Write-through persistence (debounced). `cachePersistTimer` coalesces a burst
   // of remote ops; `dirtyParents` accumulates the parent folders whose listing
@@ -401,7 +399,29 @@ export class SyncClient {
   async start(): Promise<void> {
     if (this.started || this.destroyed) return;
     this.started = true;
+    this.startupComplete = false;
     this.setStatus('connecting');
+
+      // Task 1686 — replay a reconnect that came due while the app was
+      // backgrounded. iOS delivers AppState 'change' on foreground even for
+      // the single-scene app (see the UIScene note in repos/mobile/CLAUDE.md:
+      // RCTAppState observes UIApplication-level notifications, which UIKit
+      // still posts), so this is the resume path for the paused loop. Exactly
+      // one reconnect per foreground — never one per skipped tick.
+      setSyncClientAppState(AppState.currentState);
+      this.appStateSub ??= AppState.addEventListener('change', (next) => {
+        setSyncClientAppState(next);
+        if (next === 'active' && this.reconnectDeferredWhileBackgrounded) {
+          this.reconnectDeferredWhileBackgrounded = false;
+          if (!this.reconnectTimer) {
+            this.reconnectTimer = setTimeout(() => {
+              this.reconnectTimer = null;
+              void this.reconnect();
+            }, 0);
+          }
+        }
+      });
+
 
     try {
       // Async load of persisted state — RN storage is async, unlike the web's
@@ -435,53 +455,30 @@ export class SyncClient {
         // catch-up applies its deltas on top of a real base instead of
         // nothing.
         //
-        // 1302 follow-up (Codex review on PR #103 — both real, both closed
-        // by the two checks below):
-        //   1. Cursor staleness — `lastSeq` is persisted SYNCHRONOUSLY per
-        //      op (`applyRemoteOp` → `saveLastSeq`), but the cache write
-        //      (`persistCacheNow`) is debounced ~800ms behind it. A kill
-        //      inside that window leaves an on-disk cache OLDER than
-        //      `lastSeq`; catch-up only asks the server for ops AFTER
-        //      `lastSeq`, so seeding from that stale cache would
-        //      PERMANENTLY miss the ops in the gap (they're never
-        //      re-requested) while still producing a non-empty tree that
-        //      skips the snapshot fallback. `persistCacheNow` now stamps the
-        //      cursor it was written at (`CachedFileIndex.seq`); only trust
-        //      the cache as a seed when that cursor exactly equals
-        //      `lastSeq` — otherwise treat it exactly like "no cache" and
-        //      always fetch a full, authoritative snapshot instead of
-        //      attempting an ops-only reconstruction (which can never be
-        //      proven complete without a cursor-matched base).
-        //   2. Tombstones — the cache's source (`/files/index`) excludes
-        //      trashed rows, so even a cursor-matched seed has no record of
-        //      anything already trashed as of that snapshot. An op that
-        //      targets such a node (e.g. `file_restore`) hits
-        //      `applyOpToTree`'s `if (!existing) return;` guard and silently
-        //      no-ops — the restored file would never reappear, and because
-        //      the tree isn't empty the snapshot fallback wouldn't catch it
-        //      either. Detect any op that targets a node absent from the
-        //      seeded tree and escalate to a full snapshot instead of
-        //      leaving a hole — the check is deliberately coarse (flags the
-        //      op types that mutate an existing node, without also
-        //      replaying `applyRemoteOp`'s own seq/echo filtering), so the
-        //      worst case is one extra-but-safe snapshot fetch, never an
-        //      incomplete tree.
-        try {
+        // Task 1990: a stamped cache is a complete base AT ITS OWN cursor.
+        // Replay from that cursor when the per-op Keychain checkpoint is newer
+        // (the cache write is debounced). An un-stamped cache cannot prove its
+        // base and still requires a snapshot. Missing restored tombstones also
+        // need a snapshot because /files/index excludes trashed rows.
+        {
           const cachedIndex = await loadCachedFileIndex();
           const seededFromCache =
-            !!cachedIndex && cachedIndex.files.length > 0 && cachedIndex.seq === this.lastSeq;
+            !!cachedIndex && Number.isSafeInteger(cachedIndex.seq) &&
+            cachedIndex.seq! >= 0 && cachedIndex.seq! <= this.lastSeq;
 
           let needsSnapshot = !seededFromCache;
           if (cachedIndex && seededFromCache) {
+            this.tree.clear();
             this.seedTreeFromCachedIndex(cachedIndex.files);
+            this.lastSeq = cachedIndex.seq!;
             const ops = await getSyncOps(this.lastSeq);
             for (const op of ops) {
               if (!needsSnapshot && opTargetsNodeMissingFromTree(op, this.tree)) {
                 needsSnapshot = true;
               }
-              await this.applyRemoteOp(op);
+              await this.applyRemoteOp(op, false, false);
             }
-            if (this.tree.size === 0) needsSnapshot = true;
+            await saveLastSeq(this.lastSeq);
           }
 
           if (needsSnapshot) {
@@ -489,36 +486,14 @@ export class SyncClient {
             this.tree.clear();
             this.applySnapshot(snap);
           }
-        } catch (err) {
-          // Catch-up failed — fall back to full snapshot to recover.
-          console.warn('[SyncClient] catch-up failed, fetching snapshot', err);
-          const snap = await getSnapshot();
-          this.tree.clear();
-          this.applySnapshot(snap);
         }
       }
 
+      this.startupComplete = true;
+      if (this.dirtyParents.size > 0) this.scheduleCachePersist();
+      // The provider's original start promise may already have rejected.
+      this.emit({ type: 'ready' });
       void this.openStream();
-
-      // Task 1686 — replay a reconnect that came due while the app was
-      // backgrounded. iOS delivers AppState 'change' on foreground even for
-      // the single-scene app (see the UIScene note in repos/mobile/CLAUDE.md:
-      // RCTAppState observes UIApplication-level notifications, which UIKit
-      // still posts), so this is the resume path for the paused loop. Exactly
-      // one reconnect per foreground — never one per skipped tick.
-      setSyncClientAppState(AppState.currentState);
-      this.appStateSub = AppState.addEventListener('change', (next) => {
-        setSyncClientAppState(next);
-        if (next === 'active' && this.reconnectDeferredWhileBackgrounded) {
-          this.reconnectDeferredWhileBackgrounded = false;
-          if (!this.reconnectTimer) {
-            this.reconnectTimer = setTimeout(() => {
-              this.reconnectTimer = null;
-              void this.reconnect();
-            }, 0);
-          }
-        }
-      });
 
       // Flush any locally-queued ops from a prior session.
       if (this.pendingOps.length > 0) {
@@ -526,6 +501,7 @@ export class SyncClient {
       }
     } catch (err) {
       this.started = false;
+      this.scheduleReconnect();
       this.setStatus('disconnected');
       this.emit({ type: 'error', error: err instanceof Error ? err : new Error(String(err)) });
       throw err;
@@ -570,6 +546,8 @@ export class SyncClient {
       this.tree.set(node.id, node);
     }
     this.lastSeq = snap.seq_id;
+    this.dirtyParents.add(null);
+    this.scheduleCachePersist();
     void saveLastSeq(this.lastSeq);
     this.emit({ type: 'snapshot' });
   }
@@ -600,14 +578,7 @@ export class SyncClient {
     try {
       const tokenResp = await getStreamToken();
       token = tokenResp.stream_token;
-      // Task 1686 — the stream-token round-trip SUCCEEDED for this attempt.
-      // If the stream now dies without ever firing 'open' (the server killed
-      // it, a proxy dropped it), that is a failed handshake — the next
-      // scheduleReconnect must keep the backoff ladder climbing instead of
-      // resetting it (see the flapping-connection guard there).
-      this.lastOpenAttemptGotStreamToken = true;
     } catch (err) {
-      this.lastOpenAttemptGotStreamToken = false;
       this.scheduleReconnect();
       this.emit({ type: 'error', error: err instanceof Error ? err : new Error(String(err)) });
       return;
@@ -647,10 +618,8 @@ export class SyncClient {
       opened = true;
       // Task 1686 — the handshake was accepted AND the stream came up: a
       // long-lived connection from here on resets the ladder (a later drop
-      // after real connectivity is a NEW outage, not a continuation). Also
-      // clears the flapping guard: this stream delivered.
+      // after real connectivity is a NEW outage, not a continuation).
       this.reconnectAttempts = 0;
-      this.lastOpenAttemptGotStreamToken = false;
       this.setStatus('connected');
     });
 
@@ -665,7 +634,8 @@ export class SyncClient {
         // an op threw `payload.id` on undefined for every folder the backup
         // reconcile created (1305 — RN 0.86 surfaces the rejection as an error).
         if (!isSyncOp(msg)) return;
-        void this.applyRemoteOp(msg);
+        if (this.catchUpStreamOps) this.catchUpStreamOps.push(msg);
+        else void this.applyRemoteOp(msg);
       } catch (err) {
         console.error('[SyncClient] Failed to parse SSE message', err);
       }
@@ -702,24 +672,8 @@ export class SyncClient {
     if (this.destroyed) return;
     if (this.reconnectTimer) return;
 
-    // Task 1686 — flapping-connection guard. The old code reset
-    // `reconnectAttempts = 0` on EVERY SSE 'open' event, but react-native-sse
-    // fires 'open' as soon as the HTTP response headers arrive — the server
-    // then kills the stream a moment later (expired token, proxy timeout,
-    // 401 after a logout race) and the error handler loops back here. Result:
-    // the backoff never left its 1.5 s floor — each cycle costing a stream-
-    // token POST + an SSE GET + TLS — indefinitely, which is exactly the
-    // busy-loop class task 1686 exists for. If the stream died WITHOUT
-    // delivering anything since our last token fetch, treat this failure as
-    // a continuation of the same outage and keep the backoff climbing.
-    if (this.lastOpenAttemptGotStreamToken) {
-      // Stream died before proving health — keep backing off.
-    } else {
-      // No token was fetched since the last real success/reset — this is a
-      // genuine attempt start, reset the ladder.
-      this.reconnectAttempts = 0;
-    }
-    this.lastOpenAttemptGotStreamToken = false;
+    // Startup, token and stream failures share one outage ladder. Only a
+    // successful stream open resets it; failing before a token is still a retry.
     this.reconnectAttempts += 1;
 
     const delay = reconnectDelayMs(this.reconnectAttempts - 1);
@@ -747,23 +701,50 @@ export class SyncClient {
     if (this.destroyed) return;
     // After a long disconnect, fetch any ops we missed before re-opening
     // the stream — gapless resume.
-    await this.catchUp('reconnect');
-    void this.openStream();
+    if (!this.started) {
+      await this.start().catch(() => {});
+      return;
+    }
+    if (await this.catchUp('reconnect')) void this.openStream();
   }
 
   /** The /sync/ops cursor pull. Concurrent callers share one in-flight pull. */
-  private catchUp(label: string): Promise<void> {
+  private catchUp(label: string): Promise<boolean> {
     if (this.catchUpInFlight) return this.catchUpInFlight;
+    this.catchUpStreamOps ??= [];
     const run = (async () => {
       try {
         const ops = await getSyncOps(this.lastSeq);
         for (const op of ops) {
-          await this.applyRemoteOp(op);
+          if (this.destroyed) return false;
+          await this.applyRemoteOp(op, false);
         }
+        // Keep live events behind the cursor pull, including events arriving
+        // while an earlier buffered op awaits its pending-queue write.
+        do {
+          while (this.catchUpStreamOps?.length) {
+            const buffered = this.catchUpStreamOps.splice(0).sort((a, b) => a.seq_id - b.seq_id);
+            for (const op of buffered) {
+              if (this.destroyed) return false;
+              await this.applyRemoteOp(op, false);
+            }
+          }
+          if (this.destroyed) return false;
+          await saveLastSeq(this.lastSeq);
+        } while (this.catchUpStreamOps?.length);
+        return true;
       } catch (err) {
         console.warn(`[SyncClient] ${label} catch-up failed`, err);
+        if (this.eventSource) {
+          const stream = this.eventSource;
+          this.eventSource = null;
+          this.closeStream(stream);
+        }
+        this.scheduleReconnect();
+        return false;
       }
     })().finally(() => {
+      this.catchUpStreamOps = null;
       this.catchUpInFlight = null;
     });
     this.catchUpInFlight = run;
@@ -777,6 +758,7 @@ export class SyncClient {
    */
   private requestCatchUp(): void {
     if (this.destroyed || this.resyncTimer) return;
+    this.catchUpStreamOps ??= [];
     this.resyncTimer = setTimeout(() => {
       this.resyncTimer = null;
       if (this.destroyed) return;
@@ -789,7 +771,7 @@ export class SyncClient {
    * originally submitted by this client (echo), the optimistic update is
    * already in place — we just confirm it.
    */
-  private async applyRemoteOp(op: SyncOp): Promise<void> {
+  private async applyRemoteOp(op: SyncOp, persistCursor = true, suppressEcho = true): Promise<void> {
     if (!isSyncOp(op)) return; // defensive: catch-up / snapshot paths share this entry
     if (op.seq_id <= this.lastSeq) return; // already applied
 
@@ -799,11 +781,16 @@ export class SyncClient {
       if (idx !== -1) {
         this.pendingOps.splice(idx, 1);
         await savePendingOps(this.pendingOps);
-        // Tree already reflects the change locally — only update seq.
-        this.lastSeq = op.seq_id;
-        await saveLastSeq(this.lastSeq);
-        this.emit({ type: 'op', op });
-        return;
+        // A rebuilt cache has no optimistic updates: apply the echo below.
+        if (suppressEcho) {
+          // Tree already reflects the change locally — only update seq.
+          this.lastSeq = op.seq_id;
+          if (persistCursor) await saveLastSeq(this.lastSeq);
+          for (const parent of this.affectedParentsForOp(op.op_type, op.payload) ?? [null]) this.dirtyParents.add(parent);
+          this.scheduleCachePersist();
+          this.emit({ type: 'op', op });
+          return;
+        }
       }
     }
 
@@ -818,13 +805,11 @@ export class SyncClient {
 
     this.applyOpToTree(op.op_type, op.payload);
     this.lastSeq = op.seq_id;
-    await saveLastSeq(this.lastSeq);
+    if (persistCursor) await saveLastSeq(this.lastSeq);
     this.emit({ type: 'op', op, deletedIds: deletedIds.length > 0 ? deletedIds : undefined });
 
-    if (affectedParents) {
-      for (const parent of affectedParents) this.dirtyParents.add(parent);
-      this.scheduleCachePersist();
-    }
+    for (const parent of affectedParents ?? [null]) this.dirtyParents.add(parent);
+    this.scheduleCachePersist();
   }
 
   /**
@@ -861,6 +846,7 @@ export class SyncClient {
         parents.add((payload.new_parent_id as string | null | undefined) ?? null);
         return parents;
       }
+      case 'file_update':
       case 'file_rename':
       case 'folder_rename': {
         // Rename changes the displayed name but not which folder it lives in;
@@ -870,8 +856,7 @@ export class SyncClient {
         return new Set<string | null>([existing?.parent_id ?? null]);
       }
       default:
-        // file_update (metadata-only), share_create/revoke, unknown — no listing
-        // change that the on-disk index / File Provider cache needs to mirror.
+        // Share notifications / unknown ops still advance the persisted cursor.
         return null;
     }
   }
@@ -892,6 +877,10 @@ export class SyncClient {
   }
 
   private async persistCacheNow(): Promise<void> {
+    // Also covers the stop() flush after a failed startup. Leave dirty parents
+    // queued so a successful retry can publish the recovered complete tree.
+    if (!this.startupComplete) return;
+    const seq = this.lastSeq;
     const parents = this.dirtyParents;
     this.dirtyParents = new Set<string | null>();
     if (parents.size === 0) return;
@@ -919,19 +908,15 @@ export class SyncClient {
     // cache hash when present so the next getFileIndex() conditional fetch still
     // short-circuits; fall back to a sentinel that forces a refetch otherwise.
     //
-    // 1302 follow-up — stamp the sync cursor (`this.lastSeq`) this write
-    // reflects. `start()`'s catch-up only trusts this cache as a seed when
-    // that stamped cursor exactly matches the freshly-loaded `lastSeq` — see
-    // the comment there for why (the cache write is debounced behind the
-    // synchronous `lastSeq` persist, so a kill mid-debounce can leave the
-    // cache older than `lastSeq`).
+    // Capture the cursor with this tree view before any await. A later op may
+    // replace tree entries while the previous cache hash is being read.
     try {
       const existing = await loadCachedFileIndex().catch(() => null);
       const hash = existing?.hash ?? 'live-writethrough';
       const files = liveNodes.map(syncNodeToFileEntry);
       // The write re-checks the epoch at its turn in the cache's write queue
       // (the `loadCachedFileIndex` await above is a window for a sign-out).
-      await saveCachedFileIndex(hash, files, Date.now(), this.lastSeq, this.cacheWriteScope);
+      await saveCachedFileIndex(hash, files, Date.now(), seq, this.cacheWriteScope);
     } catch {
       // disk write best-effort; the next full fetch reconciles
     }

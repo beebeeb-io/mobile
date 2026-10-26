@@ -3935,11 +3935,27 @@ export async function getSnapshot(): Promise<SyncSnapshot> {
 }
 
 export async function getSyncOps(since: number): Promise<SyncOp[]> {
-  const data = await request<{ ops: SyncOp[] }>(
-    'GET',
-    `/api/v1/sync/ops?since=${encodeURIComponent(String(since))}`,
-  );
-  return data.ops ?? [];
+  const all: SyncOp[] = [];
+  const limit = 1000;
+  let cursor = since;
+  let head: number | undefined;
+  do {
+    const data = await request<{ ops: SyncOp[]; head_seq?: number }>(
+      'GET',
+      `/api/v1/sync/ops?since=${encodeURIComponent(String(cursor))}&limit=${limit}`,
+    );
+    const ops = data.ops ?? [];
+    if (head === undefined && typeof data.head_seq === 'number') head = data.head_seq;
+    for (const op of ops) {
+      if (!Number.isSafeInteger(op.seq_id) || op.seq_id <= cursor) {
+        throw new Error('Sync cursor did not advance');
+      }
+      cursor = op.seq_id;
+      all.push(op);
+    }
+    if (head !== undefined ? cursor >= head : ops.length < limit) return all;
+    if (ops.length === 0) throw new Error('Sync page ended before its advertised head');
+  } while (true);
 }
 
 export async function submitSyncOps(ops: SubmittedSyncOp[]): Promise<SyncOpsResult> {
