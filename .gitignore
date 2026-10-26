@@ -129,3 +129,6 @@ google-service-account.json
 
 # Kotlin compiler session dir (Gradle K2)
 .kotlin/
+
+# Expo-generated release splash resources must ship with committed android/.
+!android/app/src/main/res/drawable-*/splashscreen_logo.png
