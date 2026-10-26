@@ -16,6 +16,7 @@ enum NativeEncryptedBackupUploadError: LocalizedError {
   /// to a direct Keychain read (see `currentMasterKey()`) rather than risk
   /// an unprompted biometric sheet from a background/silent caller.
   case noCachedMasterKey
+  case accountRefused
 
   var errorDescription: String? {
     switch self {
@@ -31,6 +32,8 @@ enum NativeEncryptedBackupUploadError: LocalizedError {
       return "Could not encode backup upload request"
     case .accountMismatch:
       return "Backup upload refused: signed-in account changed"
+    case .accountRefused:
+      return "Backup paused: this account cannot upload right now."
     case .noCachedMasterKey:
       return "Backup upload refused: no unlocked master key available (open Beebeeb to continue)"
     }
@@ -350,6 +353,9 @@ final class NativeEncryptedBackupUploader {
   /// `URLSession` completion fires on the session's own delegate queue, so
   /// blocking here cannot deadlock the upload.
   private func sendSync(_ request: URLRequest) throws -> Data {
+    guard !NativeBackupEngine.shared.accountUploadRefused else {
+      throw NativeEncryptedBackupUploadError.accountRefused
+    }
     let semaphore = DispatchSemaphore(value: 0)
     var outcome: Result<Data, Error> = .failure(NativeEncryptedBackupUploadError.invalidResponse)
 
@@ -362,6 +368,10 @@ final class NativeEncryptedBackupUploader {
       let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
       let body = data ?? Data()
       guard (200..<300).contains(statusCode) else {
+        NativeBackupEngine.shared.recordAuxiliaryAccountRefusal(
+          statusCode: statusCode, body: body,
+          accountId: request.value(forHTTPHeaderField: "X-Beebeeb-Expected-User") ?? ""
+        )
         outcome = .failure(NativeEncryptedBackupUploadError.httpStatus(statusCode, String(data: body, encoding: .utf8) ?? ""))
         return
       }

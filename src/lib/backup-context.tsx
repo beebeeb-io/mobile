@@ -536,6 +536,7 @@ export interface AccountRefusalPollTickDeps {
   onUnblocked: (gate: AccountGate) => void;
   /** Call the native resume/start path. Only invoked when `shouldResumeCameraBackup` is true. */
   resumeCameraBackup: () => Promise<void>;
+  resumeOtherBackups?: () => Promise<void>;
 }
 
 export interface AccountRefusalPollTickResult {
@@ -569,6 +570,7 @@ export async function runAccountRefusalPollTick(
   if (decision.shouldResumeCameraBackup) {
     await deps.resumeCameraBackup();
   }
+  await deps.resumeOtherBackups?.();
   return { resumed: true, shouldStopPolling: true };
 }
 
@@ -968,7 +970,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // stop at the first unblocked tick, and recheck immediately on foreground.
   useEffect(() => {
     if (!userId || Platform.OS === 'web') return;
-    if (!isPhotoBackupEnabled || !accountRefusalReason) return;
+    if (!(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) || !accountRefusalReason) return;
 
     let stopped = false;
     const poll = startAccountRefusalPoll(async () => {
@@ -996,6 +998,15 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
           }
           await refreshNativeProgress().catch(() => {});
         },
+        resumeOtherBackups: async () => {
+          // This tick confirmed uploads are allowed; the provider refresh
+          // may still leave the last render's read-only gate in this ref.
+          // Match resumeCameraBackup for contacts/calendar-only recovery.
+          accountBlockedRef.current = null;
+          if (!stopped && isContactsBackupEnabled) await enableNativeBackup('contacts');
+          if (!stopped && isCalendarBackupEnabled) await enableNativeBackup('calendar');
+          await refreshNativeProgress().catch(() => {});
+        },
       });
       return result;
     }, !shouldPauseBackupPolls(appStateRef.current));
@@ -1008,7 +1019,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       poll.stop();
       refusalSub.remove();
     };
-  }, [userId, isPhotoBackupEnabled, accountRefusalReason, refreshAccountState, enableNativeBackup, refreshNativeProgress]);
+  }, [userId, isPhotoBackupEnabled, isContactsBackupEnabled, isCalendarBackupEnabled, accountRefusalReason, refreshAccountState, enableNativeBackup, refreshNativeProgress]);
 
   // Stop the native backup engines when this instance unmounts. CryptoProvider
   // is keyed by user id (`user?.user_id ?? 'signed-out'` in App.tsx), so BOTH
@@ -1026,7 +1037,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Poll native backup progress every 5 s when photo backup is enabled.
+  // Poll native refusal/progress state for every enabled backup category.
   // Task 1686 (iOS idle heat): the poll no longer does work (or setState)
   // while the app is backgrounded/locked — RN timers keep (intermittently)
   // firing in the background, so without the gate the poll read native
@@ -1035,7 +1046,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // refreshes immediately on 'active', so live progress for an active user
   // is unchanged.
   useEffect(() => {
-    if (!isPhotoBackupEnabled || Platform.OS === 'web') return;
+    if (!(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) || Platform.OS === 'web') return;
 
     const poll = async () => {
       // Task 1686 — visibility gate. 'inactive' (app switcher / lock screen)
@@ -1053,7 +1064,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [isPhotoBackupEnabled, refreshNativeProgress]);
+  }, [isPhotoBackupEnabled, isContactsBackupEnabled, isCalendarBackupEnabled, refreshNativeProgress]);
 
   // Task 1686 — track AppState for both polls. A ref (not state): polls read
   // it at tick time without re-mounting the effects, and the listeners above
@@ -1072,7 +1083,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // If the user has already foregrounded the app, refresh immediately so Settings
   // reflects the live worker state instead of a stale background state.
   useEffect(() => {
-    if (!isPhotoBackupEnabled || Platform.OS === 'web') return;
+    if (!(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) || Platform.OS === 'web') return;
     const sub = AppState.addEventListener('change', (next) => {
       if (next !== 'active') return;
       // 0817 — on foreground, reconcile derived state vs server truth FIRST
@@ -1088,7 +1099,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       })();
     });
     return () => sub.remove();
-  }, [isPhotoBackupEnabled, refreshNativeProgress]);
+  }, [isPhotoBackupEnabled, isContactsBackupEnabled, isCalendarBackupEnabled, refreshNativeProgress]);
 
   const togglePhotoBackup = useCallback(async () => {
     if (!userId) return; // signed-out instance — nothing to persist against
@@ -1125,6 +1136,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       if (Platform.OS !== 'web') {
         if (next) {
           await enableNativeBackup('contacts');
+          await refreshNativeProgress().catch(() => {});
         } else {
           await disableContactsBackup();
           await configureBackupFolder('contacts', null);
@@ -1133,7 +1145,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Native module not linked yet
     }
-  }, [enableNativeBackup, isContactsBackupEnabled, userId]);
+  }, [enableNativeBackup, isContactsBackupEnabled, refreshNativeProgress, userId]);
 
   const toggleCalendarBackup = useCallback(async () => {
     if (!userId) return;
@@ -1144,6 +1156,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       if (Platform.OS !== 'web') {
         if (next) {
           await enableNativeBackup('calendar');
+          await refreshNativeProgress().catch(() => {});
         } else {
           await disableCalendarBackup();
           await configureBackupFolder('calendar', null);
@@ -1152,7 +1165,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Native module not linked yet
     }
-  }, [enableNativeBackup, isCalendarBackupEnabled, userId]);
+  }, [enableNativeBackup, isCalendarBackupEnabled, refreshNativeProgress, userId]);
 
   const setIncludeVideos = useCallback(async (value: boolean) => {
     includeVideosRef.current = value;

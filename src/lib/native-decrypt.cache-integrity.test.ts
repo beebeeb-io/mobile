@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test';
 const files = new Map<string, number>(); // uri -> size
 const deletes: string[] = [];
 let nativePlaintextSize = 5000;
+let allowEmptyOffline = false;
 let copyHook: null | (() => Promise<void>) = null;
 mock.module('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///cache/',
@@ -38,8 +39,10 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   // behind a typeof guard in native-decrypt.ts; this harness drives the
   // DOWNLOAD path, so a stub that throws (rather than silently succeeding) is
   // the honest mock here (same convention as native-decrypt.inflight.test.ts).
-  decryptLocalFileNative: async () => {
-    throw new Error('decryptLocalFileNative must not be reached by the download-path tests');
+  decryptLocalFileNative: async ({ outputUri }) => {
+    if (!allowEmptyOffline) throw new Error('decryptLocalFileNative must not be reached by download-path tests');
+    files.set(outputUri, 0);
+    return { plaintextSize: 0, chunksDecrypted: 1 };
   },
   downloadAndDecryptFileNative: (_h, _api, _tok, _id, outputPath, opts) =>
     new Promise((resolve, reject) => {
@@ -87,6 +90,7 @@ beforeEach(() => {
   deletes.length = 0;
   nativeCalls.length = 0;
   nativePlaintextSize = 5000;
+  allowEmptyOffline = false;
   copyHook = null;
   plaintextGate.open();
 });
@@ -223,4 +227,44 @@ test('preview pruning preserves hidden native writer temporaries under cache pre
   expect(deletes).not.toContain(nativeWorkingPath);
   expect(files.has(nativeWorkingPath)).toBe(true);
   expect(deletes.some(uri => uri.includes('finished-'))).toBe(true);
+});
+
+describe('1585 — zero-byte note version cache integrity', () => {
+  test('known empty cached note is reusable without a download', async () => {
+    files.set('file:///cache/preview/empty-cache.txt', 0);
+    await nd.decryptToTempFile('empty-cache', null, 'txt', 0, 1, 7);
+    expect(nativeCalls.length).toBe(0);
+  });
+  test('empty version metadata rejects stale nonempty cache and decrypts the new empty version', async () => {
+    files.set('file:///cache/preview/empty-version.txt', 100);
+    nativePlaintextSize = 0;
+    await nd.decryptToTempFile('empty-version', null, 'txt', 0, 1, 7);
+    expect(nativeCalls.length).toBe(1);
+    expect(files.get('file:///cache/preview/empty-version.txt')).toBe(0);
+  });
+  test('zero output for a nonempty note is a truncated decrypt, never success', async () => {
+    nativePlaintextSize = 0;
+    await expect(nd.decryptToTempFile('empty-truncated', null, 'txt', 5, 1, 7)).rejects.toThrow(PARTIAL_DECRYPT_MESSAGE);
+    expect(files.has('file:///cache/preview/empty-truncated.txt')).toBe(false);
+  });
+});
+
+test('1585 native offline empty result is accepted only with zero-size metadata', async () => {
+  files.set('file:///offline-empty.enc', 28);
+  allowEmptyOffline = true;
+  const uri = await nd.decryptLocalFileToTempFile('empty-local-native', new Uint8Array(32), 'txt', 'file:///offline-empty.enc', 0, 1);
+  expect(files.get(uri)).toBe(0);
+});
+
+test('1585 offline empty cache is reusable without a key or source read', async () => {
+  files.set('file:///cache/preview/empty-offline-cache.txt', 0);
+  const uri = await nd.decryptLocalFileToTempFile('empty-offline-cache', null, 'txt', 'file:///missing.enc', 0, 1);
+  expect(files.get(uri)).toBe(0);
+});
+test('1585 offline empty version rejects the old nonempty cached text', async () => {
+  files.set('file:///cache/preview/empty-offline-version.txt', 5);
+  files.set('file:///offline-empty.enc', 28);
+  allowEmptyOffline = true;
+  const uri = await nd.decryptLocalFileToTempFile('empty-offline-version', new Uint8Array(32), 'txt', 'file:///offline-empty.enc', 0, 1);
+  expect(files.get(uri)).toBe(0);
 });

@@ -642,44 +642,13 @@ final class NativeBackupEngine: NSObject {
     set { engineStateLock.lock(); _ownerUnconfirmedStopReason = newValue; engineStateLock.unlock() }
   }
 
-  /// Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): a THIRD sticky
-  /// reason, sibling to the two above — set when the server confirms this
-  /// account cannot store data right now for a BILLING reason (a never-paid
-  /// trial cancelled before its first charge, a lapsed trial/plan, no plan
-  /// at all, or the 25 GB trial cap) on a request this engine actually
-  /// sent. Unlike `accountMismatchStopReason` (the SESSION no longer
-  /// matches the account — this engine fully stops and drops its key),
-  /// this IS the right account — the engine only PAUSES
-  /// (`handleConfirmedAccountRefusal`/`handleConfirmedTrialCapExceeded`
-  /// call `pause()`, never `stop()`), so the upload queue and every asset's
-  /// `retry_count` are left exactly as they were. Cleared unconditionally
-  /// by the very next `start()` call, in EITHER of its branches (see that
-  /// function) — `start()` is the ONLY place this clears; `resume()`
-  /// (below) does NOT reach that clearing code when `isRunning` was already
-  /// true (which it always is here, since `pause()` never flips
-  /// `isRunning`) — it just flips `isPaused` back off. Callers that want
-  /// this reason cleared must go through `start()`, not `resume()`.
-  ///
-  /// Round 3 review (2026-09-29) — the resume trigger, corrected: three of
-  /// the four refusal codes move `AccountGate.kind` off `'ok'` on the JS
-  /// side (`account-state.ts`), so `backup-context.tsx`'s mount/warm-up
-  /// effect (keyed on the derived blocked-message) already re-fires
-  /// `enableNativeBackup` → native `start()` once `AccountStateProvider`
-  /// next observes the account unblocked. The FOURTH — the 25 GB trial cap
-  /// — does NOT move `AccountGate.kind` (`account_state` stays `'ok'` for a
-  /// merely-capped, not-cancelled trial; `gateForRefusalCode('quota_exceeded',
-  /// …)` returns null for an otherwise-ok account by design), so that
-  /// effect has nothing to react to for it and this reason used to stay
-  /// stuck until a manual toggle or app relaunch. `backup-context.tsx` now
-  /// runs a SEPARATE, bounded poll (`runAccountRefusalPollTick`,
-  /// `ACCOUNT_REFUSAL_POLL_MS`) while `accountRefusalReason` is set — on
-  /// foreground and every 15 s — that re-fetches `GET
-  /// /billing/subscription` directly and, the moment the account is
-  /// unblocked (a real gate transition OR the trial-cap headroom clears),
-  /// calls `enableNativeBackup('camera_roll', …)` (→ native `start()`,
-  /// which clears this reason) and stops its own interval. If the account
-  /// is STILL blocked, the poll just tries again next tick — no hot loop,
-  /// bounded to while this reason is set.
+  /// A confirmed billing/trial-cap refusal pauses this account without consuming
+  /// asset retries or dropping its key. Camera backup and contacts/calendar share
+  /// this reason. A successful start or explicit auxiliary resume clears it.
+  /// JS polls subscription state serially after 15/30/60 seconds (60-second cap)
+  /// while foregrounded and rechecks on foreground; an unblocked account resumes
+  /// only its enabled categories. Session/account mismatches instead stop the
+  /// engine and discard its key.
   private var _accountRefusalStopReason: String?
   private var accountRefusalStopReason: String? {
     get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _accountRefusalStopReason }
@@ -738,7 +707,7 @@ final class NativeBackupEngine: NSObject {
   // Hop here as the first line of every PhotoKit completion so the body — which
   // can do heavy work like `Data(contentsOf:)` for videos or
   // `continuation.resume` into an async context — never blocks main. Mirrors
-  // `PhotoBackupManager.phkitCallbackQueue` (task 0440); sibling queue here
+  // the retired camera-roll callback queue (task 0440); the live queue here
   // rather than cross-class reference to avoid type coupling (task 0443).
   private static let phkitCallbackQueue = DispatchQueue(
     label: "io.beebeeb.backup.engine.phkit-callback",
@@ -2204,6 +2173,29 @@ final class NativeBackupEngine: NSObject {
     RuntimeTrace.event("backup.native.trial_cap_exceeded")
     accountRefusalStopReason = message
     pause()
+  }
+
+  /// Contacts/calendar share the account-level pause and UI reason with photos.
+  var accountUploadRefused: Bool { accountRefusalStopReason != nil }
+
+  func recordAuxiliaryAccountRefusal(statusCode: Int, body: Data, accountId: String) {
+    guard !accountId.isEmpty, currentAccountId == accountId else { return }
+    if statusCode == 409, let code = AccountRefusalDetection.accountRefusalCode(body) {
+      handleConfirmedAccountRefusal(code: code)
+    } else if statusCode == 413, AccountRefusalDetection.isTrialCapQuotaExceeded(body) {
+      handleConfirmedTrialCapExceeded(message: AccountRefusalDetection.trialCapMessage(
+        limitBytes: AccountRefusalDetection.trialCapLimitBytes(body)
+      ))
+    }
+  }
+
+  func clearAuxiliaryAccountRefusal(accountId: String) {
+    guard !accountId.isEmpty, currentAccountId == accountId else { return }
+    let wasRefused = accountRefusalStopReason != nil
+    accountRefusalStopReason = nil
+    // An auxiliary retry clears the shared signal, so release its camera pause
+    // too. Never start camera backup when only contacts/calendar are enabled.
+    if wasRefused && isRunning { resume() }
   }
 
   // MARK: - Lifecycle

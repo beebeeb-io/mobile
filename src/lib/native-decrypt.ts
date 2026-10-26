@@ -6,7 +6,7 @@
  * temp file. Returns the local file path for native renderers to consume.
  *
  * Caches by fileId — if the decrypted temp file already exists and is
- * non-empty, returns immediately without re-downloading.
+ * size-matching (including a known empty note), returns without re-downloading.
  *
  * When `decryptChunksToFile` becomes available in the native module (Task 1),
  * this can be swapped to pass encrypted chunks directly to Rust for file I/O.
@@ -586,8 +586,8 @@ async function decryptToTempFileUnshared(
   // known, a mismatched cache entry is rejected: scrubbed here, then the
   // normal cache-miss path below re-decrypts fresh.
   const cached = await FileSystem.getInfoAsync(outputPath);
-  const expectedSize = typeof sizeBytes === 'number' && sizeBytes > 0 ? sizeBytes : null;
-  if (cached.exists && cached.size && cached.size > 0) {
+  const expectedSize = typeof sizeBytes === 'number' && Number.isSafeInteger(sizeBytes) && sizeBytes >= 0 ? sizeBytes : null;
+  if (cached.exists && typeof cached.size === 'number' && (cached.size > 0 || expectedSize != null)) {
     if (expectedSize != null && cached.size !== expectedSize) {
       recordRuntimeTrace('preview.decrypt.cache_size_mismatch', {
         fileId,
@@ -843,7 +843,6 @@ async function decryptToTempFileUnshared(
       if (
         expectedSize != null &&
         typeof result.plaintextSize === 'number' &&
-        result.plaintextSize > 0 &&
         result.plaintextSize !== expectedSize
       ) {
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
@@ -983,7 +982,7 @@ async function decryptToTempFileUnshared(
   // Resolve plaintext size
   const headerOriginalSize = responseHeaderInt(res.headers, 'X-Original-Size');
   const effectiveSize = headerOriginalSize ?? sizeBytes ?? encBytes.length - 28;
-  if (effectiveSize <= 0) {
+  if (!Number.isSafeInteger(effectiveSize) || effectiveSize < 0) {
     throw new Error('Could not determine plaintext size for decryption.');
   }
 
@@ -1054,11 +1053,11 @@ async function decryptToTempFileUnshared(
         chunksCompleted: effectiveChunkCount,
         chunksTotal: effectiveChunkCount,
       });
-      if (written <= 0) {
-        // Rust returned zero bytes — treat as a decrypt failure, clean up so
-        // the cache layer doesn't pick up a corrupt empty file later.
+      if (written !== effectiveSize) {
+        // Zero is valid only for an authenticated empty frame. A size mismatch
+        // still rejects a truncated decrypt instead of publishing it.
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
-        throw new Error('Native batched decrypt returned zero bytes.');
+        throw new Error('Native batched decrypt size mismatch.');
       }
       await prunePreviewCache(outputPath);
       recordRuntimeTrace('preview.decrypt.fast_path.success', {
@@ -1214,11 +1213,15 @@ async function decryptLocalFileLeased(
   const ext = extension.replace(/^\./, '');
   const outputPath = `${PREVIEW_CACHE_DIR}${fileId}.${ext}`;
 
-  // Reuse a previously-decrypted plaintext copy when present.
+  // Apply the same size contract to an offline cache, including empty versions.
   const cached = await FileSystem.getInfoAsync(outputPath);
-  if (cached.exists && cached.size && cached.size > 0) {
-    options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
-    return outputPath;
+  const expectedSize = typeof sizeBytes === 'number' && Number.isSafeInteger(sizeBytes) && sizeBytes >= 0 ? sizeBytes : null;
+  if (cached.exists && typeof cached.size === 'number' && (cached.size > 0 || expectedSize != null)) {
+    if (expectedSize == null || cached.size === expectedSize) {
+      options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
+      return outputPath;
+    }
+    await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
   }
 
   if (!fileKey) {
@@ -1237,7 +1240,7 @@ async function decryptLocalFileLeased(
   }
   const encryptedSize = info.size;
   const effectiveSize = sizeBytes ?? encryptedSize - 28;
-  if (effectiveSize <= 0) {
+  if (!Number.isSafeInteger(effectiveSize) || effectiveSize < 0) {
     throw new Error('Could not determine plaintext size for the offline file.');
   }
   const inferred = inferChunkCountFromEncryptedSize(encryptedSize, effectiveSize);
@@ -1287,9 +1290,9 @@ async function decryptLocalFileLeased(
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
         throw abortError();
       }
-      if (!(result.plaintextSize > 0)) {
+      if (result.plaintextSize !== effectiveSize) {
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
-        throw new Error('Native offline decrypt returned zero bytes.');
+        throw new Error('Native offline decrypt size mismatch.');
       }
       await prunePreviewCache(outputPath);
       options.onProgress?.({ requestId, fileId, stage: 'complete' });
@@ -1333,9 +1336,9 @@ async function decryptLocalFileLeased(
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
         throw abortError();
       }
-      if (written <= 0) {
+      if (written !== effectiveSize) {
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
-        throw new Error('Native batched decrypt returned zero bytes.');
+        throw new Error('Native batched decrypt size mismatch.');
       }
       await prunePreviewCache(outputPath);
       options.onProgress?.({ requestId: '', fileId, stage: 'complete' });

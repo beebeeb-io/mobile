@@ -83,6 +83,7 @@ final class CalendarBackupManager {
     // triggers via `start()`, now guaranteed regardless of which backup
     // surface is enabled first.
     NativeBackupEngine.shared.bindAccount(userId: userId)
+    if runNow { NativeBackupEngine.shared.clearAuxiliaryAccountRefusal(accountId: userId) }
     RuntimeTrace.event("backup.calendar.enable", ["runNow": runNow])
     // Task 1531 [P2] round 6 (finding N2): see the matching comment in
     // ContactsBackupManager.enable — a refused/failed upload never records
@@ -126,6 +127,7 @@ final class CalendarBackupManager {
   }
 
   func backup() {
+    guard !NativeBackupEngine.shared.accountUploadRefused else { return }
     guard let token = authToken, let accountId, !accountId.isEmpty else { return }
     RuntimeTrace.event("backup.calendar.start")
     DispatchQueue.global(qos: .background).async { [weak self] in

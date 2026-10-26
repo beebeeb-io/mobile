@@ -994,3 +994,18 @@ test('a refusal tick does not resume after its owner stops while fetching', asyn
   expect(await result).toEqual({resumed: false, shouldStopPolling: false});
   expect(resumed).toBe(0);
 });
+
+test('contacts/calendar-only refusal resumes the enabled auxiliary backups', async () => {
+  let auxiliary = 0;
+  let camera = 0;
+  const result = await runAccountRefusalPollTick({
+    fetchSubscription: async () => PAID_SUB,
+    getIsPhotoBackupEnabled: () => false,
+    onUnblocked: () => {},
+    resumeCameraBackup: async () => { camera++; },
+    resumeOtherBackups: async () => { auxiliary++; },
+  });
+  expect(result.shouldStopPolling).toBe(true);
+  expect(camera).toBe(0);
+  expect(auxiliary).toBe(1);
+});

@@ -442,15 +442,7 @@ public final class NativePhotosGridView: ExpoView {
   private var lastViewportDragPoint: CGPoint?
   private var lastSelectionDragIndexPath: IndexPath?
   private var lastAutoscrollTimestamp: CFTimeInterval = 0
-  private var pinchStartContentOffset: CGPoint = .zero
   private var pinchAnchor: CGPoint = .zero
-  private var lastLivePinchProgress: CGFloat = -1
-  private var lastLivePinchTargetColumns = 4
-  private var pinchDisplayLink: CADisplayLink?
-  private var pendingPinchTargetColumns: Int?
-  private var pendingPinchProgress: CGFloat = 0
-  private var pendingPinchAnchor: CGPoint = .zero
-  private var pendingPinchAnchorRatio: CGFloat = 0
   private var pinchChangedCount = 0
   private var pinchSkippedCount = 0
   private var pinchAppliedFrameCount = 0
@@ -526,7 +518,6 @@ public final class NativePhotosGridView: ExpoView {
     selectionDispatchWorkItem?.cancel()
     thumbnailPrefetchTasks.values.forEach { $0.cancel() }
     autoscrollLink?.invalidate()
-    pinchDisplayLink?.invalidate()
   }
 
   public override func layoutSubviews() {
@@ -652,9 +643,6 @@ public final class NativePhotosGridView: ExpoView {
       pinchStartColumns = currentColumns
       pinchTargetColumns = currentColumns
       resetPinchMetrics()
-      lastLivePinchProgress = -1
-      lastLivePinchTargetColumns = currentColumns
-      pinchStartContentOffset = collectionView.contentOffset
       pinchAnchor = recognizer.location(in: self)
       isPinchingGrid = true
       visibleDispatchWorkItem?.cancel()
@@ -663,13 +651,14 @@ public final class NativePhotosGridView: ExpoView {
       preheatWorkItem = nil
       collectionView.layer.zPosition = 10
     case .changed:
-      applyLivePinch(scale: recognizer.scale, anchor: recognizer.location(in: self))
+      pinchChangedCount += 1
+      pinchTargetColumns = columnsFor(scale: recognizer.scale, start: pinchStartColumns)
     case .ended:
       let next = columnsFor(scale: recognizer.scale, start: pinchStartColumns)
       let anchor = recognizer.location(in: self)
-      finishLivePinch(columns: next, anchor: anchor)
+      finishPinch(columns: next, anchor: anchor)
     case .cancelled, .failed:
-      cancelLivePinch()
+      cancelPinch()
     default:
       break
     }
@@ -858,27 +847,6 @@ public final class NativePhotosGridView: ExpoView {
     lastAutoscrollTimestamp = 0
   }
 
-  private func applyLivePinch(scale: CGFloat, anchor: CGPoint) {
-    pinchChangedCount += 1
-    let oldContentHeight = max(collectionView.contentSize.height, 1)
-    let anchorAbsoluteY = collectionView.contentOffset.y + anchor.y
-    let anchorRatio = anchorAbsoluteY / oldContentHeight
-    let target = liveTargetColumns(for: scale, start: pinchStartColumns)
-    let progress = pinchProgress(for: scale, start: pinchStartColumns, target: target)
-    if target == lastLivePinchTargetColumns, abs(progress - lastLivePinchProgress) < 0.012 {
-      pinchSkippedCount += 1
-      return
-    }
-    lastLivePinchTargetColumns = target
-    lastLivePinchProgress = progress
-    pinchTargetColumns = target
-    pendingPinchTargetColumns = target
-    pendingPinchProgress = progress
-    pendingPinchAnchor = anchor
-    pendingPinchAnchorRatio = anchorRatio
-    startPinchDisplayLinkIfNeeded()
-  }
-
   private func resetPinchMetrics() {
     pinchChangedCount = 0
     pinchSkippedCount = 0
@@ -889,56 +857,31 @@ public final class NativePhotosGridView: ExpoView {
     pinchThumbnailMetricsStart = PhotoGridCell.metricsSnapshot()
   }
 
-  private func startPinchDisplayLinkIfNeeded() {
-    guard pinchDisplayLink == nil else { return }
-    let link = CADisplayLink(target: self, selector: #selector(handlePinchDisplayLink(_:)))
-    link.add(to: .main, forMode: .common)
-    pinchDisplayLink = link
-  }
-
-  @objc private func handlePinchDisplayLink(_ link: CADisplayLink) {
-    flushPendingPinchLayout()
-  }
-
-  private func flushPendingPinchLayout() {
-    guard let target = pendingPinchTargetColumns else { return }
-    let progress = pendingPinchProgress
-    let anchor = pendingPinchAnchor
-    let anchorRatio = pendingPinchAnchorRatio
-    pendingPinchTargetColumns = nil
-    let started = CACurrentMediaTime()
-    gridLayout.setTransition(from: pinchStartColumns, to: target, progress: progress)
-    gridLayout.invalidateLayout()
-    collectionView.layoutIfNeeded()
-    keepAnchor(anchor, atContentRatio: anchorRatio)
-    let elapsedMs = (CACurrentMediaTime() - started) * 1000
-    pinchAppliedFrameCount += 1
-    pinchLayoutTotalMs += elapsedMs
-    pinchLayoutMaxMs = max(pinchLayoutMaxMs, elapsedMs)
-  }
-
-  private func finishLivePinch(columns: Int, anchor: CGPoint) {
+  private func finishPinch(columns: Int, anchor: CGPoint) {
     collectionView.layer.zPosition = 0
-    flushPendingPinchLayout()
-    pinchDisplayLink?.invalidate()
-    pinchDisplayLink = nil
-    pendingPinchTargetColumns = nil
-    lastLivePinchProgress = -1
-    lastLivePinchTargetColumns = columns
     isPinchingGrid = false
-    relayout(columns: columns, anchor: anchor, animated: true)
+    if columns != currentColumns {
+      let started = CACurrentMediaTime()
+      UIView.transition(with: collectionView, duration: 0.18,
+        options: [.transitionCrossDissolve, .allowUserInteraction], animations: {
+          self.relayout(columns: columns, anchor: anchor, animated: false)
+        })
+      let elapsedMs = (CACurrentMediaTime() - started) * 1000
+      pinchAppliedFrameCount = 1
+      pinchLayoutTotalMs = elapsedMs
+      pinchLayoutMaxMs = elapsedMs
+    } else {
+      dispatchVisibleIds()
+      updatePhotoKitPreheat()
+    }
     emitPinchPerfEvent(result: "ended", columns: columns)
   }
 
-  private func cancelLivePinch() {
+  private func cancelPinch() {
     collectionView.layer.zPosition = 0
-    pinchDisplayLink?.invalidate()
-    pinchDisplayLink = nil
-    pendingPinchTargetColumns = nil
-    lastLivePinchProgress = -1
-    lastLivePinchTargetColumns = currentColumns
     isPinchingGrid = false
-    relayout(columns: currentColumns, anchor: pinchAnchor, animated: true)
+    dispatchVisibleIds()
+    updatePhotoKitPreheat()
     emitPinchPerfEvent(result: "cancelled", columns: currentColumns)
   }
 
@@ -1008,31 +951,6 @@ public final class NativePhotosGridView: ExpoView {
       nextIndex -= 1
     }
     return columns[min(columns.count - 1, max(0, nextIndex))]
-  }
-
-  private func liveTargetColumns(for scale: CGFloat, start: Int) -> Int {
-    guard scale != 1,
-          let startIndex = columns.firstIndex(of: start) else { return start }
-    let final = columnsFor(scale: scale, start: start)
-    if final != start {
-      return final
-    }
-    if scale < 1 {
-      return columns[min(columns.count - 1, startIndex + 1)]
-    }
-    return columns[max(0, startIndex - 1)]
-  }
-
-  private func pinchProgress(for scale: CGFloat, start: Int, target: Int) -> CGFloat {
-    guard target != start,
-          let startIndex = columns.firstIndex(of: start),
-          let targetIndex = columns.firstIndex(of: target) else { return 0 }
-    if targetIndex > startIndex {
-      let threshold = targetIndex - startIndex >= 3 ? 0.48 : targetIndex - startIndex == 2 ? 0.68 : 0.82
-      return max(0, min(1, (1 - scale) / (1 - threshold)))
-    }
-    let threshold = startIndex - targetIndex >= 3 ? 2.1 : startIndex - targetIndex == 2 ? 1.55 : 1.28
-    return max(0, min(1, (scale - 1) / (threshold - 1)))
   }
 
   private func keepAnchor(_ anchor: CGPoint, atContentRatio anchorRatio: CGFloat) {

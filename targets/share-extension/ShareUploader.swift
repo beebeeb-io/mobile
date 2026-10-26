@@ -56,7 +56,7 @@ final class ShareUploader {
     }
 
     /// Result of a share-sheet upload. The previous `staged` variant has been
-    /// removed — we never write plaintext to disk anymore.
+    /// removed — there is no deferred plaintext App Group upload fallback.
     enum UploadResult {
         case uploaded(fileId: String)
     }
