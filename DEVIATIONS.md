@@ -1283,3 +1283,7 @@ After host load averages 20.76/21.06/17.78 remain uncontrolled, so these are
 observations, not causal improvement or OnePlus proof. Remote MIME reload repair
 ships with its red-first hook guard; quiet-host/OnePlus performance closure stays
 open. Final measurements and rejected candidates are preserved under r3/.
+
+## Task 2233 Round 2 (Guus, 2026-10-26)
+
+User ruling: implement items 9–11 directly, preserve iOS visuals. Item 9 ports the existing iOS request-key bridge to Android using the same core operations and empty HKDF context (0651), with native private-buffer cleanup. Contract/plan/evidence: `docs/runbook/task-2233-r2.md`.
