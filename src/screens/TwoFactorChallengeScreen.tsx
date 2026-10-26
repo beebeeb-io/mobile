@@ -131,7 +131,7 @@ export default function TwoFactorChallengeScreen() {
     setError(null);
     setLoading(true);
     try {
-      await completeTwoFactor(partialToken, trimmed);
+      await completeTwoFactor(partialToken, trimmed, useBackup ? 'backup' : 'authenticator');
       markUnlocked();
       await refreshAuth();
       // App.tsx auth state will react to the new token and reset to Tabs.
