@@ -9,8 +9,41 @@ struct BackupVideoFileSource {
   let sizeBytes: Int
   let ownsFile: Bool
 
+  private static let exportLock = NSLock()
+  private static var activeExportURLs = Set<URL>()
+
+  static func reserveExportURL(in directory: URL, fileExtension: String) -> URL {
+    exportLock.lock()
+    defer { exportLock.unlock() }
+    let url = directory.appendingPathComponent("backup-video-\(UUID().uuidString).\(fileExtension)")
+    activeExportURLs.insert(url.standardizedFileURL)
+    return url
+  }
+
+  /// A killed process leaves no live reservations. Keep the lock across
+  /// enumeration/removal so a concurrent export cannot be swept after reserve.
+  static func sweepAbandonedExports(in directory: URL) {
+    exportLock.lock()
+    defer { exportLock.unlock() }
+    guard let urls = try? FileManager.default.contentsOfDirectory(
+      at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+    ) else { return }
+    for url in urls {
+      guard url.lastPathComponent.hasPrefix("backup-video-"),
+            ["mov", "mp4"].contains(url.pathExtension.lowercased()),
+            !activeExportURLs.contains(url.standardizedFileURL),
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+            values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+      try? FileManager.default.removeItem(at: url)
+    }
+  }
+
   func cleanup() {
-    if ownsFile { try? FileManager.default.removeItem(at: url) }
+    guard ownsFile else { return }
+    Self.exportLock.lock()
+    defer { Self.exportLock.unlock() }
+    try? FileManager.default.removeItem(at: url)
+    Self.activeExportURLs.remove(url.standardizedFileURL)
   }
 
   static func resolve(
@@ -40,7 +73,7 @@ struct BackupVideoFileSource {
     else if types.contains(.mp4) { type = .mp4 }
     else { throw NSError(domain: "BackupVideoExport", code: 2,
                          userInfo: [NSLocalizedDescriptionKey: "This video cannot be exported for backup"]) }
-    let url = exportDirectory.appendingPathComponent("backup-video-\(UUID().uuidString).\(type == .mov ? "mov" : "mp4")")
+    let url = reserveExportURL(in: exportDirectory, fileExtension: type == .mov ? "mov" : "mp4")
     do {
       if #available(iOS 18.0, macOS 15.0, *) {
         try await exporter.export(to: url, as: type)
@@ -68,7 +101,7 @@ struct BackupVideoFileSource {
                   uti: type == .mov ? "com.apple.quicktime-movie" : "public.mpeg-4",
                   sizeBytes: size, ownsFile: true)
     } catch {
-      try? FileManager.default.removeItem(at: url)
+      Self(asset: asset, url: url, uti: "", sizeBytes: 0, ownsFile: true).cleanup()
       throw error
     }
   }

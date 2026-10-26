@@ -1,7 +1,7 @@
 // @ts-nocheck -- native helper only; no app/device or PhotoKit library access.
 import { expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const nativeTest = process.platform === 'darwin' ? test : test.skip;
@@ -49,4 +49,50 @@ enum PlaintextStorageProtection { static func protect(_ url: URL) -> Bool { true
 `);
   execFileSync('swiftc', ['-module-cache-path', join(dir, 'modules'), join(import.meta.dir, '../../modules/beebeeb-crypto/ios/BackupVideoFileSource.swift'), join(dir, 'Driver.swift'), '-o', join(dir, 'video')], { timeout: 60000 });
   expect(execFileSync(join(dir, 'video'), [dir], {encoding: 'utf8', timeout: 15000})).toContain('video source: 6 assertions passed, 0 failed');
+}, 90000);
+
+// Native recovery uses the same source file compiled by the app.
+nativeTest('backup startup sweeps abandoned exports while preserving active exports and originals', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bb-video-recovery-'));
+  writeFileSync(join(dir, 'Driver.swift'), String.raw`
+import AVFoundation
+import Foundation
+enum PlaintextStorageProtection { static func protect(_ url: URL) -> Bool { true } }
+@main struct Driver {
+  static func main() throws {
+    let directory = URL(fileURLWithPath: CommandLine.arguments[1])
+    let stale = directory.appendingPathComponent("backup-video-abandoned.mov")
+    let unrelated = directory.appendingPathComponent("original.mov")
+    let lookalike = directory.appendingPathComponent("backup-video-not-a-movie.txt")
+    let subdirectory = directory.appendingPathComponent("backup-video-directory.mov")
+    for url in [stale, unrelated, lookalike] { try Data([1]).write(to: url) }
+    try FileManager.default.createDirectory(at: subdirectory, withIntermediateDirectories: true)
+    let active = BackupVideoFileSource.reserveExportURL(in: directory, fileExtension: "mov")
+    try Data([2]).write(to: active)
+    BackupVideoFileSource.sweepAbandonedExports(in: directory)
+    guard !FileManager.default.fileExists(atPath: stale.path) else { fatalError("abandoned export retained") }
+    guard FileManager.default.fileExists(atPath: active.path) else { fatalError("active export deleted") }
+    guard FileManager.default.fileExists(atPath: unrelated.path) else { fatalError("original deleted") }
+    guard FileManager.default.fileExists(atPath: lookalike.path) else { fatalError("unrelated file deleted") }
+    guard FileManager.default.fileExists(atPath: subdirectory.path) else { fatalError("directory deleted") }
+    let source = BackupVideoFileSource(asset: AVURLAsset(url: active), url: active, uti: "com.apple.quicktime-movie", sizeBytes: 1, ownsFile: true)
+    source.cleanup()
+    guard !FileManager.default.fileExists(atPath: active.path) else { fatalError("active cleanup failed") }
+    // The reservation also protects a destination before export creates it.
+    let exporting = BackupVideoFileSource.reserveExportURL(in: directory, fileExtension: "mp4")
+    BackupVideoFileSource.sweepAbandonedExports(in: directory)
+    try Data([3]).write(to: exporting)
+    BackupVideoFileSource.sweepAbandonedExports(in: directory)
+    guard FileManager.default.fileExists(atPath: exporting.path) else { fatalError("in-progress export deleted") }
+    BackupVideoFileSource(asset: AVURLAsset(url: exporting), url: exporting, uti: "public.mpeg-4", sizeBytes: 1, ownsFile: true).cleanup()
+    print("video recovery: 7 assertions passed, 0 failed")
+  }
+}
+`);
+  execFileSync('swiftc', ['-module-cache-path', join(dir, 'modules'), join(import.meta.dir, '../../modules/beebeeb-crypto/ios/BackupVideoFileSource.swift'), join(dir, 'Driver.swift'), '-o', join(dir, 'recovery')], {timeout: 60000});
+  expect(execFileSync(join(dir, 'recovery'), [dir], {encoding: 'utf8', timeout: 15000})).toContain('video recovery: 7 assertions passed, 0 failed');
+  const engine = readFileSync(join(import.meta.dir, '../../modules/beebeeb-crypto/ios/NativeBackupEngine.swift'), 'utf8');
+  const batch = engine.slice(engine.indexOf('func processBatch('));
+  expect(batch.indexOf('BackupVideoFileSource.sweepAbandonedExports')).toBeGreaterThan(batch.indexOf('defer { finishBatchProcessing() }'));
+  expect(batch.indexOf('BackupVideoFileSource.sweepAbandonedExports')).toBeLessThan(batch.indexOf('ensureManifestReadyForUploads'));
 }, 90000);

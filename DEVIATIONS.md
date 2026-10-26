@@ -1063,3 +1063,6 @@ Rebased onto PR #168 (task 1820): its `trialCapMessage` and the native stop reas
 
 ## Full-speed L1 — composition video backup (2026-10-26)
 Task 0677: non-file-backed PhotoKit videos export to a temporary flat QuickTime movie on disk, then use the same core `fromFile` chunk ladder as URL-backed videos. Keep originals on their existing direct-file path. Export files live in the existing protected, backup-excluded, sign-out-purged PhotoKit cache; delete owned exports on failure/cancel and after encryption. No whole-video `Data(contentsOf:)` fallback. Apple's AVAssetExportSession writes to a file URL and propagates cancellation via `export(to:as:)`; use that API on iOS 18+, with the cancellable legacy equivalent for older supported systems. Real slo-mo fidelity and peak-memory acceptance remain a release-device rung.
+
+## Mobile PR #202 review fix (Guus, 2026-10-26)
+Sweep abandoned backup-video exports at backup batch startup. Serialize export reservation, cleanup and sweeping with one lock; keep reserved paths active through export and encryption, removing only unreserved regular backup-video movie files. Preserve original PhotoKit URLs and unrelated files. Verification: fail-first isolated Swift harness, isolated unit runner, Swift parse/compile, bunx tsc --noEmit. Owner: Codex, fs-l1fix-202; lead merges.

@@ -3557,6 +3557,12 @@ final class NativeBackupEngine: NSObject {
     }
     defer { finishBatchProcessing() }
 
+    // Recovery for exports abandoned by process termination. Reservations in
+    // BackupVideoFileSource protect exports still being written or encrypted.
+    let videoExportDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("beebeeb-photokit-cache", isDirectory: true)
+    BackupVideoFileSource.sweepAbandonedExports(in: videoExportDirectory)
+
     // Task 1667: never upload into a manifest that does not yet know what
     // this account already backed up from this device (after a sign-out the
     // manifest is empty; uploading would duplicate every photo).
