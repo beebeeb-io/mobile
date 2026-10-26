@@ -19,9 +19,11 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import {
   GestureHandlerRootView,
@@ -77,9 +79,12 @@ const LEADING_INSET = 54; // 20 (pad) + 22 (icon) + 12 (gap) — separators alig
 export function BBActionSheet({ visible, onClose, title, header, rows }: BBActionSheetProps) {
   const { colors: c, resolved } = useTheme();
   const insets = useSafeAreaInsets();
+  const window = useWindowDimensions();
+  const android = Platform.OS === 'android';
+  const screenH = android ? window.height : SCREEN_H;
 
   const [rendered, setRendered] = useState(false);
-  const translateY = useRef(new Animated.Value(SCREEN_H)).current;
+  const translateY = useRef(new Animated.Value(screenH)).current;
   const sheetH = useRef(0);
 
   const animateTo = useCallback(
@@ -99,17 +104,17 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
   useEffect(() => {
     if (visible) {
       setRendered(true);
-      translateY.setValue(SCREEN_H);
+      translateY.setValue(screenH);
       requestAnimationFrame(() => animateTo(0));
     } else if (rendered) {
-      animateTo(SCREEN_H, () => setRendered(false));
+      animateTo(screenH, () => setRendered(false));
     }
-  }, [visible, rendered, translateY, animateTo]);
+  }, [visible, rendered, translateY, animateTo, screenH]);
 
   // The veil itself is MODAL_SCRIM (alpha 0.5); this only fades it in as the
   // sheet springs up, so the token's own alpha is what lands at rest.
   const scrimOpacity = translateY.interpolate({
-    inputRange: [0, SCREEN_H],
+    inputRange: [0, screenH],
     outputRange: [1, 0],
     extrapolate: 'clamp',
   });
@@ -149,6 +154,64 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
 
   // Android Modals are separate native windows; gestures need a root inside.
   const SheetRoot = Platform.OS === 'android' ? GestureHandlerRootView : View;
+  // Android actions own their scroll gesture; only the header drags the sheet.
+  const SheetPan = android ? View : PanGestureHandler;
+  const headerContent = (
+    <>
+      <View style={[styles.grabber, { backgroundColor: c.line2 }]} />
+
+      {header ? (
+        <View style={[styles.header, { borderBottomColor: c.line }]}>
+          <View style={[styles.thumb, { backgroundColor: c.line }]}>
+            {header.thumbnail ?? <Ionicons name="document-outline" size={20} color={c.ink3} />}
+          </View>
+          <View style={styles.headerText}>
+            <Text style={[styles.headerName, { color: c.ink }]} numberOfLines={1} ellipsizeMode="middle">
+              {header.name}
+            </Text>
+            {header.subtitle ? (
+              <Text style={[styles.headerSub, { color: c.ink3 }]} numberOfLines={1}>
+                {header.subtitle}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      ) : title ? (
+        <View style={[styles.titleWrap, { borderBottomColor: c.line }]}>
+          <Text style={[styles.title, { color: c.ink3 }]}>{title}</Text>
+        </View>
+      ) : (
+        <View style={{ height: 4 }} />
+      )}
+    </>
+  );
+  const actions = rows.map((row, i) => {
+    const tint = row.destructive ? c.red : row.active ? c.amber : c.ink;
+    const labelColor = row.destructive ? c.red : c.ink;
+    return (
+      <React.Fragment key={row.key}>
+        <Pressable
+          onPress={() => handleRow(row)}
+          testID={row.testID}
+          accessibilityRole="button"
+          accessibilityState={{ selected: row.active }}
+          style={({ pressed }) => [styles.row, pressed && { backgroundColor: c.line }]}
+        >
+          <Ionicons name={row.icon} size={22} color={tint} style={styles.rowIcon} />
+          <Text
+            style={[styles.rowLabel, { color: labelColor, fontWeight: row.active ? '600' : '400' }]}
+            numberOfLines={1}
+          >
+            {row.label}
+          </Text>
+          {row.active ? <Ionicons name="checkmark" size={18} color={c.amber} /> : null}
+        </Pressable>
+        {i < rows.length - 1 ? (
+          <View style={[styles.separator, { backgroundColor: c.line }]} />
+        ) : null}
+      </React.Fragment>
+    );
+  });
 
   return (
     <Modal transparent visible={rendered} animationType="none" onRequestClose={onClose} statusBarTranslucent>
@@ -159,74 +222,36 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
           <Pressable style={styles.fill} onPress={onClose} accessibilityLabel="Dismiss menu" />
         </Animated.View>
 
-        <PanGestureHandler onGestureEvent={onGesture} onHandlerStateChange={onGestureStateChange}>
+        <SheetPan
+          style={android ? styles.fill : undefined}
+          pointerEvents={android ? 'box-none' : undefined}
+          {...(android ? {} : { onGestureEvent: onGesture, onHandlerStateChange: onGestureStateChange })}
+        >
           <Animated.View
             onLayout={(e) => { sheetH.current = e.nativeEvent.layout.height; }}
             style={[
               styles.sheet,
               shadows.lg,
               {
+                ...(android ? { maxHeight: Math.max(0, window.height - insets.top) } : {}),
                 backgroundColor: c.paper2,
                 paddingBottom: bottomAnchorInset(insets.bottom, Math.max(insets.bottom, 12)),
                 transform: [{ translateY }],
               },
             ]}
           >
-            <View style={[styles.grabber, { backgroundColor: c.line2 }]} />
-
-            {header ? (
-              <View style={[styles.header, { borderBottomColor: c.line }]}>
-                <View style={[styles.thumb, { backgroundColor: c.line }]}>
-                  {header.thumbnail ?? <Ionicons name="document-outline" size={20} color={c.ink3} />}
-                </View>
-                <View style={styles.headerText}>
-                  <Text style={[styles.headerName, { color: c.ink }]} numberOfLines={1} ellipsizeMode="middle">
-                    {header.name}
-                  </Text>
-                  {header.subtitle ? (
-                    <Text style={[styles.headerSub, { color: c.ink3 }]} numberOfLines={1}>
-                      {header.subtitle}
-                    </Text>
-                  ) : null}
-                </View>
-              </View>
-            ) : title ? (
-              <View style={[styles.titleWrap, { borderBottomColor: c.line }]}>
-                <Text style={[styles.title, { color: c.ink3 }]}>{title}</Text>
-              </View>
-            ) : (
-              <View style={{ height: 4 }} />
-            )}
-
-            {rows.map((row, i) => {
-              const tint = row.destructive ? c.red : row.active ? c.amber : c.ink;
-              const labelColor = row.destructive ? c.red : c.ink;
-              return (
-                <React.Fragment key={row.key}>
-                  <Pressable
-                    onPress={() => handleRow(row)}
-                    testID={row.testID}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: row.active }}
-                    style={({ pressed }) => [styles.row, pressed && { backgroundColor: c.line }]}
-                  >
-                    <Ionicons name={row.icon} size={22} color={tint} style={styles.rowIcon} />
-                    <Text
-                      style={[styles.rowLabel, { color: labelColor, fontWeight: row.active ? '600' : '400' }]}
-                      numberOfLines={1}
-                    >
-                      {row.label}
-                    </Text>
-                    {row.active ? <Ionicons name="checkmark" size={18} color={c.amber} /> : null}
-                  </Pressable>
-                  {i < rows.length - 1 ? (
-                    <View style={[styles.separator, { backgroundColor: c.line }]} />
-                  ) : null}
-                </React.Fragment>
-              );
-            })}
+            {android ? (
+              <PanGestureHandler onGestureEvent={onGesture} onHandlerStateChange={onGestureStateChange}>
+                <View>{headerContent}</View>
+              </PanGestureHandler>
+            ) : headerContent}
+            {android ? (
+              <ScrollView style={styles.actions} bounces={false} testID="action-sheet-actions">
+                {actions}
+              </ScrollView>
+            ) : actions}
           </Animated.View>
-        </PanGestureHandler>
+        </SheetPan>
       </SheetRoot>
     </Modal>
   );
@@ -234,6 +259,7 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
+  actions: { flexShrink: 1 },
   scrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   sheet: {
     position: 'absolute',
