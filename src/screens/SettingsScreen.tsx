@@ -1,3 +1,4 @@
+import { appVersion } from '../lib/app-version';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
@@ -32,7 +33,6 @@ let Calendar: any = {
   getCalendarPermissions: async () => ({ status: 'undetermined', granted: false }),
   requestCalendarPermissions: async () => ({ status: 'undetermined', granted: false }),
 };
-let Constants: any = { expoConfig: null };
 
 try { LocalAuthentication = require('expo-local-authentication'); } catch {}
 try { StoreReview = require('expo-store-review'); } catch {}
@@ -40,7 +40,6 @@ try { Notifications = require('expo-notifications'); } catch {}
 try { MediaLibrary = require('expo-media-library'); } catch {}
 try { Contacts = require('expo-contacts'); } catch {}
 try { Calendar = require('expo-calendar'); } catch {}
-try { Constants = require('expo-constants'); } catch {}
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -1722,7 +1721,7 @@ export default function SettingsScreen() {
   }, []);
 
   const handleShowVersion = useCallback(() => {
-    const version = Constants.expoConfig?.version ?? '1.0.0';
+    const { version } = appVersion();
     Alert.alert(
       `Beebeeb v${version}`,
       '• End-to-end encrypted file storage\n• Camera roll backup\n• Dark mode support\n• File search and sort\n• Swipe actions\n• Biometric lock\n\nMade in Europe by Beebeeb.io',
@@ -2790,7 +2789,7 @@ export default function SettingsScreen() {
             <SettingsRow
               label="Version"
               icon="information-circle-outline"
-              value={`${Constants.expoConfig?.version ?? '1.0.0'} (${Constants.expoConfig?.ios?.buildNumber ?? Constants.expoConfig?.android?.versionCode ?? '1'})`}
+              value={`${appVersion().version} (${appVersion().build})`}
               showChevron={false}
               onPress={handleShowVersion}
               c={c}

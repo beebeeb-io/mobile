@@ -1,6 +1,7 @@
 // @ts-nocheck — isolated Bun process; every native dependency is mocked here.
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
+mock.module('expo-application', () => ({ nativeApplicationVersion: '1.0.1', nativeBuildVersion: '8' }));
 const platform = { OS: 'android' };
 const registered: unknown[] = [];
 const persisted: unknown[] = [];
@@ -9,7 +10,7 @@ let tokenRequests = 0;
 mock.module('react-native', () => ({ Platform: platform }));
 mock.module('expo-device', () => ({ deviceName: 'Test device', modelName: 'Test model', isDevice: true }));
 mock.module('expo-constants', () => ({
-  default: { expoConfig: { version: '1.0.1', extra: { eas: { projectId: 'test-project' } } } },
+  default: { expoConfig: { version: '1.0.0', extra: { eas: { projectId: 'test-project' } } } },
 }));
 mock.module('@react-native-async-storage/async-storage', () => ({ default: {
   getItem: async () => null,

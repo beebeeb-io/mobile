@@ -1287,3 +1287,5 @@ open. Final measurements and rejected candidates are preserved under r3/.
 ## Task 2233 Round 2 (Guus, 2026-10-26)
 
 User ruling: implement items 9–11 directly, preserve iOS visuals. Item 9 ports the existing iOS request-key bridge to Android using the same core operations and empty HKDF context (0651), with native private-buffer cleanup. Contract/plan/evidence: `docs/runbook/task-2233-r2.md`.
+
+Task 2233 item 10: use one installed-binary appVersion() helper for Settings, API provenance, device registration and backup manifests, with config fallback. Existing expo-application transitive dependency/native linkage is reused; no dependencies added. iOS layout/styles unchanged.
