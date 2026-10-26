@@ -1169,3 +1169,10 @@ Implement the existing 0670/0717 contract: only HTTP 403 with typed error object
 A typed file-limit pause stops new batch/asset admissions while existing staged work remains intact. Keep a dedicated lock-protected reason across progress/status refreshes; clear it on an explicit retry or account purge. Verification: scheduling and native status regressions fail first, then isolated suite and TypeScript.
 
 Validation also carries the active-export directory-alias repair from mobile PR 203 (e6215eb): the native recovery test fails without it on this host. Graphify update in PR 203 refused to replace its larger existing graph; generated partial output was removed.
+
+## Task 2233 — Android first device report (L3, 2026-10-26)
+
+Guus's ruling: preserve iOS visuals and behavior; use Android device copy, app-owned menus and measured layout. Execute 5, 3/4, 7, 2, 6, 1. Owner: Codex L3 solo, branch fs/l3-android/device-r1, worktree /Users/guuslangelaar/code/bb-worktrees/fs-l3-android-2233. Verification per item: red-first regression, isolated runner, TypeScript; emulator screenshots for 2/3/4/7; generated ZIP reproduction and Photos before/after measurements. OnePlus confirmation remains the final device rung.
+
+Item 5: route preview decrypt, edited-copy name and camera-roll deletion copy through the existing device-copy module. Its iOS return values are identical. Audited src and native modules: remaining iPhone literals describe source-device guides, fixtures/comments, or iOS-only native/File Provider/thumbnail-repair paths; Android-accessible backup-insights/startup copy is already platform-gated. No iOS native strings or WebView assets changed. RED: 1 pass/1 fail (preview decrypt wiring), evidence ~/code/bb-gate-logs/2233/5-red.log.
+Item 5 validation: isolated: 2989 pass, 0 fail across 288 files; bunx tsc --noEmit exit 0. Logs: ~/code/bb-gate-logs/2233/5-{red,isolated,tsc}.log. Native iOS-only copy audit preserves those paths unchanged.
