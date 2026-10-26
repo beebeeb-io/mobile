@@ -20,6 +20,7 @@ MANIFEST=(
   "native-preview-working-storage-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift"
   "native-video-streamer-harness.swift|scripts/swift-tests/native-video-streamer-stubs.swift modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/NativeVideoStreamer.swift"
   "preview-chunk-pipeline-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/PreviewChunkPipeline.swift"
+  "empty-preview-frame-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/PreviewChunkPipeline.swift"
   "account-refusal-detection-test.swift|modules/beebeeb-crypto/ios/AccountRefusalDetection.swift"
   "share-upload-request-policy-test.swift|targets/share-extension/ShareUploadRequestPolicy.swift targets/file-provider/AccountMismatchDetection.swift"
   "share-recent-folders-test.swift|targets/share-extension/ShareRecentFolders.swift"

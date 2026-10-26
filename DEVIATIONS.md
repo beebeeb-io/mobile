@@ -1115,3 +1115,6 @@ Review/cleanup pass: only known safe integer zero gains empty-cache semantics; u
 
 ## PR 215 validation (2026-10-26)
 Rebase preserves both deviation histories. Carry the PR 203/e6215eb active-export directory-alias repair so native recovery retains active files on this host. Verification: isolated suite and TypeScript; no unresolved review threads at inspection. Graphify refresh in PR 203 refused its incomplete replacement graph.
+
+## PR 215 Swift gate repair (2026-10-26)
+The CI gate rejected an unregistered empty-preview-frame driver (21/22 drivers), and direct compilation reproduced an invalid @main entry point when the runner copies it as main.swift. Register the driver with both production sources, use the runner-compatible top-level entry point, and emit its counted assertion format. Verification: reproduce failed compile, then execute the real authenticated-empty/tampered/truncated/extra-byte native scenarios, followed by isolated suite and TypeScript.
