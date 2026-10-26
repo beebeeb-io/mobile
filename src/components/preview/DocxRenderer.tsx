@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { isolatePreviewHtml, staticPreviewWebViewProps } from '../../lib/preview-html-policy';
 // @ts-ignore — mammoth/mammoth.browser ships no .d.ts.
 import mammoth from 'mammoth/mammoth.browser';
 // 1346 — the static `colors` (light-only) import that used to live here was
@@ -168,8 +169,8 @@ export function DocxRenderer({ data, colors: c, isDark, topInset = 0, bottomInse
     // flex:1 (default align:'stretch') is the fix.
     <View style={styles.docxWebViewWrap}>
       <WebView
-        originWhitelist={['*']}
-        source={{ html }}
+        {...staticPreviewWebViewProps}
+        source={{ html: isolatePreviewHtml(html) }}
         style={[styles.docxWebView, { backgroundColor: c.paper }]}
         showsVerticalScrollIndicator
       />
