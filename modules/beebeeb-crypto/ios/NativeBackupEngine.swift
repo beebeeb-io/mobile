@@ -642,6 +642,13 @@ final class NativeBackupEngine: NSObject {
     set { engineStateLock.lock(); _ownerUnconfirmedStopReason = newValue; engineStateLock.unlock() }
   }
 
+  /// A file-count refusal remains visible until the next explicit retry.
+  private var _fileLimitStopReason: String?
+  private var fileLimitStopReason: String? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _fileLimitStopReason }
+    set { engineStateLock.lock(); _fileLimitStopReason = newValue; engineStateLock.unlock() }
+  }
+
   /// A confirmed billing/trial-cap refusal pauses this account without consuming
   /// asset retries or dropping its key. Camera backup and contacts/calendar share
   /// this reason. A successful start or explicit auxiliary resume clears it.
@@ -1561,6 +1568,9 @@ final class NativeBackupEngine: NSObject {
   /// `BackupSurfaceState` (the rules moved there unchanged), which also
   /// keeps the server-check pause on every surface and every update.
   private func backupState(pending: Int) -> (state: String, reason: String) {
+    if isPaused, let reason = fileLimitStopReason {
+      return ("pausedByUser", reason)
+    }
     var networkAvailable = true
     #if os(iOS)
     networkAvailable = isNetworkAvailable
@@ -1599,7 +1609,7 @@ final class NativeBackupEngine: NSObject {
       bytesUploaded: bytesUploaded,
       bytesTotal: bytesTotal,
       state: state.state,
-      reason: explicitReason ?? state.reason,
+      reason: (isPaused ? fileLimitStopReason : nil) ?? explicitReason ?? state.reason,
       lastBackupAt: latestUploadedAt(),
       lastChangeAt: now,
       updatedAt: now
@@ -2361,6 +2371,10 @@ final class NativeBackupEngine: NSObject {
       // STILL blocked, the very next upload attempt just re-pauses
       // immediately (one harmless refused request), never a silent stuck
       // pause with no way back to "running" short of a full app relaunch.
+      if fileLimitStopReason != nil {
+        fileLimitStopReason = nil
+        isPaused = false
+      }
       if accountRefusalStopReason != nil {
         accountRefusalStopReason = nil
         isPaused = false
@@ -2469,6 +2483,7 @@ final class NativeBackupEngine: NSObject {
     // FRESH start, `isRunning` was false) is the "next start" resume
     // point. `isPaused` is already reset to `false` a few lines below
     // (this function's own tail), so there is nothing further to flip.
+    fileLimitStopReason = nil
     accountRefusalStopReason = nil
     // Task 1599 followup 3: `currentAccountId` here is `start()`'s OWN
     // persisted account id (Keychain-backed — see its property doc), which
@@ -2629,6 +2644,7 @@ final class NativeBackupEngine: NSObject {
 
   /// Resume after pause.
   func resume() {
+    fileLimitStopReason = nil
     if !isRunning {
       start()
       guard isRunning else {
@@ -2717,7 +2733,8 @@ final class NativeBackupEngine: NSObject {
       defer { exsqlite3_finalize(stmt) }
       let sql = """
       SELECT error_message FROM backup_assets
-      WHERE status IN ('failed', 'local_missing') AND error_message IS NOT NULL AND error_message != ''
+      WHERE (status IN ('failed', 'local_missing') OR COALESCE(retry_count, 0) >= 10)
+        AND error_message IS NOT NULL AND error_message != ''
       ORDER BY COALESCE(last_attempt_at, 0) DESC
       LIMIT 1
       """
@@ -3609,9 +3626,9 @@ final class NativeBackupEngine: NSObject {
       var activeCount = 0
       var index = 0
 
-      while (index < pending.count || !group.isEmpty) && isRunning && !Task.isCancelled {
+      while (index < pending.count || !group.isEmpty) && isRunning && !isPaused && !Task.isCancelled {
         // Add tasks up to concurrency limit
-        while activeCount < maxConcurrentUploads && index < pending.count && isRunning && !Task.isCancelled {
+        while activeCount < maxConcurrentUploads && index < pending.count && isRunning && !isPaused && !Task.isCancelled {
           let asset = pending[index]
           index += 1
           activeCount += 1
@@ -3725,6 +3742,7 @@ final class NativeBackupEngine: NSObject {
   /// a manual trigger can otherwise race ahead, see zero pending rows, and make
   /// the UI look active while no upload starts.
   func triggerManualBackup(limit: Int = 50) async throws -> [String: Any] {
+    fileLimitStopReason = nil
     if !isRunning {
       start()
     } else {
@@ -3767,7 +3785,7 @@ final class NativeBackupEngine: NSObject {
     /// it in its own `dbQueue` block.
     ticket: ManifestWriteFence.Ticket
   ) async -> Bool {
-    guard isRunning && !Task.isCancelled else { return false }
+    guard isRunning && !isPaused && !Task.isCancelled else { return false }
 
     // Task 1531 [P1-2]: refuse outright — no staging, no upload — unless the
     // LIVE `currentAccountId` still matches the account this batch's
@@ -4057,6 +4075,20 @@ final class NativeBackupEngine: NSObject {
       updateBackupStatusSurfaces(reason: "Backup paused")
       onFileStatus?(asset.localAssetId, "pending", nil, nil)
       NSLog("[NativeBackupEngine] Asset upload paused (trial storage cap reached): \(asset.localAssetId)")
+      return false
+    } catch BackupError.httpStatus(let statusCode, let body) where
+      AccountRefusalDetection.isObjectBudgetExceeded(statusCode: statusCode, body: Data(body.utf8)) {
+      guard currentAccountId == batchAccountId else { return false }
+      let message = AccountRefusalDetection.objectBudgetMessage
+      fileLimitStopReason = message
+      pause()
+      dbQueue.sync {
+        guard admitsWrite(ticket, "markFailed.object_budget") else { return }
+        markFailed(assetId: asset.localAssetId, error: message, retryLimitReached: true)
+      }
+      failedAssets += 1
+      updateBackupStatusSurfaces(reason: message)
+      onFileStatus?(asset.localAssetId, "failed", nil, message)
       return false
     } catch {
       perfLog("asset.fail", [
@@ -5676,14 +5708,14 @@ final class NativeBackupEngine: NSObject {
   }
 
   /// Mark an asset as failed, incrementing retry count.
-  private func markFailed(assetId: String, error: String) {
+  private func markFailed(assetId: String, error: String, retryLimitReached: Bool = false) {
     guard let db = db else { return }
     let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
     // Increment retry_count. Assets with retry_count >= 10 become dead letters.
     let sql = """
     UPDATE backup_assets
     SET status = CASE WHEN staged_file_id IS NOT NULL THEN 'staged_upload' ELSE 'pending_upload' END,
-        retry_count = COALESCE(retry_count, 0) + 1,
+        retry_count = \(retryLimitReached ? "10" : "COALESCE(retry_count, 0) + 1"),
         error_message = ?,
         last_attempt_at = ?
     WHERE local_asset_id = ?
@@ -6073,6 +6105,7 @@ final class NativeBackupEngine: NSObject {
   /// `currentAccountId` — the previous doc comment's claim that purging
   /// first was needed to preserve that diagnostic was itself mistaken.
   func clearAccountAndPurgeStaged() {
+    fileLimitStopReason = nil
     currentAccountId = nil
     dbQueue.sync { purgeAllStagedAssets() }
     // Task 1531 [P1-3] (lead review, round 4): belt-and-braces — `stop()`
@@ -7650,7 +7683,9 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
         // path re-stages + requeues fast instead of climbing toward retry-10.
         let uploadError: Error = statusCode == 408
           ? BackupError.uploadStalled(chunk.chunkIndex)
-          : BackupError.httpStatus(statusCode, "Chunk upload failed")
+          : BackupError.httpStatus(statusCode,
+              responseBody.flatMap { AccountRefusalDetection.isObjectBudgetExceeded(statusCode: statusCode, body: $0) ? String(data: $0, encoding: .utf8) : nil }
+                ?? "Chunk upload failed")
         dbQueue.async { [weak self] in
           guard let self, self.admitsChunkCallback(ticket, "markChunkFailed") else { return }
           self.markChunkFailed(
