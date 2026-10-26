@@ -18,6 +18,7 @@
  * closing the sheet aborts both and clears the plaintext from state.
  */
 
+import { bottomAnchorInset } from './glass/tab-bar-inset';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -263,7 +264,7 @@ export default function EncryptionProof({ file, fileName, mimeType, visible, onC
           )}
         </ScrollView>
 
-        <View style={[styles.footer, { backgroundColor: c.paper, borderTopColor: c.line, paddingBottom: insets.bottom || spacing.md }]}>
+        <View style={[styles.footer, { backgroundColor: c.paper, borderTopColor: c.line, paddingBottom: bottomAnchorInset(insets.bottom, insets.bottom || spacing.md) }]}>
           <TouchableOpacity
             style={[styles.downloadBtn, { backgroundColor: c.amber, opacity: downloading ? 0.6 : 1 }]}
             onPress={handleDownload}

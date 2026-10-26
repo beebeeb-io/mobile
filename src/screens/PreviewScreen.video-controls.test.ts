@@ -23,7 +23,8 @@ function styleObjectBody(styleName: string): string {
 describe('Preview video controls', () => {
   test('the video control inset is derived from the same safe-area floor as the bottom chrome', () => {
     expect(source).toContain('const previewVideoControlsBottomInset = useMemo(');
-    expect(source).toContain('Math.max(insets.bottom, 16) + PREVIEW_VIDEO_CONTROLS_BOTTOM_CLEARANCE');
+    expect(source).toContain('const previewBottomInset = bottomAnchorInset(insets.bottom, Math.max(insets.bottom, 16));');
+    expect(source).toContain('previewBottomInset + PREVIEW_VIDEO_CONTROLS_BOTTOM_CLEARANCE');
     expect(source).toMatch(/PREVIEW_VIDEO_CONTROLS_BOTTOM_CLEARANCE\s*=\s*84/);
   });
 

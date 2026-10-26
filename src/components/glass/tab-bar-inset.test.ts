@@ -10,6 +10,7 @@ import { describe, expect, it, mock } from 'bun:test';
 // a test actually calls — that package pulls in RN's real Flow-typed
 // source, which bun's test runner can't parse (same fix as
 // useKeyboardLayoutAnimation.test.ts / the pre-1308a version of this file).
+mock.module('react-native', () => ({ Platform: { OS: 'ios' } }));
 mock.module('react-native-bottom-tabs', () => ({
   useBottomTabBarHeight: () => 0,
 }));

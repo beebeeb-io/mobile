@@ -29,6 +29,7 @@
  * rows stay reachable at the half detent.
  */
 
+import { bottomAnchorInset } from '../glass/tab-bar-inset';
 import React, {
   createContext,
   forwardRef,
@@ -440,7 +441,7 @@ export function BottomSheet({
     [pos, sheetHeight, smallest, closedY],
   );
 
-  const safeBottom = sheetSafeBottom(insets.bottom);
+  const safeBottom = bottomAnchorInset(insets.bottom, sheetSafeBottom(insets.bottom));
   const bottomPad = keyboardHeight > 0 ? 8 : safeBottom;
   const onRootLayout = useCallback((e: LayoutChangeEvent) => {
     const h = Math.round(e.nativeEvent.layout.height);

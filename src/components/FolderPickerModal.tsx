@@ -13,6 +13,7 @@
  * the component pure: it only walks `parentId` links and renders.
  */
 
+import { bottomAnchorInset } from './glass/tab-bar-inset';
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -199,7 +200,7 @@ export default function FolderPickerModal({
         />
 
         {/* Footer — commit into the currently-open folder */}
-        <View style={[styles.footer, { borderTopColor: c.line, paddingBottom: insets.bottom + 12 }]}>
+        <View style={[styles.footer, { borderTopColor: c.line, paddingBottom: bottomAnchorInset(insets.bottom, insets.bottom + 12) }]}>
           {alreadyHere && (
             <Text style={[styles.footerHint, { color: c.ink3 }]}>
               {`Already in “${current.name}”.`}

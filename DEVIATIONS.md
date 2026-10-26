@@ -1177,3 +1177,116 @@ Existing account-boundary contracts: a SecureStore read crossing a session gener
 Rebase onto current main (task 2234) reconciled one semantic conflict: `api-client-session.test.ts` ("stale token read resolving after setToken does not overwrite cached token") pinned the older, weaker contract — the stale caller still received the signed-out/superseded token. The hardened `getToken` returns `null` there, so that one expectation now asserts `toBeNull()`; the cache assertions are unchanged. The cached-token guard for a clear is `api-token-clear-race.test.ts`; the native-cache guard is `crypto-context.key-ownership.test.ts`. `crypto-context.reset-recovery.test.ts` only needed the new `clearCachedMasterKey` export in its crypto mock (without it the file fails to link: "Export named 'clearCachedMasterKey' not found"), and `software-vault-gate(-device).test.ts` — added to main after the held commit — needed the same no-op stub. Mechanical mock adaptation only; no behaviour change in those three files.
 
 Release window (task 2234): the iOS build number source moved from EAS remote versioning to `local` (`eas.json` `appVersionSource: local`, `production.autoIncrement: false`), with the number that actually ships set where this prebuilt tree reads it: `CFBundleVersion` 248 in `ios/Beebeeb/Info.plist` (`app.json` `ios.buildNumber: 248` mirrors it and is ignored by EAS while `ios/` is committed). Uploads no longer go through `eas submit`; the IPA is uploaded directly to App Store Connect with `xcrun altool --upload-app` and the existing App Store Connect API key. Reason: build 247 was already consumed by an accidental `eas submit`, and the binary should not transit Expo's servers. Consequence: the build number must be bumped by hand for every future release.
+## Task 2233 — Android first device report (L3, 2026-10-26)
+
+Guus's ruling: preserve iOS visuals and behavior; use Android device copy, app-owned menus and measured layout. Execute 5, 3/4, 7, 2, 6, 1. Owner: Codex L3 solo, branch fs/l3-android/device-r1, worktree /Users/guuslangelaar/code/bb-worktrees/fs-l3-android-2233. Verification per item: red-first regression, isolated runner, TypeScript; emulator screenshots for 2/3/4/7; generated ZIP reproduction and Photos before/after measurements. OnePlus confirmation remains the final device rung.
+
+Item 5: route preview decrypt, edited-copy name and camera-roll deletion copy through the existing device-copy module. Its iOS return values are identical. Audited src and native modules: remaining iPhone literals describe source-device guides, fixtures/comments, or iOS-only native/File Provider/thumbnail-repair paths; Android-accessible backup-insights/startup copy is already platform-gated. No iOS native strings or WebView assets changed. RED: 1 pass/1 fail (preview decrypt wiring), evidence ~/code/bb-gate-logs/2233/5-red.log.
+Item 5 validation: isolated: 2989 pass, 0 fail across 288 files; bunx tsc --noEmit exit 0. Logs: ~/code/bb-gate-logs/2233/5-{red,isolated,tsc}.log. Native iOS-only copy audit preserves those paths unchanged.
+
+Items 3/4 design before code: react-native-bottom-tabs Android RCTTabView.kt adds layoutHolder(weight=1) and bottomNavigation as VERTICAL siblings and reports layoutHolder.height to JS. The screen's coordinate origin already ends ABOVE the measured bar (including its system inset); adding that height again lifts both controls a second time. Android therefore reserves only the existing 12pt content clearance inside that scene. iOS keeps measured native height + 12 unchanged. This is the same full-window clearance after accounting for the Android container's reserved bar, without a guessed iOS/Android height or double-counting safe area. Scope is the shared inset helper used by both requested controls.
+Items 3/4 share one implementation commit because both already consume the same inset helper. RED corrected fixture: 1 pass/1 fail; GREEN 2/0; full isolated 2991 pass/0 fail across 289 files; TypeScript exit 0. Emulator screenshots remain pending; no device result claimed. Logs: ~/code/bb-gate-logs/2233/34-*.log.
+
+Item 7 design before code: Android preview overflow uses the existing BBActionSheet (theme tokens, destructive rows, Android back dismissal) for the existing preview action array. iOS keeps its current PreviewOptionsPopover and action dispatch. No native gray/blue Alert menu on Android. Shared filename and action handlers stay authoritative.
+Item 7 also roots Android Modal gestures inside GestureHandlerRootView; the iOS root remains View. Initial RED 0 pass/2 fail; gesture RED 2 pass/1 fail; full isolated: 2994 pass/0 fail across 290 files; TypeScript exit 0. Screenshot rung open: emulator 30.3.5 and 37.2.12 both exit 132 before ADB registration, including software/no-accel attempt. Logs ~/code/bb-gate-logs/2233/7-*.log and emulator{,-software}.log. No keystore accessed; no app authentication attempted.
+
+Item 2 design before code: preserve the full-height Android list behind the absolute floating header, but put the measured header height in SCROLL CONTENT padding, not on the viewport. Add it to getItemLayout offsets so pinch/restoration lands correctly; reserve the measured bottom overlay. Keep the existing canvas ScrollEdgeBlur gradient mounted on Android, including rest, rather than relying on iOS native scroll callbacks/blur behavior. iOS native grid and its scroll-gated blur remain unchanged. Android uses the existing tint fade, not an unsupported native blur claim.
+Item 2 verification: RED 0 pass/2 fail; the existing 1689 iOS-only source-shape guard also failed until it was refined to evaluate all four platform/scroll-state combinations, preserving both iOS outcomes. Final isolated: 2996 pass, 0 fail across 291 files; TypeScript exit 0; diff check exit 0. Screenshot rung remains open because emulator startup exits 132. Logs ~/code/bb-gate-logs/2233/2-*.log.
+
+Item 6 remains open: generated local DEFLATE/UTF-8 ZIP (486 bytes, 3 files) plus existing ZIP fixture (2 files) parse/extract with 0 errors under Bun. This is host evidence only, not Android reproduction. Emulator current/installed versions exit 132 before ADB registration, so diagnosis/fix is not claimed. No ZIP source change. Fixture/logs: ~/code/bb-gate-logs/2233/{2233-android.zip,6-host-probe.log}. Detailed handoff in docs/qa/2233-android-device-feedback.md.
+Item 6 checkpoint validation (no ZIP code change): isolated 2996 pass/0 fail across 291 files; TypeScript exit 0. This does not close ZIP reproduction. Logs ~/code/bb-gate-logs/2233/6-{isolated,tsc}.log.
+
+Item 1 remains open: the emulator cannot boot, so no JS FPS or time-to-first-thumbnail baseline/after measurement exists. Source inspection identifies investigation targets, not proven causes: Android FlatList viewport IDs are deferred until scrolling settles (0559), so arriving rows may remain disabled during a fling; both screen prefetch and tile hooks use the legacy JS thumbnail path; photo metadata updates rebuild grouping and row props. The native iOS grid is separate. No unmeasured virtualization/decode changes are shipped. Complete item 6 reproduction first, then profile these paths on the emulator before changing Android-only behavior. Screenshot/reproduction/performance rungs and the OnePlus final rung remain open.
+Final item 7 review preserves the web fallback Alert as well: only Android joins the existing iOS options dispatch. Executable handler regression checks Android, iOS and web; removing Android from the condition is RED 2 pass/1 fail, restored GREEN 3/0. Graphify update attempted: 787/787 files extracted, but it refused to replace 23908 graph nodes with the partial 7186-node graph; existing graph preserved (exit 1). Full log: ~/code/bb-gate-logs/2233/graphify-update.log.
+Item 1 checkpoint/final branch verification: isolated: 2996 pass, 0 fail across 291 files; bunx tsc --noEmit exit 0; git diff --check exit 0. Logs ~/code/bb-gate-logs/2233/{1-isolated,1-tsc,final-isolated,final-tsc}.log. These counts validate the implemented code only; they do not replace missing emulator screenshots, ZIP reproduction or performance measurements.
+
+## 2233 round 2 — item 8 design ruling, before implementation
+
+Guus added item 8 on workspace main: all bottom-anchored controls share the
+Android inset rule, including Files selection, sheets, banners and toasts.
+Extend `glass/tab-bar-inset.ts` to own Android window safe-area clearance too.
+Tab scenes already exclude the measured native tab bar and system inset; their
+remaining inset is zero before the existing 12pt clearance. Modal/full-window
+surfaces still reserve the live bottom safe area, with that same clearance
+minimum. Backgrounds remain flush to the edge; inset interactive sheet content,
+not the sheet background. Keep keyboard lift separate. Pass each existing iOS
+expression through unchanged. Keep spacing between stacked controls unchanged.
+
+The guard inventories anchored screen controls, shared sheet primitives and
+inherited anchors. ToastOverlay is top-anchored (`top: insets.top + 8`), and
+ExportProgressBanner is in-flow; neither should be moved to the bottom. The
+UploadActivityCard inherits Files' helper-derived bottom prop. Sheet wrappers
+inherit BottomSheet's inset; document preview children inherit the parent chrome
+inset. Decorative fills, thumbnail badges and captions inside already-bounded
+content are not window/tab anchors. No unrelated settings or scroll padding
+redesign is intended.
+
+### 2233 item 1 measurement contract (before profiling)
+
+Measure the Android fallback grid with the existing local QA content account,
+three matched runs per version, unchanged file set, cache state and gestures.
+Use gfxinfo frame totals/jank and actual Image onLoad runtime timestamps from
+Photos focus for time-to-first-thumbnail. Add an Android-development-only
+Image onLoad trace; iOS gets no handler and release builds do no extra work.
+Only change performance behavior after a device baseline identifies the cause.
+
+Item 1 profiling finding and ruling, before repair: a warm-cache Android Photos
+run made 274 thumbnail-hook requests for 155 distinct IDs. Metadata decryption
+changes mimeType after initial rendering; the real-hook regression reproduces
+a second cache read and URI reset for a remote-only tile. RED: 3 pass / 1 fail,
+expected one cache read, observed two (`r3/1-metadata-red.log`). MIME is needed
+only to create a local-asset thumbnail, not to read/download a remote thumbnail.
+For Android remote-only entries, normalize the effect's MIME dependency to null;
+retain the existing dependency for local assets and every iOS call. Disabling a
+tile still clears its URI (locked tiles included), and file changes still reload.
+Do not tune FlatList batch/window values or change iOS rendering.
+
+Item 1 second measured experiment, before tuning: MIME-only repair produced
+TTF 871/1408/646 ms (median 871) and jank 73.23/79.92/83.00%; the stable baseline
+TTF was 548/760/872 ms (median 760), jank 80.33/92.62/87.50%. Loading is not
+consistently better. First cache hit precedes first Image load by 457/550 ms
+in two after runs; Android mounts 12 list rows (including offscreen tiles) and
+batches eight more at a time. Test an Android-only 8 initial rows / 4 per batch /
+3 viewport window, leaving 80ms batching and all iOS values unchanged. RED:
+1 pass / 2 fail (`r3/1-window-red.log`). Run the same three measurements; retain
+only if the combined result improves, and report residual emulator jank honestly.
+
+Window experiment rejected: three runs gave TTF 1000/1019/589 ms (median 1000),
+jank 78.60/75.71/56.92% (median 75.71%). Restore the original 12/8/5 grid settings;
+preserve the experiment patch/test/logs outside the repo under r3/. No window
+change will ship. The installed react-native-blurhash 2.1.3 native view defaults
+`decodeAsync=false` and calls its decoder synchronously from updateBlurhash;
+ThumbnailImage passes no override. Its official README recommends decodeAsync
+for stutters in large lists (https://github.com/mrousavy/react-native-blurhash#asynchronous-decoding).
+Before repair: real-component RED 2 pass / 1 fail, expected Android decodeAsync
+true, received undefined (`r3/1-blurhash-red.log`). Enable that existing prop only
+on Android; leave iOS undefined, preserve placeholder resolution/colors and
+keep the original virtualization settings. Re-run the same three measurements.
+
+Measurement correction (instrument audit): the early baseline used 181 cache
+files, while later experiments accumulated 193 then 203. Earlier before/after
+comparisons above remain visible but are provisional and must not be used as
+the final evidence. Repeat both versions against one 203-file warm-cache
+snapshot. Force-stop only the app before each run; remove only cache additions
+created after the snapshot and assert every retained thumbnail's SHA256 matches.
+The baseline keeps the identical Image onLoad trace but neither performance
+repair. The final version restores both repairs and the original list settings.
+Record per-run cache content digests, 247 media rows, gestures and gfxinfo counts.
+
+Async-decoder experiment rejected: fixed-cache medians were 704 -> 1190ms TTF,
+77.54 -> 97.52% jank and 133 -> 500ms p95. Host load was 53.96-68.16 during the
+after window, and cached-index reading stalled 8741ms in one run. Contention is
+a possible confound, not a proven explanation or permission to discard bad data.
+Remove the async prop/test from the shipping diff; preserve the rejected source,
+test, bundle receipt and raw measurements in r3. Retain only the real-hook-proven
+remote MIME reload repair and Android-dev timing trace. Measure that final source
+against the same 203-file cache; performance closure requires a quiet host or
+OnePlus run. No decoder/window tuning ships on this inconclusive evidence.
+
+Final-source fixed-cache result: three runs per version, 247 rows and the same
+203 SHA256-verified cache entries. Observed medians TTF 704 -> 608ms, jank
+77.54 -> 73.36%, p95 133 -> 105ms; aggregate janky/total 592/780 -> 610/861.
+After host load averages 20.76/21.06/17.78 remain uncontrolled, so these are
+observations, not causal improvement or OnePlus proof. Remote MIME reload repair
+ships with its red-first hook guard; quiet-host/OnePlus performance closure stays
+open. Final measurements and rejected candidates are preserved under r3/.

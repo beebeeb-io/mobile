@@ -71,6 +71,13 @@ export function useThumbnail(
   const { getFileKeyBytes, isUnlocked } = useCrypto();
   const [state, setState] = useState<ThumbnailHookState>({ uri: null, source: null, failed: false });
   const cancelledRef = useRef(false);
+  // Decrypted MIME metadata arrives after remote thumbnails can already be
+  // visible. Only local-asset generation needs that value; restarting Android
+  // remote loads here clears a valid URI and repeats cache/bridge work.
+  // iOS retains its existing MIME-triggered native request behavior.
+  const thumbnailMimeType = Platform.OS === 'android' && !getLocalIdentifier(fileId)
+    ? null
+    : mimeType;
 
   useEffect(() => {
     cancelledRef.current = false;
@@ -129,7 +136,7 @@ export function useThumbnail(
           return;
         }
         if (cameraRollUri) {
-          return cacheLocalThumbnail(fileId, cameraRollUri, mimeType).then((localUri) => {
+          return cacheLocalThumbnail(fileId, cameraRollUri, thumbnailMimeType).then((localUri) => {
             if (cancelledRef.current) return;
             if (localUri) {
               recordRuntimeTrace('thumbnail.hook.android_photokit_success', { fileId });
@@ -180,7 +187,7 @@ export function useThumbnail(
       });
 
     return () => { cancelledRef.current = true; };
-  }, [fileId, width, height, enabled, isUnlocked, mimeType, hasThumbnail, getFileKeyBytes]);
+  }, [fileId, width, height, enabled, isUnlocked, thumbnailMimeType, hasThumbnail, getFileKeyBytes]);
 
   // Subscribe to refresh events on iOS — when a remote thumbnail lands after
   // the initial render, the actor fires `onThumbnailReady` so we can update
