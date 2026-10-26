@@ -1076,3 +1076,7 @@ Task 0677: non-file-backed PhotoKit videos export to a temporary flat QuickTime 
 
 ## Mobile PR #202 review fix (Guus, 2026-10-26)
 Sweep abandoned backup-video exports at backup batch startup. Serialize export reservation, cleanup and sweeping with one lock; keep reserved paths active through export and encryption, removing only unreserved regular backup-video movie files. Preserve original PhotoKit URLs and unrelated files. Verification: fail-first isolated Swift harness, isolated unit runner, Swift parse/compile, bunx tsc --noEmit. Owner: Codex, fs-l1fix-202; lead merges.
+
+## Task 1178 — preview export feedback (2026-10-26, L1)
+
+Design call before implementation: reuse the existing opaque ExportProgressBanner in a non-interactive overlay above the preview bottom actions, in both media and document viewers. Its own themed surface supplies contrast over arbitrary pixels. Show it during preparation, dismiss before presenting the native share sheet, and clear it on every exit. Feed native download/decrypt events through its existing throttled imperative ref so export ticks do not rerender the preview. A stream materialization with no byte events remains an honest indeterminate spinner. No new progress model or dependency. Device placement and large-file export are deferred release rungs under the full-speed program section 5.6.
