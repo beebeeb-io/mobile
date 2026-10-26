@@ -41,7 +41,6 @@ const PRINCIPAL_CLASS = 'ShareViewController';
 
 const SOURCE_FILES = [
   'ShareViewController.swift',
-  'BeebeebCryptoShim.swift',
   'ShareUploader.swift',
   // Task 1594 round 5: the pure X-Beebeeb-Expected-User / 409 account_mismatch
   // decisions `ShareUploader.swift` calls, extracted so they're testable via
