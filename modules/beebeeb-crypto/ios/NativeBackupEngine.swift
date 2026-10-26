@@ -2717,7 +2717,8 @@ final class NativeBackupEngine: NSObject {
       defer { exsqlite3_finalize(stmt) }
       let sql = """
       SELECT error_message FROM backup_assets
-      WHERE status IN ('failed', 'local_missing') AND error_message IS NOT NULL AND error_message != ''
+      WHERE (status IN ('failed', 'local_missing') OR COALESCE(retry_count, 0) >= 10)
+        AND error_message IS NOT NULL AND error_message != ''
       ORDER BY COALESCE(last_attempt_at, 0) DESC
       LIMIT 1
       """
@@ -4057,6 +4058,19 @@ final class NativeBackupEngine: NSObject {
       updateBackupStatusSurfaces(reason: "Backup paused")
       onFileStatus?(asset.localAssetId, "pending", nil, nil)
       NSLog("[NativeBackupEngine] Asset upload paused (trial storage cap reached): \(asset.localAssetId)")
+      return false
+    } catch BackupError.httpStatus(let statusCode, let body) where
+      AccountRefusalDetection.isObjectBudgetExceeded(statusCode: statusCode, body: Data(body.utf8)) {
+      guard currentAccountId == batchAccountId else { return false }
+      let message = AccountRefusalDetection.objectBudgetMessage
+      pause()
+      dbQueue.sync {
+        guard admitsWrite(ticket, "markFailed.object_budget") else { return }
+        markFailed(assetId: asset.localAssetId, error: message, retryLimitReached: true)
+      }
+      failedAssets += 1
+      updateBackupStatusSurfaces(reason: message)
+      onFileStatus?(asset.localAssetId, "failed", nil, message)
       return false
     } catch {
       perfLog("asset.fail", [
@@ -5676,14 +5690,14 @@ final class NativeBackupEngine: NSObject {
   }
 
   /// Mark an asset as failed, incrementing retry count.
-  private func markFailed(assetId: String, error: String) {
+  private func markFailed(assetId: String, error: String, retryLimitReached: Bool = false) {
     guard let db = db else { return }
     let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
     // Increment retry_count. Assets with retry_count >= 10 become dead letters.
     let sql = """
     UPDATE backup_assets
     SET status = CASE WHEN staged_file_id IS NOT NULL THEN 'staged_upload' ELSE 'pending_upload' END,
-        retry_count = COALESCE(retry_count, 0) + 1,
+        retry_count = \(retryLimitReached ? "10" : "COALESCE(retry_count, 0) + 1"),
         error_message = ?,
         last_attempt_at = ?
     WHERE local_asset_id = ?
@@ -7650,7 +7664,9 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
         // path re-stages + requeues fast instead of climbing toward retry-10.
         let uploadError: Error = statusCode == 408
           ? BackupError.uploadStalled(chunk.chunkIndex)
-          : BackupError.httpStatus(statusCode, "Chunk upload failed")
+          : BackupError.httpStatus(statusCode,
+              responseBody.flatMap { AccountRefusalDetection.isObjectBudgetExceeded(statusCode: statusCode, body: $0) ? String(data: $0, encoding: .utf8) : nil }
+                ?? "Chunk upload failed")
         dbQueue.async { [weak self] in
           guard let self, self.admitsChunkCallback(ticket, "markChunkFailed") else { return }
           self.markChunkFailed(

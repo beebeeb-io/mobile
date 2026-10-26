@@ -40,6 +40,14 @@ enum AccountRefusalDetection {
   /// — including `account_mismatch` (handled separately, by
   /// `AccountMismatchDetection`) and the pre-existing 1589 "live foreign
   /// lease" 409 on `/uploads/init`, which is NOT one of these codes.
+  static let objectBudgetMessage = "File limit reached. This account has hit its maximum number of files — delete some files or contact support to raise the limit."
+
+  static func isObjectBudgetExceeded(statusCode: Int, body: Data) -> Bool {
+    guard statusCode == 403,
+          let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return false }
+    return (object["error"] as? String) == "object_budget_exceeded"
+  }
+
   static let knownRefusalCodes: Set<String> = [
     "trial_cancelled_read_only",
     "account_lapsed",
