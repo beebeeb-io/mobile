@@ -1090,3 +1090,8 @@ Design call before implementation: reuse the existing opaque ExportProgressBanne
 ## Task 0726 — 2FA error context (2026-10-26, L1)
 
 The merged 0726 requirement permits request context. Use the selected authenticator/backup mode to name which code was not accepted on HTTP 401. The server uses the same status for wrong code and expired partial challenge, so the text preserves both possibilities and offers sign-in again. Never classify by matching error text. No auth protocol or success-path change.
+## Tasks 1335/1381 — Maestro maintenance (2026-10-26, L1)
+
+Plan: keep run-all's existing login-test bootstrap and remove redundant, unreferenced login-flow.yaml as task 1335 permits. Update historical helper comments to point at the maintained flow. Document the FAB native menu counterexample and the legacy flatten latch (latched only after a clean pass, retried on deferrals). Add a separate FAB→New folder→confirm recipe for the release batch; do not claim it ran. This changes QA/docs only. Verify YAML parsing, all referenced runFlow files exist, and one run-all login-test invocation; device execution is deferred by COMMON.
+
+Review pass: the native Alert.prompt uses its default OK confirmation, so the prepared recipe targets OK (not the Android Create button). YAML parsed: 25; existing direct runFlow references: 12; run-all login bootstrap count: 1. No runtime pass claimed.
