@@ -999,6 +999,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
           await refreshNativeProgress().catch(() => {});
         },
         resumeOtherBackups: async () => {
+          // This tick confirmed uploads are allowed; the provider refresh
+          // may still leave the last render's read-only gate in this ref.
+          // Match resumeCameraBackup for contacts/calendar-only recovery.
+          accountBlockedRef.current = null;
           if (!stopped && isContactsBackupEnabled) await enableNativeBackup('contacts');
           if (!stopped && isCalendarBackupEnabled) await enableNativeBackup('calendar');
           await refreshNativeProgress().catch(() => {});

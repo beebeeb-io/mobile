@@ -47,6 +47,17 @@ let heldTrigger: { promise: Promise<unknown>; resolve: (v: unknown) => void } | 
 let holdReads = false;
 const heldReads: Array<(v: unknown) => void> = [];
 let disableThrows = false;
+let accountGate = { kind: 'ok' };
+let refreshAccount = async () => ({ kind: 'ok' });
+let subscription = null;
+let auxiliaryEnables: string[] = [];
+const refusalTicks: Array<() => Promise<{ shouldStopPolling: boolean }>> = [];
+mock.module('./account-refusal-poll', () => ({
+  startAccountRefusalPoll: (tick) => {
+    refusalTicks.push(tick);
+    return { stop() {}, setActive() {} };
+  },
+}));
 const calls = { getBackupProgress: 0, enablePhotoBackup: [] as Array<[string, string]>, disablePhotoBackup: 0 };
 
 function full25() {
@@ -103,14 +114,14 @@ mock.module('./runtime-trace', () => ({ recordRuntimeTrace: () => {} }));
 mock.module('./device-registration', () => ({ registerDevice: async () => 'device-1' }));
 mock.module('./backup-device-id-handoff', () => ({ syncBackupDeviceIdToNative: async () => true }));
 mock.module('./account-state-context', () => ({
-  useAccountState: () => ({ ready: true, gate: { kind: 'ok' }, subscription: null, refresh: async () => ({ kind: 'ok' }) }),
+  useAccountState: () => ({ ready: true, gate: accountGate, subscription: null, refresh: () => refreshAccount() }),
 }));
 mock.module('./api', () => ({
   clearMobileIosBackupClientSession: async () => {},
   ensureMobileIosBackupClientSession: async () => 'session-1',
   captureRequestAuthSnapshot: async () => ({ generation: 0, token: null }),
   endSessionForAccountMismatch: async () => {},
-  getSubscription: async () => null,
+  getSubscription: async () => subscription,
 }));
 mock.module('../services/BackupService', () => ({
   ensureBackupFolders: async () => ({ categoryFolderId: 'folder-1' }),
@@ -126,8 +137,8 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   disableCalendarBackup: async () => {},
   teardownAllBackup: async () => {},
   enablePhotoBackup: async (token: string, userId: string) => { calls.enablePhotoBackup.push([token, userId]); },
-  enableContactsBackup: async () => {},
-  enableCalendarBackup: async () => {},
+  enableContactsBackup: async () => { auxiliaryEnables.push('contacts'); },
+  enableCalendarBackup: async () => { auxiliaryEnables.push('calendar'); },
   resumeContactsBackup: async () => {},
   resumeCalendarBackup: async () => {},
   getBackupProgress: async () => {
@@ -195,6 +206,11 @@ beforeEach(() => {
   holdReads = false;
   heldReads.length = 0;
   disableThrows = false;
+  accountGate = { kind: 'ok' };
+  refreshAccount = async () => ({ kind: 'ok' });
+  subscription = null;
+  auxiliaryEnables = [];
+  refusalTicks.length = 0;
   latest = null;
   renders = 0;
 });
@@ -439,6 +455,32 @@ describe('PR 203 auxiliary-only refusal recovery', () => {
       expect(latest!.isPhotoBackupEnabled).toBe(false);
       expect(calls.getBackupProgress).toBeGreaterThan(0);
       expect(latest!.accountRefusalReason).toBe('Free up space');
+    });
+  }
+});
+
+
+describe('PR 217 stale read-only gate during auxiliary refusal recovery', () => {
+  for (const category of ['contacts', 'calendar']) {
+    test(`${category}-only backup resumes before the account provider refresh completes`, async () => {
+      accountGate = { kind: 'lapsed', dataDeletionAt: null };
+      // Hold the canonical provider refresh: the poll's own fetch already
+      // proves uploads allowed, but the render still carries the old gate.
+      refreshAccount = () => new Promise(() => {});
+      subscription = { account_state: 'ok', uploads_blocked_at: null, trial_storage_cap_bytes: null };
+      nativeProgressFor = () => ({ ...full25(), accountRefusalReason: 'Billing refusal' });
+      store.set(backupPrefKey(`beebeeb_${category}_backup`, USER_A), 'true');
+      await mount();
+      expect(latest!.isPhotoBackupEnabled).toBe(false);
+      expect(latest!.accountRefusalReason).toBe('Billing refusal');
+      expect(auxiliaryEnables).toEqual([]);
+      expect(refusalTicks.length).toBeGreaterThan(0);
+
+      let result;
+      await act(async () => { result = await refusalTicks.at(-1)!(); });
+      expect(result.shouldStopPolling).toBe(true);
+      expect(auxiliaryEnables).toEqual([category]);
+      expect(calls.enablePhotoBackup).toEqual([]);
     });
   }
 });
