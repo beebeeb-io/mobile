@@ -237,6 +237,64 @@ describe('SyncClient catch-up (task 1302)', () => {
 
   // --- Codex review on PR #103 (two P1s) ---------------------------------
 
+  test('startup failures back off until the stream successfully opens', async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const timers: Array<{ fn: () => void; ms: number }> = [];
+    globalThis.setTimeout = ((fn, ms) => {
+      timers.push({ fn, ms });
+      return timers.length;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = (() => {}) as typeof clearTimeout;
+    const client = new SyncClient();
+    try {
+      getSnapshotImpl = async () => { throw new Error('outage'); };
+      await expect(client.start()).rejects.toThrow('outage');
+      const delays = [timers[0].ms];
+      for (let cycle = 0; cycle < 2; cycle++) {
+        timers[cycle].fn();
+        for (let tick = 0; tick < 100 && timers.length < cycle + 2; tick++) await Promise.resolve();
+        expect(timers.length).toBe(cycle + 2);
+        delays.push(timers[cycle + 1].ms);
+      }
+      expect(getSnapshotCalls).toBe(3);
+      expect(delays[0]).toBeGreaterThanOrEqual(1200);
+      expect(delays[0]).toBeLessThanOrEqual(1800);
+      expect(delays[1]).toBeGreaterThanOrEqual(2400);
+      expect(delays[1]).toBeLessThanOrEqual(3600);
+      expect(delays[2]).toBeGreaterThanOrEqual(4800);
+      expect(delays[2]).toBeLessThanOrEqual(7200);
+    } finally {
+      client.stop();
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+    }
+  });
+
+  test('rebuild applies a pending create echo missing from the older cache', async () => {
+    secureStore.set('bb_sync_last_seq', '6');
+    secureStore.set('bb_sync_pending_ops', JSON.stringify([{
+      client_op_id: 'pending-create', op_type: 'file_create',
+      payload: { id: 'new-1', name_encrypted: 'enc-new-1' },
+    }]));
+    cachedIndex = { hash: 'old', storedAt: Date.now(), seq: 5, files: [fileEntry({ id: 'old-1' })] };
+    getSyncOpsImpl = async () => [{
+      seq_id: 7, client_op_id: 'pending-create', op_type: 'file_create',
+      payload: { id: 'new-1', name_encrypted: 'enc-new-1' },
+    }];
+    const client = new SyncClient();
+    try {
+      await client.start();
+      expect(client.getAllNodes().map(n => n.id).sort()).toEqual(['new-1', 'old-1']);
+      expect(getSyncOpsCalls).toEqual([5]);
+      expect(secureStore.get('bb_sync_last_seq')).toBe('7');
+      expect(JSON.parse(secureStore.get('bb_sync_pending_ops')!)).toEqual([]);
+      expect(getSnapshotCalls).toBe(0);
+    } finally {
+      client.stop();
+    }
+  });
+
   test('replays the debounce gap from the stamped cache cursor without losing an already-checkpointed create', async () => {
     secureStore.set('bb_sync_last_seq', '6');
     cachedIndex = {

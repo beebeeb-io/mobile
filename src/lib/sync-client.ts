@@ -281,12 +281,6 @@ export class SyncClient {
   // Task 1686 — the AppState listener registered in start(); removed in stop()
   // so a stopped client never leaks it.
   private appStateSub: { remove(): void } | null = null;
-  // Task 1686 — true once openStream() has fetched a stream token for the
-  // current reconnect cycle without the stream staying up. A reconnect whose
-  // stream dies before any op arrived (i.e. a failed/flapping handshake)
-  // keeps the attempts counter climbing instead of resetting, so a flapping
-  // stream backs off instead of spinning at the 1.5 s floor.
-  private lastOpenAttemptGotStreamToken = false;
   private listeners = new Set<Listener>();
   private started = false;
   // Startup can replay ops yet still require a snapshot (e.g. a restored
@@ -482,7 +476,7 @@ export class SyncClient {
               if (!needsSnapshot && opTargetsNodeMissingFromTree(op, this.tree)) {
                 needsSnapshot = true;
               }
-              await this.applyRemoteOp(op, false);
+              await this.applyRemoteOp(op, false, false);
             }
             await saveLastSeq(this.lastSeq);
           }
@@ -584,14 +578,7 @@ export class SyncClient {
     try {
       const tokenResp = await getStreamToken();
       token = tokenResp.stream_token;
-      // Task 1686 — the stream-token round-trip SUCCEEDED for this attempt.
-      // If the stream now dies without ever firing 'open' (the server killed
-      // it, a proxy dropped it), that is a failed handshake — the next
-      // scheduleReconnect must keep the backoff ladder climbing instead of
-      // resetting it (see the flapping-connection guard there).
-      this.lastOpenAttemptGotStreamToken = true;
     } catch (err) {
-      this.lastOpenAttemptGotStreamToken = false;
       this.scheduleReconnect();
       this.emit({ type: 'error', error: err instanceof Error ? err : new Error(String(err)) });
       return;
@@ -631,10 +618,8 @@ export class SyncClient {
       opened = true;
       // Task 1686 — the handshake was accepted AND the stream came up: a
       // long-lived connection from here on resets the ladder (a later drop
-      // after real connectivity is a NEW outage, not a continuation). Also
-      // clears the flapping guard: this stream delivered.
+      // after real connectivity is a NEW outage, not a continuation).
       this.reconnectAttempts = 0;
-      this.lastOpenAttemptGotStreamToken = false;
       this.setStatus('connected');
     });
 
@@ -687,24 +672,8 @@ export class SyncClient {
     if (this.destroyed) return;
     if (this.reconnectTimer) return;
 
-    // Task 1686 — flapping-connection guard. The old code reset
-    // `reconnectAttempts = 0` on EVERY SSE 'open' event, but react-native-sse
-    // fires 'open' as soon as the HTTP response headers arrive — the server
-    // then kills the stream a moment later (expired token, proxy timeout,
-    // 401 after a logout race) and the error handler loops back here. Result:
-    // the backoff never left its 1.5 s floor — each cycle costing a stream-
-    // token POST + an SSE GET + TLS — indefinitely, which is exactly the
-    // busy-loop class task 1686 exists for. If the stream died WITHOUT
-    // delivering anything since our last token fetch, treat this failure as
-    // a continuation of the same outage and keep the backoff climbing.
-    if (this.lastOpenAttemptGotStreamToken) {
-      // Stream died before proving health — keep backing off.
-    } else {
-      // No token was fetched since the last real success/reset — this is a
-      // genuine attempt start, reset the ladder.
-      this.reconnectAttempts = 0;
-    }
-    this.lastOpenAttemptGotStreamToken = false;
+    // Startup, token and stream failures share one outage ladder. Only a
+    // successful stream open resets it; failing before a token is still a retry.
     this.reconnectAttempts += 1;
 
     const delay = reconnectDelayMs(this.reconnectAttempts - 1);
@@ -802,7 +771,7 @@ export class SyncClient {
    * originally submitted by this client (echo), the optimistic update is
    * already in place — we just confirm it.
    */
-  private async applyRemoteOp(op: SyncOp, persistCursor = true): Promise<void> {
+  private async applyRemoteOp(op: SyncOp, persistCursor = true, suppressEcho = true): Promise<void> {
     if (!isSyncOp(op)) return; // defensive: catch-up / snapshot paths share this entry
     if (op.seq_id <= this.lastSeq) return; // already applied
 
@@ -812,13 +781,16 @@ export class SyncClient {
       if (idx !== -1) {
         this.pendingOps.splice(idx, 1);
         await savePendingOps(this.pendingOps);
-        // Tree already reflects the change locally — only update seq.
-        this.lastSeq = op.seq_id;
-        if (persistCursor) await saveLastSeq(this.lastSeq);
-        for (const parent of this.affectedParentsForOp(op.op_type, op.payload) ?? [null]) this.dirtyParents.add(parent);
-        this.scheduleCachePersist();
-        this.emit({ type: 'op', op });
-        return;
+        // A rebuilt cache has no optimistic updates: apply the echo below.
+        if (suppressEcho) {
+          // Tree already reflects the change locally — only update seq.
+          this.lastSeq = op.seq_id;
+          if (persistCursor) await saveLastSeq(this.lastSeq);
+          for (const parent of this.affectedParentsForOp(op.op_type, op.payload) ?? [null]) this.dirtyParents.add(parent);
+          this.scheduleCachePersist();
+          this.emit({ type: 'op', op });
+          return;
+        }
       }
     }
 
