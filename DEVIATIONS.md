@@ -1116,3 +1116,6 @@ Use the task's recorded native requirement: freeze layout while the pinch is act
 Full-speed changed-file cleanup writer plan: regression already4/0. Remove the pinch test's obsolete live-pinch fixture branches/fields now that the RED baseline is captured; require exact current method markers. Preserve UIKit boundary stubs and five behavioral assertions. Do not delete unrelated PhotoGridLayout transition machinery without layout coverage.
 
 Cleanup review pass (solo): test-only7 obsolete fixture lines and two legacy method-selection fallbacks removed; exact method markers checked. Native pinch1 passed/0failed (5 native assertions); earlier photo-grid3/0 unchanged. No production edit or dependencies; original RED remains l1-pinch-red.log. Deeper unused UIKit transitions deferred pending geometry coverage.
+
+## PR 208 validation (2026-10-26)
+Carry the active-video-export alias repair from PR 203/e6215eb so the existing native recovery regression preserves active files on this host. Verification: isolated suite and TypeScript; no unresolved review threads at initial inspection. Graphify refresh was attempted in PR 203 and refused an incomplete replacement graph.
