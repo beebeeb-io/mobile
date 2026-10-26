@@ -1087,3 +1087,6 @@ Task 1661: while backup is refused, retry after 15/30/60 seconds (60-second cap)
 ## Task 1178 — preview export feedback (2026-10-26, L1)
 
 Design call before implementation: reuse the existing opaque ExportProgressBanner in a non-interactive overlay above the preview bottom actions, in both media and document viewers. Its own themed surface supplies contrast over arbitrary pixels. Show it during preparation, dismiss before presenting the native share sheet, and clear it on every exit. Feed native download/decrypt events through its existing throttled imperative ref so export ticks do not rerender the preview. A stream materialization with no byte events remains an honest indeterminate spinner. No new progress model or dependency. Device placement and large-file export are deferred release rungs under the full-speed program section 5.6.
+## Task 0726 — 2FA error context (2026-10-26, L1)
+
+The merged 0726 requirement permits request context. Use the selected authenticator/backup mode to name which code was not accepted on HTTP 401. The server uses the same status for wrong code and expired partial challenge, so the text preserves both possibilities and offers sign-in again. Never classify by matching error text. No auth protocol or success-path change.
