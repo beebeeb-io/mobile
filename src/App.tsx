@@ -1256,7 +1256,13 @@ export default function App() {
           setUser(me);
           SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
           // Register this device with the clients API (best-effort, cold launch).
-          void registerDevice();
+          void registerDevice().then((clientDeviceId) => {
+            // Android token acquisition owns the permission prompt and channel
+            // setup; iOS already acquires its token inside registerDevice().
+            if (Platform.OS === 'android') {
+              void registerForPushNotifications(clientDeviceId);
+            }
+          });
           // Hydrate PhotoKit identifier map on cold launch too (refreshAuth
           // only fires for the sign-in path; runStartup is the cold-launch
           // path and needs its own hydration so prefetch doesn't race the
