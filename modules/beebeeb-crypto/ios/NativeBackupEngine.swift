@@ -2206,6 +2206,25 @@ final class NativeBackupEngine: NSObject {
     pause()
   }
 
+  /// Contacts/calendar share the account-level pause and UI reason with photos.
+  var accountUploadRefused: Bool { accountRefusalStopReason != nil }
+
+  func recordAuxiliaryAccountRefusal(statusCode: Int, body: Data, accountId: String) {
+    guard !accountId.isEmpty, currentAccountId == accountId else { return }
+    if statusCode == 409, let code = AccountRefusalDetection.accountRefusalCode(body) {
+      handleConfirmedAccountRefusal(code: code)
+    } else if statusCode == 413, AccountRefusalDetection.isTrialCapQuotaExceeded(body) {
+      handleConfirmedTrialCapExceeded(message: AccountRefusalDetection.trialCapMessage(
+        limitBytes: AccountRefusalDetection.trialCapLimitBytes(body)
+      ))
+    }
+  }
+
+  func clearAuxiliaryAccountRefusal(accountId: String) {
+    guard !accountId.isEmpty, currentAccountId == accountId else { return }
+    accountRefusalStopReason = nil
+  }
+
   // MARK: - Lifecycle
 
   /// Start the backup engine. Loads the master key from keychain, registers

@@ -109,6 +109,7 @@ final class ContactsBackupManager {
     // triggers via `start()`, now guaranteed regardless of which backup
     // surface is enabled first.
     NativeBackupEngine.shared.bindAccount(userId: userId)
+    if runNow { NativeBackupEngine.shared.clearAuxiliaryAccountRefusal(accountId: userId) }
     RuntimeTrace.event("backup.contacts.enable", ["runNow": runNow])
     // Task 1531 [P2] round 6 (finding N2): a refused/failed upload never
     // records the dedup hash (P1-B, round 5 — `shouldUpload`/
@@ -167,6 +168,7 @@ final class ContactsBackupManager {
   }
 
   func backup() {
+    guard !NativeBackupEngine.shared.accountUploadRefused else { return }
     guard let token = authToken, let accountId, !accountId.isEmpty else { return }
     RuntimeTrace.event("backup.contacts.start")
     DispatchQueue.global(qos: .background).async { [weak self] in

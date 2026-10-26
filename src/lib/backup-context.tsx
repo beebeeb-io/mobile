@@ -536,6 +536,7 @@ export interface AccountRefusalPollTickDeps {
   onUnblocked: (gate: AccountGate) => void;
   /** Call the native resume/start path. Only invoked when `shouldResumeCameraBackup` is true. */
   resumeCameraBackup: () => Promise<void>;
+  resumeOtherBackups?: () => Promise<void>;
 }
 
 export interface AccountRefusalPollTickResult {
@@ -569,6 +570,7 @@ export async function runAccountRefusalPollTick(
   if (decision.shouldResumeCameraBackup) {
     await deps.resumeCameraBackup();
   }
+  await deps.resumeOtherBackups?.();
   return { resumed: true, shouldStopPolling: true };
 }
 
@@ -968,7 +970,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   // stop at the first unblocked tick, and recheck immediately on foreground.
   useEffect(() => {
     if (!userId || Platform.OS === 'web') return;
-    if (!isPhotoBackupEnabled || !accountRefusalReason) return;
+    if (!(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) || !accountRefusalReason) return;
 
     let stopped = false;
     const poll = startAccountRefusalPoll(async () => {
@@ -996,6 +998,11 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
           }
           await refreshNativeProgress().catch(() => {});
         },
+        resumeOtherBackups: async () => {
+          if (!stopped && isContactsBackupEnabled) await enableNativeBackup('contacts');
+          if (!stopped && isCalendarBackupEnabled) await enableNativeBackup('calendar');
+          await refreshNativeProgress().catch(() => {});
+        },
       });
       return result;
     }, !shouldPauseBackupPolls(appStateRef.current));
@@ -1008,7 +1015,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       poll.stop();
       refusalSub.remove();
     };
-  }, [userId, isPhotoBackupEnabled, accountRefusalReason, refreshAccountState, enableNativeBackup, refreshNativeProgress]);
+  }, [userId, isPhotoBackupEnabled, isContactsBackupEnabled, isCalendarBackupEnabled, accountRefusalReason, refreshAccountState, enableNativeBackup, refreshNativeProgress]);
 
   // Stop the native backup engines when this instance unmounts. CryptoProvider
   // is keyed by user id (`user?.user_id ?? 'signed-out'` in App.tsx), so BOTH
