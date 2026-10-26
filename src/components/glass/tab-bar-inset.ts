@@ -16,6 +16,7 @@
  * `TabView.tsx`'s `handleTabBarMeasured`, fed by a real native
  * `onTabBarMeasured` event, not something to approximate ourselves.
  */
+import { Platform } from 'react-native';
 import { useBottomTabBarHeight } from 'react-native-bottom-tabs';
 
 /** Small clearance so scrollable content doesn't touch the bar's edge. */
@@ -39,5 +40,9 @@ export function addTabBarClearance(nativeBarHeight: number): number {
  * its own bottom edge so it never renders behind the native tab bar.
  */
 export function useTabBarBottomInset(): number {
-  return addTabBarClearance(useBottomTabBarHeight());
+  const nativeBarHeight = useBottomTabBarHeight();
+  // Android lays the scene and bar out as vertical siblings. Its measured
+  // scene already excludes the complete bar, including the system inset.
+  // iOS overlays the bar on the scene and still needs its full height.
+  return addTabBarClearance(Platform.OS === 'android' ? 0 : nativeBarHeight);
 }
