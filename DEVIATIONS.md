@@ -1083,3 +1083,7 @@ Task 1946 / server 1921 contract: continue sequential deletion after typed 409 `
 
 ## Full-speed L1 — account-refusal poll backoff (2026-10-26)
 Task 1661: while backup is refused, retry after 15/30/60 seconds (60-second cap), pause timers in background, and recheck immediately on foreground. Serialize ticks and discard a response after the effect is stopped/backgrounded. Resume once on the first unblocked response, preserving the existing 1605 account-state decision and per-account backup preference contract.
+
+## Task 1178 — preview export feedback (2026-10-26, L1)
+
+Design call before implementation: reuse the existing opaque ExportProgressBanner in a non-interactive overlay above the preview bottom actions, in both media and document viewers. Its own themed surface supplies contrast over arbitrary pixels. Show it during preparation, dismiss before presenting the native share sheet, and clear it on every exit. Feed native download/decrypt events through its existing throttled imperative ref so export ticks do not rerender the preview. A stream materialization with no byte events remains an honest indeterminate spinner. No new progress model or dependency. Device placement and large-file export are deferred release rungs under the full-speed program section 5.6.

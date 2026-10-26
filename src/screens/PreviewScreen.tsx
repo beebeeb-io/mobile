@@ -95,6 +95,7 @@ import {
 } from '../lib/photo-viewer-window';
 import { InfoSheet } from '../components/preview/InfoSheet';
 import { PreviewBottomBar } from '../components/preview/PreviewBottomBar';
+import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { formatBytes as formatSize } from '../lib/format';
 import { PARTIAL_DECRYPT_MESSAGE, STILL_UPLOADING_MESSAGE, previewLoadErrorMessage } from '../lib/preview-load-error';
@@ -2271,7 +2272,8 @@ export default function PreviewScreen() {
   const [performanceStorageProfile, setPerformanceStorageProfile] = useState<PerformanceStorageProfile>(() => (
     normalizePerformanceStorageProfile(routePerformanceStorageProfile)
   ));
-  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [preparingExport, setPreparingExport] = useState(false);
+  const exportProgressRef = useRef<ExportProgressBannerHandle>(null);
   const [optionsVisible, setOptionsVisible] = useState(false);
   const [originalPhotoRequest, setOriginalPhotoRequest] = useState<{ fileId: string; nonce: number } | null>(null);
 
@@ -3167,6 +3169,7 @@ export default function PreviewScreen() {
   const fetchAndDecrypt = useCallback(async (options: {
     signal?: AbortSignal;
     onStreamProgress?: (pct: number) => void;
+    onExportProgress?: (event: PreviewLoadProgressEvent) => void;
   } = {}): Promise<string> => {
     throwIfPreviewAborted(options.signal);
     // Task 1539 (finding 1, P0): every single-file decrypt path funnels
@@ -3242,7 +3245,8 @@ export default function PreviewScreen() {
             handleId,
             {
               onProgress: (event) => {
-                applyNativeProgress(event, setLoadProgress);
+                if (options.onExportProgress) options.onExportProgress(event);
+                else applyNativeProgress(event, setLoadProgress);
                 const pct = streamBufferPctFromEvent(event);
                 if (pct !== undefined) {
                   setStreamBufferPct(pct);
@@ -3314,7 +3318,7 @@ export default function PreviewScreen() {
     reloadNonce,
   ]);
 
-  const getExportUri = useCallback(async (signal?: AbortSignal): Promise<ExportUriResult> => {
+  const getExportUri = useCallback(async (signal?: AbortSignal, onExportProgress?: (event: PreviewLoadProgressEvent) => void): Promise<ExportUriResult> => {
     return resolvePreviewExportUri({
       isImage,
       imageUri,
@@ -3325,7 +3329,7 @@ export default function PreviewScreen() {
       videoExtension: previewDecryptExtension(currentMimeType, currentFileName),
       isPdf,
       pdfUri,
-      fetchAndDecrypt: () => fetchAndDecrypt({ signal }),
+      fetchAndDecrypt: () => fetchAndDecrypt({ signal, onExportProgress }),
       materializeStreamVideoForExport: materializeVideoPreviewForExport,
       signal,
     });
@@ -4038,7 +4042,7 @@ export default function PreviewScreen() {
 
     setDownloading(true);
     setDownloadProgress(0);
-    setExportStatus('Preparing export options...');
+    setPreparingExport(true);
 
     try {
       const token = await getToken();
@@ -4047,19 +4051,16 @@ export default function PreviewScreen() {
         return;
       }
 
-      setExportStatus('Preparing a decrypted copy on this device...');
-      const { uri: shareUri, reusedPreview, release } = await getExportUri(exportController.signal);
+      const { uri: shareUri, release } = await getExportUri(exportController.signal, (event) => {
+        exportProgressRef.current?.setProgress(event);
+      });
       releaseExportCopy = release ?? null;
-      setExportStatus(
-        reusedPreview
-          ? 'Using the decrypted preview already on this device...'
-          : 'Decrypting locally before export...',
-      );
+
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
-        setExportStatus('Opening iOS export options...');
+        setPreparingExport(false);
         await Sharing.shareAsync(shareUri, {
           mimeType: currentMimeType ?? 'application/octet-stream',
           dialogTitle: previewFileName,
@@ -4078,7 +4079,7 @@ export default function PreviewScreen() {
       }
       setDownloading(false);
       setDownloadProgress(0);
-      setExportStatus(null);
+      setPreparingExport(false);
     }
   }, [category, currentFileId, currentMimeType, getExportUri, previewFileName]);
 
@@ -4499,6 +4500,12 @@ export default function PreviewScreen() {
       sizeBytes={currentSizeBytes}
     />
   );
+
+  const exportProgressOverlay = preparingExport ? (
+    <View style={[styles.exportProgressOverlay, { bottom: Math.max(insets.bottom, 16) + 76 }]} pointerEvents="none" testID="preview-export-progress">
+      <ExportProgressBanner ref={exportProgressRef} name={previewFileName} />
+    </View>
+  ) : null;
 
   if (isMediaPreview) {
     // When a photo list is provided, show a horizontal swipeable pager
@@ -4956,6 +4963,7 @@ export default function PreviewScreen() {
           extraRows={buildInfoSheetRows(mediaDetailsRows)}
           focus={infoFocus}
         />
+        {exportProgressOverlay}
         <PreviewOptionsPopover
           visible={optionsVisible}
           filename={previewFileName}
@@ -5225,6 +5233,7 @@ export default function PreviewScreen() {
           branch's matching removal note); the lock now lives in the header
           subtitle above. */}
 
+      {exportProgressOverlay}
       <PreviewOptionsPopover
         visible={optionsVisible}
         filename={previewFileName}
@@ -6655,6 +6664,12 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     maxWidth: '60%',
     textAlign: 'right',
+  },
+  exportProgressOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    zIndex: 30,
   },
   // ---- Download bar ----
   downloadBar: {
