@@ -425,3 +425,20 @@ describe('task 1667 question B — the launch path restarts camera backup on its
   });
 });
 
+
+
+describe('PR 203 auxiliary-only refusal recovery', () => {
+  for (const category of ['contacts', 'calendar']) {
+    test(`${category}-only backup reads native refusals after enabling`, async () => {
+      nativeProgressFor = () => ({ ...full25(), accountRefusalReason: 'Free up space' });
+      await mount();
+      await act(async () => {
+        await (category === 'contacts' ? latest!.toggleContactsBackup() : latest!.toggleCalendarBackup());
+      });
+      await settle();
+      expect(latest!.isPhotoBackupEnabled).toBe(false);
+      expect(calls.getBackupProgress).toBeGreaterThan(0);
+      expect(latest!.accountRefusalReason).toBe('Free up space');
+    });
+  }
+});

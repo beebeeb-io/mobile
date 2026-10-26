@@ -2191,7 +2191,11 @@ final class NativeBackupEngine: NSObject {
 
   func clearAuxiliaryAccountRefusal(accountId: String) {
     guard !accountId.isEmpty, currentAccountId == accountId else { return }
+    let wasRefused = accountRefusalStopReason != nil
     accountRefusalStopReason = nil
+    // An auxiliary retry clears the shared signal, so release its camera pause
+    // too. Never start camera backup when only contacts/calendar are enabled.
+    if wasRefused && isRunning { resume() }
   }
 
   // MARK: - Lifecycle

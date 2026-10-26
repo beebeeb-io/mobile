@@ -1118,3 +1118,6 @@ Correction: e750b31 matched the earlier error-enum comment and removed a source 
 
 ## Active video export identity (2026-10-26)
 Validation reproduced active video exports being swept when Foundation enumerates a symlink alias of the reserved directory (`/private/tmp` versus `/tmp`). Canonicalize reservation/sweep/cleanup identities with POSIX realpath of the existing parent; the existing native recovery test failed before the fix and passes after it.
+
+## PR 203 review recovery (2026-10-26)
+Native refusal progress is polled for every enabled backup category, including auxiliary-only configurations. Retrying an auxiliary backup also resumes an already-running camera engine paused by that same refusal; it never starts disabled camera backup. Verification: provider and native regression tests fail before the repair, then isolated suite and TypeScript.

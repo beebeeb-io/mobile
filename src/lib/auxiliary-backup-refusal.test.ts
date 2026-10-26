@@ -31,6 +31,10 @@ final class NativeBackupEngine {
   var currentAccountId: String? = "account"
   var accountRefusalStopReason: String?
   var accountUploadRefused: Bool { accountRefusalStopReason != nil }
+  var isRunning = false
+  var isPaused = true
+  var resumes = 0
+  func resume() { isPaused = false; resumes += 1 }
   var calls = 0
   func handleConfirmedAccountRefusal(code: String) { accountRefusalStopReason = code; calls += 1 }
   func handleConfirmedTrialCapExceeded(message: String) { accountRefusalStopReason = message; calls += 1 }
@@ -62,7 +66,11 @@ for _ in 0..<2 {
 guard NativeBackupEngine.shared.calls == 1, StubProtocol.requests == 1 else { fatalError("refusal not surfaced or retried") }
 let engine = NativeBackupEngine.shared
 engine.clearAuxiliaryAccountRefusal(accountId: "account")
-guard !engine.accountUploadRefused else { fatalError("resume did not clear refusal") }
+guard !engine.accountUploadRefused, engine.resumes == 0 else { fatalError("auxiliary retry started disabled camera") }
+engine.isRunning = true
+engine.accountRefusalStopReason = "blocked"
+engine.clearAuxiliaryAccountRefusal(accountId: "account")
+guard !engine.isPaused, engine.resumes == 1 else { fatalError("camera recovery lost after auxiliary retry") }
 engine.recordAuxiliaryAccountRefusal(statusCode: 413, body: Data(#"{"error":"quota_exceeded","is_trial_cap":true,"limit_bytes":10000000000}"#.utf8), accountId: "account")
 guard engine.accountRefusalStopReason == "This account is on the 10 GB trial storage cap. Free up space to keep uploading." else { fatalError("lost trial cap reason") }
 engine.clearAuxiliaryAccountRefusal(accountId: "other")
