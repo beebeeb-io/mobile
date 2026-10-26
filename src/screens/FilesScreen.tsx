@@ -2622,6 +2622,7 @@ export default function FilesScreen() {
               // 0883 — let Preview auto self-repair a missing thumbnail for this
               // owner media file from the downloaded plaintext (undefined ⇒ skip).
               hasThumbnail: f.has_thumbnail,
+              thumbnailBytes: f.thumbnail_bytes,
               // File-request uploads (0643): pass the sealed-key fields so Preview
               // decrypts with the request content key, not the master-key path.
               fileRequestId: f.file_request_id ?? null,
@@ -3912,6 +3913,7 @@ export default function FilesScreen() {
         localPlaintextUri: decryptedUri,
         mimeType: itemMimeType,
         hasServerThumbnail: item.has_thumbnail,
+        serverThumbnailBytes: item.thumbnail_bytes,
         isRequestUpload: requestUpload,
         getFileKeyBytes,
         onRepaired: (id) => {

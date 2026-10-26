@@ -505,6 +505,9 @@ interface PhotoPageEntry {
   storage_pool_id?: string | null;
   thumbnail_uri?: string | null;
   local_asset_id?: string | null;
+  has_thumbnail?: boolean;
+  thumbnail_bytes?: number | null;
+  is_request_upload?: boolean;
 }
 
 type PhotoLoadStage = 'checking' | 'downloading' | 'decrypting' | 'caching';
@@ -822,6 +825,17 @@ async function loadDecryptedPhotoForViewer(
   const isVideo = !!entry.mime_type?.startsWith('video/');
   const category: Category = isVideo ? 'video' : 'image';
   const cacheExt = mediaCacheExtension(entry.mime_type, category);
+  const repairLocalSource = (uri: string, knownMissing = false) => {
+    maybeSelfRepairThumbnailFromLocalFile({
+      fileId: entry.id,
+      localPlaintextUri: uri,
+      mimeType: entry.mime_type ?? (isVideo ? 'video/mp4' : 'image/jpeg'),
+      hasServerThumbnail: knownMissing ? false : entry.has_thumbnail,
+      serverThumbnailBytes: entry.thumbnail_bytes,
+      isRequestUpload: entry.is_request_upload,
+      getFileKeyBytes,
+    });
+  };
   const startedAt = Date.now();
   recordRuntimeTrace('preview.photo_page.load_start', {
     fileId: entry.id,
@@ -848,6 +862,7 @@ async function loadDecryptedPhotoForViewer(
         cacheExt,
         elapsedMs: Date.now() - startedAt,
       });
+      repairLocalSource(cached);
       return { uri: cached, kind: 'original' };
     }
     recordRuntimeTrace('preview.photo_page.cache_miss', {
@@ -987,20 +1002,9 @@ async function loadDecryptedPhotoForViewer(
       cacheExt,
       elapsedMs: Date.now() - startedAt,
     });
-    if (autoOriginalFallback) {
-      // 1286 — the plaintext original is now in the preview cache and we have just PROVEN the
-      // server thumbnail is missing (the thumbnail fetch above returned empty — no probing,
-      // honoring 0883's no-storm contract). Generate + upload the thumbnail from these bytes so
-      // the grid stops being blank everywhere. Fire-and-forget; never blocks or throws. Scoped
-      // to the image auto-fallback only — video decrypt-completion regen stays untouched (1203).
-      maybeSelfRepairThumbnailFromLocalFile({
-        fileId: entry.id,
-        localPlaintextUri: cachedUri,
-        mimeType: entry.mime_type ?? 'image/jpeg',
-        hasServerThumbnail: false,
-        getFileKeyBytes,
-      });
-    }
+    // The full source is already local. Upgrade only known degraded/missing
+    // thumbnails; thumbnail-only opens above never fetch an original for repair.
+    repairLocalSource(cachedUri, autoOriginalFallback);
     return { uri: cachedUri, kind: 'original' };
   })();
 
@@ -2114,6 +2118,7 @@ export default function PreviewScreen() {
     initialPhotoIndex,
     performanceStorageProfile: routePerformanceStorageProfile,
     hasThumbnail,
+    thumbnailBytes,
     fileRequestId,
     senderEphemeralPubkey,
     wrappedContentKey,
@@ -3278,7 +3283,7 @@ export default function PreviewScreen() {
         elapsedMs: Date.now() - startedAt,
       });
       // 0883 — auto self-repair: the full plaintext is now on disk. If this is
-      // an OWNER media file the server has no thumbnail for, generate + upload
+      // an OWNER media file has a missing or degraded thumbnail, generate + upload
       // one from the bytes we just decrypted (fire-and-forget, never blocks the
       // open). Gated entirely inside the helper; we only feed it owner context.
       // hasThumbnail describes the *opened* file only — for swiped photos
@@ -3290,6 +3295,7 @@ export default function PreviewScreen() {
           currentMimeType ??
           (category === 'image' ? 'image/jpeg' : category === 'video' ? 'video/mp4' : null),
         hasServerThumbnail: currentFileId === fileId ? hasThumbnail : undefined,
+        serverThumbnailBytes: currentFileId === fileId ? thumbnailBytes : undefined,
         isRequestUpload: !!requestFileFields && currentFileId === fileId,
         getFileKeyBytes,
       });
@@ -3309,6 +3315,7 @@ export default function PreviewScreen() {
     currentSizeBytes,
     fileId,
     hasThumbnail,
+    thumbnailBytes,
     showToast,
     requestFileFields,
     getFileKeyBytes,
