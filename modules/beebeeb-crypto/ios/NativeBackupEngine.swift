@@ -230,6 +230,418 @@ enum BackupError: LocalizedError {
   /// like any other asset failure; never a second re-init attempt with the
   /// server's id (that would compound the mistake, not fix it).
   case reinitFileIdMismatch
+  /// Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): the server's
+  /// typed 409 for an account that cannot store data right now for a
+  /// BILLING reason — `trial_cancelled_read_only` / `account_lapsed` /
+  /// `plan_required` (`AccountRefusalDetection.knownRefusalCodes`).
+  /// Distinct from `.accountMismatchConfirmed` (the SESSION doesn't match
+  /// the account) — this IS the right account. Routes to a DIFFERENT
+  /// recovery than the generic `markFailed` path: the call site that
+  /// detected this already paused the whole engine
+  /// (`handleConfirmedAccountRefusal`) and this asset's catch clause keeps
+  /// its queue position (no `retry_count` bump) rather than climbing
+  /// toward the retry-10 dead-letter for a reason that has nothing to do
+  /// with this specific asset.
+  case accountRefused(code: String)
+  /// Task 1605 — the sibling 413 `quota_exceeded` with `is_trial_cap:
+  /// true`: the never-paid-trial cap. Same pause-and-keep-queue
+  /// recovery as `.accountRefused` above (`handleConfirmedTrialCapExceeded`)
+  /// — NOT the ordinary `quota_exceeded` retry (a real out-of-plan-quota
+  /// hit is still a generic retryable failure, unchanged by this case).
+  case trialCapExceeded(message: String)
+
+  var errorDescription: String? {
+    switch self {
+    case .assetNotFound: return "Photo asset not found in library"
+    case .assetLoadFailed: return "Failed to load photo data from library"
+    case .databaseUnavailable: return "Backup database unavailable"
+    case .noMasterKey: return "Master key not available — sign in required"
+    case .notConfigured: return "Backup engine not configured (missing token or API URL)"
+    case .accountUnknown: return "Backup engine has no current account id — refusing to stage or upload"
+    case .invalidServerURL: return "Invalid server URL for backup"
+    case .invalidResponse: return "Invalid server response"
+    case .httpStatus(let code, let body):
+      return body.isEmpty ? "HTTP \(code)" : "HTTP \(code): \(body)"
+    case .jsonEncoding: return "JSON encoding failed"
+    case .encryptionFailed(let msg): return "Encryption failed: \(msg)"
+    case .unreconciledChunks(let indices):
+      let list = indices.map(String.init).joined(separator: ",")
+      return "Resumable upload could not be reconciled; chunks still pending: [\(list)]"
+    case .uploadStalled(let chunkIndex):
+      return "Upload stalled on chunk \(chunkIndex) (server reported storage.upload_stalled)"
+    case .uploadSessionGoneTwice:
+      return "Upload session expired twice in a row for this asset"
+    case .accountMismatchConfirmed:
+      return "Backup upload refused: server reported the signed-in account changed"
+    case .reinitFileIdMismatch:
+      return "Upload session re-init returned a different file id than expected"
+    case .accountRefused(let code):
+      return "Backup upload refused: account cannot store data right now (\(code))"
+    case .trialCapExceeded:
+      return "Backup upload refused: trial storage cap reached"
+    }
+  }
+}
+
+/// Task 1599: mirrors `NativeEncryptedBackupUploader.applyExpectedUserHeader`
+/// and `ApiClient.authedRequest`'s `expectedUser` param — the SAME
+/// `X-Beebeeb-Expected-User` signal (task 1594) every other native upload
+/// surface already attaches to its authenticated mutations, so the server can
+/// refuse (409 `account_mismatch`) a request whose session doesn't match the
+/// account this engine's unlocked master key is bound to. `accountId` must be
+/// the caller's CONFIRMED account (`batchAccountId`/`currentAccountId`,
+/// already re-checked live immediately before the network call) — never a
+/// fresh, unchecked read taken here. Matches `NativeEncryptedBackupUploader`'s
+/// contract: an empty `accountId` omits the header entirely rather than
+/// sending an empty value.
+private func applyExpectedUserHeader(to request: inout URLRequest, accountId: String) {
+  guard !accountId.isEmpty else { return }
+  request.setValue(accountId, forHTTPHeaderField: "X-Beebeeb-Expected-User")
+}
+
+// `AccountMismatchDetection.isAccountMismatch` (the 409 body check used
+// below) lives in the sibling file `AccountMismatchDetection.swift` in this
+// same directory — see that file's doc comment for why it is not simply
+// `import`ed from `targets/file-provider/AccountMismatchDetection.swift`.
+
+/// Task 1589 — true when `error` means "this v2 upload session no longer
+/// exists — drop it and re-init the same file id", never for any other
+/// failure (409 conflict, 429, a validation 400, …). The actual status/body
+/// check is `isUploadSessionGoneStatus` (`UploadSessionGone.swift`), kept
+/// dependency-free and unit-tested on its own; this just unwraps the
+/// `BackupError` case it can appear in. The chunk-PUT path here only ever
+/// surfaces a status code (`urlSession(_:task:didCompleteWithError:)` does
+/// not capture the response body for a background upload task), so in
+/// practice only 404 is ever seen there; `completeUpload` DOES capture the
+/// body, so the legacy pre-#120 400 "not writable: expired" is matched there
+/// too, as a fallback.
+private func isBackupUploadSessionGone(_ error: Error) -> Bool {
+  guard case BackupError.httpStatus(let status, let body) = error else { return false }
+  return isUploadSessionGoneStatus(status, body: body)
+}
+
+/// Row from the backup_assets SQLite table.
+struct BackupAssetRow {
+  let localAssetId: String
+  let remoteFileId: String?
+  let assetType: String
+  let contentHash: String
+  let fileSize: Int64
+  let createdAt: String
+  let retryCount: Int
+  let errorMessage: String?
+  let filename: String? // Not stored in DB — resolved from PHAsset at upload time
+  let stagedFileId: String?
+  let stagedNameEncrypted: String?
+  let stagedMimeType: String?
+  let stagedIsMedia: Bool
+  let stagedOriginalSize: Int64
+  let stagedChunkCount: Int
+  let stagedDir: String?
+  /// v2 upload-session id (`/api/v1/uploads/{id}/...`). Persisted alongside
+  /// `remoteFileId` (= the v2 `file_id`) so a resumed/relaunched upload re-PUTs
+  /// chunks and completes against the SAME session. `remoteFileId` is still used
+  /// for the GET /files/{id} completion check and thumbnails.
+  let stagedUploadSessionId: String?
+  /// The signed-in account (user id) whose master key encrypted the staged
+  /// chunks + name envelope, captured at STAGE time (task 1531 [P0]). `nil`
+  /// for rows staged before this column existed (pre-migration) or when no
+  /// account id was available at stage time. Lead review on this task
+  /// (2026-09-25) corrected an earlier version of this fix that trusted a
+  /// `nil` tag: a device that staged under account A pre-migration, then
+  /// switched to account B, has exactly this NULL-tagged state — nil does
+  /// NOT mean "same account", it means "unknown", and unknown staged
+  /// ciphertext must never be uploaded under a session that didn't encrypt
+  /// it. `purgeMismatchedStagedAssets` therefore treats `nil` the same as a
+  /// non-nil mismatch: both get dropped and re-staged. Only a value EQUAL to
+  /// the current session's account id is trusted.
+  let stagedAccountId: String?
+}
+
+private struct BackgroundChunkTaskDescription: Codable {
+  let localAssetId: String
+  /// v2 upload-session id the chunk PUT targets. Named `serverFileId` no longer
+  /// (the route is `/uploads/{session}/chunks/{i}`), but kept as a stable JSON
+  /// key so descriptions persisted by nsurlsessiond across launches still decode.
+  let uploadSessionId: String
+  let chunkIndex: Int
+}
+
+private struct StagedChunkRow {
+  let index: Int
+  let path: String
+}
+
+/// Task 1600: per-asset heartbeat pacing state for `uploadStagedAsset`, as an
+/// explicit reference type instead of a captured `var` local. Build 224
+/// crashed ~10s after enabling camera backup — EXC_BAD_ACCESS in
+/// `objc_retain`, symbolicated to `uploadStagedAsset` -> a nested local
+/// `func runChunksAndComplete` calling a `[weak self]` async closure
+/// (`heartbeatIfDue`) that captured and mutated the enclosing `var
+/// lastHeartbeatAt` across `await` points. That capture chain (local func +
+/// closure sharing a mutable local var box across awaits, in a Release/
+/// whole-module-optimized build) is the prime suspect; it reproduced only in
+/// Release, never Debug. `HeartbeatPacer` removes the capture entirely: it is
+/// passed as an ordinary reference-type argument to plain private instance
+/// methods (see `runChunksAndComplete`/`heartbeatIfDue` below), which capture
+/// nothing but `self`.
+private final class HeartbeatPacer {
+  var lastSentAt = Date()
+  var intervalSecs: Double
+
+  init(intervalSecs: Double) {
+    self.intervalSecs = intervalSecs
+  }
+}
+
+/// Result of POST /api/v1/uploads/init. We persist BOTH: `uploadSessionId` is
+/// the route anchor for chunk PUTs + complete; `fileId` is the durable file row
+/// used for thumbnails and the GET /files/{id} completion/resume check.
+private struct UploadSessionInit {
+  let uploadSessionId: String
+  let fileId: String
+  let chunkCount: Int
+  /// Task 1589 — the server's recommended heartbeat cadence for this session
+  /// (server PR #120, `lease_seconds / 3`). Falls back to
+  /// `NativeBackupEngine.defaultHeartbeatIntervalSecs` for a server response
+  /// that omits it (pre-#120).
+  let heartbeatIntervalSecs: Double
+}
+
+private enum BackupPacingMode: String {
+  case foregroundActive
+  case foregroundIdle
+  case background
+  case lowPower
+  case thermalPressure
+  case serverBackoff
+
+  var batchLimit: Int {
+    switch self {
+    case .foregroundActive, .lowPower, .thermalPressure, .serverBackoff:
+      return 1
+    case .foregroundIdle:
+      return 2
+    case .background:
+      return 3
+    }
+  }
+
+  var delayNanoseconds: UInt64 {
+    switch self {
+    case .foregroundActive:
+      return 2_000_000_000
+    case .foregroundIdle:
+      return 750_000_000
+    case .background:
+      return 150_000_000
+    case .lowPower, .thermalPressure, .serverBackoff:
+      return 5_000_000_000
+    }
+  }
+}
+
+// MARK: - NativeBackupEngine
+
+/// Native Swift backup engine for camera-roll backup.
+///
+/// Architecture:
+/// - PHPhotoLibraryChangeObserver for real-time asset detection
+/// - Foreground-friendly single-upload pipeline
+/// - Rust encrypt via MasterKeyHandle -> FileKeyHandle -> encryptChunk (chunks written to temp files)
+/// - Rust `uploadEncryptedFile()` from beebeeb-upload crate handles init/chunk-upload/complete
+/// - Shared SQLite database (backup_assets) with JS UI layer via WAL mode
+/// - Expo EventEmitter bridge for progress -> React
+///
+/// Encryption uses the MasterKeyHandle -> FileKeyHandle -> encryptChunk path,
+/// writing encrypted chunks to temp files. The Rust `uploadEncryptedFile()`
+/// function from the beebeeb-upload crate then handles the full upload
+/// protocol (init session, upload chunks, complete) in a single blocking call.
+final class NativeBackupEngine: NSObject {
+  static let shared = NativeBackupEngine()
+
+  private let liveActivityRequestQueue = DispatchQueue(label: "io.beebeeb.backup.live-activity")
+  private var liveActivityRequestInFlight = false
+
+  private let heartbeatQueue = DispatchQueue(label: "io.beebeeb.backup.heartbeat", qos: .utility)
+  private var lastHeartbeatSentAt: Date?
+  private var lastHeartbeatStatus: String?
+  private var lastHeartbeatBytesSynced: Int64 = 0
+  private var lastHeartbeatMetricAt: Date?
+  private var lastKnownSpeedBps: Int64 = 0
+
+  private func perfLog(_ event: String, _ fields: [String: CustomStringConvertible] = [:]) {
+    let suffix = fields
+      .map { "\($0.key)=\($0.value)" }
+      .sorted()
+      .joined(separator: " ")
+    if suffix.isEmpty {
+      NSLog("[BeebeebPerf] backup.native.\(event)")
+    } else {
+      NSLog("[BeebeebPerf] backup.native.\(event) \(suffix)")
+    }
+  }
+
+  private func isoString(from date: Date) -> String {
+    ISO8601DateFormatter().string(from: date)
+  }
+
+  private func jsonValue<T>(_ value: T?) -> Any {
+    guard let value else { return NSNull() }
+    return value
+  }
+
+  private func nowMs() -> Int64 {
+    Int64(Date().timeIntervalSince1970 * 1000)
+  }
+
+  private func normalizedCreatedAt(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let value = Double(trimmed), value.isFinite {
+      let seconds = value > 10_000_000_000 ? value / 1000 : value
+      return isoString(from: Date(timeIntervalSince1970: seconds))
+    }
+    if let date = ISO8601DateFormatter().date(from: trimmed) {
+      return isoString(from: date)
+    }
+    return isoString(from: Date())
+  }
+
+  // MARK: - Private state
+
+  private let queue = DispatchQueue(label: "io.beebeeb.backup.engine", qos: .utility)
+  private let dbQueue = DispatchQueue(label: "io.beebeeb.backup.engine.db", qos: .utility)
+  /// Task 1531 [P2-C] (round 5 delta review): guards the read-compare-write
+  /// of `currentAccountId` + the `accountGeneration` bump together. Without
+  /// it, two near-simultaneous writers (e.g. a JS-driven `bindAccount` call
+  /// racing a `BGProcessingTask`'s own account guard reading the property)
+  /// could interleave a Keychain read from one with a Keychain write from
+  /// the other, corrupting the "only bump on a REAL change" comparison
+  /// below, and `accountGeneration` itself (a plain `Int`, not atomic) has
+  /// no other synchronization — every read of it also goes through
+  /// `accountGenerationSnapshot()` below rather than the bare property.
+  private let accountIdLock = NSLock()
+  private var backgroundSession: URLSession!
+  private var metadataSession: URLSession!
+  /// Task 1667 round 6: the engine's one native connection to the manifest
+  /// and every open / reset / recover / reopen of it
+  /// (`BackupManifestHandle.swift`). dbQueue-only, like `db` below
+  /// (`swift-db-queue-audit.ts` checks both names).
+  private let manifestHandle = BackupManifestHandle(
+    path: NativeBackupEngine.backupDatabaseURL().standardizedFileURL.path,
+    pendingReset: .userDefaults(NativeBackupEngine.manifestResetPendingKey),
+    // Round 9: "that pending reset is an account deletion's" (no account id).
+    discardPending: .userDefaults(NativeBackupEngine.manifestResetDiscardPendingKey),
+    // Round 8: every write the fence drops is traced (and logged).
+    onFencedWrite: { writer, ticketGeneration, generation in
+      RuntimeTrace.event("backup.native.manifest.write_fenced", [
+        "writer": writer,
+        "ticketGeneration": ticketGeneration.map { Int($0) } ?? -1,
+        "generation": Int(generation),
+      ])
+      NSLog("[NativeBackupEngine] Manifest write dropped by the sign-out fence: \(writer)")
+    },
+    prepareSchema: NativeBackupEngine.ensureTables
+  )
+  /// The open manifest handle, or nil while it is closed. Read-only here:
+  /// only `manifestHandle` opens or closes it.
+  private var db: OpaquePointer? { manifestHandle.db }
+  /// Round 8: scans spawned by `registerPhotoObserver` / `photoLibraryDidChange`
+  /// (guarded by `engineStateLock`). `stop()` cancels them; the write fence,
+  /// not the cancel, is what keeps a late scan out of a reset manifest.
+  private var _scanTasks: [UUID: Task<Void, Never>] = [:]
+  /// Round 8: the write ticket of each in-flight chunk PUT, by task id, for
+  /// its completion callback (`urlSession(_:task:didCompleteWithError:)`).
+  private let chunkTaskTickets = LockedDictionary<Int, ManifestWriteFence.Ticket>()
+  /// Task 1667 round 6: why `start()` could not open the manifest, and the
+  /// retry it scheduled (both guarded by `engineStateLock`). Surfaced as
+  /// `manifestUnavailableReason` in the progress dict and as the status
+  /// reason; cleared by the next successful open, `stop()` and sign-out.
+  private var _manifestAvailability = ManifestAvailability()
+  private var _manifestOpenRetry: DispatchWorkItem?
+
+  /// Task 1600 [P2]: dedicated lock for every plain scalar/reference `var`
+  /// below that is written from more than one of the engine's concurrent
+  /// execution contexts (the URLSession delegate queue, a detached/`Task {}`
+  /// body on the cooperative pool — the drain loop and the `BGProcessingTask`
+  /// handler each spawn their own — Expo's shared serial
+  /// `AsyncFunctionDefinition` queue that `start()`/`stop()`/`pause()`/
+  /// `resume()` run on, and the `NWPathMonitor` callback queue). A separate
+  /// lock from `accountIdLock` on purpose: several of these accessors are
+  /// read from inside functions that themselves may already be called while
+  /// `accountIdLock` is held elsewhere (e.g. `bindAccount`), and `NSLock` is
+  /// not reentrant — reusing `accountIdLock` here risks a self-deadlock the
+  /// moment two of its critical sections nest. Every getter/setter below is
+  /// a single lock → touch storage → unlock with no call-outs in between, so
+  /// there is no nesting risk against THIS lock either.
+  private let engineStateLock = NSLock()
+
+  private var _masterKeyHandle: MasterKeyHandle?
+  private var masterKeyHandle: MasterKeyHandle? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _masterKeyHandle }
+    set { engineStateLock.lock(); _masterKeyHandle = newValue; engineStateLock.unlock() }
+  }
+
+  /// Task 1599 followup 2 (round 2, moved behind `engineStateLock` on the
+  /// #150 merge — same rationale as every other var above/below it): the
+  /// honest, user-facing reason the LAST confirmed `account_mismatch`
+  /// stopped this engine — `nil` when nothing stopped it for that reason.
+  /// Written from `handleConfirmedAccountMismatch()` (reachable from the
+  /// URLSession delegate queue, via `uploadStagedChunk`/`completeUpload`'s
+  /// error handling) and cleared from `bindAccount(userId:)` (Expo's shared
+  /// serial `AsyncFunctionDefinition` queue); read from `currentProgress()`
+  /// (`backupState(pending:)`), which `backup-context.tsx` polls from
+  /// whatever queue JS's poll timer runs on — three independent contexts,
+  /// same shape as every other property this lock already covers.
+  private var _accountMismatchStopReason: String?
+  private var accountMismatchStopReason: String? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _accountMismatchStopReason }
+    set { engineStateLock.lock(); _accountMismatchStopReason = newValue; engineStateLock.unlock() }
+  }
+
+  /// Task 1599 followups round 3 (P1 — sign-in lockout loop): a monotonic
+  /// counter, incremented every time `handleConfirmedAccountMismatch()` sets
+  /// a NEW `accountMismatchStopReason`. Exposed via `currentProgress()`
+  /// alongside the reason string so JS can distinguish "this reason was
+  /// raised during MY session" from "this reason is a leftover from BEFORE
+  /// my session started" — the distinction the lockout loop got wrong: a
+  /// confirmed 409 sets the reason, JS ends that session, and the VERY NEXT
+  /// sign-in's `BackupProvider` can remount and poll BEFORE
+  /// `confirmMasterKeyHandle` (the unlock choke point) has a chance to clear
+  /// it, misreading the stale reason as fresh and ending the brand-new
+  /// session before the user finishes signing in. `mirrorSessionToAppGroup`
+  /// (BeebeebCryptoModule.swift) now also clears the reason itself on both a
+  /// token change and a sign-out, closing the common case; this generation
+  /// counter is JS's own backstop (`backup-context.tsx`'s
+  /// `reduceAccountMismatchPoll`) for whatever race remains. Never reset —
+  /// only ever incremented, so "greater than the baseline observed at mount"
+  /// is a stable comparison regardless of how many mismatches happened
+  /// before this process even started polling.
+  private var _accountMismatchGeneration = 0
+  private var accountMismatchGeneration: Int {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _accountMismatchGeneration }
+    set { engineStateLock.lock(); _accountMismatchGeneration = newValue; engineStateLock.unlock() }
+  }
+
+  /// Task 1599 followups round 3 (P2): distinct from `accountMismatchStopReason`
+  /// above — that one is set only after the SERVER confirms a 409
+  /// `account_mismatch` on a request this engine actually sent. This one is
+  /// set entirely LOCALLY, in `start()`, when the ownership-verification
+  /// guard refuses to even attempt loading the master key (a cached handle
+  /// with no confirmed/matching owner, or a keychain-sourced handle the
+  /// shared "proven vault key owner" mirror doesn't confirm for this
+  /// account) — no network round-trip happens in that case, so
+  /// `accountMismatchStopReason` would never fire, and backup silently sat
+  /// idle with no explanation. Cleared whenever `start()` succeeds past the
+  /// master-key section, and by `clearOwnerUnconfirmedStopReasonOnNewAuthentication()`
+  /// at the same genuine-new-authentication choke points as the sibling
+  /// account-mismatch clear.
+  private var _ownerUnconfirmedStopReason: String?
+  private var ownerUnconfirmedStopReason: String? {
+    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _ownerUnconfirmedStopReason }
+    set { engineStateLock.lock(); _ownerUnconfirmedStopReason = newValue; engineStateLock.unlock() }
+  }
+
   /// A confirmed billing/trial-cap refusal pauses this account without consuming
   /// asset retries or dropping its key. Camera backup and contacts/calendar share
   /// this reason. A successful start or explicit auxiliary resume clears it.
