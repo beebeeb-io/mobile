@@ -307,11 +307,13 @@ export type RootStackParamList = {
     performanceStorageProfile?: PerformanceStorageProfile;
     /**
      * Server `has_thumbnail` truth for the opened file (0883 auto self-repair).
-     * Only owner navigators (Photos/Files) pass it; when `false` the preview
-     * decrypt path generates + uploads a thumbnail from the downloaded plaintext.
+     * Only owner navigators (Photos/Files) pass it. The full-source path repairs
+     * missing or known degraded thumbnails from the local plaintext.
      * Undefined ⇒ unknown ⇒ self-repair skips (avoids network-probe storms).
      */
     hasThumbnail?: boolean;
+    /** Known encrypted thumbnail bytes for local-source quality repair (0554). */
+    thumbnailBytes?: number | null;
     // ── File-request uploads (0643) ──
     // When set, the file arrived through a file request and must be decrypted
     // with the request content key (resolved from these), NOT the master-key
