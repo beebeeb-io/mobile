@@ -95,6 +95,7 @@ import {
   PHOTO_PAGE_LOAD_RADIUS,
 } from '../lib/photo-viewer-window';
 import { InfoSheet } from '../components/preview/InfoSheet';
+import { BBActionSheet } from '../components/BBActionSheet';
 import { PreviewBottomBar } from '../components/preview/PreviewBottomBar';
 import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
@@ -4350,7 +4351,7 @@ export default function PreviewScreen() {
     // Task 1583 — ⋯ while the Info sheet is open swaps the sheet for the
     // menu instead of stacking the menu on the sheet.
     setInfoVisible(false);
-    if (Platform.OS === 'ios') {
+    if (Platform.OS === 'ios' || Platform.OS === 'android') {
       setOptionsVisible(true);
       return;
     }
@@ -5912,6 +5913,23 @@ function PreviewOptionsPopover({
   onClose,
   top,
 }: PreviewOptionsPopoverProps) {
+  if (Platform.OS === 'android') {
+    return (
+      <BBActionSheet
+        visible={visible}
+        onClose={onClose}
+        header={{ name: filename }}
+        rows={actions.map((action) => ({
+          key: action.label,
+          label: action.label,
+          icon: action.icon,
+          destructive: action.destructive,
+          onPress: action.run,
+        }))}
+      />
+    );
+  }
+
   if (!visible) return null;
 
   const runAction = (action: PreviewOptionAction) => {
