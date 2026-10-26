@@ -10,6 +10,8 @@ iOS ships at launch; **Android does NOT ship September 1 — post-launch.** The 
 
 **Never use `eas build` without `--local` on a macOS device** (cloud builds cost credits; local is free and just as fast on Apple Silicon). Exception: CI/CD without Xcode. Prereqs: `fastlane`, `xcbeautify` (`brew install`). **Never remove the `ios/.xcode.env` pin `export ENTRY_FILE="src/App.tsx"`** — without it an `eas build --local` staged in a symlinked tmpdir fails "Unable to resolve module …/src/App.tsx" → ARCHIVE FAILED. (details: H#task-0671)
 
+Android versionCode is local too: bump `android/app/build.gradle` (and `app.json`) by 1 for every Play upload; Play rejects a versionCode ≤ the last upload.
+
 ```bash
 # Build locally (free — runs on this Mac, ~10-15 min)
 eas build --platform ios --profile production --local --output ./build/beebeeb.ipa
