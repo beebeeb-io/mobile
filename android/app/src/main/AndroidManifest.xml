@@ -42,6 +42,12 @@
         <data android:scheme="beebeeb"/>
         <data android:scheme="exp+beebeeb"/>
       </intent-filter>
+      <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <category android:name="android.intent.category.BROWSABLE"/>
+        <data android:scheme="https" android:host="app.beebeeb.io"/>
+      </intent-filter>
     </activity>
   </application>
 </manifest>
