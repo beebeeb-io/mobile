@@ -23,6 +23,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
+import { useAndroidFilesBack } from '../lib/use-android-files-back';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
@@ -2358,6 +2359,21 @@ export default function FilesScreen() {
   const navigateToBreadcrumb = useCallback((index: number) => {
     setFolderStack((prev) => prev.slice(0, index + 1));
   }, []);
+
+  useAndroidFilesBack({
+    selecting: selectMode,
+    searching: searchActive,
+    folderDepth: folderStack.length,
+    exitSelection: () => {
+      setSelectMode(false);
+      setSelectedIds(new Set());
+    },
+    closeSearch: () => {
+      setSearchActive(false);
+      setSearchQuery('');
+    },
+    goToParent: () => setFolderStack((prev) => prev.slice(0, Math.max(1, prev.length - 1))),
+  });
 
   // Open the collapsed-breadcrumb popover, measuring the "…" chip so the popover
   // hangs directly under it.
