@@ -1115,3 +1115,6 @@ Task 1662 / existing 1605 account-refusal contract: the shared native uploader r
 Cleanup writer plan (2026-10-26): update only the changed refusal-state comment to match auxiliary refusal clearing and 15/30/60/60 foreground polling. No runtime behavior change; Swift parse is the appropriate check.
 Cleanup review pass: comment now describes the implemented shared reason, enabled-category resume and capped serial foreground poll; Swift parse exit0, diff check exit0. No stale fixed-15-second/only-start claim remains in this comment.
 Correction: e750b31 matched the earlier error-enum comment and removed a source region; parse alone did not catch that semantic error. Restored from5464820 and bounded replacement immediately before the refusal property. Verified every non-comment line is byte-identical to5464820; correction is explicit and append-only.
+
+## Active video export identity (2026-10-26)
+Validation reproduced active video exports being swept when Foundation enumerates a symlink alias of the reserved directory (`/private/tmp` versus `/tmp`). Canonicalize reservation/sweep/cleanup identities with POSIX realpath of the existing parent; the existing native recovery test failed before the fix and passes after it.
