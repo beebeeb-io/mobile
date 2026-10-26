@@ -1,3 +1,4 @@
+import { bottomAnchorInset } from '../components/glass/tab-bar-inset';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -1246,7 +1247,7 @@ function ProofDetailModal({ proof, fileName, onClose, showToast }: ProofDetailMo
       </ScrollView>
 
       {/* Footer with Share button */}
-      <View style={[proofStyles.footer, { borderTopColor: c.line, paddingBottom: insets.bottom || 16, backgroundColor: c.paper }]}>
+      <View style={[proofStyles.footer, { borderTopColor: c.line, paddingBottom: bottomAnchorInset(insets.bottom, insets.bottom || 16), backgroundColor: c.paper }]}>
         <TouchableOpacity
           style={[proofStyles.shareBtn, { backgroundColor: c.amber, opacity: sharing ? 0.6 : 1 }]}
           onPress={() => void handleShare()}
@@ -5261,7 +5262,7 @@ export default function FilesScreen() {
               // to reserve it itself now — `Math.max(insets.bottom, 12)`
               // mirrors GlassTabBar's own `insets.bottom || 12` fallback for
               // devices with no home-indicator inset.
-              { paddingBottom: Math.max(insets.bottom, 12) },
+              { paddingBottom: bottomAnchorInset(insets.bottom, Math.max(insets.bottom, 12)) },
             ]}
           >
             <Ionicons name="search" size={20} color={actionBarMaterial.labelMuted} />

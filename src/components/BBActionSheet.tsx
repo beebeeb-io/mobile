@@ -11,17 +11,20 @@
  * or swipe down past ~30% of the sheet height.
  */
 
+import { bottomAnchorInset } from './glass/tab-bar-inset';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Dimensions,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import {
+  GestureHandlerRootView,
   PanGestureHandler,
   State,
   type PanGestureHandlerGestureEvent,
@@ -144,9 +147,12 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
 
   if (!rendered) return null;
 
+  // Android Modals are separate native windows; gestures need a root inside.
+  const SheetRoot = Platform.OS === 'android' ? GestureHandlerRootView : View;
+
   return (
     <Modal transparent visible={rendered} animationType="none" onRequestClose={onClose} statusBarTranslucent>
-      <View style={styles.fill}>
+      <SheetRoot style={styles.fill}>
         <Animated.View
           style={[styles.scrim, { backgroundColor: modalScrim(resolved), opacity: scrimOpacity }]}
         >
@@ -161,7 +167,7 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
               shadows.lg,
               {
                 backgroundColor: c.paper2,
-                paddingBottom: Math.max(insets.bottom, 12),
+                paddingBottom: bottomAnchorInset(insets.bottom, Math.max(insets.bottom, 12)),
                 transform: [{ translateY }],
               },
             ]}
@@ -221,7 +227,7 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
             })}
           </Animated.View>
         </PanGestureHandler>
-      </View>
+      </SheetRoot>
     </Modal>
   );
 }

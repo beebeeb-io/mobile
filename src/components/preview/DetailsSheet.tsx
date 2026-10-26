@@ -21,6 +21,7 @@
  * a case of "root went light, chrome forgot to follow." Not touched.
  */
 
+import { bottomAnchorInset } from '../glass/tab-bar-inset';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -99,7 +100,7 @@ export function DetailsSheet({
   const touchStartY = useRef<number | null>(null);
 
   // Geometry
-  const safeBottom = Math.max(insets.bottom, 16);
+  const safeBottom = bottomAnchorInset(insets.bottom, Math.max(insets.bottom, 16));
   const expandedHeight = Math.min(
     Math.max(MIN_EXPANDED_HEIGHT, Math.round(windowHeight * 0.6)),
     windowHeight - insets.top - 60,

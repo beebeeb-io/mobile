@@ -1,7 +1,8 @@
 import React, { useEffect } from 'react';
-import { Image, StyleSheet, View } from 'react-native';
+import { Image, Platform, StyleSheet, View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
 import { useThumbnail } from '../lib/use-thumbnail';
+import { recordRuntimeTrace } from '../lib/runtime-trace';
 
 // Dynamic require keeps the JS layer working when the native binding isn't
 // linked (web preview, jest, etc.).
@@ -66,6 +67,9 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
           source={{ uri }}
           style={StyleSheet.absoluteFill}
           resizeMode="cover"
+          onLoad={__DEV__ && Platform.OS === 'android'
+            ? () => recordRuntimeTrace('thumbnail.image.loaded', { fileId })
+            : undefined}
           onError={() => onUnavailable?.(fileId)}
         />
       )}

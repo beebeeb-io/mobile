@@ -2054,8 +2054,8 @@ export default function PhotosScreen() {
     if (!item) {
       return { length: cellSize + GRID_GAP, offset: 0, index };
     }
-    return { length: item.length, offset: item.offset, index };
-  }, [cellSize, listItems]);
+    return { length: item.length, offset: item.offset + (Platform.OS === 'android' ? headerHeight : 0), index };
+  }, [cellSize, headerHeight, listItems]);
 
   const handleViewableItemsChanged = useRef((info: { viewableItems: Array<{ index: number | null }> }) => {
     if (isPinchingRef.current) return;
@@ -2187,7 +2187,8 @@ export default function PhotosScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.paper }]}>
-      {/* 1322, AMENDED by task 1689 — the scroll-edge blur is gated on
+      {/* Android (2233) keeps the title tint gradient mounted at rest.
+          iOS retains 1322/1689 below: the scroll-edge blur is gated on
           `isScrolled` exactly like every sibling screen (Files 4545,
           Settings 1826, Trash 386, Shared 737, Storage 403,
           BackupInsights 629), because in light mode the 0.30-alpha light
@@ -2210,7 +2211,7 @@ export default function PhotosScreen() {
           unblurred content for the duration of the gesture — the same
           deferred-side-effect trade the native grid already makes for
           thumbnail prefetch. */}
-      {isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
+      {Platform.OS === 'android' || isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
       <View
         style={[styles.floatingHeader, { paddingTop: insets.top }]}
         onLayout={(e) => {
@@ -2302,9 +2303,16 @@ export default function PhotosScreen() {
                     onRefresh={handleRefresh}
                     tintColor={c.amber}
                     colors={[c.amber]}
+                    progressViewOffset={Platform.OS === 'android' ? headerHeight : undefined}
                   />
                 }
-                contentContainerStyle={listItems.length === 0 ? styles.emptyList : undefined}
+                contentContainerStyle={[
+                  listItems.length === 0 ? styles.emptyList : undefined,
+                  Platform.OS === 'android' ? {
+                    paddingTop: headerHeight,
+                    paddingBottom: tabBarBottomInset + bottomOverlayHeight,
+                  } : undefined,
+                ]}
                 ListFooterComponent={<View style={{ height: LIST_FOOTER_HEIGHT }} />}
                 onScroll={handleGridScroll}
                 onScrollBeginDrag={handleScrollBeginDrag}
