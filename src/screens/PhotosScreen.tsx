@@ -1357,6 +1357,9 @@ export default function PhotosScreen() {
           chunk_count: p.chunk_count,
           version_number: p.version_number,
           storage_pool_id: p.storage_pool_id ?? null,
+          is_request_upload: !!p.file_request_id || !!p.wrapped_content_key,
+          has_thumbnail: p.has_thumbnail,
+          thumbnail_bytes: p.thumbnail_bytes,
           thumbnail_uri: thumbnailUris[p.id] ?? null,
           local_asset_id: photoKitAssetMap.get(p.id) ?? null,
         })),
@@ -1376,6 +1379,7 @@ export default function PhotosScreen() {
         // 0883 — let Preview auto self-repair a missing thumbnail for this owner
         // photo/video from the downloaded plaintext (undefined ⇒ skip).
         hasThumbnail: entry.has_thumbnail,
+        thumbnailBytes: entry.thumbnail_bytes,
       });
     },
     [navigation, decryptedMimeTypes, decryptedNames, flatPhotos, performanceStorageProfile, photoKitAssetMap, thumbnailUris],

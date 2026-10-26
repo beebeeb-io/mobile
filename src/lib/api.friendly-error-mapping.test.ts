@@ -269,14 +269,16 @@ describe('1709: human messages still pass through unchanged', () => {
     );
   });
 
-  test('2FA wrong-code 401 keeps "Incorrect or expired code. Try again."', async () => {
-    fetchQueue.push(async () => jsonResponse({ error: 'invalid_totp_code' }, 401));
-    const { ApiError, friendlyError, completeTwoFactor } = await loadFreshApi();
-    const err = await completeTwoFactor('partial-token', '000000').catch((caught) => caught);
-    expect(err).toBeInstanceOf(ApiError);
-    expect(err.message).toBe('Incorrect or expired code. Try again.');
-    expect(friendlyError(err)).toBe('Incorrect or expired code. Try again.');
-  });
+  for (const [kind, label] of [['authenticator', 'Authenticator code'], ['backup', 'Backup code']]) {
+    test(`2FA 401 uses ${kind} request context without claiming whether the challenge expired`, async () => {
+      fetchQueue.push(async () => jsonResponse({ error: 'unauthorized' }, 401));
+      const { ApiError, friendlyError, completeTwoFactor } = await loadFreshApi();
+      const err = await completeTwoFactor('partial-token', '000000', kind).catch((caught) => caught);
+      expect(err).toBeInstanceOf(ApiError);
+      expect(friendlyError(err)).toBe(`${label} was not accepted. Try again, or sign in again if this challenge expired.`);
+      expect(friendlyError(err)).not.toContain('password');
+    });
+  }
 
   test('429 with Retry-After header keeps the formatted wait line', async () => {
     fetchQueue.push(async () => new Response(JSON.stringify({ error: 'rate_limited' }), {

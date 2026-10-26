@@ -109,6 +109,7 @@ final class NSFileProviderManager {
   // Task 1722 round 4: what the system reports as materialized, and every signal sent.
   private static var _materialized: [NSFileProviderItem] = []
   private static var _signals: [String] = []
+  static var signalDelay: TimeInterval = 0
   static func setMaterialized(_ items: [NSFileProviderItem]) { lock.lock(); _materialized = items; lock.unlock() }
   static var signals: [String] { lock.lock(); defer { lock.unlock() }; return _signals }
   static func resetRecords() { lock.lock(); _materialized = []; _signals = []; lock.unlock() }
@@ -118,6 +119,7 @@ final class NSFileProviderManager {
     return Self.systemTemporaryDirectory
   }
   func signalEnumerator(for container: NSFileProviderItemIdentifier, completionHandler: @escaping (Error?) -> Void) {
+    Thread.sleep(forTimeInterval: Self.signalDelay)
     Self.lock.lock(); Self._signals.append(container.rawValue); Self.lock.unlock()
     completionHandler(nil)
   }
@@ -983,6 +985,7 @@ func callMaterializedItemsDidChange(_ ext: FileProviderExtension) -> Bool {
 func materializedSetFollowsTheSystem() async {
   reset()
   NSFileProviderManager.resetRecords()
+  NSFileProviderManager.signalDelay = 0.15
   CacheManager.shared.rows["F"] = row("F", name: "Taxes", folder: true)
   CacheManager.shared.rows["G"] = row("G", name: "Photos", folder: true)
   CacheManager.shared.rows["x"] = row("x", name: "notes.txt")
@@ -991,7 +994,8 @@ func materializedSetFollowsTheSystem() async {
   soft(callMaterializedItemsDidChange(ext), "materializedItemsDidChange is implemented and returns at once")
   let stored = await waitUntil { CacheManager.shared.materializedContainerIds() == ["F", "G"] }
   soft(stored, "the system's materialized folders are stored (not its files, not the root), got \(CacheManager.shared.materializedContainerIds())")
-  soft(NSFileProviderManager.signals.contains(NSFileProviderItemIdentifier.workingSet.rawValue), "the working set is signalled when the stored set changes, got \(NSFileProviderManager.signals)")
+  let signalled = await waitUntil { NSFileProviderManager.signals.contains(NSFileProviderItemIdentifier.workingSet.rawValue) }
+  soft(signalled, "the working set is signalled when the stored set changes, got \(NSFileProviderManager.signals)")
   NSFileProviderManager.setMaterialized(materializedItems(["F"]))
   _ = callMaterializedItemsDidChange(ext)
   let shrunk = await waitUntil { CacheManager.shared.materializedContainerIds() == ["F"] }
@@ -1038,10 +1042,17 @@ func staleMaterializedFoldersAreRefreshed() async {
   soft(ApiClient.shared.count("list G") == 0, "a folder Files never listed is not refreshed, calls \(ApiClient.shared.calls)")
   let after = await listWorkingSetNames()
   soft(after.contains("2026 return.pdf") && !after.contains("beach.jpg"), "the working set now carries the real name and nothing from G, got \(after)")
+  let invalidated = await waitUntil {
+    var current: NSFileProviderSyncAnchor?
+    ws.currentSyncAnchor { current = $0 }
+    return current != anchor
+  }
+  soft(invalidated, "the refresh invalidates the prior working-set anchor")
   let changed = ChangeObserver()
   ws.enumerateChanges(for: changed, from: anchor!)
   soft(isProviderError(changed.error, .syncAnchorExpired), "Files is told the working set changed, got \(describe(changed.error))")
-  soft(NSFileProviderManager.signals.contains(NSFileProviderItemIdentifier.workingSet.rawValue), "the refresh signalled the working set, got \(NSFileProviderManager.signals)")
+  let signalled = await waitUntil { NSFileProviderManager.signals.contains(NSFileProviderItemIdentifier.workingSet.rawValue) }
+  soft(signalled, "the refresh signalled the working set, got \(NSFileProviderManager.signals)")
   let listCount = ApiClient.shared.count("list F")
   ws.enumerateChanges(for: ChangeObserver(), from: anchor!)
   try? await Task.sleep(nanoseconds: 400_000_000)
@@ -1208,7 +1219,7 @@ describe('task 1722 round 4: folders Files already listed get their changes thro
   }, 300_000);
 
   nativeSwiftHarnessTest('a stale materialized folder is listed again from the working set, gets its real names, once', () => {
-    expectScenario('materialized-refresh', 10);
+    expectScenario('materialized-refresh', 11);
   }, 300_000);
 });
 

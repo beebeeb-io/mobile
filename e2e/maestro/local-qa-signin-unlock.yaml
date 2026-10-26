@@ -49,7 +49,7 @@ appId: io.beebeeb.app
 # PRECONDITION: start signed OUT (or on the RecoveryUnlock screen, handled above). A
 # sign-out-first branch was tried and removed: `scrollUntilVisible` on the Settings list hangs
 # inside a conditional runFlow. If the app is already signed in, sign out by hand first, or use
-# the existing e2e/maestro/login-flow.yaml which does its own sign-out with fixed scrolls.
+# the maintained e2e/maestro/login-test.yaml bootstrap.
 
 - extendedWaitUntil:
     visible: "Sign in"

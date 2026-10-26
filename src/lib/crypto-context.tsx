@@ -1522,7 +1522,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
     } else {
       setBackupEncryption(null)
     }
-  }, [isUnlocked, encryptChunkFn, encryptMetadataFn, decryptMetadataFn])
+  }, [isUnlocked, encryptChunkFn, decryptChunkFn, encryptMetadataFn, decryptMetadataFn])
 
   // Push session credentials to the native ThumbnailService so its actor can
   // fetch + decrypt remote thumbnails without crossing back to JS. Best-effort:
