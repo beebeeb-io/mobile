@@ -38,3 +38,34 @@ The Android `FlatList` fallback uses `initialNumToRender=12`, `maxToRenderPerBat
 Graphify refresh was attempted after the code changes: 787/787 files extracted; exit 1 because it refused to overwrite the existing 23908-node graph with 7186 nodes. The existing graph remains unchanged. This is a tooling limitation, not a successful refresh. The menu handler's final executable regression also pins web's existing Alert; Android joins iOS's app-options dispatch. Android-condition mutation: 2 pass/1 fail; restored: 3 pass/0 fail.
 
 Final branch verification: `isolated: 2996 pass, 0 fail across 291 files`; `bunx tsc --noEmit` exit 0; `git diff --check` exit 0. Item 6 and item 1 checkpoints separately observed the same 2996/0 count and tsc exit 0. These are source/test results, not emulator/device proof. Full logs: `final-isolated.log`, `final-tsc.log`, `6-{isolated,tsc}.log`, `1-{isolated,tsc}.log` in the evidence directory.
+
+## 2026-10-26 L3 continuation — item 8
+
+The lead supplied a booted `emulator-5554` (bb-pixel-36 / Android 36 arm64).
+ADB readback: `get-state=device`, `sys.boot_completed=1`. L3 uses only explicitly
+addressed ADB; the lead retains emulator process ownership. No child agents.
+
+Item 8 routes the Files selection bar, FAB and upload card, Photos backup pill,
+shared BottomSheet/BBActionSheet, FolderPicker footer, EncryptionProof, preview
+DetailsSheet and preview bottom chrome/export/video/editor insets through
+`glass/tab-bar-inset.ts`. Toast is top-anchored; ExportProgressBanner inherits its
+parent position. Six sheet/card wrappers inherit the shared inset. Background
+fills and child captions are deliberately excluded from the window-anchor list.
+iOS's previous caller expressions pass through unchanged. The design ruling is
+recorded in DEVIATIONS.md before the implementation.
+
+Guard: 20 tests (12 anchor bindings, 6 inherited bindings, arithmetic and top/in-flow
+exception). Original integration RED: 11 pass / 9 fail (`8-red-corrected.log`).
+Fresh Android-rule mutation RED: 19 pass / 1 fail, expected 12 but received 116;
+restored GREEN: 20 pass / 0 fail (`r3/8-{mutation-red,restored-green}.log`).
+Fresh isolated run: **isolated: 3016 pass, 0 fail across 292 files**;
+`bunx tsc --noEmit` exit 0 (`r3/isolated.log`, `r3/tsc.log`).
+
+Correction to the earlier build blocker: a debug APK can be assembled with
+Gradle signing disabled; access to a keystore is not necessary for assembly.
+The current build uses the task-local Gradle home and an init script clearing
+debug signing. Existing keystores, credentials.json and ~/.private_keys remain
+untouched. Metro is explicitly configured for `http://10.0.2.2:3001`; the local
+API was absent and is now started from the existing local debug binary, with
+local DB URL validated and real mail disabled. Health returns HTTP 200.
+Full evidence for this continuation: `~/code/bb-gate-logs/2233/r3/`.

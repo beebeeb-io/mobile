@@ -149,7 +149,7 @@ describe('Info sheet geometry (design section 03)', () => {
   });
 
   test('the home-indicator inset is padding inside the sheet', () => {
-    expect(bottomSheetSource).toMatch(/const safeBottom = sheetSafeBottom\(insets\.bottom\)/);
+    expect(bottomSheetSource).toMatch(/const safeBottom = bottomAnchorInset\(insets.bottom, sheetSafeBottom\(insets\.bottom\)\)/);
     expect(bottomSheetSource).toMatch(/return Math\.max\(insetBottom, 16\)/);
     expect(bottomSheetSource).toMatch(/paddingBottom:\s*bottomPad \+ restHidden/);
   });

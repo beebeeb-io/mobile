@@ -1,3 +1,4 @@
+import { bottomAnchorInset } from '../components/glass/tab-bar-inset';
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
@@ -177,7 +178,7 @@ const TextEditorView = React.lazy(async () => {
   return { default: m.TextEditorView };
 });
 
-// Preview's floating bottom bar sits at `Math.max(insets.bottom, 16) + 8` and
+// Preview's floating bottom bar sits at `previewBottomInset + 8` and
 // its glass content is roughly 68pt tall. expo-video draws native controls
 // inside the VideoView bounds, so the view itself needs this extra bottom
 // clearance or the playhead lands behind Beebeeb's bottom chrome.
@@ -2097,11 +2098,12 @@ export default function PreviewScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<PreviewRoute>();
   const insets = useSafeAreaInsets();
+  const previewBottomInset = bottomAnchorInset(insets.bottom, Math.max(insets.bottom, 16));
   const { colors: c, resolved } = useTheme();
   const { showToast } = useToast();
   const previewVideoControlsBottomInset = useMemo(
-    () => Math.max(insets.bottom, 16) + PREVIEW_VIDEO_CONTROLS_BOTTOM_CLEARANCE,
-    [insets.bottom],
+    () => previewBottomInset + PREVIEW_VIDEO_CONTROLS_BOTTOM_CLEARANCE,
+    [previewBottomInset],
   );
   const videoControlsBottomStyle = useMemo(
     () => ({ bottom: previewVideoControlsBottomInset }),
@@ -4511,7 +4513,7 @@ export default function PreviewScreen() {
   );
 
   const exportProgressOverlay = preparingExport ? (
-    <View style={[styles.exportProgressOverlay, { bottom: Math.max(insets.bottom, 16) + 76 }]} pointerEvents="none" testID="preview-export-progress">
+    <View style={[styles.exportProgressOverlay, { bottom: previewBottomInset + 76 }]} pointerEvents="none" testID="preview-export-progress">
       <ExportProgressBanner ref={exportProgressRef} name={previewFileName} />
     </View>
   ) : null;
@@ -4608,7 +4610,7 @@ export default function PreviewScreen() {
               styles.mediaStage,
               {
                 paddingTop: insets.top + 64,
-                paddingBottom: 24 + Math.max(insets.bottom, 16),
+                paddingBottom: 24 + previewBottomInset,
               },
             ]}
           >
@@ -4663,7 +4665,7 @@ export default function PreviewScreen() {
               styles.mediaStage,
               {
                 paddingTop: insets.top + 64,
-                paddingBottom: 24 + Math.max(insets.bottom, 16),
+                paddingBottom: 24 + previewBottomInset,
                 alignItems: 'center',
                 justifyContent: 'center',
               },
@@ -4692,7 +4694,7 @@ export default function PreviewScreen() {
               styles.mediaStage,
               {
                 paddingTop: insets.top + 64,
-                paddingBottom: 24 + Math.max(insets.bottom, 16),
+                paddingBottom: 24 + previewBottomInset,
               },
             ]}
             onPress={handleContentTap}
@@ -4948,7 +4950,7 @@ export default function PreviewScreen() {
             second glass sheet. */}
         {!editMode && (
           <Animated.View
-            style={[styles.bottomBarWrap, { opacity: barsOpacity, bottom: Math.max(insets.bottom, 16) + 8 }]}
+            style={[styles.bottomBarWrap, { opacity: barsOpacity, bottom: previewBottomInset + 8 }]}
             pointerEvents={chromeVisible ? 'auto' : 'none'}
           >
             <PreviewBottomBar
@@ -5486,7 +5488,7 @@ export default function PreviewScreen() {
                   initialText={editText ?? textContent ?? ''}
                   language={codeLanguage}
                   onChangeText={setEditText}
-                  bottomInset={Math.max(insets.bottom, 16)}
+                  bottomInset={previewBottomInset}
                   // Build 217 bug fix — reuses the SAME measured header
                   // height CodeRenderer's read-only sibling already gets via
                   // its own `topInset` prop a few branches up (`docHeaderHeight`
@@ -5845,7 +5847,7 @@ export default function PreviewScreen() {
           bar while editing (item 7). */}
       {!editMode && (
         <Animated.View
-          style={[styles.bottomBarWrap, { opacity: barsOpacity, bottom: Math.max(insets.bottom, 16) + 8 }]}
+          style={[styles.bottomBarWrap, { opacity: barsOpacity, bottom: previewBottomInset + 8 }]}
           pointerEvents={chromeVisible ? 'auto' : 'none'}
           onLayout={(e) => {
             // Round 5 — the bar's OWN height (not its offset from the safe

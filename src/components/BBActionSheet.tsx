@@ -11,6 +11,7 @@
  * or swipe down past ~30% of the sheet height.
  */
 
+import { bottomAnchorInset } from './glass/tab-bar-inset';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
@@ -166,7 +167,7 @@ export function BBActionSheet({ visible, onClose, title, header, rows }: BBActio
               shadows.lg,
               {
                 backgroundColor: c.paper2,
-                paddingBottom: Math.max(insets.bottom, 12),
+                paddingBottom: bottomAnchorInset(insets.bottom, Math.max(insets.bottom, 12)),
                 transform: [{ translateY }],
               },
             ]}

@@ -45,7 +45,7 @@ describe('BottomSheet geometry — full width (Guus, build 221)', () => {
 
   test('the home-indicator inset is padding INSIDE the sheet', () => {
     expect(src).toMatch(/return Math\.max\(insetBottom, 16\);/);
-    expect(src).toMatch(/const safeBottom = sheetSafeBottom\(insets\.bottom\);/);
+    expect(src).toMatch(/const safeBottom = bottomAnchorInset\(insets.bottom, sheetSafeBottom\(insets\.bottom\)\);/);
     expect(src).toMatch(/const bottomPad = keyboardHeight > 0 \? 8 : safeBottom;/);
     expect(src).toMatch(/paddingBottom: bottomPad \+ restHidden,/);
   });

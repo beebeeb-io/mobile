@@ -1192,3 +1192,24 @@ Item 6 checkpoint validation (no ZIP code change): isolated 2996 pass/0 fail acr
 Item 1 remains open: the emulator cannot boot, so no JS FPS or time-to-first-thumbnail baseline/after measurement exists. Source inspection identifies investigation targets, not proven causes: Android FlatList viewport IDs are deferred until scrolling settles (0559), so arriving rows may remain disabled during a fling; both screen prefetch and tile hooks use the legacy JS thumbnail path; photo metadata updates rebuild grouping and row props. The native iOS grid is separate. No unmeasured virtualization/decode changes are shipped. Complete item 6 reproduction first, then profile these paths on the emulator before changing Android-only behavior. Screenshot/reproduction/performance rungs and the OnePlus final rung remain open.
 Final item 7 review preserves the web fallback Alert as well: only Android joins the existing iOS options dispatch. Executable handler regression checks Android, iOS and web; removing Android from the condition is RED 2 pass/1 fail, restored GREEN 3/0. Graphify update attempted: 787/787 files extracted, but it refused to replace 23908 graph nodes with the partial 7186-node graph; existing graph preserved (exit 1). Full log: ~/code/bb-gate-logs/2233/graphify-update.log.
 Item 1 checkpoint/final branch verification: isolated: 2996 pass, 0 fail across 291 files; bunx tsc --noEmit exit 0; git diff --check exit 0. Logs ~/code/bb-gate-logs/2233/{1-isolated,1-tsc,final-isolated,final-tsc}.log. These counts validate the implemented code only; they do not replace missing emulator screenshots, ZIP reproduction or performance measurements.
+
+## 2233 round 2 — item 8 design ruling, before implementation
+
+Guus added item 8 on workspace main: all bottom-anchored controls share the
+Android inset rule, including Files selection, sheets, banners and toasts.
+Extend `glass/tab-bar-inset.ts` to own Android window safe-area clearance too.
+Tab scenes already exclude the measured native tab bar and system inset; their
+remaining inset is zero before the existing 12pt clearance. Modal/full-window
+surfaces still reserve the live bottom safe area, with that same clearance
+minimum. Backgrounds remain flush to the edge; inset interactive sheet content,
+not the sheet background. Keep keyboard lift separate. Pass each existing iOS
+expression through unchanged. Keep spacing between stacked controls unchanged.
+
+The guard inventories anchored screen controls, shared sheet primitives and
+inherited anchors. ToastOverlay is top-anchored (`top: insets.top + 8`), and
+ExportProgressBanner is in-flow; neither should be moved to the bottom. The
+UploadActivityCard inherits Files' helper-derived bottom prop. Sheet wrappers
+inherit BottomSheet's inset; document preview children inherit the parent chrome
+inset. Decorative fills, thumbnail badges and captions inside already-bounded
+content are not window/tab anchors. No unrelated settings or scroll padding
+redesign is intended.

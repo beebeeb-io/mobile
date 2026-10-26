@@ -34,6 +34,19 @@ export function addTabBarClearance(nativeBarHeight: number): number {
 }
 
 /**
+ * Bottom-anchored chrome in either coordinate space. Android tab scenes
+ * already exclude the tab bar AND system navigation area: pass 0 there.
+ * Full-window surfaces pass their live safe-area bottom instead. Keep the
+ * background flush; apply this to content padding or the control's anchor.
+ * iOS retains the caller's existing geometry exactly.
+ */
+export function bottomAnchorInset(remainingSafeBottom: number, iosInset: number): number {
+  return Platform.OS === 'android'
+    ? Math.max(remainingSafeBottom, CONTENT_CLEARANCE)
+    : iosInset;
+}
+
+/**
  * What every tab screen's scrollable content — and any bottom-pinned control
  * that isn't already positioned relative to the bar itself, e.g. a FAB, a
  * Live-Activity-style progress card, a batch action bar — must reserve at
@@ -44,5 +57,5 @@ export function useTabBarBottomInset(): number {
   // Android lays the scene and bar out as vertical siblings. Its measured
   // scene already excludes the complete bar, including the system inset.
   // iOS overlays the bar on the scene and still needs its full height.
-  return addTabBarClearance(Platform.OS === 'android' ? 0 : nativeBarHeight);
+  return bottomAnchorInset(0, addTabBarClearance(nativeBarHeight));
 }
