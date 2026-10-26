@@ -32,7 +32,7 @@ describe('wiring', () => {
     expect(handler).toContain('setFilesMountedByUser({');
     expect(handler).not.toContain('mountTrustedFileProvider(');
     expect(handler).not.toContain('removeTrustedFileProvider(');
-    expect(settings).toContain('label="Mount Beebeeb in Files"');
+    expect(settings).toContain('label="Show Beebeeb in Files"');
     expect(settings).toContain('subtitle="Anyone who can unlock this iPhone can access the mounted Files location."');
     expect(settings).toContain('testID="files-mount-toggle"');
   });

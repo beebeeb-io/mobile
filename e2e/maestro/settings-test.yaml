@@ -24,12 +24,21 @@ appId: io.beebeeb.app
 
 - takeScreenshot: "settings-01-top"
 
-# Scroll down to reveal more settings
-- scroll
-
-- takeScreenshot: "settings-02-mid-about"
-
-# Scroll down more to reveal data residency / legal links
-- scroll
-
-- takeScreenshot: "settings-03-bottom-legal"
+# Each group has one entry on the settings hub.
+- assertVisible: "Account"
+- assertVisible: "Security"
+- assertVisible: "Backups & files"
+- tapOn:
+    id: "settings-category-backups"
+- assertVisible: "Back up camera roll"
+- takeScreenshot: "settings-02-backups"
+- tapOn:
+    id: "settings-back"
+- scrollUntilVisible:
+    element:
+      id: "settings-category-help"
+    direction: DOWN
+    centerElement: true
+- tapOn:
+    id: "settings-category-help"
+- takeScreenshot: "settings-03-help-about"

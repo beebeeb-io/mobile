@@ -3,6 +3,7 @@ import {
   ActionSheetIOS,
   ActivityIndicator,
   Alert,
+  BackHandler,
   Linking,
   Platform,
   RefreshControl,
@@ -117,6 +118,8 @@ import {
 import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
 import DevicesSection from '../components/settings/DevicesSection';
+import { SETTINGS_CATEGORIES, SettingsCategory, SettingsCategoryList, type SettingsCategoryId } from '../components/settings/SettingsCategories';
+import SettingsDiagnostics from '../components/settings/SettingsDiagnostics';
 import { markUnlocked } from '../lib/lock-state';
 import { populateFileProviderCache, registerTrustedFileProviderDomain, resetTrustedFileProviderDomain } from '../lib/file-provider-mount';
 import { setFilesMountedByUser } from '../lib/files-mount-default';
@@ -340,7 +343,7 @@ function SettingsRow({
             </Text>
           </View>
         )}
-        {value != null && <Text style={{ fontSize: 13, color: c.ink3 }}>{value}</Text>}
+        {value != null && <Text style={{ fontSize: 13, color: c.ink3, fontFamily: label === 'Version' ? fonts.mono : fonts.sans }}>{value}</Text>}
         {showChevron && !danger && <Text style={{ fontSize: 18, color: c.ink4, marginLeft: 2 }}>{'›'}</Text>}
       </View>
     </TouchableOpacity>
@@ -669,6 +672,23 @@ export default function SettingsScreen() {
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
   const apiEnvironment = getApiEnvironment();
+  const [activeCategory, setActiveCategory] = useState<SettingsCategoryId | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+
+  const selectCategory = useCallback((id: SettingsCategoryId | null) => {
+    setActiveCategory(id);
+    setIsScrolled(false);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, []);
+
+  useFocusEffect(useCallback(() => {
+    if (activeCategory === null) return;
+    const back = BackHandler.addEventListener('hardwareBackPress', () => {
+      selectCategory(null);
+      return true;
+    });
+    return () => back.remove();
+  }, [activeCategory, selectCategory]));
   // "Paused — waiting for Wi-Fi" only kicks in when the user explicitly opted
   // to gate uploads on Wi-Fi *and* we're offline (or on cellular, once the
   // hook differentiates). useNetworkStatus currently reports a binary
@@ -1678,7 +1698,7 @@ export default function SettingsScreen() {
   // primary-CTA button below to `navigation.navigate('Storage')` — but
   // StorageScreen has no purchase mechanism of any kind (task 1400, App
   // Review 3.1.1(a)), so the button was a dead end. Removed entirely rather
-  // than reworded: the "Storage & plan" row further down this screen already
+  // than reworded: the "Storage" row further down this screen already
   // navigates to the same place for a user who wants to see their plan.
 
   const handleReportBug = useCallback(() => {
@@ -1718,7 +1738,7 @@ export default function SettingsScreen() {
     } catch {
       // Fall through to fallback
     }
-    Alert.alert('Rate Beebeeb', 'Coming soon to the App Store.');
+    Alert.alert('Rate Beebeeb', 'Rating is not available on this device right now.');
   }, []);
 
   const handleSignOut = useCallback(() => {
@@ -1814,7 +1834,7 @@ export default function SettingsScreen() {
     }
 
     if (cameraIssueCount > 0) {
-      return `${cameraIssueCount.toLocaleString()} item${cameraIssueCount === 1 ? '' : 's'} need attention · open Backup Insights`;
+      return `${cameraIssueCount.toLocaleString()} item${cameraIssueCount === 1 ? '' : 's'} need attention · open Backup status`;
     }
 
     if (cameraTotalCount > 0 || cameraBackedUpCount > 0) {
@@ -1868,15 +1888,30 @@ export default function SettingsScreen() {
           setHeaderHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
         }}
       >
-        <Text style={[typeScale.largeTitle, {
-          color: c.ink,
-          paddingHorizontal: spacing.lg, paddingTop: insets.top + 6, paddingBottom: 10,
-        }]}>
-          Settings
-        </Text>
+        <View style={{ paddingTop: insets.top + 6 }}>
+          {activeCategory !== null ? (
+            <TouchableOpacity
+              onPress={() => selectCategory(null)}
+              testID="settings-back"
+              accessibilityRole="button"
+              accessibilityLabel="Back to Settings"
+              style={{ flexDirection: 'row', alignItems: 'center', minHeight: 44, paddingHorizontal: spacing.lg }}
+            >
+              <Ionicons name="chevron-back" size={20} color={c.ink} />
+              <Text style={[typeScale.body, { color: c.ink }]}>Settings</Text>
+            </TouchableOpacity>
+          ) : null}
+          <Text accessibilityRole="header" style={[typeScale.largeTitle, {
+            color: c.ink, paddingHorizontal: spacing.lg, paddingBottom: 10,
+          }]}>
+            {SETTINGS_CATEGORIES.find((category) => category.id === activeCategory)?.title ?? 'Settings'}
+          </Text>
+        </View>
       </View>
 
       <ScrollView
+        ref={scrollRef}
+        key={activeCategory ?? 'categories'}
         style={layout.scroll}
         contentContainerStyle={[layout.scrollContent, { paddingTop: headerHeight, paddingBottom: tabBarBottomInset }]}
         onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
@@ -1894,6 +1929,11 @@ export default function SettingsScreen() {
         }
       >
 
+        {activeCategory === null ? (
+          <SettingsCategoryList colors={c} backgroundColor={surfaces.groupedCell} onSelect={selectCategory} />
+        ) : null}
+
+        <SettingsCategory id="account" active={activeCategory}>
         {/* ---- Account ---- */}
         <View style={layout.section}>
           <SectionHeader title="Account" c={c} />
@@ -1976,7 +2016,7 @@ export default function SettingsScreen() {
                       that lived here navigated to StorageScreen, which (task
                       1400, App Review 3.1.1(a)) has no purchase mechanism of
                       any kind — the button was a dead end. Removed, not
-                      reworded; the "Storage & plan" row below already reaches
+                      reworded; the "Storage" row below already reaches
                       the same screen for a user who wants to see their plan. */}
                 </View>
               </>
@@ -1998,7 +2038,7 @@ export default function SettingsScreen() {
                 activeOpacity={0.6}
                 onPress={() => navigation.navigate('Storage')}
                 accessibilityRole="button"
-                accessibilityLabel="Show storage details"
+                accessibilityLabel="Storage"
               >
                 <StorageBar
                   usedBytes={usage.used_bytes}
@@ -2016,6 +2056,102 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* ---- Sign out ---- */}
+        <View style={layout.section}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
+            <SettingsRow
+              label="Sign out"
+              icon="log-out-outline"
+              danger
+              showChevron={false}
+              onPress={handleSignOut}
+              c={c}
+            />
+          </View>
+        </View>
+
+        </SettingsCategory>
+
+        <SettingsCategory id="security" active={activeCategory}>
+        {/* ---- Security ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Security" c={c} />
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
+            {!loadingBiometric && biometricAvailable && (
+              <>
+                <ToggleRow
+                  label="Biometric lock"
+                  value={biometricEnabled}
+                  onValueChange={handleBiometricToggle}
+                  c={c}
+                />
+                {biometricEnabled && (
+                  <>
+                    <RowDivider c={c} />
+                    <SettingsRow
+                      label="Lock after"
+                      value={biometricDelayLabel(biometricDelayMs)}
+                      onPress={handleBiometricDelayPress}
+                      c={c}
+                    />
+                  </>
+                )}
+                <RowDivider c={c} />
+              </>
+            )}
+            <SettingsRow
+              label="Two-factor authentication"
+              // Task 1610: show the live status inline, straight from
+              // useAuth().user (already fetched — /auth/me always includes
+              // totp_enabled) rather than making the user open the screen to
+              // find out. TwoFactorSetupScreen itself reads the same field to
+              // decide whether to open on the On state or the fresh-enrollment
+              // wizard — this row's onPress never branches on it.
+              value={user?.totp_enabled ? 'On' : undefined}
+              icon="lock-closed-outline"
+              onPress={() => navigation.navigate('TwoFactorSetup')}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Password and passkeys"
+              value="app.beebeeb.io"
+              icon="shield-checkmark-outline"
+              onPress={handleAccountSecurity}
+              c={c}
+            />
+          </View>
+          <SectionNote
+            text="Your recovery phrase is shown once during account setup and is not stored on this device. Use the copy you saved offline."
+            c={c}
+          />
+          <SectionNote
+            text="Manage your password on the web at app.beebeeb.io."
+            c={c}
+          />
+        </View>
+
+        {/* ---- Devices ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Devices" c={c} />
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell, marginBottom: 8 }]}>
+            <SettingsRow
+              label="Add a device"
+              icon="phone-portrait-outline"
+              onPress={() => navigation.navigate('DevicePairing')}
+              c={c}
+            />
+          </View>
+          <DevicesSection c={c} />
+          <SectionNote
+            text="Devices and their sync/backup sessions. Status updates every 30 seconds."
+            c={c}
+          />
+        </View>
+
+        </SettingsCategory>
+
+        <SettingsCategory id="backups" active={activeCategory}>
         {/* ---- Backup ---- */}
         <View style={layout.section}>
           <SectionHeader title="Backup" c={c} />
@@ -2097,7 +2233,7 @@ export default function SettingsScreen() {
               style={layout.row}
               activeOpacity={0.6}
               onPress={() => setAdvancedExpanded((prev) => !prev)}
-              accessibilityLabel={advancedExpanded ? 'Collapse advanced backup options' : 'Expand advanced backup options'}
+              accessibilityLabel={advancedExpanded ? 'Collapse backup options' : 'Expand backup options'}
               accessibilityRole="button"
             >
               <Ionicons
@@ -2107,14 +2243,14 @@ export default function SettingsScreen() {
                 style={{ marginRight: 8 }}
               />
               <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
-                Advanced
+                Backup options
               </Text>
             </TouchableOpacity>
             {advancedExpanded && (
               <>
                 <RowDivider c={c} />
                 <ToggleRow
-                  label="Photos and videos"
+                  label="Include videos"
                   subtitle="Back up videos in addition to photos. Videos can be large -- backed up over Wi-Fi only."
                   value={includeVideos}
                   onValueChange={handleIncludeVideosChange}
@@ -2142,7 +2278,7 @@ export default function SettingsScreen() {
                       />
                       <View style={{ flex: 1 }}>
                         <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
-                          Photo albums
+                          Photo albums to back up
                         </Text>
                         <Text style={{ fontSize: 11, color: c.ink3, marginTop: 2 }}>
                           {photoAlbumsLoading ? 'Loading albums...' : photoAlbumSelectionLabel}
@@ -2151,6 +2287,7 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                     {photoAlbumsExpanded && (
                       <View style={{ paddingHorizontal: 12, paddingBottom: 8, paddingLeft: 50 }}>
+                        <Text style={{ fontSize: 12, color: c.ink3, paddingVertical: 6 }}>Choose phone albums to upload. To change what appears in Photos, use Folders shown in Photos.</Text>
                         <TouchableOpacity
                           style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 }}
                           activeOpacity={0.6}
@@ -2206,7 +2343,7 @@ export default function SettingsScreen() {
                 />
                 <RowDivider c={c} />
                 <ToggleRow
-                  label="Background upload"
+                  label="Background uploads"
                   subtitle="Allow uploads in the background. May increase battery usage."
                   value={backgroundUpload}
                   onValueChange={handleBackgroundUploadChange}
@@ -2215,8 +2352,8 @@ export default function SettingsScreen() {
                 />
                 <RowDivider c={c} />
                 <ToggleRow
-                  label="Keep vault unlocked for backup"
-                  subtitle="Your encryption key stays securely on this device so backups continue in the background."
+                  label="Allow backup while locked"
+                  subtitle="Keep an encryption key available on this device for backup, even when the app is locked. Background work depends on your phone’s settings."
                   value={keepVaultUnlocked}
                   onValueChange={handleKeepVaultUnlockedChange}
                   indent
@@ -2235,7 +2372,7 @@ export default function SettingsScreen() {
                     <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'keep' ? c.amber : c.ink4 }]}>
                       {deletionBehavior === 'keep' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
                     </View>
-                    <Text style={{ fontSize: 13, color: c.ink }}>Keep in cloud</Text>
+                    <Text style={{ fontSize: 13, color: c.ink }}>Keep in Beebeeb</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4, marginTop: 4 }}
@@ -2252,7 +2389,7 @@ export default function SettingsScreen() {
             )}
             <RowDivider c={c} />
             <SettingsRow
-              label="Backup insights"
+              label="Backup status"
               onPress={() => navigation.navigate('BackupInsights')}
               c={c}
             />
@@ -2264,30 +2401,19 @@ export default function SettingsScreen() {
             />
             <RowDivider c={c} />
             <SettingsRow
-              label="Folders in Photos"
+              label="Folders shown in Photos"
               icon="images-outline"
               onPress={() => navigation.navigate('PhotoLibrarySettings')}
               c={c}
             />
-          </View>
-        </View>
-
-        {/* ---- Devices ---- */}
-        <View style={layout.section}>
-          <SectionHeader title="Devices" c={c} />
-          <View style={[layout.card, { backgroundColor: surfaces.groupedCell, marginBottom: 8 }]}>
+            <RowDivider c={c} />
             <SettingsRow
-              label="Add a device"
-              icon="phone-portrait-outline"
-              onPress={() => navigation.navigate('DevicePairing')}
+              label="Photo loading & quality"
+              icon="images-outline"
+              onPress={() => navigation.navigate('AdvancedSettings')}
               c={c}
             />
           </View>
-          <DevicesSection c={c} />
-          <SectionNote
-            text="Devices and their sync/backup sessions. Status updates every 30 seconds."
-            c={c}
-          />
         </View>
 
         {/* ---- Files ---- */}
@@ -2297,7 +2423,7 @@ export default function SettingsScreen() {
             {fileProviderSupported && (
               <>
                 <ToggleRow
-                  label="Mount Beebeeb in Files"
+                  label="Show Beebeeb in Files"
                   subtitle="Anyone who can unlock this iPhone can access the mounted Files location."
                   value={fileProviderMounted}
                   onValueChange={handleFileProviderMountToggle}
@@ -2317,6 +2443,9 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        </SettingsCategory>
+
+        <SettingsCategory id="notifications" active={activeCategory}>
         {/* ---- Notifications ---- */}
         <View style={layout.section}>
           <SectionHeader title="Notifications" c={c} />
@@ -2332,6 +2461,7 @@ export default function SettingsScreen() {
             {notificationsEnabled && (
               <>
                 <View style={{ height: 1, backgroundColor: c.line }} />
+                <View style={{ paddingHorizontal: 12, paddingTop: 12 }}><SectionHeader title="Account notifications" c={c} /></View>
                 <ToggleRow
                   label="File updates"
                   subtitle="When a file changes from another device"
@@ -2341,7 +2471,7 @@ export default function SettingsScreen() {
                   c={c}
                 />
                 <ToggleRow
-                  label="Share received"
+                  label="Shared with you"
                   subtitle="When someone shares a file with you"
                   value={notifPrefs.share_received}
                   onValueChange={(v) => void handleNotifPrefToggle('share_received', v)}
@@ -2350,7 +2480,7 @@ export default function SettingsScreen() {
                 />
                 <ToggleRow
                   label="Storage warnings"
-                  subtitle="When you reach 75%, 90% or 100% of your quota"
+                  subtitle="When your account is close to its storage limit"
                   value={notifPrefs.storage_warning}
                   onValueChange={(v) => void handleNotifPrefToggle('storage_warning', v)}
                   disabled={notifPrefsLoading}
@@ -2366,24 +2496,25 @@ export default function SettingsScreen() {
                 />
                 <ToggleRow
                   label="Backup complete"
-                  subtitle="When photo backup finishes"
+                  subtitle="Account alert when a backup finishes"
                   value={notifPrefs.backup_complete}
                   onValueChange={(v) => void handleNotifPrefToggle('backup_complete', v)}
                   disabled={notifPrefsLoading}
                   c={c}
                 />
                 <View style={{ height: 1, backgroundColor: c.line }} />
+                <View style={{ paddingHorizontal: 12, paddingTop: 12 }}><SectionHeader title="On this device" c={c} /></View>
                 <ToggleRow
-                  label="Photo backup summaries"
-                  subtitle="Example: Beebeeb backed up 12 new photos in the last 24 hours"
+                  label="Daily photo backup summary"
+                  subtitle="A daily summary when this device backs up new photos"
                   value={backupNotifPrefs.backupSummaries}
                   onValueChange={(v) => void handleBackupNotifPrefToggle('backupSummaries', v)}
                   disabled={backupNotifPrefsLoading}
                   c={c}
                 />
                 <ToggleRow
-                  label="No-change check-ins"
-                  subtitle="Example: Beebeeb checked your camera roll. Nothing new to back up."
+                  label="Weekly backup check-in"
+                  subtitle="Up to once a week when this device finds no new photos to back up"
                   value={backupNotifPrefs.noChangeCheckins}
                   onValueChange={(v) => void handleBackupNotifPrefToggle('noChangeCheckins', v)}
                   disabled={backupNotifPrefsLoading}
@@ -2402,6 +2533,9 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        </SettingsCategory>
+
+        <SettingsCategory id="appearance" active={activeCategory}>
         {/* ---- Appearance ---- */}
         <View style={layout.section}>
           <SectionHeader title="Appearance" c={c} />
@@ -2463,64 +2597,9 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* ---- Security ---- */}
-        <View style={layout.section}>
-          <SectionHeader title="Security" c={c} />
-          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
-            {!loadingBiometric && biometricAvailable && (
-              <>
-                <ToggleRow
-                  label="Face ID lock"
-                  value={biometricEnabled}
-                  onValueChange={handleBiometricToggle}
-                  c={c}
-                />
-                {biometricEnabled && (
-                  <>
-                    <RowDivider c={c} />
-                    <SettingsRow
-                      label="Lock after"
-                      value={biometricDelayLabel(biometricDelayMs)}
-                      onPress={handleBiometricDelayPress}
-                      c={c}
-                    />
-                  </>
-                )}
-                <RowDivider c={c} />
-              </>
-            )}
-            <SettingsRow
-              label="Two-Factor Authentication"
-              // Task 1610: show the live status inline, straight from
-              // useAuth().user (already fetched — /auth/me always includes
-              // totp_enabled) rather than making the user open the screen to
-              // find out. TwoFactorSetupScreen itself reads the same field to
-              // decide whether to open on the On state or the fresh-enrollment
-              // wizard — this row's onPress never branches on it.
-              value={user?.totp_enabled ? 'On' : undefined}
-              icon="lock-closed-outline"
-              onPress={() => navigation.navigate('TwoFactorSetup')}
-              c={c}
-            />
-            <RowDivider c={c} />
-            <SettingsRow
-              label="Manage account on the web"
-              value="app.beebeeb.io"
-              icon="shield-checkmark-outline"
-              onPress={handleAccountSecurity}
-              c={c}
-            />
-          </View>
-          <SectionNote
-            text="Your recovery phrase is shown once during account setup and is not stored on this device. Use the copy you saved offline."
-            c={c}
-          />
-          <SectionNote
-            text="Manage your password on the web at app.beebeeb.io."
-            c={c}
-          />
-        </View>
+        </SettingsCategory>
 
+        <SettingsCategory id="privacy" active={activeCategory}>
         {/* ---- Privacy & data ---- */}
         <View style={layout.section}>
           <SectionHeader title="Privacy & data" c={c} />
@@ -2534,9 +2613,12 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        </SettingsCategory>
+
+        <SettingsCategory id="storage" active={activeCategory}>
         {/* ---- Data residency ---- */}
         <View style={layout.section}>
-          <SectionHeader title="Data residency" c={c} />
+          <SectionHeader title="Storage location" c={c} />
           <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             {/* Rows come from GET /api/v1/storage-regions (task 1919). */}
             {regionRows.length === 0 && (
@@ -2670,6 +2752,9 @@ export default function SettingsScreen() {
           )}
         </View>
 
+        </SettingsCategory>
+
+        <SettingsCategory id="help" active={activeCategory}>
         {/* ---- Support ---- */}
         <View style={layout.section}>
           <SectionHeader title="Support" c={c} />
@@ -2689,19 +2774,13 @@ export default function SettingsScreen() {
             />
             <RowDivider c={c} />
             <SettingsRow
-              label="Siri & Shortcuts"
+              label="System settings"
               icon="mic-outline"
               onPress={() => { void Linking.openSettings(); }}
               c={c}
             />
-            <RowDivider c={c} />
-            <SettingsRow
-              label="Advanced"
-              icon="options-outline"
-              onPress={() => navigation.navigate('AdvancedSettings')}
-              c={c}
-            />
           </View>
+          {__DEV__ ? <SettingsDiagnostics /> : null}
         </View>
 
         {/* ---- About ---- */}
@@ -2716,6 +2795,7 @@ export default function SettingsScreen() {
               onPress={handleShowVersion}
               c={c}
             />
+            {__DEV__ && <>
             <RowDivider c={c} />
             <SettingsRow
               label="API environment"
@@ -2724,6 +2804,7 @@ export default function SettingsScreen() {
               showChevron={false}
               c={c}
             />
+            </>}
             <RowDivider c={c} />
             <SettingsRow
               label="Operated by"
@@ -2762,27 +2843,13 @@ export default function SettingsScreen() {
             />
             <RowDivider c={c} />
             <SettingsRow
-              label="Rate on App Store"
+              label="Rate Beebeeb"
               icon="star-half-outline"
               onPress={handleRateApp}
               c={c}
             />
           </View>
-          <SectionNote text={`API target: ${apiEnvironment.baseUrl}`} c={c} />
-        </View>
-
-        {/* ---- Sign out ---- */}
-        <View style={layout.section}>
-          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
-            <SettingsRow
-              label="Sign out"
-              icon="log-out-outline"
-              danger
-              showChevron={false}
-              onPress={handleSignOut}
-              c={c}
-            />
-          </View>
+          {__DEV__ ? <Text selectable style={{ fontFamily: fonts.mono, fontSize: 11, color: c.ink3, marginTop: 6 }}>{`API target: ${apiEnvironment.baseUrl}`}</Text> : null}
         </View>
 
         {/* Footer */}
@@ -2795,6 +2862,8 @@ export default function SettingsScreen() {
           )}
           <Text style={{ fontSize: 10, color: c.ink4 }}>Operated by Initlabs B.V., Wijchen, Netherlands.</Text>
         </View>
+        </SettingsCategory>
+
       </ScrollView>
     </View>
   );

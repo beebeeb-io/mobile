@@ -40,7 +40,6 @@ const ALLOWED = [
   ['src/lib/onboarding/account-summary.ts', 'A payment did not go through', 'headline for past_due: a state, no action offered'],
   ['src/lib/onboarding/account-summary.ts', 'The first payment is on', 'a trial that already has a card on file: the date is a fact'],
   // Account and password management (security), not a plan or a payment.
-  ['src/screens/SettingsScreen.tsx', 'Manage account on the web', 'row that opens account security (password, 2FA); no plan or billing behind it'],
   ['src/screens/SettingsScreen.tsx', 'Manage your password on the web at app.beebeeb.io.', 'password management note; no plan or billing'],
   // Renewal date of a subscription that already exists, shown as a fact ("Renews 12 Oct 2026").
   ['src/lib/billing-status.ts', 'Renews', 'date of an existing active subscription; no price, no action'],
