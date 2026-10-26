@@ -1,16 +1,47 @@
 // @ts-nocheck — Bun's isolated test runtime types are not part of the app TypeScript project.
 import { expect, test } from 'bun:test';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const root = resolve(import.meta.dir, '../..');
+const git = process.env.GIT_BIN ?? 'git';
 test('release splash images referenced by the native theme exist and are not ignored at every density', () => {
   for (const density of ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi', 'xxxhdpi']) {
     const path = `android/app/src/main/res/drawable-${density}/splashscreen_logo.png`;
     expect(existsSync(resolve(root, path))).toBe(true);
-    expect(execFileSync('git', ['check-ignore', '--no-index', '--non-matching', '-v', path], { cwd: root, encoding: 'utf8' }))
+    expect(execFileSync(git, ['check-ignore', '--no-index', '--non-matching', '-v', path], { cwd: root, encoding: 'utf8' }))
       .toContain('!android/app/src/main/res/drawable-*/splashscreen_logo.png');
+  }
+});
+
+test('tracked native image assets are included in EAS archives', () => {
+  const assets = execFileSync(git, [
+    'ls-files',
+    'android/app/src/main/res/',
+    'ios/Beebeeb/Images.xcassets/',
+  ], { cwd: root, encoding: 'utf8' }).trim().split('\n');
+  const proofRoot = mkdtempSync(join(tmpdir(), 'bb-easignore-'));
+  writeFileSync(join(proofRoot, '.easignore'), readFileSync(resolve(root, '.easignore')));
+  execFileSync(git, ['init', '--quiet'], { cwd: proofRoot });
+
+  try {
+    for (const path of assets) {
+      let excluded = false;
+      try {
+        const match = execFileSync(git, [
+          '-c', `core.excludesFile=${join(proofRoot, '.easignore')}`,
+          'check-ignore', '-v', '--no-index', path,
+        ], { cwd: proofRoot, encoding: 'utf8' });
+        excluded = !match.includes(':!');
+      } catch (error: any) {
+        expect(error.status).toBe(1);
+      }
+      expect(excluded).toBe(false);
+    }
+  } finally {
+    rmSync(proofRoot, { recursive: true, force: true });
   }
 });
 
