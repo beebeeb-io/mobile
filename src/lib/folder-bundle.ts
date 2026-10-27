@@ -11,11 +11,9 @@
  *
  * Bundles are FLAT and the manifest names each item from its own
  * `name_encrypted`, so the guest page lists the plain file names (a duplicate
- * name in two subfolders is allowed — the item id tells them apart). A path
- * sidecar in the link fragment was considered and dropped: up to 256 sealed
- * paths make the URL long enough for chat apps to cut it off, and this is an
- * interim fix until 2237 phase 1 ships real folder links. This module only
- * does the walk: deterministic order, the subtree, the bundle item cap.
+ * name in two subfolders is allowed — the item id tells them apart). This is
+ * the interim shape until 2237 phase 1 ships real folder links. This module
+ * only does the walk: deterministic order, the subtree, the item cap.
  *
  * Deliberately dependency-free (types + injected callbacks) so the walk is
  * unit-testable in bun without native modules, a network or a vault.
@@ -35,6 +33,20 @@ export interface FolderBundleNode {
   name_encrypted: string;
   is_folder: boolean;
   is_trashed?: boolean;
+  /**
+   * File-request envelope. A row received through a file request is sealed
+   * under a RANDOM content key, which mobile cannot unwrap (the request key
+   * resolver is web-only), so such rows are EXCLUDED from the bundle and
+   * counted instead — see `FolderBundleScan.requestUploads`.
+   */
+  file_request_id?: string | null;
+  sender_ephemeral_pubkey?: string | null;
+  wrapped_content_key?: string | null;
+}
+
+/** True for a row that arrived through a file request (see FolderBundleNode). */
+export function isRequestUploadNode(node: FolderBundleNode): boolean {
+  return !!node.file_request_id || !!node.sender_ephemeral_pubkey || !!node.wrapped_content_key;
 }
 
 /** One file that will become a bundle item. */
@@ -50,6 +62,13 @@ export interface FolderBundleScan {
   /** Ordered, non-trashed files in the subtree (at most `maxItems`). */
   files: FolderBundleFile[];
   /**
+   * Files received through a FILE REQUEST that were skipped: mobile cannot
+   * unwrap their content key, so they cannot travel in this bundle. The sheet
+   * says how many were left out instead of silently sharing an item nobody can
+   * decrypt.
+   */
+  requestUploads: number;
+  /**
    * True when the subtree holds MORE files than `maxItems` — the walk stops at
    * the cap, so `files.length === maxItems` in that case. The caller must
    * refuse to mint a link and explain the cap.
@@ -60,12 +79,6 @@ export interface FolderBundleScan {
 export interface FolderBundleOptions {
   /** Bundle item cap; defaults to `FOLDER_BUNDLE_MAX_ITEMS`. */
   maxItems?: number;
-  /**
-   * Leading segment of every prefix: the shared folder's own display name, so
-   * the link reads `Holiday/beach.jpg` rather than leaving a root-level item's
-   * path ambiguous. Empty when unknown.
-   */
-  rootPrefix?: string;
 }
 
 export interface FolderBundleDeps {
@@ -82,11 +95,10 @@ export interface FolderBundleDeps {
 /**
  * Walk `rootFolderId`'s subtree depth-first and return every non-trashed file
  * in a stable order: children of a folder sorted by decrypted name (falling
- * back to id), files at a level before its subfolders' contents.
+ * back to id), depth-first.
  *
- * The order is the bundle's `position` order, so the same folder produces the
- * same link layout twice — which is what makes the link's path payload line up
- * with the manifest (`position` is what the manifest orders and paginates by).
+ * The order is the bundle's `position` order, so the same folder always yields
+ * the same layout — the manifest orders and paginates by exactly that position.
  *
  * The walk STOPS as soon as it has seen `maxItems + 1` files: the caller only
  * needs to know "it fits" or "it does not", and a 50k-file folder must not be
@@ -100,6 +112,7 @@ export async function collectFolderBundle(
   const maxItems = options.maxItems ?? FOLDER_BUNDLE_MAX_ITEMS;
   const files: FolderBundleFile[] = [];
   let overCap = false;
+  let requestUploads = 0;
 
   async function walk(folderId: string): Promise<void> {
     if (overCap) return;
@@ -121,6 +134,12 @@ export async function collectFolderBundle(
         await walk(node.id);
         continue;
       }
+      // A request upload cannot be decrypted by a mobile-created link — count
+      // it and leave it out rather than publishing an undecryptable item.
+      if (isRequestUploadNode(node)) {
+        requestUploads += 1;
+        continue;
+      }
       if (files.length >= maxItems) {
         overCap = true;
         return;
@@ -130,5 +149,5 @@ export async function collectFolderBundle(
   }
 
   await walk(rootFolderId);
-  return { files, overCap };
+  return { files, overCap, requestUploads };
 }

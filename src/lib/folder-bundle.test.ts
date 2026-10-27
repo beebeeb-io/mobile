@@ -1,7 +1,7 @@
 // @ts-nocheck
 /**
  * Task 2238 (mobile) — a folder "Share link" is a snapshot bundle of the
- * folder's files, with each item's relative path as a display prefix.
+ * folder's files. Bundles are flat, so each item shows its own plain file name.
  *
  * RED-first: written against the pre-2238 tree, where no folder walk exists and
  * the sheet mints a `file` share on the folder id (the guest page then dies on
@@ -93,4 +93,18 @@ describe('collectFolderBundle (2238)', () => {
     expect(scan.files.map((f) => f.name)).toEqual([null, null]);
   });
 
+  test('skips files received through a file request and counts them (2238 review)', async () => {
+    // Their content key is the random request key, which mobile cannot unwrap —
+    // sharing one would publish an item nobody can decrypt.
+    const scan = await collectFolderBundle('root', {
+      listChildren: async () => [
+        node('req-1', 'received.txt', { file_request_id: 'r1' }),
+        node('mine-1', 'mine.txt'),
+        node('req-2', 'other.txt', { sender_ephemeral_pubkey: 'pk' }),
+      ],
+      decryptName: async (n) => n.name_encrypted.slice(4),
+    });
+    expect(scan.files.map((f) => f.fileId)).toEqual(['mine-1']);
+    expect(scan.requestUploads).toBe(2);
+  });
 });

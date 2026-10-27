@@ -198,6 +198,8 @@ export default function ShareSheetScreen() {
   // state the real count and the cap is known before anything is minted.
   const [folderScan, setFolderScan] = useState<FolderBundleScan | null>(null);
   const [folderScanError, setFolderScanError] = useState<string | null>(null);
+  // Bumped by the note's Retry control; re-runs the folder walk.
+  const [folderScanAttempt, setFolderScanAttempt] = useState(0);
   const { showToast } = useToast();
 
   const badge = makeFileTypeBadge(mimeType, c);
@@ -241,6 +243,8 @@ export default function ShareSheetScreen() {
     zkBadgeText: { fontSize: 9, fontWeight: '700', color: c.amberDeep, letterSpacing: 0.5 },
     snapshotNote: { borderWidth: 1, borderColor: c.line, borderRadius: radii.md, backgroundColor: c.paper2, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 },
     snapshotNoteText: { fontSize: 12, color: c.ink2, lineHeight: 18 },
+    retryButton: { alignSelf: 'flex-start', marginTop: 8, paddingHorizontal: 12, paddingVertical: 6, borderRadius: radii.sm, borderWidth: 1, borderColor: c.line, backgroundColor: c.paper },
+    retryButtonText: { fontSize: 12, fontWeight: '600', color: c.ink },
     errorBanner: { backgroundColor: resolved === 'dark' ? '#2d1515' : '#fef2f2', borderWidth: 1, borderColor: resolved === 'dark' ? '#5c2828' : '#fecaca', borderRadius: radii.md, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, marginTop: spacing.lg },
     errorText: { fontSize: 12, color: c.red, lineHeight: 17 },
     createButton: { height: 46, backgroundColor: c.amber, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center', marginTop: spacing.xl },
@@ -311,7 +315,7 @@ export default function ShareSheetScreen() {
     return () => {
       cancelled = true;
     };
-  }, [isFolder, isUnlocked, fileId, fileName, decryptNames]);
+  }, [isFolder, isUnlocked, fileId, decryptNames, folderScanAttempt]);
 
   const handleCreate = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -707,16 +711,38 @@ export default function ShareSheetScreen() {
             {isFolder && (
               <View style={styles.snapshotNote} accessibilityRole="text" testID="folder-snapshot-note">
                 <Text style={styles.snapshotNoteText}>
-                  {folderScanError
-                    ? `Could not read this folder: ${folderScanError}`
-                    : folderScan === null
-                      ? 'Counting the files in this folder…'
-                      : folderScan.files.length === 0
-                        ? 'Nothing to share yet'
-                        : folderScan.overCap
-                          ? `This folder has more than ${FOLDER_BUNDLE_MAX_ITEMS} files. A link covers up to ${FOLDER_BUNDLE_MAX_ITEMS}; share fewer files.`
-                          : `Shares the ${folderScan.files.length} files in this folder and its subfolders as they are now. Files added later won't appear.`}
+                  {!isUnlocked
+                    ? 'Unlock Beebeeb to share this folder.'
+                    : folderScanError
+                      ? `Could not read this folder: ${folderScanError}`
+                      : folderScan === null
+                        ? 'Counting the files in this folder…'
+                        : folderScan.files.length === 0
+                          ? 'Nothing to share yet'
+                          : folderScan.overCap
+                            ? `This folder has more than ${FOLDER_BUNDLE_MAX_ITEMS} files. A link covers up to ${FOLDER_BUNDLE_MAX_ITEMS}; share fewer files.`
+                            : `Shares the ${folderScan.files.length} files in this folder and its subfolders as they are now. Files added later won't appear.`}
                 </Text>
+                {/* Task 2238 review — the rows we had to leave out, said plainly
+                    instead of silently publishing an item nobody can decrypt. */}
+                {!!isUnlocked && folderScan && folderScan.requestUploads > 0 && !folderScan.overCap && (
+                  <Text style={styles.snapshotNoteText} testID="folder-request-uploads-note">
+                    {folderScan.requestUploads === 1
+                      ? "1 file received through a file request isn't included; share it from the web app."
+                      : `${folderScan.requestUploads} files received through a file request aren't included; share them from the web app.`}
+                  </Text>
+                )}
+                {!!isUnlocked && folderScanError && (
+                  <TouchableOpacity
+                    style={styles.retryButton}
+                    onPress={() => setFolderScanAttempt((n) => n + 1)}
+                    activeOpacity={0.8}
+                    accessibilityRole="button"
+                    testID="folder-scan-retry"
+                  >
+                    <Text style={styles.retryButtonText}>Retry</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             )}
             {isFolder ? null : (
