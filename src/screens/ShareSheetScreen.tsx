@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -19,8 +19,10 @@ import { BottomSheet, BottomSheetScrollView } from '../components/sheet/BottomSh
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
-import { ApiError, approveInvite, createInvite, createShare, friendlyError, getWebAppUrl, resolveSharingContact } from '../lib/api';
-import type { Share as ShareLink } from '../lib/api';
+import { ApiError, approveInvite, createBundleShare, createInvite, createShare, friendlyError, getWebAppUrl, listAllFiles, resolveSharingContact } from '../lib/api';
+import type { CreateBundleShareItem, FileEntry, Share as ShareLink } from '../lib/api';
+import { FOLDER_BUNDLE_MAX_ITEMS, collectFolderBundle } from '../lib/folder-bundle';
+import type { FolderBundleScan } from '../lib/folder-bundle';
 import { useCrypto } from '../lib/crypto-context';
 import { formatBytes as formatSize } from '../lib/format';
 import { formatDateTime } from '../lib/date-format';
@@ -171,8 +173,8 @@ export default function ShareSheetScreen() {
   const navigation = useNavigation();
   const route = useRoute<ShareRoute>();
   const { colors: c, resolved } = useTheme();
-  const { fileId, fileName, mimeType, sizeBytes } = route.params;
-  const { getFileKeyBytes, deriveX25519PrivateFromHandle, getMasterKeyHandleId, isUnlocked } = useCrypto();
+  const { fileId, fileName, mimeType, sizeBytes, isFolder } = route.params;
+  const { getFileKeyBytes, decryptNames, deriveX25519PrivateFromHandle, getMasterKeyHandleId, isUnlocked } = useCrypto();
   useKeyboardLayoutAnimation();
 
   const [expiry, setExpiry] = useState<ExpiryOption>(EXPIRY_OPTIONS[1]);
@@ -191,6 +193,13 @@ export default function ShareSheetScreen() {
   // badge) is gone.
   const [copied, setCopied] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  // Task 2238 — a FOLDER link is a SNAPSHOT BUNDLE of the files below it
+  // (folder-bundle.ts). Scanned as soon as the sheet opens so the copy can
+  // state the real count and the cap is known before anything is minted.
+  const [folderScan, setFolderScan] = useState<FolderBundleScan | null>(null);
+  const [folderScanError, setFolderScanError] = useState<string | null>(null);
+  // Bumped by the note's Retry control; re-runs the folder walk.
+  const [folderScanAttempt, setFolderScanAttempt] = useState(0);
   const { showToast } = useToast();
 
   const badge = makeFileTypeBadge(mimeType, c);
@@ -232,6 +241,10 @@ export default function ShareSheetScreen() {
     toggleSub: { fontSize: 11, color: c.ink3, marginTop: 3, lineHeight: 16 },
     zkBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: c.amberBg, borderWidth: 1, borderColor: c.amber, borderRadius: radii.sm, paddingHorizontal: 6, paddingVertical: 2, alignSelf: 'flex-start', marginTop: 4 },
     zkBadgeText: { fontSize: 9, fontWeight: '700', color: c.amberDeep, letterSpacing: 0.5 },
+    snapshotNote: { borderWidth: 1, borderColor: c.line, borderRadius: radii.md, backgroundColor: c.paper2, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 },
+    snapshotNoteText: { fontSize: 12, color: c.ink2, lineHeight: 18 },
+    retryButton: { alignSelf: 'flex-start', marginTop: 8, paddingHorizontal: 12, paddingVertical: 6, borderRadius: radii.sm, borderWidth: 1, borderColor: c.line, backgroundColor: c.paper },
+    retryButtonText: { fontSize: 12, fontWeight: '600', color: c.ink },
     errorBanner: { backgroundColor: resolved === 'dark' ? '#2d1515' : '#fef2f2', borderWidth: 1, borderColor: resolved === 'dark' ? '#5c2828' : '#fecaca', borderRadius: radii.md, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, marginTop: spacing.lg },
     errorText: { fontSize: 12, color: c.red, lineHeight: 17 },
     createButton: { height: 46, backgroundColor: c.amber, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center', marginTop: spacing.xl },
@@ -265,6 +278,45 @@ export default function ShareSheetScreen() {
     navigation.goBack();
   }, [navigation]);
 
+  // Task 2238 — walk the folder's subtree (non-trashed files only) so the sheet
+  // can state the real snapshot count and refuse an empty / over-cap folder
+  // before it mints anything. Mirrors web's share dialog.
+  const folderFiles = isFolder ? folderScan?.files ?? [] : [];
+  /** Minting is refused while the folder is unread, empty or over the cap. */
+  const folderBlocked = !!isFolder && (folderScan === null || folderFiles.length === 0 || folderScan.overCap);
+
+  useEffect(() => {
+    if (!isFolder || !isUnlocked) return;
+    let cancelled = false;
+    setFolderScan(null);
+    setFolderScanError(null);
+    void (async () => {
+      try {
+        const scan = await collectFolderBundle(
+          fileId,
+          {
+            listChildren: (folderId) => listAllFiles(folderId, { trashed: false }) as Promise<FileEntry[]>,
+            decryptName: async (node) => {
+              if (!node.name_encrypted) return null;
+              try {
+                const [row] = await decryptNames([{ fileId: node.id, nameEncrypted: node.name_encrypted }]);
+                return row && typeof row.name === 'string' ? row.name : null;
+              } catch {
+                return null;
+              }
+            },
+          },
+        );
+        if (!cancelled) setFolderScan(scan);
+      } catch (e) {
+        if (!cancelled) setFolderScanError(friendlyError(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isFolder, isUnlocked, fileId, decryptNames, folderScanAttempt]);
+
   const handleCreate = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setCreating(true);
@@ -274,6 +326,87 @@ export default function ShareSheetScreen() {
     try {
       if (!isUnlocked) {
         setError('Vault is locked. Unlock it to create a share.');
+        return;
+      }
+
+      // ── Folder snapshot bundle (task 2238) ────────────────────────────────
+      // A folder link is ONE bundle over every file in the subtree as it is
+      // now — never a `file` share on the folder row (the guest page would die
+      // on `400 cannot download a folder`). Items show their plain file names
+      // (bundles are flat; duplicates are allowed) and the link keeps today's
+      // `#key=`-only format.
+      if (isFolder) {
+        const scan = folderScan;
+        if (!scan) {
+          setError('Still counting the files in this folder. Try again in a moment.');
+          return;
+        }
+        if (scan.files.length === 0) {
+          setError('Nothing to share yet');
+          return;
+        }
+        if (scan.overCap) {
+          setError(`A link covers up to ${FOLDER_BUNDLE_MAX_ITEMS} files. Share fewer files.`);
+          return;
+        }
+
+        const clientKey = await generateRandomBytes(32);
+        let items: CreateBundleShareItem[] = [];
+        let keyForUrl: string;
+        let ownerWrappedKey: string;
+        try {
+          for (const f of scan.files) {
+            const itemKey = await getFileKeyBytes(f.fileId);
+            try {
+              const wrapped = await wrapFileKeyForShare(clientKey, itemKey);
+              items.push({
+                file_id: f.fileId,
+                position: f.position,
+                wrapped_file_key: toBase64(wrapped),
+              });
+            } finally {
+              itemKey.fill(0);
+            }
+          }
+          ownerWrappedKey = await ownerWrapToBase64(getMasterKeyHandleId(), clientKey);
+          keyForUrl = toBase64url(clientKey);
+        } finally {
+          clientKey.fill(0);
+        }
+
+        const mintToken = async (): Promise<
+          { token: string; owner_wrapped_token: string }
+        > => {
+          const token = toBase64url(await generateRandomBytes(20));
+          return { token, owner_wrapped_token: await ownerWrapToBase64(getMasterKeyHandleId(), asciiBytes(token)) };
+        };
+        let tokenFields = await mintToken();
+        const buildBundleOpts = async () => ({
+          items,
+          expires_in_hours: expiry.hours ?? undefined,
+          max_opens: opens.value ?? undefined,
+          passphrase: passphrase.trim() || undefined,
+          token: tokenFields.token,
+          owner_wrapped_key: ownerWrappedKey,
+          owner_wrapped_token: tokenFields.owner_wrapped_token,
+        });
+
+        let result: ShareLink;
+        try {
+          result = await createBundleShare(await buildBundleOpts());
+        } catch (e) {
+          // 409 = client-token collision (≈ never at 20 random bytes) → re-mint once.
+          if (e instanceof ApiError && e.status === 409) {
+            tokenFields = await mintToken();
+            result = await createBundleShare(await buildBundleOpts());
+          } else {
+            throw e;
+          }
+        }
+
+        setShare(result);
+        setLocalShareUrl(buildFullShareLink(getWebAppUrl(), result.token, keyForUrl));
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         return;
       }
 
@@ -364,7 +497,7 @@ export default function ShareSheetScreen() {
     } finally {
       setCreating(false);
     }
-  }, [fileId, expiry, opens, passphrase, isUnlocked, getFileKeyBytes, getMasterKeyHandleId]);
+  }, [fileId, expiry, opens, passphrase, isUnlocked, isFolder, folderScan, getFileKeyBytes, getMasterKeyHandleId]);
 
   const handleCreateInvite = useCallback(async () => {
     const raw = recipient.trim();
@@ -573,6 +706,46 @@ export default function ShareSheetScreen() {
         ) : (
           /* ---- Configure share settings ---- */
           <View>
+            {/* Task 2238 — a folder link is a snapshot of the files below it:
+                flat, immutable, capped. Same sentence as web. */}
+            {isFolder && (
+              <View style={styles.snapshotNote} accessibilityRole="text" testID="folder-snapshot-note">
+                <Text style={styles.snapshotNoteText}>
+                  {!isUnlocked
+                    ? 'Unlock Beebeeb to share this folder.'
+                    : folderScanError
+                      ? `Could not read this folder: ${folderScanError}`
+                      : folderScan === null
+                        ? 'Counting the files in this folder…'
+                        : folderScan.files.length === 0
+                          ? 'Nothing to share yet'
+                          : folderScan.overCap
+                            ? `This folder has more than ${FOLDER_BUNDLE_MAX_ITEMS} files. A link covers up to ${FOLDER_BUNDLE_MAX_ITEMS}; share fewer files.`
+                            : `Shares the ${folderScan.files.length} files in this folder and its subfolders as they are now. Files added later won't appear.`}
+                </Text>
+                {/* Task 2238 review — the rows we had to leave out, said plainly
+                    instead of silently publishing an item nobody can decrypt. */}
+                {!!isUnlocked && folderScan && folderScan.requestUploads > 0 && !folderScan.overCap && (
+                  <Text style={styles.snapshotNoteText} testID="folder-request-uploads-note">
+                    {folderScan.requestUploads === 1
+                      ? "1 file received through a file request isn't included; share it from the web app."
+                      : `${folderScan.requestUploads} files received through a file request aren't included; share them from the web app.`}
+                  </Text>
+                )}
+                {!!isUnlocked && folderScanError && (
+                  <TouchableOpacity
+                    style={styles.retryButton}
+                    onPress={() => setFolderScanAttempt((n) => n + 1)}
+                    activeOpacity={0.8}
+                    accessibilityRole="button"
+                    testID="folder-scan-retry"
+                  >
+                    <Text style={styles.retryButtonText}>Retry</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+            {isFolder ? null : (
             <View style={styles.modeRow} accessibilityRole="tablist">
               <TouchableOpacity
                 style={[styles.modeButton, mode === 'link' && styles.modeButtonActive]}
@@ -603,8 +776,9 @@ export default function ShareSheetScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
+            )}
 
-            {mode === 'link' ? (
+            {mode === 'link' || isFolder ? (
               <>
                 {/* Expiry */}
                 <Text style={styles.sectionLabel}>Expires</Text>
@@ -705,22 +879,22 @@ export default function ShareSheetScreen() {
             )}
 
             <TouchableOpacity
-              style={[styles.createButton, creating && styles.buttonDisabled]}
+              style={[styles.createButton, (creating || folderBlocked) && styles.buttonDisabled]}
               onPress={mode === 'link' ? handleCreate : handleCreateInvite}
               activeOpacity={0.8}
-              disabled={creating}
+              disabled={creating || folderBlocked}
             >
               {creating ? (
                 <ActivityIndicator color={c.ink} size="small" />
               ) : (
                 <Text style={styles.createButtonText}>
-                  {mode === 'link' ? 'Create encrypted link' : 'Send invite'}
+                  {mode === 'link' || isFolder ? 'Create encrypted link' : 'Send invite'}
                 </Text>
               )}
             </TouchableOpacity>
 
             <Text style={styles.fineprint}>
-              {mode === 'link'
+              {mode === 'link' || isFolder
                 ? 'End-to-end encrypted — Beebeeb cannot decrypt this share.'
                 : 'Email invites appear as pending until the recipient can accept them.'}
             </Text>

@@ -333,6 +333,11 @@ export type RootStackParamList = {
     fileName: string;
     mimeType?: string;
     sizeBytes?: number;
+    /**
+     * Task 2238 — the target is a FOLDER: the sheet mints a snapshot bundle of
+     * every file below it (a `file` share on the folder row cannot download).
+     */
+    isFolder?: boolean;
   };
   // Incoming share link: beebeeb://s/:token or https://app.beebeeb.io/s/:token
   SharedView: { token: string };
