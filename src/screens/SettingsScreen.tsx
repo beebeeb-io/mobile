@@ -121,6 +121,7 @@ import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
 import DevicesSection from '../components/settings/DevicesSection';
 import { SETTINGS_CATEGORIES, SettingsCategory, SettingsCategoryList, type SettingsCategoryId } from '../components/settings/SettingsCategories';
+import { useSettingsAttention } from '../lib/use-settings-attention';
 import SettingsDiagnostics from '../components/settings/SettingsDiagnostics';
 import { markUnlocked } from '../lib/lock-state';
 import { populateFileProviderCache, registerTrustedFileProviderDomain, resetTrustedFileProviderDomain } from '../lib/file-provider-mount';
@@ -671,6 +672,8 @@ export default function SettingsScreen() {
     manifestUnavailableReason,
     serverCheckPausedReason,
   } = useBackup();
+  // Task 2245 (P1): same object the Settings tab badge reads.
+  const settingsAttention = useSettingsAttention();
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
   const apiEnvironment = getApiEnvironment();
@@ -803,6 +806,14 @@ export default function SettingsScreen() {
 
   // Advanced backup section toggle
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
+
+  // Task 2245 (P1): storage attention is refreshed when Settings gains focus,
+  // not only on mount, so a reason the user just fixed disappears here.
+  useFocusEffect(
+    useCallback(() => {
+      settingsAttention.refresh();
+    }, [settingsAttention.refresh]),
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -1964,7 +1975,7 @@ export default function SettingsScreen() {
       >
 
         {activeCategory === null ? (
-          <SettingsCategoryList colors={c} backgroundColor={surfaces.groupedCell} onSelect={selectCategory} />
+          <SettingsCategoryList colors={c} backgroundColor={surfaces.groupedCell} onSelect={selectCategory} attention={settingsAttention} />
         ) : null}
 
         <SettingsCategory id="account" active={activeCategory}>
