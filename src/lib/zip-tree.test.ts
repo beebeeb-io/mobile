@@ -1,7 +1,7 @@
 // @ts-nocheck — bun runs this; `bun:test` types aren't in the Expo tsconfig
 // (matches the convention in the other src/lib/*.test.ts files).
 import { describe, expect, test } from 'bun:test';
-import { levelRows, isMacOsNoise, type ZipEntry } from './zip-tree';
+import { levelRows, isMacOsNoise, withoutMacOsNoise, type ZipEntry } from './zip-tree';
 
 // Helper: a ZipEntry as parseZip would produce (dir paths have NO trailing slash).
 const e = (path: string, isFolder = false): ZipEntry => ({
@@ -56,5 +56,31 @@ describe('isMacOsNoise (task 0779)', () => {
     expect(isMacOsNoise('._top')).toBe(true);
     expect(isMacOsNoise('Ai-iris/logo.png')).toBe(false);
     expect(isMacOsNoise('notes._draft.txt')).toBe(false); // ._ mid-name is real content
+  });
+});
+
+describe('withoutMacOsNoise (task 2233 item 6)', () => {
+  // The ranged listing path builds its tree straight from the central
+  // directory, so the macOS metadata filter has to be applied there too.
+  test('drops __MACOSX and AppleDouble entries, keeps real content', () => {
+    const entries = [
+      e('__MACOSX'),
+      e('__MACOSX/Ai-iris'),
+      e('__MACOSX/Ai-iris/._logo.png'),
+      e('Ai-iris'),
+      e('Ai-iris/._cover.jpg'),
+      e('Ai-iris/logo.png'),
+      e('notes._draft.txt'),
+    ];
+    expect(withoutMacOsNoise(entries).map((x) => x.path)).toEqual([
+      'Ai-iris',
+      'Ai-iris/logo.png',
+      'notes._draft.txt',
+    ]);
+  });
+
+  test('leaves an archive without metadata untouched', () => {
+    const entries = [e('docs'), e('docs/a.txt')];
+    expect(withoutMacOsNoise(entries)).toEqual(entries);
   });
 });
