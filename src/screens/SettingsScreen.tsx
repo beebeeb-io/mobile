@@ -68,14 +68,12 @@ import {
 } from '../lib/backup-notification-settings';
 import { writeWidgetData } from '../utils/widgetData';
 import {
-  getStorageUsage,
   getPreference,
   getSubscription,
   getRegion,
   getNotificationPreferences,
   setNotificationPreferences,
   getApiEnvironment,
-  type StorageUsage,
   type Subscription,
   type Region,
   type MobileNotificationPreferences,
@@ -121,7 +119,7 @@ import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
 import DevicesSection from '../components/settings/DevicesSection';
 import { SETTINGS_CATEGORIES, SettingsCategory, SettingsCategoryList, type SettingsCategoryId } from '../components/settings/SettingsCategories';
-import { useSettingsAttention } from '../lib/use-settings-attention';
+import { useSettingsAttention } from '../lib/settings-attention-context';
 import SettingsDiagnostics from '../components/settings/SettingsDiagnostics';
 import { markUnlocked } from '../lib/lock-state';
 import { populateFileProviderCache, registerTrustedFileProviderDomain, resetTrustedFileProviderDomain } from '../lib/file-provider-mount';
@@ -731,7 +729,9 @@ export default function SettingsScreen() {
   // online/offline; treat offline as paused for now.
   const backupPaused = wifiOnly && !isOnline;
 
-  const [usage, setUsage] = useState<StorageUsage | null>(null);
+  // Task 2245 (P1): the SAME storage snapshot the tab badge reads. The
+  // provider owns the fetch; this screen never keeps a second copy.
+  const usage = settingsAttention.usage;
   const [loadingUsage, setLoadingUsage] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   // Track which storage thresholds we've already alerted on this session, so
@@ -918,8 +918,8 @@ export default function SettingsScreen() {
 
   const fetchUsage = useCallback(async () => {
     try {
-      const data = await getStorageUsage();
-      setUsage(data);
+      const data = await settingsAttention.refresh();
+      if (!data) return;
       void writeWidgetData({ storageUsed: data.used_bytes, storageTotal: data.plan_limit_bytes, recentFiles: [] });
 
       // Quota warning: toast once per session as the user crosses 75 / 90 / 100%.
@@ -948,7 +948,7 @@ export default function SettingsScreen() {
     } finally {
       setLoadingUsage(false);
     }
-  }, [showToast]);
+  }, [settingsAttention.refresh, showToast]);
 
   const loadBiometricPrefs = useCallback(async () => {
     try {

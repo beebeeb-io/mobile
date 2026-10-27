@@ -4,11 +4,13 @@
 // nothing. These are the RED-first tests for the one shared attention value:
 // the same object drives the tab badge AND the Settings root rows.
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import {
   computeSettingsAttention,
   backupAttentionMessage,
   storageAttentionMessage,
   STORAGE_ATTENTION_RATIO,
+  settingsTabBadge,
 } from './settings-attention';
 
 const GB = 1_000_000_000;
@@ -76,6 +78,23 @@ describe('settings attention (task 2245)', () => {
     const attention = computeSettingsAttention({ backupFailedCount: 4 });
     expect(attention.reasons).toEqual([{ id: 'backups', message: '4 items need attention' }]);
     expect(attention.storagePercent).toBeNull();
+  });
+
+  test('the count is locale-formatted', () => {
+    expect(backupAttentionMessage(1234)).toBe(`${(1234).toLocaleString()} items need attention`);
+  });
+
+  test('the tab badge is never undefined (native tabs keep a removed badge)', () => {
+    const clear = computeSettingsAttention({ backupFailedCount: 0, usedBytes: 10, limitBytes: 100 });
+    expect(settingsTabBadge(clear)).toBe('');
+    const warn = computeSettingsAttention({ backupFailedCount: 2 });
+    expect(settingsTabBadge(warn)).toBe('!');
+  });
+
+  test('App feeds the tab badge through the never-undefined helper', () => {
+    const app = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+    expect(app).toContain('settingsTabBadge(settingsAttention)');
+    expect(app).not.toContain('tabBarBadge: settingsAttention.badge');
   });
 
   test('percent copy is bounded at 100 and never negative', () => {

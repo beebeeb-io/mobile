@@ -18,7 +18,7 @@ mock.module('@expo/vector-icons', () => ({ Ionicons: () => null }));
 const { SettingsCategoryList } = await import('./SettingsCategories');
 const { computeSettingsAttention } = await import('../../lib/settings-attention');
 
-const c = { ink: '#111', ink2: '#222', ink3: '#555', ink4: '#777', line: '#ddd', amberDeep: '#b8860b' };
+const c = { ink: '#111', ink2: '#5c564e', ink3: '#555', ink4: '#777', line: '#ddd', amberDeep: '#b8860b' };
 
 function texts(node, out = []) {
   if (node == null) return out;
@@ -45,6 +45,11 @@ describe('Settings root rows carry the reason (task 2245)', () => {
     expect(all).toContain('3 items need attention');
     expect(all).not.toContain('Phone backups, photos and file access');
     expect(mounted.root.findAll((n) => typeof n.type === 'string' && n.props?.testID === 'settings-category-backups-attention')).toHaveLength(1);
+    const row = mounted.root.findAll((n) => typeof n.type === 'string' && n.props?.testID === 'settings-category-backups')[0]
+      ?? mounted.root.findAll((n) => n.props?.testID === 'settings-category-backups')[0];
+    expect(row.props.accessibilityLabel).toBe('Backups & files, 3 items need attention');
+    const reasonText = mounted.root.findAll((n) => typeof n.type === 'string' && n.props?.children === '3 items need attention')[0];
+    expect(reasonText.props.style.color).toBe(c.ink2);
     expect(mounted.root.findAll((n) => typeof n.type === 'string' && n.props?.testID === 'settings-category-account-attention')).toHaveLength(0);
     await act(async () => mounted.unmount());
   });
@@ -55,6 +60,11 @@ describe('Settings root rows carry the reason (task 2245)', () => {
     expect(all).toContain('Storage 82% full');
     expect(all).not.toContain('Your account and storage use');
     expect(mounted.root.findAll((n) => typeof n.type === 'string' && n.props?.testID === 'settings-category-account-attention')).toHaveLength(1);
+    const row = mounted.root.findAll((n) => typeof n.type === 'string' && n.props?.testID === 'settings-category-account')[0]
+      ?? mounted.root.findAll((n) => n.props?.testID === 'settings-category-account')[0];
+    expect(row.props.accessibilityLabel).toBe('Account, Storage 82% full');
+    const marker = mounted.root.findAll((n) => typeof n.type === 'string' && n.props?.testID === 'settings-category-account-attention')[0];
+    expect(marker.props.style.color).toBe(c.ink2);
     expect(mounted.root.findAll((n) => typeof n.type === 'string' && n.props?.testID === 'settings-category-backups-attention')).toHaveLength(0);
     await act(async () => mounted.unmount());
   });

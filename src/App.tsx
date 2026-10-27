@@ -138,7 +138,8 @@ import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
 import { DiagnosticPanel, LAST_CONNECTED_KEY } from './components/DiagnosticPanel';
 import { BackupProvider } from './lib/backup-context';
-import { useSettingsAttention } from './lib/use-settings-attention';
+import { SettingsAttentionProvider, useSettingsAttention } from './lib/settings-attention-context';
+import { settingsTabBadge } from './lib/settings-attention';
 import { AnnouncementProvider } from './lib/announcement-context';
 import AnnouncementBanner from './components/AnnouncementBanner';
 import { discardAllPendingShares, getPendingSharesCount, processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
@@ -922,7 +923,7 @@ function TabNavigator() {
   // native tab bar keeps the last badge (“!” stayed after both reasons
   // cleared). An empty string is converted to nil by the tab view and is a
   // real prop transition, so the badge clears.
-  const settingsBadge: string = settingsAttention.badge ?? '';
+  const settingsBadge: string = settingsTabBadge(settingsAttention);
 
   return (
     <Tab.Navigator
@@ -1661,6 +1662,7 @@ export default function App() {
       <ToastProvider>
       <AnnouncementProvider>
       <BackupProvider>
+        <SettingsAttentionProvider>
         <NavigationContainer
           ref={navigationRef}
           // 1320 — without this react-navigation uses its light DefaultTheme and
@@ -1830,6 +1832,7 @@ export default function App() {
               )}
             </Stack.Navigator>
         </NavigationContainer>
+        </SettingsAttentionProvider>
 
         {/* Offline banner */}
         {!isConnected && <OfflineBanner />}

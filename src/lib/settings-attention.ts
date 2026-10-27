@@ -36,7 +36,16 @@ export interface SettingsAttentionInput {
 
 /** "3 items need attention" / "1 item needs attention" — no "(s)". */
 export function backupAttentionMessage(count: number): string {
-  return count === 1 ? '1 item needs attention' : `${count} items need attention`;
+  return count === 1 ? '1 item needs attention' : `${count.toLocaleString()} items need attention`;
+}
+
+/**
+ * The native bottom-tab badge value. NEVER `undefined`: removing that prop
+ * leaves the previous badge painted on the native tab bar (task 2245 rung),
+ * so the clear state is the empty string, which the tab view converts to nil.
+ */
+export function settingsTabBadge(attention: Pick<SettingsAttention, 'badge'>): string {
+  return attention.badge ?? '';
 }
 
 export function storageAttentionMessage(percent: number): string {

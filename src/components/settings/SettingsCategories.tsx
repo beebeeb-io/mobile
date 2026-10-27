@@ -40,20 +40,23 @@ export function SettingsCategoryList({ colors: c, backgroundColor, onSelect, att
     <View style={{ borderRadius: 26, overflow: 'hidden', backgroundColor }}>
       {SETTINGS_CATEGORIES.map((category, index) => {
         const reason = attention?.reasons.find((entry) => entry.id === category.id);
+        // Task 2245 lead review: the reason is part of the accessible NAME,
+        // not only the hint, so VoiceOver announces why the row is marked.
+        const accessibilityLabel = reason ? `${category.title}, ${reason.message}` : category.title;
         return (
           <TouchableOpacity
             key={category.id}
             testID={`settings-category-${category.id}`}
             accessibilityRole="button"
-            accessibilityLabel={category.title}
-            accessibilityHint={reason?.message ?? category.description}
+            accessibilityLabel={accessibilityLabel}
+            accessibilityHint={category.description}
             onPress={() => onSelect(category.id)}
             style={{ flexDirection: 'row', alignItems: 'center', minHeight: 64, paddingHorizontal: 16, paddingVertical: 12, gap: 12, borderTopWidth: index === 0 ? 0 : 0.5, borderTopColor: c.line }}
           >
             <Ionicons name={category.icon} size={20} color={c.ink3} />
             <View style={{ flex: 1 }}>
               <Text style={[typeScale.body, { color: c.ink }]}>{category.title}</Text>
-              <Text style={{ fontSize: 12, color: reason ? c.amberDeep : c.ink3, marginTop: 3 }}>
+              <Text style={{ fontSize: 12, color: reason ? c.ink2 : c.ink3, marginTop: 3 }}>
                 {reason?.message ?? category.description}
               </Text>
             </View>
@@ -62,7 +65,7 @@ export function SettingsCategoryList({ colors: c, backgroundColor, onSelect, att
                 testID={`settings-category-${category.id}-attention`}
                 accessibilityElementsHidden
                 importantForAccessibility="no"
-                style={{ fontSize: 13, fontWeight: '700' as const, color: c.amberDeep }}
+                style={{ fontSize: 13, fontWeight: '700' as const, color: c.ink2 }}
               >
                 !
               </Text>
