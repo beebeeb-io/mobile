@@ -1298,3 +1298,5 @@ User ruling: implement items 9–11 directly, preserve iOS visuals. Item 9 ports
 Task 2233 item 10: use one installed-binary appVersion() helper for Settings, API provenance, device registration and backup manifests, with config fallback. Existing expo-application transitive dependency/native linkage is reused; no dependencies added. iOS layout/styles unchanged.
 
 Task 2233 item 11: Android BBActionSheet uses live window height minus top safe area, scrollable actions and header-only drag, retaining bottomAnchorInset. iOS retains its existing rows, geometry and whole-sheet pan. Contract/evidence: `docs/runbook/task-2233-r2.md`.
+
+Task 2245 (2026-10-27, Guus report + lead review): the Settings root rows that carry the badge reason are a new surface the design artefact does not draw. Reason text and the "!" marker use `ink2`, not `amberDeep`: `amberDeep` is 3.25:1 on the light grouped cell (#ffffff) and fails WCAG AA 4.5:1; `ink2` is 7.25:1 light / 9.37:1 dark. The warning meaning is carried by the copy ("N items need attention" / "Storage N% full") and the marker, both from existing tokens. No new colour was introduced.

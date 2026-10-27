@@ -29,7 +29,6 @@ import {
   getMe,
   getToken,
   logout,
-  getStorageUsage,
   registerSessionExpiredHandler,
   registerAccountDeletedHandler,
 } from './lib/api';
@@ -138,7 +137,9 @@ import CreateFileRequestScreen from './screens/CreateFileRequestScreen';
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
 import { DiagnosticPanel, LAST_CONNECTED_KEY } from './components/DiagnosticPanel';
-import { BackupProvider, useBackup } from './lib/backup-context';
+import { BackupProvider } from './lib/backup-context';
+import { SettingsAttentionProvider, useSettingsAttention } from './lib/settings-attention-context';
+import { settingsTabBadge } from './lib/settings-attention';
 import { AnnouncementProvider } from './lib/announcement-context';
 import AnnouncementBanner from './components/AnnouncementBanner';
 import { discardAllPendingShares, getPendingSharesCount, processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
@@ -900,20 +901,10 @@ function FileProviderDomainRegistrar({ enabled, userId }: { enabled: boolean; us
 
 function TabNavigator() {
   const { colors: c } = useTheme();
-  const backup = useBackup();
-  // Check storage on mount — show badge on Settings tab when >= 80% full
-  const [storageWarning, setStorageWarning] = useState(false);
-  useEffect(() => {
-    getStorageUsage()
-      .then(u => { if (u.plan_limit_bytes > 0) setStorageWarning(u.used_bytes / u.plan_limit_bytes >= 0.8); })
-      .catch(() => {});
-  }, []);
-
-  // Backup badge is driven by the native backup engine state.
-  const backupRunning =
-    ['preparing', 'encrypting', 'uploading'].includes(backup.backupProgress.state) ||
-    backup.backupProgress.inProgress > 0;
-  const backupFailed = backup.backupProgress.failed > 0;
+  // Task 2245 (P1): ONE source for the Settings badge and the Settings root
+  // rows. Storage refreshes on foreground (inside the hook) and when
+  // Settings gains focus (SettingsScreen calls `refresh()`).
+  const settingsAttention = useSettingsAttention();
   // 1308a — native tab badges take ONLY a string; there is no per-badge
   // background/text colour hook on iOS at all (`tabBarBadgeBackgroundColor`/
   // `tabBarBadgeTextColor` are Android-only — confirmed reading the
@@ -928,7 +919,11 @@ function TabNavigator() {
   // that distinction is exactly what's gone now), so folding it into the
   // same string loses no legible signal that survives this library's badge
   // model. Recorded in DEVIATIONS.md.
-  const settingsBadge: string | undefined = backupFailed || storageWarning ? '!' : undefined;
+  // Task 2245 rung finding: passing `undefined` removes the prop, and the
+  // native tab bar keeps the last badge (“!” stayed after both reasons
+  // cleared). An empty string is converted to nil by the tab view and is a
+  // real prop transition, so the badge clears.
+  const settingsBadge: string = settingsTabBadge(settingsAttention);
 
   return (
     <Tab.Navigator
@@ -1667,6 +1662,7 @@ export default function App() {
       <ToastProvider>
       <AnnouncementProvider>
       <BackupProvider>
+        <SettingsAttentionProvider>
         <NavigationContainer
           ref={navigationRef}
           // 1320 — without this react-navigation uses its light DefaultTheme and
@@ -1836,6 +1832,7 @@ export default function App() {
               )}
             </Stack.Navigator>
         </NavigationContainer>
+        </SettingsAttentionProvider>
 
         {/* Offline banner */}
         {!isConnected && <OfflineBanner />}
