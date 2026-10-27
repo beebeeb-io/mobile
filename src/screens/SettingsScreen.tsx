@@ -1,5 +1,5 @@
 import { appVersion } from '../lib/app-version';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -12,8 +12,10 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
@@ -55,6 +57,7 @@ import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { ensureCalendarPermission } from '../lib/calendar-permissions';
 import { ensurePhotoPermission } from '../lib/photo-permissions';
 import { formatBytes } from '../lib/format';
+import { shouldCompleteSettingsBackSwipe } from '../lib/settings-back-swipe';
 import {
   DEFAULT_BACKUP_NOTIFICATION_SETTINGS,
   type BackupNotificationSettings,
@@ -673,12 +676,43 @@ export default function SettingsScreen() {
   const apiEnvironment = getApiEnvironment();
   const [activeCategory, setActiveCategory] = useState<SettingsCategoryId | null>(null);
   const scrollRef = useRef<ScrollView>(null);
+  const { width: windowWidth } = useWindowDimensions();
 
   const selectCategory = useCallback((id: SettingsCategoryId | null) => {
     setActiveCategory(id);
     setIsScrolled(false);
     scrollRef.current?.scrollTo({ y: 0, animated: false });
   }, []);
+
+  // 2235 — sub-screens are local state, not routes, so iOS has no native
+  // interactive pop to offer. Interpret a left-edge pan as "back" ourselves.
+  // iOS only: Android keeps the hardware back handler below, web the
+  // breadcrumb. Disabled at the category list, where there is nothing to pop.
+  const backSwipeEnabled = Platform.OS === 'ios' && activeCategory !== null;
+  // RNGH's pan event payload has no `x0` in ~2.32's types, so the start
+  // position is captured on begin (window-relative, matching screen coords).
+  const backSwipeStartX = useRef(0);
+  const backSwipeGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(backSwipeEnabled)
+        // Let vertical scrolling win; only horizontal intent starts the pan.
+        .activeOffsetX(10)
+        .failOffsetY([-12, 12])
+        .onBegin((e) => {
+          backSwipeStartX.current = e.absoluteX;
+        })
+        .onEnd((e) => {
+          const completed = shouldCompleteSettingsBackSwipe({
+            startX: backSwipeStartX.current,
+            translationX: e.translationX,
+            velocityX: e.velocityX,
+            screenWidth: windowWidth,
+          });
+          if (completed) selectCategory(null);
+        }),
+    [backSwipeEnabled, selectCategory, windowWidth],
+  );
 
   useFocusEffect(useCallback(() => {
     if (activeCategory === null) return;
@@ -1876,7 +1910,8 @@ export default function SettingsScreen() {
   const surfaces = surfacesFor(resolved);
 
   return (
-    <View style={[layout.root, { backgroundColor: surfaces.groupedBg }]}>
+    <GestureDetector gesture={backSwipeGesture}>
+      <View style={[layout.root, { backgroundColor: surfaces.groupedBg }]}>
       {/* 1314 — content runs under the chrome; the title floats with a
           scroll-edge blur behind it, the same pattern Drive uses (1313). */}
       {isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
@@ -2864,6 +2899,7 @@ export default function SettingsScreen() {
         </SettingsCategory>
 
       </ScrollView>
-    </View>
+      </View>
+    </GestureDetector>
   );
 }
