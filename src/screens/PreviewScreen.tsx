@@ -3967,17 +3967,18 @@ export default function PreviewScreen() {
         if (cancelled) return;
         throwIfPreviewAborted(controller.signal);
         const source = openZipFileSource(uri);
+        // Own the handle before awaiting: if the listing rejects (directory
+        // cap, corrupt archive) the catch below must still close it.
+        zipSourceRef.current = source;
         const listing = await readZipListing(source, {
           // 16 MB of central directory is far beyond any navigable archive.
           maxCentralDirectoryBytes: MAX_CENTRAL_DIRECTORY_BYTES,
         });
-        if (cancelled) {
-          source.close();
-          return;
-        }
-        zipSourceRef.current = source;
+        if (cancelled) return;
         setZipListing(listing);
       } catch (err) {
+        zipSourceRef.current?.close();
+        zipSourceRef.current = null;
         if (!cancelled && !isAbortError(err)) {
           if (err instanceof ZipReadError && err.code === 'too-large') {
             // Not an error: an honest state with its own copy and a way back.

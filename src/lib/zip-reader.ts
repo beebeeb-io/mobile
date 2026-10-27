@@ -416,29 +416,34 @@ export async function readZipEntry(
   const inflater = new Inflate({ raw: true, chunkSize: 64 * 1024 });
   const chunks: Uint8Array[] = [];
   let total = 0;
-  let overCap = false;
   // pako flushes through onData as the output buffer fills (and at the end).
   // Counting here — rather than after the loop — is what stops a zip bomb at
-  // the cap instead of after it has inflated completely.
+  // the cap instead of after it has inflated completely. Throwing from the
+  // callback aborts the current push() instead of letting the rest of a 256 KB
+  // input chunk expand first, so one read cannot blow past the cap.
   inflater.onData = (chunk: Uint8Array) => {
-    if (overCap) return;
-    chunks.push(chunk);
     total += chunk.length;
-    if (total > cap) overCap = true;
+    if (total > cap) {
+      throw new ZipReadError('too-large', 'This file is too large to open here.');
+    }
+    chunks.push(chunk);
   };
   let consumed = 0;
-  while (consumed < entry.compressedSize && !overCap) {
-    const length = Math.min(READ_CHUNK_BYTES, entry.compressedSize - consumed);
-    const chunk = await source.read(dataOffset + consumed, length);
-    if (chunk.length !== length) throw new ZipReadError('corrupt', 'The archive is damaged (short file data).');
-    consumed += length;
-    inflater.push(chunk, consumed === entry.compressedSize);
-    if (inflater.err) {
-      throw new ZipReadError('corrupt', 'The archive is damaged (this file could not be decompressed).');
+  try {
+    while (consumed < entry.compressedSize) {
+      const length = Math.min(READ_CHUNK_BYTES, entry.compressedSize - consumed);
+      const chunk = await source.read(dataOffset + consumed, length);
+      if (chunk.length !== length) throw new ZipReadError('corrupt', 'The archive is damaged (short file data).');
+      consumed += length;
+      inflater.push(chunk, consumed === entry.compressedSize);
+      if (inflater.err) {
+        throw new ZipReadError('corrupt', 'The archive is damaged (this file could not be decompressed).');
+      }
     }
-  }
-  if (overCap) {
-    throw new ZipReadError('too-large', 'This file is too large to open here.');
+  } catch (err) {
+    // The cap abort travels out through pako's onData; keep it as its own code.
+    if (err instanceof ZipReadError) throw err;
+    throw new ZipReadError('corrupt', 'The archive is damaged (this file could not be decompressed).');
   }
   const data = concatChunks(chunks, total);
   if (data.length !== entry.uncompressedSize) {

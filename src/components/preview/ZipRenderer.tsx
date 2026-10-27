@@ -41,7 +41,7 @@ import { Alert } from 'react-native';
 // states.
 import { radii } from '../../theme';
 import type { Colors } from '../../theme';
-import { type ZipEntry, type ZipRow, levelRows, isMacOsNoise } from '../../lib/zip-tree';
+import { type ZipEntry, type ZipRow, levelRows, withoutMacOsNoise } from '../../lib/zip-tree';
 import { formatBytes } from '../../lib/format';
 import { formatDate, zipDosDateAsLocal } from '../../lib/date-format';
 
@@ -84,14 +84,16 @@ function entryHash(path: string): string {
 
 /** The listing as the navigable tree expects it. */
 function listingToTreeEntries(listing: ZipListing): ZipEntry[] {
-  return listing.entries.map((e) => ({
-    path: e.path,
-    name: e.name,
-    isFolder: e.isFolder,
-    uncompressedSize: e.uncompressedSize,
-    modifiedAt: e.modifiedAt,
-    ext: e.isFolder ? '' : (e.name.toLowerCase().split('.').pop() ?? ''),
-  }));
+  return withoutMacOsNoise(
+    listing.entries.map((e) => ({
+      path: e.path,
+      name: e.name,
+      isFolder: e.isFolder,
+      uncompressedSize: e.uncompressedSize,
+      modifiedAt: e.modifiedAt,
+      ext: e.isFolder ? '' : (e.name.toLowerCase().split('.').pop() ?? ''),
+    })),
+  );
 }
 
 function zipEntryIcon(entry: ZipEntry): IoniconName {
@@ -194,7 +196,8 @@ export function ZipRenderer({
       entries,
       fileCount: entries.filter((e) => !e.isFolder).length,
       folderCount: entries.filter((e) => e.isFolder).length,
-      totalUncompressed: listing.totalUncompressed,
+      // Summed over the visible entries so macOS metadata noise cannot inflate it.
+      totalUncompressed: entries.reduce((sum, e) => sum + (e.isFolder ? 0 : e.uncompressedSize), 0),
     };
   }, [listing]);
 

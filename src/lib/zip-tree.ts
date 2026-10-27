@@ -27,6 +27,16 @@ export function isMacOsNoise(path: string): boolean {
 }
 
 /**
+ * Task 2233 item 6 — the ranged listing path builds its tree directly from the
+ * central directory, so the macOS metadata filter that `parseZip` applied has to
+ * be applied here too: AppleDouble forks (`__MACOSX/`, `._*`) must not show up as
+ * extractable files or inflate the counts and the uncompressed total.
+ */
+export function withoutMacOsNoise(entries: ZipEntry[]): ZipEntry[] {
+  return entries.filter((entry) => !isMacOsNoise(entry.path));
+}
+
+/**
  * Immediate children at a folder prefix ('' = root, 'Ai-iris/' = inside
  * Ai-iris). Folders are derived from BOTH explicit dir entries AND the implied
  * parents of deeper files, so navigation works whether or not the archive stored

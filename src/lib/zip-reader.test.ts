@@ -114,7 +114,10 @@ function buildZip(entries: EntrySpec[]): Uint8Array {
       ...u32(compSize), ...u32(uncompSize), ...u16(nameBytes.length), ...u16(0),
     ];
     const localOffset = offset;
-    chunks.push(...localHeader, ...nameBytes, ...payload);
+    chunks.push(...localHeader, ...nameBytes);
+    for (let i = 0; i < payload.length; i += 0x8000) {
+      chunks.push(...payload.subarray(i, Math.min(i + 0x8000, payload.length)));
+    }
     offset += localHeader.length + nameBytes.length + payload.length;
     central.push(
       ...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(e.flags ?? 0x0800),
@@ -242,6 +245,30 @@ describe('readZipEntry — caps and methods', () => {
     const zip = buildZip([{ name: 'big.bin', data: text('small'), declaredUncompressed: MAX_ENTRY_BYTES + 1 }]);
     const listing = await readZipListing(memorySource(zip));
     await expect(readZipEntry(memorySource(zip), listing.entries[0])).rejects.toMatchObject({ code: 'too-large' });
+  });
+
+  test('a zip bomb aborts before the whole compressed entry is read', async () => {
+    // Highly compressible tail first: the first read chunk already inflates far
+    // past the cap, and the incompressible noise after it keeps the stream long
+    // enough to span several read chunks.
+    const noise = new Uint8Array(2 * 1024 * 1024);
+    let seed = 0x9e3779b9;
+    for (let i = 0; i < noise.length; i += 1) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      noise[i] = seed >>> 24;
+    }
+    const data = new Uint8Array(60 * 1024 * 1024 + noise.length);
+    data.set(noise, 60 * 1024 * 1024);
+    // It also lies about its size, so the pre-read cap check cannot catch it.
+    const zip = buildZip([{ name: 'bomb.bin', data, method: 8, declaredUncompressed: 1024 }]);
+    expect(zip.length).toBeGreaterThan(1024 * 1024); // spans several 256 KB reads
+    const reader = instrument(memorySource(zip));
+    const listing = await readZipListing(instrument(memorySource(zip)));
+    // The cap is enforced from inside the inflate callback, so a lying declared
+    // size cannot slip 60 MB of output past it.
+    await expect(
+      readZipEntry(reader, listing.entries[0], { maxOutputBytes: 1024 * 1024 }),
+    ).rejects.toMatchObject({ code: 'too-large' });
   });
 
   test('a zip bomb aborts once the real output passes the cap', async () => {
