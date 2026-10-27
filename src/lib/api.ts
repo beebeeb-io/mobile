@@ -3878,6 +3878,9 @@ export async function fetchBreachRange(endpointTemplate: string, prefix: string)
 export interface SyncNode {
   id: string;
   name_encrypted: string;
+  file_request_id?: string | null;
+  sender_ephemeral_pubkey?: string | null;
+  wrapped_content_key?: string | null;
   parent_id: string | null;
   is_folder: boolean;
   is_uploading?: boolean;

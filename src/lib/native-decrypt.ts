@@ -57,6 +57,8 @@ const MAX_PREVIEW_CACHE_BYTES = 512 * 1024 * 1024;
 const PREVIEW_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 export interface PreviewDecryptOptions {
+  /** Request uploads supply their sealed random content key, not a master-derived key. */
+  useProvidedFileKey?: boolean;
   onProgress?: (event: PreviewLoadProgressEvent) => void;
   onOfflineFallback?: (event: { fileId: string; reason: string }) => void;
   signal?: AbortSignal;
@@ -269,6 +271,7 @@ export async function decryptToTempFile(
           masterKeyHandleId,
           {
             signal,
+            useProvidedFileKey: options.useProvidedFileKey,
             onProgress: (event) => {
               sharedListeners.get(outputPath)?.forEach((l) => l.onProgress?.(event));
             },
@@ -672,7 +675,9 @@ async function decryptToTempFileUnshared(
   // the Java heap). The 1683g fail-closed gate below remains only for legacy
   // native builds, where a null handle fails argument conversion → treated
   // as not-available → gated fallback.
-  if (isNativeAvailable) {
+  // A null handle also means “resolve the loaded master key” on Android.
+  // Request uploads must explicitly bypass that derivation and use their C.
+  if (isNativeAvailable && !options.useProvidedFileKey) {
     try {
       recordRuntimeTrace('preview.decrypt.native.request', {
         fileId,
