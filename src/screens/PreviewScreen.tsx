@@ -107,6 +107,8 @@ import { checkLockedFileIds, isPagerPageGated } from '../lib/preview-lock-gate';
 import { computePreviewContentInset } from '../lib/preview-content-inset';
 import { FILES_APP_LOCK_CAVEAT } from '../lib/lock-copy';
 import { formatPdfPageCounter, nextBarsVisible, pagerTapAction } from '../lib/preview-chrome';
+import { MAX_CENTRAL_DIRECTORY_BYTES, ZipReadError, readZipListing, type ZipListing } from '../lib/zip-reader';
+import { openZipFileSource, type ZipFileSource } from '../lib/zip-file-source';
 import { buildInfoSheetRows, type InfoSheetFocus } from '../lib/preview-info';
 import { extensionForAudio } from '../lib/audio-format';
 import { extensionForRaw, rawFormatLabel } from '../lib/raw-format';
@@ -2421,11 +2423,14 @@ export default function PreviewScreen() {
   const [htmlError, setHtmlError] = useState<string | null>(null);
   const [htmlShowSource, setHtmlShowSource] = useState(false);
 
-  // ZIP archive listing state — raw arrayBuffer; JSZip parsing inside the
-  // lazy ZipRenderer.
-  const [zipData, setZipData] = useState<ArrayBuffer | null>(null);
+  // ZIP archive listing state (task 2233 item 6) — the archive is read through
+  // a ranged source: the central directory for the listing, one entry on tap.
+  // No copy of the archive is ever held in JS memory.
+  const [zipListing, setZipListing] = useState<ZipListing | null>(null);
   const [zipLoading, setZipLoading] = useState(false);
   const [zipError, setZipError] = useState<string | null>(null);
+  const [zipTooLarge, setZipTooLarge] = useState(false);
+  const zipSourceRef = useRef<ZipFileSource | null>(null);
 
   // Archive (TAR/GZ/TGZ) state — uses ArchiveRenderer component
   const [archiveData, setArchiveData] = useState<ArrayBuffer | null>(null);
@@ -3940,7 +3945,10 @@ export default function PreviewScreen() {
     return buildSvgHtml(svgContent);
   }, [svgContent]);
 
-  // Auto-load ZIP archives — bytes go to the lazy ZipRenderer (owns JSZip).
+  // Auto-load ZIP archives (task 2233 item 6) — the decrypted file stays on
+  // disk and is read through a ranged source. Listing reads only the EOCD tail
+  // plus the central directory, so archive size stops mattering; entries are
+  // read one at a time when tapped.
   useEffect(() => {
     if (!isZip) return;
     if (Platform.OS === 'web') return;
@@ -3948,17 +3956,36 @@ export default function PreviewScreen() {
     let cancelled = false;
     setZipLoading(true);
     setZipError(null);
-    setZipData(null);
+    setZipTooLarge(false);
+    setZipListing(null);
+    zipSourceRef.current?.close();
+    zipSourceRef.current = null;
 
     (async () => {
       try {
         const uri = await fetchAndDecrypt({ signal: controller.signal });
         if (cancelled) return;
         throwIfPreviewAborted(controller.signal);
-        const arrayBuffer = await readFileAsArrayBuffer(uri);
-        if (!cancelled) setZipData(arrayBuffer);
+        const source = openZipFileSource(uri);
+        const listing = await readZipListing(source, {
+          // 16 MB of central directory is far beyond any navigable archive.
+          maxCentralDirectoryBytes: MAX_CENTRAL_DIRECTORY_BYTES,
+        });
+        if (cancelled) {
+          source.close();
+          return;
+        }
+        zipSourceRef.current = source;
+        setZipListing(listing);
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setZipError(previewLoadErrorMessage(err));
+        if (!cancelled && !isAbortError(err)) {
+          if (err instanceof ZipReadError && err.code === 'too-large') {
+            // Not an error: an honest state with its own copy and a way back.
+            setZipTooLarge(true);
+          } else {
+            setZipError(previewLoadErrorMessage(err));
+          }
+        }
       } finally {
         if (!cancelled) {
           setZipLoading(false);
@@ -3970,6 +3997,8 @@ export default function PreviewScreen() {
     return () => {
       cancelled = true;
       controller.abort();
+      zipSourceRef.current?.close();
+      zipSourceRef.current = null;
     };
   }, [isZip, fetchAndDecrypt]);
 
@@ -5713,19 +5742,41 @@ export default function PreviewScreen() {
             </View>
           )
         ) : isZip ? (
-          zipData ? (
+          zipListing && zipSourceRef.current ? (
             // Preview redesign item 3 — full-bleed + tap-to-hide (no WebView
             // in this renderer).
             <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
               <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
                 <ZipRenderer
-                  data={zipData}
+                  source={zipSourceRef.current}
+                  listing={zipListing}
+                  onShareArchive={() => void handleDownload()}
                   colors={c}
                   topInset={docContentInset.top}
                   bottomInset={docContentInset.bottom}
                 />
               </Suspense>
             </Pressable>
+          ) : zipTooLarge ? (
+            // Task 2233 item 6 — an honest state, not an error: the archive is
+            // valid, it is simply beyond what the in-app listing supports.
+            <View style={[styles.imageStatus, { paddingTop: docContentInset.top + 24 }]}>
+              <Ionicons name="archive-outline" size={40} color={c.ink3} />
+              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
+                Too large to preview
+              </Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>
+                This archive is too large to preview here. Save it to open it in another app.
+              </Text>
+              <TouchableOpacity
+                onPress={() => void handleDownload()}
+                testID="zip-too-large-save"
+                accessibilityRole="button"
+                style={[styles.imageStatusAction, { borderColor: c.line }]}
+              >
+                <Text style={[styles.imageStatusActionText, { color: c.amberDeep }]}>Save archive</Text>
+              </TouchableOpacity>
+            </View>
           ) : zipError ? (
             renderLoadError("Couldn't open archive", zipError)
           ) : (
@@ -6595,6 +6646,18 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.6)',
     textAlign: 'center',
     lineHeight: 20,
+  },
+  // Task 2233 item 6 — the too-large archive state's own action.
+  imageStatusAction: {
+    marginTop: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  imageStatusActionText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   previewProgressWrap: {
     width: Math.min(SCREEN_WIDTH - 72, 360),

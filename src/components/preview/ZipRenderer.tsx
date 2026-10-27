@@ -1,8 +1,10 @@
 /**
- * ZipRenderer — read-only, NAVIGABLE listing for .zip archives via JSZip.
+ * ZipRenderer — read-only, NAVIGABLE listing for .zip archives.
  *
- * Owns the JSZip import so the library only enters Hermes when the user opens a
- * ZIP. (.tar / .gz / .tgz are handled by ArchiveRenderer.)
+ * Task 2233 item 6: the archive is NOT loaded. The listing comes from the
+ * central directory (zip-reader.ts, ranged reads) and one entry is read on
+ * demand, so a 50 MB+ archive no longer exhausts the JS heap.
+ * (.tar / .gz / .tgz are handled by ArchiveRenderer.)
  *
  * Nested folders are navigable (task 0779): the flat central-directory entries
  * are projected into a folder tree on the fly — tap a folder to drill in, tap a
@@ -20,8 +22,16 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import JSZip from 'jszip';
+import { File } from 'expo-file-system';
 import * as FileSystem from 'expo-file-system/legacy';
+import {
+  MAX_ENTRY_BYTES,
+  ZipReadError,
+  readZipEntry,
+  type ByteSource,
+  type ZipEntryMeta,
+  type ZipListing,
+} from '../../lib/zip-reader';
 import { withPlaintextLease, writePlaintext } from '../../lib/plaintext-gate';
 import * as Sharing from 'expo-sharing';
 import { Alert } from 'react-native';
@@ -43,14 +53,17 @@ interface ZipSummary {
 }
 
 interface ZipRendererProps {
-  data: ArrayBuffer;
+  /** Ranged access to the decrypted archive on disk (never its bytes). */
+  source: ByteSource;
+  /** Central-directory listing, produced by `readZipListing`. */
+  listing: ZipListing;
+  /** Share/save the whole decrypted archive when one entry cannot be previewed. */
+  onShareArchive?: () => void;
   colors: Colors;
   /**
    * Task 1592 — the preview is full-bleed (PreviewScreen's `fullBleedFill`),
    * with the close / title / ⋯ chrome floating over the top and the action bar
-   * over the bottom. Without these the "N files · M folders" header sat under
-   * the status bar and the first row under the close button. Same contract as
-   * XlsxRenderer: `topInset` pads the whole container (header stays pinned
+   * over the bottom. `topInset` pads the whole container (header stays pinned
    * below the chrome), `bottomInset` is the list's scroll-content inset.
    */
   topInset?: number;
@@ -59,46 +72,26 @@ interface ZipRendererProps {
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
-async function parseZip(arrayBuffer: ArrayBuffer): Promise<ZipSummary> {
-  const zip = await JSZip.loadAsync(arrayBuffer);
-  const entries: ZipEntry[] = [];
-  let fileCount = 0;
-  let folderCount = 0;
-  let totalUncompressed = 0;
+/** Stable short hash for a temp file name — the entry path may be hostile. */
+function entryHash(path: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < path.length; i += 1) {
+    hash ^= path.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
 
-  Object.keys(zip.files).forEach((path) => {
-    const f = zip.files[path];
-    // Hide macOS resource-fork noise (__MACOSX/ + ._* AppleDouble) — task 0779.
-    if (isMacOsNoise(path)) return;
-    const cleanPath = f.dir ? path.replace(/\/$/, '') : path;
-    const segments = cleanPath.split('/');
-    const name = segments[segments.length - 1] || cleanPath;
-    const ext = f.dir ? '' : (name.toLowerCase().split('.').pop() ?? '');
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const internalData = (f as any)._data as { uncompressedSize?: number } | undefined;
-    const uncompressedSize = f.dir ? 0 : internalData?.uncompressedSize ?? 0;
-
-    if (f.dir) {
-      folderCount += 1;
-    } else {
-      fileCount += 1;
-      totalUncompressed += uncompressedSize;
-    }
-
-    entries.push({
-      path: cleanPath,
-      name,
-      isFolder: !!f.dir,
-      uncompressedSize,
-      // Task 1592 — a ZIP time is zone-less local time; JSZip decodes it as
-      // UTC, which moved a 22:38 file to the next day east of UTC.
-      modifiedAt: zipDosDateAsLocal(f.date),
-      ext,
-    });
-  });
-
-  return { entries, fileCount, folderCount, totalUncompressed };
+/** The listing as the navigable tree expects it. */
+function listingToTreeEntries(listing: ZipListing): ZipEntry[] {
+  return listing.entries.map((e) => ({
+    path: e.path,
+    name: e.name,
+    isFolder: e.isFolder,
+    uncompressedSize: e.uncompressedSize,
+    modifiedAt: e.modifiedAt,
+    ext: e.isFolder ? '' : (e.name.toLowerCase().split('.').pop() ?? ''),
+  }));
 }
 
 function zipEntryIcon(entry: ZipEntry): IoniconName {
@@ -130,29 +123,20 @@ function formatZipDate(d: Date | null): string | null {
   return formatDate(d) || null;
 }
 
-// 1291 — single-entry extraction cap. The whole archive is already in memory (data:
-// ArrayBuffer), so extracting adds ~entry-size on top; beyond this, protect the
-// memory-watchdog budget and tell the user to use the full archive instead.
-const MAX_EXTRACT_BYTES = 100 * 1000 * 1000; // 100 MB (SI)
-
-/** Extract one file entry to the auto-pruned cache and hand it to the OS share
- *  sheet (Quick Look / Save to Files / AirDrop). Returns when the sheet closes. */
-async function extractAndShare(data: ArrayBuffer, entry: ZipEntry): Promise<void> {
-  const zip = await JSZip.loadAsync(data);
-  const file = zip.files[entry.path] ?? zip.files[`${entry.path}/`];
-  if (!file || file.dir) throw new Error('Entry not found in archive.');
-  const b64 = await file.async('base64');
-  // Only the basename reaches the filesystem — entry paths are attacker-controlled
-  // archive content and may contain traversal segments.
-  const safeName = entry.name.replace(/[/\\]/g, '_') || 'extracted';
+/** Writes one entry under the pre-existing `zip-extract/` plaintext cache entry
+ *  and hands it to the OS share sheet. The temp name is hashed so an entry's
+ *  own (`..`-bearing) name never reaches the filesystem. */
+async function extractAndShare(source: ByteSource, entry: ZipEntryMeta): Promise<void> {
+  const bytes = await readZipEntry(source, entry, { maxOutputBytes: MAX_ENTRY_BYTES });
+  const safeName = entry.name.replace(/[/\\]/g, '_').replace(/^\.+/, '') || 'extracted';
   const dir = `${FileSystem.cacheDirectory}zip-extract/`;
   await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
-  const target = `${dir}${Date.now()}-${safeName}`;
+  const target = `${dir}${entryHash(entry.path)}-${safeName}`;
   // Task 1593 round 3 — plaintext writer: gated by the sign-out purge.
   await withPlaintextLease('ZIP entry extract', (lease) =>
-    writePlaintext(lease, target, FileSystem, () =>
-      FileSystem.writeAsStringAsync(target, b64, { encoding: FileSystem.EncodingType.Base64 }),
-    ),
+    writePlaintext(lease, target, FileSystem, async () => {
+      new File(target).write(bytes);
+    }),
   );
   try {
     await Sharing.shareAsync(target);
@@ -163,66 +147,59 @@ async function extractAndShare(data: ArrayBuffer, entry: ZipEntry): Promise<void
   }
 }
 
-export function ZipRenderer({ data, colors: c, topInset = 0, bottomInset = 0 }: ZipRendererProps) {
-  const [summary, setSummary] = useState<ZipSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
+/** Copy for the states where an entry cannot be opened in place. */
+function entryRefusal(err: unknown): { title: string; body: string } {
+  if (err instanceof ZipReadError) {
+    if (err.code === 'too-large') {
+      return {
+        title: 'Too large to preview here',
+        body: 'This file is too large to open in the app. Share the archive to open it somewhere else.',
+      };
+    }
+    if (err.code === 'encrypted') {
+      return {
+        title: 'Password-protected file',
+        body: 'This file is encrypted inside the archive. Share the archive to open it in another app.',
+      };
+    }
+    if (err.code === 'unsupported-method') {
+      return {
+        title: 'Cannot preview this file',
+        body: 'This file uses a compression method the app cannot open. Share the archive to open it in another app.',
+      };
+    }
+  }
+  return {
+    title: 'Could not read this file',
+    body: 'The archive may be damaged. Share it to open it in another app.',
+  };
+}
+
+export function ZipRenderer({
+  source,
+  listing,
+  onShareArchive,
+  colors: c,
+  topInset = 0,
+  bottomInset = 0,
+}: ZipRendererProps) {
   // Current folder prefix being browsed ('' = archive root, 'a/b/' = nested).
   const [prefix, setPrefix] = useState('');
   // 1291 — path of the entry currently being extracted (one at a time).
   const [extracting, setExtracting] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    setSummary(null);
-    setError(null);
-    setPrefix('');
-    (async () => {
-      try {
-        const result = await parseZip(data);
-        if (!cancelled) setSummary(result);
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to read archive.');
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
+  const summary = useMemo<ZipSummary>(() => {
+    const entries = listingToTreeEntries(listing);
+    return {
+      entries,
+      fileCount: entries.filter((e) => !e.isFolder).length,
+      folderCount: entries.filter((e) => e.isFolder).length,
+      totalUncompressed: listing.totalUncompressed,
     };
-  }, [data]);
+  }, [listing]);
 
-  const rows = useMemo(
-    () => (summary ? levelRows(summary.entries, prefix) : []),
-    [summary, prefix],
-  );
+  const rows = useMemo(() => levelRows(summary.entries, prefix), [summary, prefix]);
   const segments = useMemo(() => prefix.split('/').filter(Boolean), [prefix]);
-
-  if (error) {
-    // 1346 review finding — `colors` here was the module-level STATIC
-    // import from '../../theme' (light-only), silently shadowing the `c`
-    // prop (`colors: c` in the component signature below, the real
-    // scheme-aware palette). White-on-PreviewScreen's-doc-root (now
-    // c.paper since this task) was invisible in light mode. Fixed to `c`'s
-    // ink tokens, matching every other colour in this file (c.line, c.ink,
-    // c.ink3 throughout the row/header rendering below).
-    return (
-      <View style={[styles.imageStatus, { paddingTop: topInset + 24 }]}>
-        <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-          Couldn't open archive
-        </Text>
-        <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{error}</Text>
-      </View>
-    );
-  }
-
-  if (!summary) {
-    return (
-      <View style={[styles.imageStatus, { paddingTop: topInset + 24 }]}>
-        <ActivityIndicator color={c.amber} />
-        <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>Reading archive…</Text>
-      </View>
-    );
-  }
 
   const { fileCount, folderCount, totalUncompressed } = summary;
 
@@ -267,20 +244,29 @@ export function ZipRenderer({ data, colors: c, topInset = 0, bottomInset = 0 }: 
     // auto-pruned cache and opens the OS share sheet (Quick Look / Save to Files / AirDrop).
     const onExtract = async () => {
       if (extracting) return;
-      if (entry.uncompressedSize > MAX_EXTRACT_BYTES) {
+      const meta = listing.entries.find((e) => e.path === entry.path);
+      if (!meta) return;
+      if (meta.uncompressedSize > MAX_ENTRY_BYTES) {
         Alert.alert(
-          'File too large to extract here',
-          `${entry.name} is ${formatBytes(entry.uncompressedSize)}. Save the whole archive to Files and extract it there instead.`,
+          'Too large to preview here',
+          'This file is too large to open in the app. Share the archive to open it somewhere else.',
+          onShareArchive
+            ? [{ text: 'Cancel', style: 'cancel' }, { text: 'Share archive', onPress: onShareArchive }]
+            : [{ text: 'OK' }],
         );
         return;
       }
       setExtracting(entry.path);
       try {
-        await extractAndShare(data, entry);
+        await extractAndShare(source, meta);
       } catch (err) {
+        const refused = entryRefusal(err);
         Alert.alert(
-          'Could not extract file',
-          err instanceof Error ? err.message : 'The entry could not be read from the archive.',
+          refused.title,
+          refused.body,
+          onShareArchive
+            ? [{ text: 'Cancel', style: 'cancel' }, { text: 'Share archive', onPress: onShareArchive }]
+            : [{ text: 'OK' }],
         );
       } finally {
         setExtracting(null);
