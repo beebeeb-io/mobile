@@ -978,7 +978,7 @@ async function loadDecryptedPhotoForViewer(
       entry.size_bytes,
       entry.chunk_count,
       getMasterKeyHandleId(),
-      { onProgress, signal },
+      { onProgress, signal, useProvidedFileKey: entry.is_request_upload === true },
     );
     if (signal?.aborted) {
       // Task 1593 round 2 (P2-F) — give the shared preview copy back instead of
@@ -2448,8 +2448,8 @@ export default function PreviewScreen() {
 
   // Resolve the key provider + master-key handle for decryptToTempFile. For a
   // file-request upload (0643) we hand it the request content key C and a null
-  // handle, which forces the explicit-key decrypt path (decryptChunksToFile)
-  // instead of the native master-key derivation that would produce the wrong
+  // handle and explicitly select the supplied-key decrypt path rather than
+  // the native master-key derivation that would produce the wrong
   // key. Only the single previewed file can be a request upload — swiped photos
   // always take the normal path.
   const resolveDecryptKey = useCallback(
@@ -2460,6 +2460,11 @@ export default function PreviewScreen() {
       return { keyProvider: () => getFileKeyBytes(id), handleId: getMasterKeyHandleId() };
     },
     [requestFileFields, fileId, getRequestContentKey, getFileKeyBytes, getMasterKeyHandleId],
+  );
+
+  const getPreviewFileKeyBytes = useCallback(
+    (id: string) => resolveDecryptKey(id).keyProvider(),
+    [resolveDecryptKey],
   );
 
   // Use current* values so derived state updates when swiping between photos
@@ -3253,6 +3258,7 @@ export default function PreviewScreen() {
             currentChunkCount,
             handleId,
             {
+              useProvidedFileKey: !!requestFileFields && currentFileId === fileId,
               onProgress: (event) => {
                 if (options.onExportProgress) options.onExportProgress(event);
                 else applyNativeProgress(event, setLoadProgress);
@@ -3360,6 +3366,7 @@ export default function PreviewScreen() {
 
   const currentPhotoPageEntry = useMemo<PhotoPageEntry>(() => ({
     id: currentFileId,
+    is_request_upload: !!requestFileFields && currentFileId === fileId,
     name_encrypted: currentFileName,
     display_name: currentFileName,
     mime_type: currentMimeType ?? null,
@@ -3371,6 +3378,8 @@ export default function PreviewScreen() {
     thumbnail_uri: currentEntry?.thumbnail_uri ?? null,
     local_asset_id: currentEntry?.local_asset_id ?? null,
   }), [
+    requestFileFields,
+    fileId,
     currentChunkCount,
     currentCreatedAt,
     currentEntry?.local_asset_id,
@@ -3409,7 +3418,7 @@ export default function PreviewScreen() {
       const preview = await loadDecryptedPhotoForViewer(
         currentPhotoPageEntry,
         isUnlocked,
-        getFileKeyBytes,
+        getPreviewFileKeyBytes,
         getMasterKeyHandleId,
         {
           profile: performanceStorageProfile,
@@ -3457,7 +3466,7 @@ export default function PreviewScreen() {
     contentLocked,
     currentFileId,
     currentPhotoPageEntry,
-    getFileKeyBytes,
+    getPreviewFileKeyBytes,
     getMasterKeyHandleId,
     hasSwipe,
     isImage,
@@ -3483,7 +3492,7 @@ export default function PreviewScreen() {
     const startedAt = Date.now();
     recordRuntimeTrace('preview.image.large_thumbnail.upgrade_request', { fileId: currentFileId });
 
-    loadLargePreviewThumbnail(currentPhotoPageEntry, isUnlocked, getFileKeyBytes, controller.signal)
+    loadLargePreviewThumbnail(currentPhotoPageEntry, isUnlocked, getPreviewFileKeyBytes, controller.signal)
       .then((large) => {
         if (cancelled || !large) {
           if (!cancelled) recordRuntimeTrace('preview.image.large_thumbnail.empty', { fileId: currentFileId });
@@ -3514,7 +3523,7 @@ export default function PreviewScreen() {
     contentLocked,
     currentFileId,
     currentPhotoPageEntry,
-    getFileKeyBytes,
+    getPreviewFileKeyBytes,
     hasSwipe,
     imagePreviewKind,
     imageUri,
@@ -3551,6 +3560,7 @@ export default function PreviewScreen() {
           currentChunkCount,
           pdfHandleId,
           {
+            useProvidedFileKey: !!requestFileFields && currentFileId === fileId,
             onProgress: (event) => applyNativeProgress(event, setLoadProgress),
             signal: controller.signal,
           },

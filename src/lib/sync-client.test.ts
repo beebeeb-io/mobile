@@ -626,3 +626,35 @@ test('SyncProvider becomes ready after its rejected startup recovers without a s
     start.mockRestore();
   }
 });
+
+// 2236: metadata encrypted to the request content key must retain its routing
+// envelope across cache seeding, snapshot persistence and incoming create ops.
+const requestEnvelope2236 = {
+  file_request_id: 'request-2236', sender_ephemeral_pubkey: 'ephemeral-2236', wrapped_content_key: 'wrapped-2236',
+};
+test('2236 request envelope survives cache -> sync -> persisted cache', async () => {
+  secureStore.set('bb_sync_last_seq', '5');
+  cachedIndex = {hash:'h', storedAt:1, seq:5, files:[fileEntry(requestEnvelope2236)]};
+  getSyncOpsImpl = async (since) => since < 6 ? [{seq_id:6,op_type:'file_update',payload:{id:'file-1',size_bytes:1235}}] : [];
+  const client = new SyncClient();
+  try {
+    await client.start();
+    expect(client.getNode('file-1')).toMatchObject(requestEnvelope2236);
+    await client.persistCacheNow();
+    expect(savedIndexCalls.at(-1)?.files[0]).toMatchObject(requestEnvelope2236);
+  } finally { client.stop(); }
+});
+test('2236 request envelope survives a snapshot -> persisted cache', async () => {
+  getSnapshotImpl = async () => ({seq_id:5,nodes:[syncNode(requestEnvelope2236)]});
+  const client = new SyncClient();
+  try {
+    await client.start(); await client.persistCacheNow();
+    expect(savedIndexCalls.at(-1)?.files[0]).toMatchObject(requestEnvelope2236);
+  } finally { client.stop(); }
+});
+test('2236 request envelope survives a create op', async () => {
+  const client = new SyncClient();
+  client.applyRemoteOp({seq_id:1,op_type:'file_create',payload:{id:'request-file',...requestEnvelope2236}});
+  expect(client.getNode('request-file')).toMatchObject(requestEnvelope2236);
+  client.stop();
+});

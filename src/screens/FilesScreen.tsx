@@ -389,6 +389,9 @@ function syncNodeToFileEntry(node: SyncNode): FileEntry {
   return {
     id: node.id,
     name_encrypted: node.name_encrypted,
+    file_request_id: node.file_request_id,
+    sender_ephemeral_pubkey: node.sender_ephemeral_pubkey,
+    wrapped_content_key: node.wrapped_content_key,
     mime_type: node.mime_type,
     size_bytes: node.size_bytes,
     is_folder: node.is_folder,
@@ -3894,6 +3897,7 @@ export default function FilesScreen() {
       const decryptedUri = await decryptToTempFile(
         item.id, keyProvider, extForSave(), item.size_bytes, item.chunk_count, handleId,
         {
+          useProvidedFileKey: requestUpload,
           // 1180 — crash-safe Save progress. The native handle path
           // (downloadAndDecryptFileNative, handleId != null) streams to disk, so
           // onProgress is memory-safe. Push each event into the ISOLATED banner

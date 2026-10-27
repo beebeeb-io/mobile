@@ -1252,6 +1252,9 @@ function syncNodeToFileEntry(node: SyncNode): FileEntry {
   return {
     id: node.id,
     name_encrypted: node.name_encrypted,
+    file_request_id: node.file_request_id,
+    sender_ephemeral_pubkey: node.sender_ephemeral_pubkey,
+    wrapped_content_key: node.wrapped_content_key,
     parent_id: node.parent_id ?? null,
     is_folder: node.is_folder,
     size_bytes: node.size_bytes,
@@ -1281,6 +1284,9 @@ export function fileEntryToSyncNode(entry: FileEntry): SyncNode {
   return {
     id: entry.id,
     name_encrypted: entry.name_encrypted,
+    file_request_id: entry.file_request_id,
+    sender_ephemeral_pubkey: entry.sender_ephemeral_pubkey,
+    wrapped_content_key: entry.wrapped_content_key,
     parent_id: entry.parent_id ?? null,
     is_folder: entry.is_folder,
     is_uploading: entry.is_uploading,
@@ -1348,6 +1354,9 @@ function payloadToNode(
   return {
     id,
     name_encrypted: (payload.name_encrypted as string | undefined) ?? '',
+    file_request_id: (payload.file_request_id as string | null | undefined) ?? null,
+    sender_ephemeral_pubkey: (payload.sender_ephemeral_pubkey as string | null | undefined) ?? null,
+    wrapped_content_key: (payload.wrapped_content_key as string | null | undefined) ?? null,
     parent_id: (payload.parent_id as string | null | undefined) ?? null,
     is_folder: isFolder,
     size_bytes: (payload.size_bytes as number | undefined) ?? 0,
