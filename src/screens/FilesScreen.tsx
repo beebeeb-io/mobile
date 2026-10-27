@@ -3478,6 +3478,8 @@ export default function FilesScreen() {
         fileName: name,
         mimeType: mimeTypeFor(item) ?? undefined,
         sizeBytes: item.size_bytes,
+        // Task 2238 — a folder's link is a snapshot bundle of its files.
+        isFolder: item.is_folder === true,
       });
     })();
   }, [selectedIds, files, decryptedNames, exitSelectMode, navigation, mimeTypeFor, ensureFileReady]);
@@ -4146,6 +4148,8 @@ export default function FilesScreen() {
               fileName: name,
               mimeType: itemMimeType ?? undefined,
               sizeBytes: item.size_bytes,
+              // Task 2238 — a folder's link is a snapshot bundle of its files.
+              isFolder: item.is_folder === true,
             });
           })();
           return;
@@ -4503,6 +4507,8 @@ export default function FilesScreen() {
         fileName: name,
         mimeType: mimeTypeFor(item) ?? undefined,
         sizeBytes: item.size_bytes,
+        // Task 2238 — a folder's link is a snapshot bundle of its files.
+        isFolder: item.is_folder === true,
       });
     })();
   }, [navigation, decryptedNames, mimeTypeFor, ensureFileReady]);

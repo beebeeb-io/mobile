@@ -3113,6 +3113,39 @@ export async function createShare(
   return request<Share>('POST', '/api/v1/shares', { file_id: fileId, ...opts });
 }
 
+/** One item of a bundle share create (POST /api/v1/shares, share_type 'bundle'). */
+export interface CreateBundleShareItem {
+  file_id: string;
+  /** 0-based, contiguous. The manifest orders and paginates by this. */
+  position: number;
+  /** base64(AES-256-GCM(itemFileKey, K_c)) — one K_c covers the whole bundle. */
+  wrapped_file_key: string;
+}
+
+/**
+ * Task 2238 — one link over an ORDERED set of files (bundle spec 0417).
+ *
+ * Used by the share sheet when the target is a FOLDER: until shared folders
+ * ship (2237 phase 1) a folder link is a snapshot of every file below it, and
+ * a `file` share on the folder row would make the guest page fail with
+ * `400 cannot download a folder`. Same K_c / owner-recovery model as
+ * `createShare` — the server stores the wrapped item keys and never unwraps
+ * them. The item cap (256), positional order and non-folder/non-trashed rules
+ * are the server's; the caller checks the cap before calling this.
+ */
+export interface CreateBundleShareOpts extends Omit<ShareCreateOpts, 'wrapped_file_key'> {
+  items: CreateBundleShareItem[];
+}
+
+export async function createBundleShare(opts: CreateBundleShareOpts): Promise<Share> {
+  const { items, ...rest } = opts;
+  return request<Share>('POST', '/api/v1/shares', {
+    share_type: 'bundle',
+    items,
+    ...rest,
+  });
+}
+
 export async function listMyShares(): Promise<MyShareLink[]> {
   const data = await request<{ shares: MyShareLink[] }>('GET', '/api/v1/shares/mine');
   return data.shares ?? [];
