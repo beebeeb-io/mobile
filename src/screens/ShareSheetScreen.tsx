@@ -26,6 +26,8 @@ import type { FolderBundleScan } from '../lib/folder-bundle';
 import { useCrypto } from '../lib/crypto-context';
 import { formatBytes as formatSize } from '../lib/format';
 import { formatDateTime } from '../lib/date-format';
+import { FolderSharePanel } from '../components/folder-share/FolderSharePanel';
+import { useSharedFoldersFlag } from '../lib/use-shared-folders-flag';
 import { buildFullShareLink } from '../lib/share-full-link';
 import {
   deriveShareKey,
@@ -176,6 +178,10 @@ export default function ShareSheetScreen() {
   const { fileId, fileName, mimeType, sizeBytes, isFolder } = route.params;
   const { getFileKeyBytes, decryptNames, deriveX25519PrivateFromHandle, getMasterKeyHandleId, isUnlocked } = useCrypto();
   useKeyboardLayoutAnimation();
+  const sharing = useSharedFoldersFlag();
+  const [folderSharingUnavailable, setFolderSharingUnavailable] = useState(false);
+  const folderSharingEnabled = sharing.enabled && !folderSharingUnavailable;
+  const fallbackToBundle = useCallback(() => setFolderSharingUnavailable(true), []);
 
   const [expiry, setExpiry] = useState<ExpiryOption>(EXPIRY_OPTIONS[1]);
   const [opens, setOpens] = useState<OpensOption>(OPENS_OPTIONS[0]);
@@ -286,7 +292,7 @@ export default function ShareSheetScreen() {
   const folderBlocked = !!isFolder && (folderScan === null || folderFiles.length === 0 || folderScan.overCap);
 
   useEffect(() => {
-    if (!isFolder || !isUnlocked) return;
+    if (!isFolder || !isUnlocked || (sharing.loading || folderSharingEnabled) && !folderSharingUnavailable) return;
     let cancelled = false;
     setFolderScan(null);
     setFolderScanError(null);
@@ -315,7 +321,7 @@ export default function ShareSheetScreen() {
     return () => {
       cancelled = true;
     };
-  }, [isFolder, isUnlocked, fileId, decryptNames, folderScanAttempt]);
+  }, [isFolder, isUnlocked, fileId, decryptNames, folderScanAttempt, sharing.loading, folderSharingEnabled, folderSharingUnavailable]);
 
   const handleCreate = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -595,6 +601,12 @@ export default function ShareSheetScreen() {
       </View>
     </View>
   );
+
+  if (isFolder && (sharing.loading || folderSharingEnabled)) {
+    return <BottomSheet visible={open} onRequestClose={handleClose} onDismissed={handleDismissed} detents={['half', 'default', 'large']} avoidKeyboard contentStyle={styles.body} handleAccessibilityLabel="Share sheet" testID="share-sheet">
+      {sharing.loading ? <Text style={{ color: c.ink2, paddingVertical: 24 }}>Checking sharing options...</Text> : <FolderSharePanel folderId={fileId} folderName={fileName} onClose={handleClose} onUnavailable={fallbackToBundle} />}
+    </BottomSheet>;
+  }
 
   return (
     <BottomSheet

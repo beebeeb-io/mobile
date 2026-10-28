@@ -8,3 +8,8 @@ appId: io.beebeeb.app
 - runFlow: file-preview-test.yaml
 - runFlow: share-test.yaml
 - runFlow: deep-link-test.yaml
+# 2237c local fixture only; the lead's release matrix supplies the row and evidence dir.
+- runFlow:
+    when:
+      true: ${typeof RUN_2237C !== 'undefined' && RUN_2237C == '1'}
+    file: 2237c-folder-share.yaml

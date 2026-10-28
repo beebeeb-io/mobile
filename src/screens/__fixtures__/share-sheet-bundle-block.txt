@@ -1,0 +1,81 @@
+      // ── Folder snapshot bundle (task 2238) ────────────────────────────────
+      // A folder link is ONE bundle over every file in the subtree as it is
+      // now — never a `file` share on the folder row (the guest page would die
+      // on `400 cannot download a folder`). Items show their plain file names
+      // (bundles are flat; duplicates are allowed) and the link keeps today's
+      // `#key=`-only format.
+      if (isFolder) {
+        const scan = folderScan;
+        if (!scan) {
+          setError('Still counting the files in this folder. Try again in a moment.');
+          return;
+        }
+        if (scan.files.length === 0) {
+          setError('Nothing to share yet');
+          return;
+        }
+        if (scan.overCap) {
+          setError(`A link covers up to ${FOLDER_BUNDLE_MAX_ITEMS} files. Share fewer files.`);
+          return;
+        }
+
+        const clientKey = await generateRandomBytes(32);
+        let items: CreateBundleShareItem[] = [];
+        let keyForUrl: string;
+        let ownerWrappedKey: string;
+        try {
+          for (const f of scan.files) {
+            const itemKey = await getFileKeyBytes(f.fileId);
+            try {
+              const wrapped = await wrapFileKeyForShare(clientKey, itemKey);
+              items.push({
+                file_id: f.fileId,
+                position: f.position,
+                wrapped_file_key: toBase64(wrapped),
+              });
+            } finally {
+              itemKey.fill(0);
+            }
+          }
+          ownerWrappedKey = await ownerWrapToBase64(getMasterKeyHandleId(), clientKey);
+          keyForUrl = toBase64url(clientKey);
+        } finally {
+          clientKey.fill(0);
+        }
+
+        const mintToken = async (): Promise<
+          { token: string; owner_wrapped_token: string }
+        > => {
+          const token = toBase64url(await generateRandomBytes(20));
+          return { token, owner_wrapped_token: await ownerWrapToBase64(getMasterKeyHandleId(), asciiBytes(token)) };
+        };
+        let tokenFields = await mintToken();
+        const buildBundleOpts = async () => ({
+          items,
+          expires_in_hours: expiry.hours ?? undefined,
+          max_opens: opens.value ?? undefined,
+          passphrase: passphrase.trim() || undefined,
+          token: tokenFields.token,
+          owner_wrapped_key: ownerWrappedKey,
+          owner_wrapped_token: tokenFields.owner_wrapped_token,
+        });
+
+        let result: ShareLink;
+        try {
+          result = await createBundleShare(await buildBundleOpts());
+        } catch (e) {
+          // 409 = client-token collision (≈ never at 20 random bytes) → re-mint once.
+          if (e instanceof ApiError && e.status === 409) {
+            tokenFields = await mintToken();
+            result = await createBundleShare(await buildBundleOpts());
+          } else {
+            throw e;
+          }
+        }
+
+        setShare(result);
+        setLocalShareUrl(buildFullShareLink(getWebAppUrl(), result.token, keyForUrl));
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        return;
+      }
+
