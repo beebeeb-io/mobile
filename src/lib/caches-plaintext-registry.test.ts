@@ -285,3 +285,20 @@ describe('shared-folder adopted IDs (2237c Task 7)', () => {
     expect(deleted).toEqual(['file:///cache/shared-adopted-0123456789abcdef.json']);
   });
 });
+
+describe('shared-folder publish retry IDs (2237c Task 8)', () => {
+  test('the guard sees and registers the exact retry writer and its seven-day clear rule', async () => {
+    expect(cachesWriters().some(w => w.where.startsWith('lib/shared-folder-publish.ts:') && w.literal === 'shared-publish-')).toBe(true);
+    const entry = cachesEntryFor('shared-publish-0123456789abcdef.json');
+    expect(entry?.match).toBe('shared-publish-'); expect(entry?.plaintext).toBe(true);
+    expect(entry?.writer).toBe('lib/shared-folder-publish.ts');
+    expect(entry?.contains).toContain('IDs'); expect(entry?.contains).toContain('7 days'); expect(entry?.contains).toContain('sign-out');
+    const deleted: string[] = [];
+    const result = await purgeCachesPlaintext({ cacheDirectory: 'file:///cache/',
+      readDirectoryAsync: async () => ['shared-publish-0123456789abcdef.json', 'shared-publisher-unrelated.json'],
+      deleteAsync: async uri => { deleted.push(uri); },
+    });
+    expect(result.removed).toEqual(['shared-publish-0123456789abcdef.json']);
+    expect(deleted).toEqual(['file:///cache/shared-publish-0123456789abcdef.json']);
+  });
+});

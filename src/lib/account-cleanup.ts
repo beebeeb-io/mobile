@@ -1,3 +1,4 @@
+import { clearPendingPublishes } from './shared-folder-publish';
 import { clearAdopted } from './shared-folder-adoption';
 import { clearSharedKeys } from './shared-folder-keys';
 /**
@@ -157,6 +158,7 @@ async function sweepDecryptedCaches(): Promise<{ removed: string[]; failed: stri
   clearSharedKeys();
   await Promise.allSettled([
     clearAdopted(),
+    clearPendingPublishes(),
     clearThumbnailCache(),
     clearNameCache(),
     clearPreviewCache(),

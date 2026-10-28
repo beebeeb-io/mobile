@@ -1,3 +1,4 @@
+import { onOwnerUpload } from './shared-folder-publish'
 /**
  * Streaming encrypted upload for the Beebeeb mobile client.
  *
@@ -248,10 +249,13 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
         onProgress,
         signal: abortSignal,
       })
-      if (native) return native
+      if (native) {
+        onOwnerUpload({ id: native.id, parent_id: native.parent_id === undefined ? parentId ?? null : native.parent_id })
+        return native
+      }
     }
 
-    return await uploadEncryptedChunked({
+    const entry = await uploadEncryptedChunked({
       fileId,
       nameEncrypted: nameEncryptedForFileId,
       v2InitNameEncrypted,
@@ -268,6 +272,8 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
       readEncryptedChunk,
       signal: abortSignal,
     })
+    onOwnerUpload({ id: entry.id, parent_id: entry.parent_id === undefined ? parentId ?? null : entry.parent_id })
+    return entry
   } finally {
     settleUploadSignal(fileId, abortSignal)
   }

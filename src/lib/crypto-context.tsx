@@ -1,3 +1,6 @@
+import { retryPending, clearPublishState } from './shared-folder-publish'
+import { accountEpoch, isCurrentAccountEpoch } from './account-epoch'
+import * as ReactNative from 'react-native'
 import { adoptVerified, adoptDecryptedNames } from './shared-folder-adoption'
 import * as SharedNative from '../../modules/beebeeb-crypto'
 import { configureSharedKeys, clearSharedKeys, assertFileKeyExportable, resolveSharedNames, retrySharedDecrypt, type SharedKeysApi, type SharedKeysNative } from './shared-folder-keys'
@@ -1241,6 +1244,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
   }, [unlockAttempted])
 
   const lock = useCallback(() => {
+    clearPublishState()
     clearSharedKeys()
     void clearCachedMasterKey().catch(() => {})
     recordRuntimeTrace('vault.lock.request', {
@@ -1273,10 +1277,18 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
     if (!isUnlocked) return
     // C1/C3 promised Interfaces; readiness fails closed until the native bridge ships.
     let active = true
+    let configured = false
+    const epoch = accountEpoch()
     void import('./api').then(api => {
-      if (active) configureSharedKeys(SharedNative as unknown as Partial<SharedKeysNative>, api as unknown as SharedKeysApi, requireHandleId)
+      if (!active || !isCurrentAccountEpoch(epoch)) return
+      configureSharedKeys(SharedNative as unknown as Partial<SharedKeysNative>, api as unknown as SharedKeysApi, requireHandleId)
+      configured = true
+      void retryPending()
     })
-    return () => { active = false; clearSharedKeys() }
+    const subscription = ReactNative.AppState?.addEventListener('change', state => {
+      if (state === 'active' && active && configured && isCurrentAccountEpoch(epoch)) void retryPending()
+    })
+    return () => { active = false; subscription?.remove(); clearPublishState(); clearSharedKeys() }
   }, [isUnlocked])
 
   const encryptChunkFn = useCallback(

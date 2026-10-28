@@ -1,0 +1,84 @@
+// @ts-nocheck -- C1/C3 promised Interfaces are explicitly mocked through ports.
+import { expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { createSharedFolderPublisher, isPublishableOwnedFile } from './shared-folder-publish';
+import { clearTree, ingestTree, ancestorsOf } from './shared-folder-tree';
+const DAY = 86_400_000;
+function setup() {
+  clearTree(); ingestTree([{id:'sub',parent_id:'R'}]);
+  let clock=1000, disk=null, status=0, enabled=true, lists=0, wraps=0;
+  const posts=[];
+  const p={
+    enabled:async()=>enabled,
+    links:async()=>{lists++;return [{folder_id:'R',revoked_at:null,expires_at:null}];},
+    folderHandleFor:async()=>7,
+    // Marked C1 mock: returns only ciphertext wraps, never a file key.
+    wrap:async(handle,ids)=>{expect(handle).toBe(7);wraps++;return ids.map(fileId=>({fileId,wrapped:new Uint8Array(60).fill(3)}));},
+    publish:async(root,keys)=>{posts.push({root,keys});if(status)throw Object.assign(Error('endpoint failure'),{status});return {written:keys.length,skipped:0};},
+    ancestors:ancestorsOf, eligible:id=>isPublishableOwnedFile(id,'owner'),
+    read:async()=>disk,write:async value=>{disk=value;},remove:async()=>{disk=null;},
+    now:()=>clock,current:()=>true,
+  };
+  return {p,posts,disk:()=>disk,lists:()=>lists,wraps:()=>wraps,setStatus:v=>status=v,setEnabled:v=>enabled=v,advance:n=>clock+=n};
+}
+test('an_owner_upload_into_a_shared_subtree_publishes_one_wrap',async()=>{
+  const s=setup(),a=createSharedFolderPublisher(s.p); a.onOwnerUpload({id:'f',parent_id:'sub'});await a.idle();
+  expect(s.posts).toHaveLength(1);expect(s.posts[0].root).toBe('R');
+  expect(s.posts[0].keys).toHaveLength(1);expect(s.posts[0].keys[0].file_id).toBe('f');expect(atob(s.posts[0].keys[0].encrypted_file_key).length).toBe(60);
+  expect(s.wraps()).toBe(1);expect(s.lists()).toBe(1);
+});
+test('an_upload_outside_any_shared_root_makes_no_request',async()=>{
+  const s=setup(),a=createSharedFolderPublisher(s.p);a.onOwnerUpload({id:'f',parent_id:'private'});await a.idle();
+  expect(s.posts).toEqual([]);expect(s.wraps()).toBe(0); // Discovery is allowed; no key-list GET or publish POST.
+});
+test('a_failed_publish_is_retried_and_a_404_is_dropped',async()=>{
+  const s=setup(),a=createSharedFolderPublisher(s.p);s.setStatus(500);a.onOwnerUpload({id:'f',parent_id:'R'});await a.idle();
+  expect(s.posts).toHaveLength(1);expect(JSON.parse(s.disk())).toEqual([{fileId:'f',parentId:'R',rootId:'R',createdAt:1000}]);
+  s.setStatus(0);await a.retryPending();expect(s.posts).toHaveLength(2);expect(JSON.parse(s.disk())).toEqual([]);
+  for(const code of [404,501]){s.setStatus(code);a.onOwnerUpload({id:`f${code}`,parent_id:'R'});await a.idle();expect(JSON.parse(s.disk())).toEqual([]);}
+  s.setStatus(500);a.onOwnerUpload({id:'expired',parent_id:'R'});await a.idle();const n=s.posts.length;s.advance(8*DAY);await a.retryPending();expect(s.posts).toHaveLength(n);expect(JSON.parse(s.disk())).toEqual([]);
+});
+test('the_publish_hook_never_throws_into_the_upload',async()=>{
+  const s=setup();s.p.links=async()=>{throw Error('offline');};const a=createSharedFolderPublisher(s.p);
+  expect(()=>a.onOwnerUpload({id:'f',parent_id:'R'})).not.toThrow();await expect(a.idle()).resolves.toBeUndefined();
+  s.p.links=async()=>[{folder_id:'R'}];await a.retryPending();expect(s.posts).toHaveLength(1);
+});
+test('roots_cache_expires_after_five_minutes_and_clears_on_lock',async()=>{
+  const s=setup(),a=createSharedFolderPublisher(s.p);
+  for(let i=0;i<2;i++){a.onOwnerUpload({id:`f${i}`,parent_id:'R'});await a.idle();}expect(s.lists()).toBe(1);
+  s.advance(5*60_000+1);a.onOwnerUpload({id:'f2',parent_id:'R'});await a.idle();expect(s.lists()).toBe(2);
+  a.invalidate();const b=createSharedFolderPublisher(s.p);b.onOwnerUpload({id:'f3',parent_id:'R'});await b.idle();expect(s.lists()).toBe(3);
+});
+test('flag_off_makes_no_request',async()=>{
+  const s=setup();s.setEnabled(false);s.p.read=async()=>{throw Error('should not read');};const a=createSharedFolderPublisher(s.p);
+  a.onOwnerUpload({id:'f',parent_id:'R'});await a.idle();await a.publishOwnedKeys('R',['f']);await a.retryPending();
+  expect(s.posts).toEqual([]);expect(s.lists()).toBe(0);expect(s.wraps()).toBe(0);expect(s.disk()).toBeNull();
+});
+test('the_retry_queue_survives_relaunch_and_contains_only_ids_and_age',async()=>{
+  const s=setup();s.setStatus(500);const a=createSharedFolderPublisher(s.p);await a.publishOwnedKeys('R',['f']);
+  const row=JSON.parse(s.disk())[0];expect(Object.keys(row).sort()).toEqual(['createdAt','fileId','parentId','rootId']);
+  a.invalidate();s.setStatus(0);await createSharedFolderPublisher(s.p).retryPending();expect(s.posts).toHaveLength(2);expect(JSON.parse(s.disk())).toEqual([]);
+});
+test('request_uploads_and_foreign_file_keys_are_never_wrapped_as_owner_keys',async()=>{
+  const s=setup();ingestTree([{id:'request',file_request_id:'req'},{id:'guest',acted_via_share_id:'link'},{id:'member',uploaded_by:'other'}]);
+  await createSharedFolderPublisher(s.p).publishOwnedKeys('R',['request','guest','member','own']);expect(s.posts[0].keys.map(k=>k.file_id)).toEqual(['own']);
+});
+test('a_late_native_result_cannot_publish_or_recreate_a_purged_queue',async()=>{
+  const s=setup();let release;s.p.wrap=async(h,ids)=>{await new Promise(r=>release=r);return ids.map(fileId=>({fileId,wrapped:new Uint8Array(60)}));};
+  const a=createSharedFolderPublisher(s.p);const work=a.publishOwnedKeys('R',['f']);for(let i=0;i<30&&!release;i++)await Promise.resolve();expect(typeof release).toBe('function');
+  const purge=a.clearPending();release();await work;await purge;expect(s.posts).toEqual([]);expect(s.disk()).toBeNull();
+});
+test('batches_are_bounded_and_bad_native_wraps_are_not_posted',async()=>{
+  const s=setup(),a=createSharedFolderPublisher(s.p);await a.publishOwnedKeys('R',Array.from({length:1001},(_,i)=>`f${i}`));
+  expect(s.posts.map(p=>p.keys.length)).toEqual([1000,1]);s.p.wrap=async()=>[{fileId:'wrong',wrapped:new Uint8Array(59)}];await a.publishOwnedKeys('R',['bad']);expect(s.posts).toHaveLength(2);
+});
+test('revoked_and_expired_links_are_not_publish_roots',async()=>{
+  const s=setup();s.p.links=async()=>[{folder_id:'R',revoked_at:'today'},{folder_id:'R',expires_at:new Date(0).toISOString()}];
+  const a=createSharedFolderPublisher(s.p);a.onOwnerUpload({id:'f',parent_id:'R'});await a.idle();expect(s.posts).toEqual([]);
+});
+test('production_hooks_cover_both_upload_engines_unlock_foreground_and_sign_out',()=>{
+  const source=file=>readFileSync(new URL(file,import.meta.url),'utf8');
+  const upload=source('./encrypted-upload.ts');expect((upload.match(/onOwnerUpload\(/g)??[]).length).toBe(2);
+  const crypto=source('./crypto-context.tsx');expect(crypto.includes("addEventListener('change'")).toBe(true);expect(crypto.includes("state === 'active'")).toBe(true);expect((crypto.match(/retryPending\(/g)??[]).length).toBeGreaterThanOrEqual(2);
+  expect(source('./account-cleanup.ts').includes('clearPendingPublishes()')).toBe(true);
+});
