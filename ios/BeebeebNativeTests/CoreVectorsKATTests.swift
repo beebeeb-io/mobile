@@ -32,9 +32,9 @@ final class CoreVectorsKATTests: XCTestCase {
 
     // MARK: - Pin
 
-    /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v11, core f86f5b63).
+    /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v11, core c08defc7).
     private static let expectedSha256Hex =
-        "60fbdfdc6090ef9bcff52de6061bdf213a6196d58aaf3062132842b9c20d8fed"
+        "11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a"
     // The v10 resource filename is retained; contents track the pinned core version.
     private static let expectedVersion = 11
     private static let requiredVectorNames = [
@@ -602,6 +602,52 @@ final class CoreVectorsKATTests: XCTestCase {
             }
             print("[CoreVectorsKAT] \(name): 1 row")
         }
+    }
+
+    func testOwnerWrapRejectsOwnV1Content() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let id = "11111111-1111-4111-8111-111111111111"
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let derived = try master.deriveFileKey(fileId: Data(id.utf8))
+        let frame = try SharedKeyOps.wire(derived.encryptChunk(plaintext: Data(repeating: 0x55, count: 32)))
+        XCTAssertEqual(frame.count, 60)
+        XCTAssertFalse(SharedKeyOps.openOwnerFileKey(master: master, fileId: id, wrapped: frame, registry: registry))
+        XCTAssertNil(registry.file(id))
+    }
+
+    func testOwnerWrapRejectsLegacyNameEnvelope() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let id = "11111111-1111-4111-8111-111111111111"
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let name = try master.encryptName(fileId: id, filename: "test", mimeType: nil)
+        let blob = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(name.utf8)) as? [String: Any])
+        let nonce = Data(try XCTUnwrap(blob["nonce"] as? [UInt8]))
+        let ciphertext = Data(try XCTUnwrap(blob["ciphertext"] as? [UInt8]))
+        let frame = nonce + ciphertext
+        XCTAssertEqual(frame.count, 60)
+        XCTAssertFalse(SharedKeyOps.openOwnerFileKey(master: master, fileId: id, wrapped: frame, registry: registry))
+        XCTAssertNil(registry.file(id))
+    }
+
+    func testL8OwnerWrapVectorAndAdoption() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "owner_wrapped_file_key")
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(v, "master_key_hex"))
+        let id = try Self.str(v, "file_id")
+        let frame = try Self.hex(v, "expected_frame_hex")
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        XCTAssertTrue(SharedKeyOps.openOwnerFileKey(master: master, fileId: id, wrapped: frame, registry: registry))
+        let expected = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "child_key_hex"))
+        XCTAssertEqual(try XCTUnwrap(registry.file(id)).keyId(), try expected.keyId())
+        let adopted = try SharedKeyOps.adoptWrap(master: master, fileId: id, registry: registry)
+        XCTAssertEqual(adopted.count, 60)
+        registry.clear()
+        XCTAssertTrue(SharedKeyOps.openOwnerFileKey(master: master, fileId: id, wrapped: adopted, registry: registry))
+        XCTAssertEqual(try XCTUnwrap(registry.file(id)).keyId(), try expected.keyId())
+        XCTAssertFalse(SharedKeyOps.openOwnerFileKey(master: master, fileId: "22222222-2222-4222-8222-222222222222", wrapped: adopted, registry: registry))
+        var corrupt = adopted
+        corrupt[corrupt.count - 1] ^= 1
+        XCTAssertFalse(SharedKeyOps.openOwnerFileKey(master: master, fileId: id, wrapped: corrupt, registry: registry))
+        XCTAssertEqual(try XCTUnwrap(registry.file(id)).keyId(), try expected.keyId())
     }
 
     func testSharedKeyOpsRoundTrip() throws {

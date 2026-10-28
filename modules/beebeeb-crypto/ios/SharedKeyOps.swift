@@ -64,7 +64,11 @@ enum SharedKeyOps {
     static func openOwnerFileKey(master: MasterKeyHandle, fileId: String, wrapped: Data,
                                  registry: SharedKeyRegistry<FileKeyHandle> = registry) -> Bool {
         let epoch = registry.generation
-        do { return registry.storeFile(fileId, try unwrap(master.deriveFileKey(fileId: Data(fileId.utf8)), wrapped), generation: epoch) }
+        do {
+            guard wrapped.count == 60 else { return false }
+            let key = try master.unwrapOwnerFileKey(itemId: fileId, nonce: Data(wrapped.prefix(12)), ciphertext: Data(wrapped.dropFirst(12)))
+            return registry.storeFile(fileId, key, generation: epoch)
+        }
         catch { return false }
     }
     static func wrapChildKeys(master: MasterKeyHandle, folderId: Int, fileIds: [String], kind: UInt8 = 1,
@@ -76,7 +80,7 @@ enum SharedKeyOps {
     static func adoptWrap(master: MasterKeyHandle, fileId: String,
                           registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> Data {
         guard let key = registry.file(fileId) else { throw SharedKeyError.locked }
-        return try wire(master.deriveFileKey(fileId: Data(fileId.utf8)).wrapKey(inner: key))
+        return try wire(master.wrapOwnerFileKey(itemId: fileId, inner: key))
     }
     static func fileKey(master: MasterKeyHandle, fileId: String,
                         registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> FileKeyHandle {

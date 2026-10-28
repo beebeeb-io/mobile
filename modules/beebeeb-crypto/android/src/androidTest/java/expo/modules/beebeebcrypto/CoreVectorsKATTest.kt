@@ -63,9 +63,9 @@ import uniffi.beebeeb_uniffi.FileKeyHandle
 class CoreVectorsKATTest {
 
     companion object {
-        /** `sha256sum` of the vendored asset (v11, matching merged core f86f5b63). */
+        /** `sha256sum` of the vendored asset (v11, matching merged core c08defc7). */
         private const val EXPECTED_SHA256 =
-            "60fbdfdc6090ef9bcff52de6061bdf213a6196d58aaf3062132842b9c20d8fed"
+            "11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a"
         // The v10 asset filename is retained; contents track the pinned core version.
         private const val EXPECTED_VERSION = 11
         private val REQUIRED_VECTOR_NAMES = listOf(
@@ -373,6 +373,66 @@ class CoreVectorsKATTest {
                 assertThrows(Exception::class.java) { key.unwrapFolderChild(r,i,k,wire.copyOfRange(0,12),wire.copyOfRange(12,wire.size)) }
             }
             println("[CoreVectorsKAT] $name: 1 row")
+        }
+    }
+
+    @Test
+    fun ownerWrapRejectsOwnV1Content() {
+        MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 }).use { master ->
+            val id = "11111111-1111-4111-8111-111111111111"
+            val registry = SharedKeyRegistry<FileKeyHandle> { it.close() }
+            try {
+                val frame = master.deriveFileKey(id.toByteArray()).use { derived ->
+                    SharedKeyOps.wire(derived.encryptChunk(ByteArray(32) { 0x55 }))
+                }
+                assertEquals(60, frame.size)
+                assertFalse(SharedKeyOps.openOwnerFileKey(master, id, frame, registry))
+                assertNull(registry.file(id))
+            } finally { registry.clear() }
+        }
+    }
+
+    @Test
+    fun ownerWrapRejectsLegacyNameEnvelope() {
+        MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 }).use { master ->
+            val id = "11111111-1111-4111-8111-111111111111"
+            val registry = SharedKeyRegistry<FileKeyHandle> { it.close() }
+            try {
+                val blob = JSONObject(master.encryptName(id, "test", null))
+                fun bytes(name: String): ByteArray {
+                    val array = blob.getJSONArray(name)
+                    return ByteArray(array.length()) { array.getInt(it).toByte() }
+                }
+                val frame = bytes("nonce") + bytes("ciphertext")
+                assertEquals(60, frame.size)
+                assertFalse(SharedKeyOps.openOwnerFileKey(master, id, frame, registry))
+                assertNull(registry.file(id))
+            } finally { registry.clear() }
+        }
+    }
+
+    @Test
+    fun l8OwnerWrapVectorAndAdoption() {
+        val v = vector(loadRoot(), "owner_wrapped_file_key")
+        MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes()).use { master ->
+            val id = v.getString("file_id")
+            val registry = SharedKeyRegistry<FileKeyHandle> { it.close() }
+            FileKeyHandle.fromKeyBytes(v.getString("child_key_hex").hexToBytes()).use { expected ->
+                try {
+                    assertTrue(SharedKeyOps.openOwnerFileKey(master, id, v.getString("expected_frame_hex").hexToBytes(), registry))
+                    assertTrue(expected.keyId().contentEquals(registry.file(id)!!.keyId()))
+                    val adopted = SharedKeyOps.adoptWrap(master, id, registry)
+                    assertEquals(60, adopted.size)
+                    registry.clear()
+                    assertTrue(SharedKeyOps.openOwnerFileKey(master, id, adopted, registry))
+                    assertTrue(expected.keyId().contentEquals(registry.file(id)!!.keyId()))
+                    assertFalse(SharedKeyOps.openOwnerFileKey(master, "22222222-2222-4222-8222-222222222222", adopted, registry))
+                    val corrupt = adopted.copyOf()
+                    corrupt[corrupt.lastIndex] = (corrupt.last().toInt() xor 1).toByte()
+                    assertFalse(SharedKeyOps.openOwnerFileKey(master, id, corrupt, registry))
+                    assertTrue(expected.keyId().contentEquals(registry.file(id)!!.keyId()))
+                } finally { registry.clear() }
+            }
         }
     }
 

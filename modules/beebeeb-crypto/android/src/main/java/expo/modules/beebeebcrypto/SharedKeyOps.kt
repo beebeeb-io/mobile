@@ -48,7 +48,11 @@ object SharedKeyOps {
   fun openOwnerFileKey(master: MasterKeyHandle, fileId: String, wrapped: ByteArray,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): Boolean {
     val epoch = registry.generation
-    return try { registry.storeFile(fileId, unwrap(master.deriveFileKey(fileId.toByteArray(Charsets.UTF_8)), wrapped), epoch) }
+    return try {
+      require(wrapped.size == 60) { "Invalid shared key wrap" }
+      val key = master.unwrapOwnerFileKey(fileId, wrapped.copyOfRange(0, 12), wrapped.copyOfRange(12, wrapped.size))
+      registry.storeFile(fileId, key, epoch)
+    }
     catch (_: Exception) { false }
   }
   fun wrapChildKeys(master: MasterKeyHandle, folderId: Int, fileIds: List<String>,
@@ -64,7 +68,7 @@ object SharedKeyOps {
   fun adoptWrap(master: MasterKeyHandle, fileId: String,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): ByteArray {
     val key = registry.file(fileId) ?: error("Vault is locked")
-    return wire(master.deriveFileKey(fileId.toByteArray(Charsets.UTF_8)).wrapKey(key))
+    return wire(master.wrapOwnerFileKey(fileId, key))
   }
   fun fileKey(master: MasterKeyHandle, fileId: String,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): FileKeyHandle =

@@ -1052,6 +1052,8 @@ external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_link_o
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_link_owner_token(
 ): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_owner_file_key(
+): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_bytes(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_folder_custody(
@@ -1061,6 +1063,8 @@ external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_key(
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_link_owner_key(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_link_owner_token(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_owner_file_key(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_encrypt_buckets(
 ): Short
@@ -1447,6 +1451,8 @@ external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_link_owner_k
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_link_owner_token(`ptr`: Long,`shareId`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_owner_file_key(`ptr`: Long,`itemId`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_bytes(`ptr`: Long,`bytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_folder_custody(`ptr`: Long,`folderId`: RustBuffer.ByValue,`inner`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -1456,6 +1462,8 @@ external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_key(`ptr`: Lon
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_link_owner_key(`ptr`: Long,`shareId`: RustBuffer.ByValue,`inner`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_link_owner_token(`ptr`: Long,`shareId`: RustBuffer.ByValue,`token`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_owner_file_key(`ptr`: Long,`itemId`: RustBuffer.ByValue,`inner`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_clone_searchindexhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
@@ -2287,6 +2295,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_link_owner_token() != 21189.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_owner_file_key() != 55056.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_bytes() != 63264.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -2300,6 +2311,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_link_owner_token() != 17239.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_owner_file_key() != 19400.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_encrypt_buckets() != 883.toShort()) {
@@ -7485,6 +7499,11 @@ public interface MasterKeyHandleInterface {
     fun `unwrapLinkOwnerToken`(`shareId`: kotlin.String, `nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): kotlin.ByteArray
     
     /**
+     * Open only L8 and return an opaque handle, never raw file-key bytes.
+     */
+    fun `unwrapOwnerFileKey`(`itemId`: kotlin.String, `nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): FileKeyHandle
+    
+    /**
      * Wrap bytes without exporting the master key across the FFI boundary.
      */
     fun `wrapBytes`(`bytes`: kotlin.ByteArray): EncryptedData
@@ -7500,6 +7519,11 @@ public interface MasterKeyHandleInterface {
     fun `wrapLinkOwnerKey`(`shareId`: kotlin.String, `inner`: FileKeyHandle): EncryptedData
     
     fun `wrapLinkOwnerToken`(`shareId`: kotlin.String, `token`: kotlin.ByteArray): EncryptedData
+    
+    /**
+     * L8 owner adoption. Key material stays in native handles.
+     */
+    fun `wrapOwnerFileKey`(`itemId`: kotlin.String, `inner`: FileKeyHandle): EncryptedData
     
     companion object
 }
@@ -7902,6 +7926,23 @@ open class MasterKeyHandle: Disposable, AutoCloseable, MasterKeyHandleInterface
 
     
     /**
+     * Open only L8 and return an opaque handle, never raw file-key bytes.
+     */
+    @Throws(CryptoException::class)override fun `unwrapOwnerFileKey`(`itemId`: kotlin.String, `nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): FileKeyHandle {
+            return FfiConverterTypeFileKeyHandle.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_owner_file_key(
+        it,
+        FfiConverterString.lower(`itemId`),FfiConverterByteArray.lower(`nonce`),FfiConverterByteArray.lower(`ciphertext`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Wrap bytes without exporting the master key across the FFI boundary.
      */
     @Throws(CryptoException::class)override fun `wrapBytes`(`bytes`: kotlin.ByteArray): EncryptedData {
@@ -7971,6 +8012,23 @@ open class MasterKeyHandle: Disposable, AutoCloseable, MasterKeyHandleInterface
     UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_link_owner_token(
         it,
         FfiConverterString.lower(`shareId`),FfiConverterByteArray.lower(`token`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * L8 owner adoption. Key material stays in native handles.
+     */
+    @Throws(CryptoException::class)override fun `wrapOwnerFileKey`(`itemId`: kotlin.String, `inner`: FileKeyHandle): EncryptedData {
+            return FfiConverterTypeEncryptedData.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_owner_file_key(
+        it,
+        FfiConverterString.lower(`itemId`),FfiConverterTypeFileKeyHandle.lower(`inner`),_status)
 }
     }
     )
