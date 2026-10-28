@@ -1,3 +1,4 @@
+import { gatedPlaintextWrite } from './plaintext-gate';
 import { accountEpoch, onAccountEpochAdvance, sameAccountEpoch } from './account-epoch';
 import { isOwnerWrapLoaded, sharedFileKeyIsLoaded, sharedMasterHandleId } from './shared-folder-keys';
 
@@ -65,12 +66,13 @@ async function defaultAdopter(): Promise<Adopter | null> {
     const api=await import('./api');
     const {accountDigest}=await import('./files-mount-default');
     if(!sameAccountEpoch(epoch,accountEpoch())||!fs.cacheDirectory)return null;
-    const path=`${fs.cacheDirectory}shared-adopted-${accountDigest(epoch.accountId!)}.json`;
+    const cacheDir = fs.cacheDirectory;
+    const path=`${cacheDir}shared-adopted-${accountDigest(epoch.accountId!)}.json`;
     const a=createSharedFolderAdopter({
       loaded:sharedFileKeyIsLoaded,fromOwnerWrap:isOwnerWrapLoaded,
       wrap:id=>native.sharedAdoptWrap(sharedMasterHandleId(),id),post:api.adoptOwnerFileKey,
       read:async()=>{const info=await fs.getInfoAsync(path);return info.exists?fs.readAsStringAsync(path):null;},
-      write:value=>fs.writeAsStringAsync(path,value),remove:()=>fs.deleteAsync(path,{idempotent:true}),
+      write:value=>gatedPlaintextWrite('shared-adopted IDs',path,fs,()=>fs.writeAsStringAsync(path,value)),remove:()=>fs.deleteAsync(path,{idempotent:true}),
       current:()=>sameAccountEpoch(epoch,accountEpoch()),
     });
     instances.add(a); return a;

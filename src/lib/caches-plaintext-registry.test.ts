@@ -262,3 +262,26 @@ describe('task 1593 round 4 (P2-3) — the File Provider NAME cache writer is ga
     expect(body).toMatch(/lease\.release\(\)/);
   });
 });
+
+describe('shared-folder adopted IDs (2237c Task 7)', () => {
+  test('the guard sees the actual adopted-ID cache writer', () => {
+    expect(cachesWriters().some(w => w.where.startsWith('lib/shared-folder-adoption.ts:') && w.literal === 'shared-adopted-')).toBe(true);
+  });
+  test('the exact adopted-ID prefix records purpose, writer and clear policy and is purged', async () => {
+    const entry = cachesEntryFor('shared-adopted-0123456789abcdef.json');
+    expect(entry?.match).toBe('shared-adopted-');
+    expect(entry?.plaintext).toBe(true);
+    expect(entry?.writer).toBe('lib/shared-folder-adoption.ts');
+    expect(entry?.contains).toContain('IDs only');
+    expect(entry?.contains).toContain('sign-out');
+    expect(cachesEntryFor('shared-adoptedness-unrelated.json')).toBeNull();
+    const deleted: string[] = [];
+    const result = await purgeCachesPlaintext({
+      cacheDirectory: 'file:///cache/',
+      readDirectoryAsync: async () => ['shared-adopted-0123456789abcdef.json', 'shared-adoptedness-unrelated.json'],
+      deleteAsync: async path => { deleted.push(path); },
+    });
+    expect(result.removed).toEqual(['shared-adopted-0123456789abcdef.json']);
+    expect(deleted).toEqual(['file:///cache/shared-adopted-0123456789abcdef.json']);
+  });
+});
