@@ -243,6 +243,62 @@ describe('contract: format l7 and 409 upgrade_required', () => {
   });
 });
 
+describe('L11: no fresh custody over a folder the server said needs the upgrade', () => {
+  const upgradeError = { status: 409, code: 'upgrade_required', message: 'x' };
+
+  test('after a 409 upgrade_required the folder is never minted over, and the state is the upgrade state', async () => {
+    const memory = restart();
+    await custody.assertMayRegisterCustody(memory, A, FOLDER);
+    const state = await custody.noteUpgradeRequired(memory, A, FOLDER, upgradeError);
+    expect(state).toBeInstanceOf(custody.UpgradeRequiredError);
+    await expect(custody.assertMayRegisterCustody(memory, A, FOLDER)).rejects.toBeInstanceOf(custody.UpgradeRequiredError);
+    await custody.assertMayRegisterCustody(memory, A, OTHER_FOLDER);
+  });
+
+  test('it survives a restart, is per account, and is cleared at sign-out', async () => {
+    await custody.noteUpgradeRequired(restart(), A, FOLDER, upgradeError);
+    const again = restart();
+    await expect(custody.assertMayRegisterCustody(again, A, FOLDER)).rejects.toBeInstanceOf(custody.UpgradeRequiredError);
+    await custody.assertMayRegisterCustody(again, B, FOLDER);
+    await again.clearAll();
+    await custody.assertMayRegisterCustody(restart(), A, FOLDER);
+  });
+
+  test('other errors do not mark the folder', async () => {
+    const memory = restart();
+    expect(await custody.noteUpgradeRequired(memory, A, FOLDER, { status: 409, code: 'folder_key_missing' })).toBeNull();
+    expect(await custody.noteUpgradeRequired(memory, A, FOLDER, new Error('boom'))).toBeNull();
+    await custody.assertMayRegisterCustody(memory, A, FOLDER);
+  });
+
+  test('once the upgrade finished and custody was seen, the folder is custody and the flag is gone', async () => {
+    const memory = restart();
+    await custody.noteUpgradeRequired(memory, A, FOLDER, upgradeError);
+    await memory.markSeen(A, FOLDER);
+    const again = restart();
+    expect(await again.isUpgradeRequired(A, FOLDER)).toBe(false);
+    await expect(custody.assertMayRegisterCustody(again, A, FOLDER)).rejects.toBeInstanceOf(custody.CustodyUnavailableError);
+  });
+
+  test('a Keychain that cannot store the flag still returns the upgrade state for this write', async () => {
+    const memory = restart();
+    failWrites = true;
+    expect(await custody.noteUpgradeRequired(memory, A, FOLDER, upgradeError)).toBeInstanceOf(custody.UpgradeRequiredError);
+  });
+
+  test('records written before the flag existed still load', async () => {
+    const memory = restart();
+    await memory.markSeen(A, FOLDER);
+    for (const key of [...keychain.keys()]) {
+      if (key.endsWith('.index')) continue;
+      keychain.set(key, JSON.stringify({ v: 1, folders: [FOLDER] }));
+    }
+    const again = restart();
+    expect(await again.hasSeen(A, FOLDER)).toBe(true);
+    expect(await again.isUpgradeRequired(A, FOLDER)).toBe(false);
+  });
+});
+
 describe('source contract', () => {
   const source = readFileSync(join(import.meta.dir, 'shared-folder-custody.ts'), 'utf8');
   test('the custody module never logs (folder ids and account digests stay out of logs)', () => {

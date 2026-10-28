@@ -1,5 +1,6 @@
 /**
- * Task 2237c, decision L7c (plan C): shared-folder custody is one-way per account.
+ * Task 2237c, decisions L7c, L10 and L11 (plan C; contract-2237-format-l7.md §1 and §2):
+ * shared-folder custody is one-way per account.
  *
  * The server is untrusted. The format a client uses for a shared folder's child wraps
  * follows custody (L7b): a folder WITH a custody record is L7 for every read and write, a
@@ -13,6 +14,9 @@
  *     (`CustodyUnavailableError`, "This folder's keys are unavailable"), never "legacy";
  *   - no fresh random folder key is minted over it (`assertMayRegisterCustody`): L1 says a
  *     client mints only when the server has no record, and a downgrading server would say so.
+ * L11: a folder the server answered 409 `upgrade_required` on (it already has key rows and no
+ * custody) is never minted over either; only the owner's upgrade gives it custody. That state is
+ * recorded the same way (`noteUpgradeRequired`) and ends when custody is later seen and opened.
  * A folder this account never saw custody for keeps the L7b behaviour: 404/405/501 = legacy.
  * An unreadable or unwritable memory is never read as "never seen": it refuses.
  *
@@ -29,9 +33,9 @@
  *   - on 404/405/501 (`isCustodyAbsentStatus`) or a 200 that does not open:
  *     `await settleMissingCustody(...)` — 'legacy' or a thrown refusal;
  *   - before minting + registering custody: `await assertMayRegisterCustody(...)`;
- *   - every key write for a custody folder: `withL7Format(body)`;
- *   - a 409 on any key write: `toUpgradeRequired(error)` is the honest "the owner must
- *     upgrade this folder" state, never a retry as legacy.
+ *   - every key write for a custody folder: `withL7Format(body)` (L10);
+ *   - a 409 on any key write or on registering custody: `noteUpgradeRequired(...)` is the honest
+ *     "the owner must convert this folder first" state (L11), never a retry as legacy.
  */
 
 import * as SecureStore from 'expo-secure-store';
@@ -41,6 +45,7 @@ const INDEX_KEY = 'beebeeb.custody-seen.v1.index';
 const RECORD_PREFIX = 'beebeeb.custody-seen.v1.';
 // 5,000 folders is ~190 KB; past that the memory would rather refuse than forget.
 const MAX_FOLDERS_PER_ACCOUNT = 5000;
+interface AccountRecord { folders: Set<string>; upgrade: Set<string> }
 const STORE_OPTIONS: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
 };
@@ -95,8 +100,12 @@ export const secureStoreCustodyPort: CustodyStorePort = {
 export interface CustodyMemory {
   /** True once this account has seen and opened the folder's custody. Refuses when unprovable. */
   hasSeen(accountId: string | null, folderId: string): Promise<boolean>;
-  /** Durable, idempotent. Resolves only after the record is stored. */
+  /** Durable, idempotent. Resolves only after the record is stored. Ends an `upgrade_required` mark. */
   markSeen(accountId: string | null, folderId: string): Promise<void>;
+  /** True while the server's last word on this folder was 409 `upgrade_required` (L11). */
+  isUpgradeRequired(accountId: string | null, folderId: string): Promise<boolean>;
+  /** Durable, idempotent: this folder needs the owner's upgrade, never a fresh custody. */
+  markUpgradeRequired(accountId: string | null, folderId: string): Promise<void>;
   /** Sign-out: every account's record, memory and store. Best effort; a leftover is only ever read by its own account. */
   clearAll(): Promise<void>;
 }
@@ -122,19 +131,27 @@ function folderKey(folderId: string): string {
   return folderId.toLowerCase();
 }
 
-function parseStringList(raw: string, field: 'folders' | 'accounts'): string[] {
+function sameSet(a: Set<string>, b: Set<string>): boolean {
+  return a.size === b.size && [...a].every(item => b.has(item));
+}
+
+function parseList(value: unknown, field: string, required: boolean): string[] {
+  const list = (value as Record<string, unknown> | null)?.[field];
+  if (list === undefined && !required) return [];
+  if (!Array.isArray(list) || !list.every(item => typeof item === 'string')) throw new CustodyUnavailableError();
+  return list as string[];
+}
+
+function parseJson(raw: string): unknown {
   let value: unknown;
   try { value = JSON.parse(raw); } catch { throw new CustodyUnavailableError(); }
-  const list = (value as Record<string, unknown> | null)?.[field];
-  if ((value as { v?: unknown } | null)?.v !== 1 || !Array.isArray(list) || !list.every(item => typeof item === 'string')) {
-    throw new CustodyUnavailableError();
-  }
-  return list as string[];
+  if ((value as { v?: unknown } | null)?.v !== 1) throw new CustodyUnavailableError();
+  return value;
 }
 
 export function createCustodyMemory(store: CustodyStorePort): CustodyMemory {
   let generation = 0;
-  const cache = new Map<string, Set<string>>();
+  const cache = new Map<string, AccountRecord>();
   let queue: Promise<unknown> = Promise.resolve();
   onAccountEpochAdvance(() => { generation += 1; cache.clear(); });
 
@@ -145,49 +162,69 @@ export function createCustodyMemory(store: CustodyStorePort): CustodyMemory {
     return run;
   }
 
-  async function load(key: string): Promise<Set<string>> {
+  async function load(key: string): Promise<AccountRecord> {
     const cached = cache.get(key);
     if (cached) return cached;
     const started = generation;
     let raw: string | null;
     try { raw = await store.get(RECORD_PREFIX + key); } catch { throw new CustodyUnavailableError(); }
-    const ids = new Set(raw === null ? [] : parseStringList(raw, 'folders'));
-    if (started === generation) cache.set(key, ids);
-    return ids;
+    const value = raw === null ? null : parseJson(raw);
+    // Records written before `upgrade` existed carry only `folders`.
+    const record: AccountRecord = value === null
+      ? { folders: new Set(), upgrade: new Set() }
+      : { folders: new Set(parseList(value, 'folders', true)), upgrade: new Set(parseList(value, 'upgrade', false)) };
+    if (started === generation) cache.set(key, record);
+    return record;
   }
 
   async function indexedAccounts(): Promise<string[]> {
     try {
       const raw = await store.get(INDEX_KEY);
-      return raw === null ? [] : parseStringList(raw, 'accounts');
+      return raw === null ? [] : parseList(parseJson(raw), 'accounts', true);
     } catch { return []; }
+  }
+
+  // One durable change to an account's record, behind the queue and the epoch checks.
+  function update(accountId: string | null, change: (next: AccountRecord) => void): Promise<void> {
+    const key = accountKey(accountId);
+    const started = generation;
+    return serial(async () => {
+      const known = await load(key);
+      if (started !== generation) throw new StaleAccountError('custody memory');
+      const next: AccountRecord = { folders: new Set(known.folders), upgrade: new Set(known.upgrade) };
+      change(next);
+      if (sameSet(known.folders, next.folders) && sameSet(known.upgrade, next.upgrade)) return;
+      if (next.folders.size > MAX_FOLDERS_PER_ACCOUNT || next.upgrade.size > MAX_FOLDERS_PER_ACCOUNT) throw new CustodyUnavailableError();
+      try {
+        const accounts = new Set(await indexedAccounts()).add(key);
+        if (started !== generation) throw new StaleAccountError('custody memory');
+        // Index first: an index entry without a record is harmless, the reverse would hide it from the sweep.
+        await store.set(INDEX_KEY, JSON.stringify({ v: 1, accounts: [...accounts].sort() }));
+        await store.set(RECORD_PREFIX + key, JSON.stringify({ v: 1, folders: [...next.folders].sort(), upgrade: [...next.upgrade].sort() }));
+      } catch (error) {
+        throw error instanceof StaleAccountError ? error : new CustodyUnavailableError();
+      }
+      cache.set(key, next);
+    });
   }
 
   return {
     async hasSeen(accountId, folderId) {
       const key = accountKey(accountId), id = folderKey(folderId);
-      return (await load(key)).has(id);
+      return (await load(key)).folders.has(id);
+    },
+    async isUpgradeRequired(accountId, folderId) {
+      const key = accountKey(accountId), id = folderKey(folderId);
+      return (await load(key)).upgrade.has(id);
     },
     async markSeen(accountId, folderId) {
-      const key = accountKey(accountId), id = folderKey(folderId);
-      const started = generation;
-      return serial(async () => {
-        const known = await load(key);
-        if (started !== generation) throw new StaleAccountError('custody memory');
-        if (known.has(id)) return;
-        if (known.size >= MAX_FOLDERS_PER_ACCOUNT) throw new CustodyUnavailableError();
-        const next = new Set(known).add(id);
-        try {
-          const accounts = new Set(await indexedAccounts()).add(key);
-          if (started !== generation) throw new StaleAccountError('custody memory');
-          // Index first: an index entry without a record is harmless, the reverse would hide it from the sweep.
-          await store.set(INDEX_KEY, JSON.stringify({ v: 1, accounts: [...accounts].sort() }));
-          await store.set(RECORD_PREFIX + key, JSON.stringify({ v: 1, folders: [...next].sort() }));
-        } catch (error) {
-          throw error instanceof StaleAccountError ? error : new CustodyUnavailableError();
-        }
-        cache.set(key, next);
-      });
+      const id = folderKey(folderId);
+      return update(accountId, next => { next.upgrade.delete(id); next.folders.add(id); });
+    },
+    async markUpgradeRequired(accountId, folderId) {
+      const id = folderKey(folderId);
+      // A folder already seen as custody stays custody: the server saying "upgrade" about it is not news we act on.
+      return update(accountId, next => { if (!next.folders.has(id)) next.upgrade.add(id); });
     },
     clearAll() {
       return serial(async () => {
@@ -208,9 +245,25 @@ export async function settleMissingCustody(memory: CustodyMemory, accountId: str
   return 'legacy';
 }
 
-/** Mint-and-register path: never over a folder whose custody this account has seen. */
+/**
+ * Mint-and-register path: never over a folder whose custody this account has seen (L7c), and never
+ * over one the server said needs the owner's upgrade (L11).
+ */
 export async function assertMayRegisterCustody(memory: CustodyMemory, accountId: string | null, folderId: string): Promise<void> {
   if (await memory.hasSeen(accountId, folderId)) throw new CustodyUnavailableError();
+  if (await memory.isUpgradeRequired(accountId, folderId)) throw new UpgradeRequiredError();
+}
+
+/**
+ * A key write or custody registration failed. A 409 `upgrade_required` is recorded for the folder and
+ * returned as the upgrade state; any other error returns null (the caller handles it as before).
+ * Recording is best effort: this write is refused either way, so a Keychain failure must not hide it.
+ */
+export async function noteUpgradeRequired(memory: CustodyMemory, accountId: string | null, folderId: string, error: unknown): Promise<UpgradeRequiredError | null> {
+  const state = toUpgradeRequired(error);
+  if (!state) return null;
+  await memory.markUpgradeRequired(accountId, folderId).catch(() => undefined);
+  return state;
 }
 
 export const custodyMemory: CustodyMemory = createCustodyMemory(secureStoreCustodyPort);
