@@ -9479,9 +9479,9 @@ public enum UploadError: Swift.Error, Equatable, Hashable, Foundation.LocalizedE
     
     case Network(detail: String
     )
-    case ServerError(status: UInt16, message: String
+    case ServerError(status: UInt16, detail: String
     )
-    case ClientError(status: UInt16, message: String
+    case ClientError(status: UInt16, detail: String
     )
     case RateLimited(retryAfterSecs: UInt64
     )
@@ -9527,11 +9527,11 @@ public struct FfiConverterTypeUploadError: FfiConverterRustBuffer {
             )
         case 2: return .ServerError(
             status: try FfiConverterUInt16.read(from: &buf), 
-            message: try FfiConverterString.read(from: &buf)
+            detail: try FfiConverterString.read(from: &buf)
             )
         case 3: return .ClientError(
             status: try FfiConverterUInt16.read(from: &buf), 
-            message: try FfiConverterString.read(from: &buf)
+            detail: try FfiConverterString.read(from: &buf)
             )
         case 4: return .RateLimited(
             retryAfterSecs: try FfiConverterUInt64.read(from: &buf)
@@ -9566,16 +9566,16 @@ public struct FfiConverterTypeUploadError: FfiConverterRustBuffer {
             FfiConverterString.write(detail, into: &buf)
             
         
-        case let .ServerError(status,message):
+        case let .ServerError(status,detail):
             writeInt(&buf, Int32(2))
             FfiConverterUInt16.write(status, into: &buf)
-            FfiConverterString.write(message, into: &buf)
+            FfiConverterString.write(detail, into: &buf)
             
         
-        case let .ClientError(status,message):
+        case let .ClientError(status,detail):
             writeInt(&buf, Int32(3))
             FfiConverterUInt16.write(status, into: &buf)
-            FfiConverterString.write(message, into: &buf)
+            FfiConverterString.write(detail, into: &buf)
             
         
         case let .RateLimited(retryAfterSecs):
