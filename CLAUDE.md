@@ -32,6 +32,18 @@ eas build --platform ios --profile production --local --output ./build/beebeeb.i
 bunx expo prebuild --platform ios --clean --no-install && scripts/restore-vendored-ios.sh
 ```
 
+### Prebuild bridge guard (task 2252)
+
+`modules/beebeeb-crypto/ios/BeebeebCryptoBridge.swift` is the only bridge source;
+CocoaPods compiles it directly. The UniFFI plugin must never overwrite it.
+`node scripts/check-prebuild-bridge.cjs` exercises the plugin copy mod in a disposable
+project and compares the resulting bridge bytes with the module source. CI runs it;
+`bun install` installs the same pre-commit check for this worktree, preserving any
+existing secret/coordination hook. Install explicitly with
+`bash scripts/install-prebuild-guard.sh` if lifecycle scripts are disabled.
+The guard checks the copy mod; a real clean prebuild plus the documented restore
+and an iOS Debug build remain required when changing the generator.
+
 ## iOS 27 UIScene lifecycle (build-213 App Review crash, fixed in 214)
 
 Scene lifecycle is plugin-owned (`plugins/scene-lifecycle/withSceneLifecycle.js` + `ios/Beebeeb/SceneDelegate.swift`) — never reintroduce bare `UIWindow(frame:)`/`startReactNative` on AppDelegate. Cold-launch deep links: fold `connectionOptions.urlContexts`/`.userActivities` into the `launchOptions` passed to `factory.startReactNative` — `RCTLinkingManager.getInitialURL()` reads it directly and does NOT fire an event. BGTaskScheduler, remote-notification registration and JS `AppState` privacy-lock were verified unaffected. (details: H#build-213)

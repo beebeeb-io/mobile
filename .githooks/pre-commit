@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Keep existing secret/coordination hooks, including the workspace dispatcher.
+previous="$(git config --get prebuildguard.previousHooksPath || true)"
+if [ -n "$previous" ] && [ -x "$previous/pre-commit" ]; then
+  "$previous/pre-commit" "$@"
+fi
+# Judge the bytes being committed: refuse unstaged edits in the guarded inputs.
+git diff --quiet -- plugins/uniffi-bridge plugins/lib/extension-target.js \
+  modules/beebeeb-crypto/ios/BeebeebCryptoBridge.swift scripts/check-prebuild-bridge.cjs || {
+  echo 'prebuild bridge: stage the guarded inputs before committing' >&2
+  exit 1
+}
+exec env -u NODE_OPTIONS node scripts/check-prebuild-bridge.cjs

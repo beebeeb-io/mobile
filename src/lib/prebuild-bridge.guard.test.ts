@@ -59,3 +59,47 @@ test('guard refuses a plugin that no longer exercises its copy mod', async () =>
     await expect(checkPrebuildBridge(root)).rejects.toThrow('copy mod was not registered');
   });
 });
+
+test('share plugin refuses a missing canonical controller instead of using a fallback', async () => {
+  await fixture(async (root) => {
+    cpSync(join(ROOT, 'targets/share-extension'), join(root, 'targets/share-extension'), { recursive: true });
+    mkdirSync(join(root, 'ios'), { recursive: true });
+    rmSync(join(root, 'targets/share-extension/ShareViewController.swift'));
+    writeFileSync(join(root, 'plugins/share-extension/ShareViewController.swift'), '// stale fallback\n');
+    const plugin = require(join(root, 'plugins/share-extension/withShareExtension.js'));
+    const config = plugin({ name: 'share-guard', slug: 'share-guard' });
+    await expect(config.mods.ios.xcodeproj({
+      ...config,
+      modRequest: { projectRoot: root, platformProjectRoot: join(root, 'ios'), platform: 'ios' },
+      modResults: {},
+    })).rejects.toThrow(/ENOENT.*ShareViewController/);
+  });
+});
+
+test('pre-commit installation is isolated, idempotent and preserves earlier hooks', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'prebuild-hook-test-'));
+  try {
+    cpSync(join(ROOT, '.githooks'), join(root, '.githooks'), { recursive: true });
+    mkdirSync(join(root, 'scripts'));
+    cpSync(join(ROOT, 'scripts/install-prebuild-guard.sh'), join(root, 'scripts/install-prebuild-guard.sh'));
+    const run = (args) => {
+      const result = Bun.spawnSync(args, { cwd: root, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } });
+      expect(result.exitCode).toBe(0);
+      return result.stdout.toString().trim();
+    };
+    run(['git', 'init', '-q']);
+    writeFileSync(join(root, '.git/hooks/pre-commit'), '#!/bin/sh\nprintf previous >> hook-ran\n', { mode: 0o755 });
+    run(['bash', 'scripts/install-prebuild-guard.sh']);
+    const previous = run(['git', 'config', '--get', 'prebuildguard.previousHooksPath']);
+    run(['bash', 'scripts/install-prebuild-guard.sh']);
+    expect(run(['git', 'config', '--get', 'prebuildguard.previousHooksPath'])).toBe(previous);
+    expect(run(['git', 'config', '--worktree', '--get', 'core.hooksPath'])).toBe('.githooks');
+    // A stand-in only for the final command, so this verifies hook execution/exit propagation.
+    writeFileSync(join(root, 'scripts/check-prebuild-bridge.cjs'), 'process.exit(23);\n');
+    const hook = Bun.spawnSync(['bash', '.githooks/pre-commit'], { cwd: root });
+    expect(hook.exitCode).toBe(23);
+    expect(readFileSync(join(root, 'hook-ran'), 'utf8')).toBe('previous');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
