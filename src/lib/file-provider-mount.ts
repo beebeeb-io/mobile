@@ -1,3 +1,4 @@
+import { sharedFileKeyIsLoaded } from './shared-folder-keys';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { FileProviderDomainRegistrationResult } from '../../modules/beebeeb-crypto/src/BeebeebCrypto.types';
@@ -134,7 +135,7 @@ export async function syncDecryptedEntriesToFileProvider(
 ): Promise<number> {
   if (Platform.OS !== 'ios') return 0;
 
-  const entries: FileProviderCacheEntry[] = files.map((f) => ({
+  const entries: FileProviderCacheEntry[] = files.filter(f => !sharedFileKeyIsLoaded(f.id)).map((f) => ({
     id: f.id,
     parent_id: f.parent_id ?? parentId ?? null,
     name_encrypted: f.name_encrypted ?? null,

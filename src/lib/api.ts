@@ -1360,6 +1360,44 @@ export async function findFile(
   );
 }
 
+// Shared-folder routes the key resolver and the key publisher call (2237c). Ciphertexts are opaque to these wrappers.
+import type { FolderLink, SharedFolderInfo, SharedFolderKeyRow } from './shared-folder-api-types';
+import { withL7Format } from './shared-folder-custody';
+export function getEvaluateFlags(): Promise<{ flags: Record<string, boolean> }> {
+  return request('GET', '/api/v1/feature-flags/evaluate');
+}
+export async function listFolderLinks(folderId?: string): Promise<FolderLink[]> {
+  const data = await request<{ links: FolderLink[] }>('GET', `/api/v1/shares/folder-links${folderId ? `?folder_id=${encodeURIComponent(folderId)}` : ''}`);
+  return data.links;
+}
+export function getSharedFolder(folderId: string): Promise<SharedFolderInfo> {
+  return request('GET', `/api/v1/shared-folders/${encodeURIComponent(folderId)}`);
+}
+export function listSharedFolderKeys(folderId: string, options: { limit: number; cursor: string | null }): Promise<{ keys: SharedFolderKeyRow[]; next_cursor: string | null }> {
+  const query = `limit=${options.limit}${options.cursor ? `&cursor=${encodeURIComponent(options.cursor)}` : ''}`;
+  return request('GET', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/keys?${query}`);
+}
+export function publishSharedFolderKeys(folderId: string, keys: SharedFolderKeyRow[]): Promise<{ written: number; skipped: number }> {
+  // L10: every wrap this app seals for a custody folder is L7, and the server needs to be told.
+  return request('POST', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/keys`, withL7Format({ keys }));
+}
+export async function getFileOwnerWrap(fileId: string): Promise<{ ownerWrap: Uint8Array | null; actedViaShareId: string | null }> {
+  const row = await request<{ owner_wrapped_file_key?: string | number[] | null; acted_via_share_id?: string | null }>('GET', `/api/v1/files/${encodeURIComponent(fileId)}`);
+  const value = row.owner_wrapped_file_key;
+  let ownerWrap: Uint8Array | null = null;
+  if (typeof value === 'string') {
+    try { ownerWrap = Uint8Array.from(atob(value), char => char.charCodeAt(0)); } catch { /* malformed wrap is unavailable */ }
+  } else if (Array.isArray(value) && value.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+    ownerWrap = new Uint8Array(value);
+  }
+  return { ownerWrap, actedViaShareId: row.acted_via_share_id ?? null };
+}
+
+/** Write-once owner wrap; callers MUST verify authenticated file data first. */
+export async function adoptOwnerFileKey(fileId: string, ownerWrappedFileKey: string): Promise<{ adopted: boolean }> {
+  return request('POST', `/api/v1/files/${fileId}/owner-key`, { owner_wrapped_file_key: ownerWrappedFileKey });
+}
+
 export async function getFile(id: string): Promise<FileEntry> {
   return request<FileEntry>('GET', `/api/v1/files/${id}`);
 }

@@ -1,3 +1,4 @@
+import { sharedFileKeyIsLoaded } from '../lib/shared-folder-keys';
 /**
  * "Prove it" — the decrypted file next to the stored ciphertext, plus the
  * raw-ciphertext download.
@@ -101,6 +102,7 @@ export default function EncryptionProof({ file, fileName, mimeType, visible, onC
       setCipher(CLOSED_CIPHER_STATE);
       return;
     }
+    if (sharedFileKeyIsLoaded(file.id)) { setPlain(CLOSED_PLAIN_STATE); setCipher(CLOSED_CIPHER_STATE); return; }
     setDownloadError(null);
     const request = isRequestUpload(file);
     const cacheExt = previewDecryptExtension(mimeType ?? file.mime_type ?? guessMimeType(fileName), fileName);

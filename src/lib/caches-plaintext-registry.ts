@@ -33,6 +33,8 @@ export interface CachesEntry {
 const LEGACY_ID_PREFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_/i;
 
 export const CACHES_REGISTRY: readonly CachesEntry[] = [
+  { match: 'shared-publish-', plaintext: true, contains: 'pending owner-wrap file/root/parent IDs and creation time only, scoped by account digest; retry entries expire after 7 days, evicted by the OS or cleared on sign-out/account deletion by clearPendingPublishes and this purge', writer: 'lib/shared-folder-publish.ts' },
+  { match: 'shared-adopted-', plaintext: true, contains: 'adopted file IDs only, scoped by account digest; survives relaunch, evicted by the OS or cleared on sign-out/account deletion by clearAdopted and this purge', writer: 'lib/shared-folder-adoption.ts' },
   { match: 'preview/', plaintext: true, contains: 'decrypted file previews + RAW embedded JPEGs', writer: 'lib/native-decrypt.ts, lib/raw-extract.ts' },
   { match: 'beebeeb-photo-cache/', plaintext: true, contains: 'decrypted photo/video originals (Photos pager)', writer: 'lib/photo-cache.ts' },
   { match: 'zip-extract/', plaintext: true, contains: 'a file extracted from a decrypted ZIP for the share sheet', writer: 'components/preview/ZipRenderer.tsx' },

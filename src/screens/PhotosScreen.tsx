@@ -1,3 +1,4 @@
+import { thumbnailKeyFor } from '../lib/thumbnail';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../App';
@@ -1710,7 +1711,7 @@ export default function PhotosScreen() {
         const fetched: Record<string, string> = {};
         const stats = await prefetchDecryptedThumbnails(
           toFetch,
-          getFileKeyBytes,
+          id => thumbnailKeyFor(id, getMasterKeyHandleId, getFileKeyBytes),
           {
             signal: controller.signal,
             onLoaded: (fileId, uri) => {

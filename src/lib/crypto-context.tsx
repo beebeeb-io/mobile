@@ -1,3 +1,9 @@
+import { retryPending, clearPublishState } from './shared-folder-publish'
+import { accountEpoch, isCurrentAccountEpoch } from './account-epoch'
+import * as ReactNative from 'react-native'
+import { adoptVerified, adoptDecryptedNames } from './shared-folder-adoption'
+import * as SharedNative from '../../modules/beebeeb-crypto'
+import { configureSharedKeys, clearSharedKeys, assertFileKeyExportable, resolveSharedNames, retrySharedDecrypt, type SharedKeysApi, type SharedKeysNative } from './shared-folder-keys'
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import * as Device from 'expo-device'
 import * as FileSystem from 'expo-file-system/legacy'
@@ -1238,6 +1244,8 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
   }, [unlockAttempted])
 
   const lock = useCallback(() => {
+    clearPublishState()
+    clearSharedKeys()
     void clearCachedMasterKey().catch(() => {})
     recordRuntimeTrace('vault.lock.request', {
       hadHandle: masterKeyHandleId.current != null,
@@ -1264,6 +1272,24 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
     }
     return masterKeyHandleId.current
   }
+
+  useEffect(() => {
+    if (!isUnlocked) return
+    // C1/C3 promised Interfaces; readiness fails closed until the native bridge ships.
+    let active = true
+    let configured = false
+    const epoch = accountEpoch()
+    void import('./api').then(api => {
+      if (!active || !isCurrentAccountEpoch(epoch)) return
+      configureSharedKeys(SharedNative as unknown as Partial<SharedKeysNative>, api as unknown as SharedKeysApi, requireHandleId)
+      configured = true
+      void retryPending()
+    })
+    const subscription = ReactNative.AppState?.addEventListener('change', state => {
+      if (state === 'active' && active && configured && isCurrentAccountEpoch(epoch)) void retryPending()
+    })
+    return () => { active = false; subscription?.remove(); clearPublishState(); clearSharedKeys() }
+  }, [isUnlocked])
 
   const encryptChunkFn = useCallback(
     async (fileId: string, plaintext: Uint8Array): Promise<EncryptedData> => {
@@ -1292,7 +1318,9 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
 
   const decryptMetadataFn = useCallback(
     async (fileId: string, nonce: Uint8Array, ct: Uint8Array): Promise<string> => {
-      return handleDecryptMetadata(requireHandleId(), fileId, nonce, ct)
+      const value = await retrySharedDecrypt(fileId, () => handleDecryptMetadata(requireHandleId(), fileId, nonce, ct))
+      void adoptVerified([fileId])
+      return value
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -1300,7 +1328,9 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
 
   const decryptNamesFn = useCallback(
     async (items: BatchNameItem[]): Promise<BatchNameResult[]> => {
-      return decryptNames(requireHandleId(), items)
+      const results = await resolveSharedNames(items, batch => decryptNames(requireHandleId(), batch))
+      void adoptDecryptedNames(items, results)
+      return results
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -1314,6 +1344,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
       // genuinely locked; we must NEVER fall back to re-reading the Keychain
       // here because that would surface a Face ID prompt during routine
       // thumbnail/preview decryption (task 0556).
+      assertFileKeyExportable(fileId)
       const key = await handleDeriveFileKey(requireHandleId(), fileId)
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports

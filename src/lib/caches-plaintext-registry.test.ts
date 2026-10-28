@@ -262,3 +262,43 @@ describe('task 1593 round 4 (P2-3) — the File Provider NAME cache writer is ga
     expect(body).toMatch(/lease\.release\(\)/);
   });
 });
+
+describe('shared-folder adopted IDs (2237c Task 7)', () => {
+  test('the guard sees the actual adopted-ID cache writer', () => {
+    expect(cachesWriters().some(w => w.where.startsWith('lib/shared-folder-adoption.ts:') && w.literal === 'shared-adopted-')).toBe(true);
+  });
+  test('the exact adopted-ID prefix records purpose, writer and clear policy and is purged', async () => {
+    const entry = cachesEntryFor('shared-adopted-0123456789abcdef.json');
+    expect(entry?.match).toBe('shared-adopted-');
+    expect(entry?.plaintext).toBe(true);
+    expect(entry?.writer).toBe('lib/shared-folder-adoption.ts');
+    expect(entry?.contains).toContain('IDs only');
+    expect(entry?.contains).toContain('sign-out');
+    expect(cachesEntryFor('shared-adoptedness-unrelated.json')).toBeNull();
+    const deleted: string[] = [];
+    const result = await purgeCachesPlaintext({
+      cacheDirectory: 'file:///cache/',
+      readDirectoryAsync: async () => ['shared-adopted-0123456789abcdef.json', 'shared-adoptedness-unrelated.json'],
+      deleteAsync: async path => { deleted.push(path); },
+    });
+    expect(result.removed).toEqual(['shared-adopted-0123456789abcdef.json']);
+    expect(deleted).toEqual(['file:///cache/shared-adopted-0123456789abcdef.json']);
+  });
+});
+
+describe('shared-folder publish retry IDs (2237c Task 8)', () => {
+  test('the guard sees and registers the exact retry writer and its seven-day clear rule', async () => {
+    expect(cachesWriters().some(w => w.where.startsWith('lib/shared-folder-publish.ts:') && w.literal === 'shared-publish-')).toBe(true);
+    const entry = cachesEntryFor('shared-publish-0123456789abcdef.json');
+    expect(entry?.match).toBe('shared-publish-'); expect(entry?.plaintext).toBe(true);
+    expect(entry?.writer).toBe('lib/shared-folder-publish.ts');
+    expect(entry?.contains).toContain('IDs'); expect(entry?.contains).toContain('7 days'); expect(entry?.contains).toContain('sign-out');
+    const deleted: string[] = [];
+    const result = await purgeCachesPlaintext({ cacheDirectory: 'file:///cache/',
+      readDirectoryAsync: async () => ['shared-publish-0123456789abcdef.json', 'shared-publisher-unrelated.json'],
+      deleteAsync: async uri => { deleted.push(uri); },
+    });
+    expect(result.removed).toEqual(['shared-publish-0123456789abcdef.json']);
+    expect(deleted).toEqual(['file:///cache/shared-publish-0123456789abcdef.json']);
+  });
+});

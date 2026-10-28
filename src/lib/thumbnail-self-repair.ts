@@ -1,3 +1,4 @@
+import { sharedFileKeyIsLoaded } from './shared-folder-keys';
 /**
  * Auto self-repair on download — task 0883.
  *
@@ -120,7 +121,7 @@ async function runSelfRepair(args: SelfRepairArgs): Promise<boolean> {
     onRepaired,
   } = args;
 
-  if (!fileId || !localPlaintextUri) return false;
+  if (!fileId || !localPlaintextUri || sharedFileKeyIsLoaded(fileId)) return false;
   // Task0554: repair a known degraded existing thumbnail from this local source.
   // Unknown metadata never causes network probing or an original download.
   const degraded = hasServerThumbnail === true

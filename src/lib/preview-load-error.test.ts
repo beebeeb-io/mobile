@@ -80,3 +80,20 @@ describe('previewLoadErrorMessage — partial decrypt (task 1687d)', () => {
     expect(PARTIAL_DECRYPT_MESSAGE).toMatch(/try again/i);
   });
 });
+
+test('shared native failure copy is exact', async () => {
+  const { SharedKeyCannotOpenError, SharedKeyUpdateRequiredError } = await import('./preview-load-error');
+  expect(previewLoadErrorMessage(new SharedKeyUpdateRequiredError())).toBe('Update Beebeeb to open this file');
+  expect(previewLoadErrorMessage(new SharedKeyCannotOpenError(null))).toBe("Can't open this file");
+});
+
+test('L7c: a seen folder whose custody the server now denies says its keys are unavailable, not "Can\'t open this file"', async () => {
+  const { sharedOutcomeMessage } = await import('./preview-load-error');
+  const { CustodyUnavailableError } = await import('./shared-folder-custody');
+  expect(previewLoadErrorMessage(new CustodyUnavailableError())).toBe("This folder's keys are unavailable");
+  expect(sharedOutcomeMessage('custody_unavailable', 'Launch link')).toBe("This folder's keys are unavailable");
+  expect(sharedOutcomeMessage('update_required', null)).toBe('Update Beebeeb to open this file');
+  expect(sharedOutcomeMessage('no_key_row', 'Launch link')).toBe("Can't open this file (added via Launch link)");
+  expect(sharedOutcomeMessage('key_does_not_open', null)).toBe("Can't open this file");
+  for (const quiet of ['loaded', 'stale', undefined]) expect(sharedOutcomeMessage(quiet, null)).toBeNull();
+});
