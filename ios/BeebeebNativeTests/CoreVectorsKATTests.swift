@@ -670,6 +670,19 @@ final class CoreVectorsKATTests: XCTestCase {
         XCTAssertNotNil(rejected[0].error, "a table decrypt failure must not fall back to the master")
     }
 
+    func testTruncatedV2PreviewRejectsMissingLastFrame() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "chunk_v2_stream")
+        let key = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
+        let decryptor = try ChunkDecryptorHandle.forPushWithFileKeyHandle(
+            fileKey: key, fileId: try Self.str(v, "file_id"), expectedChunkFormat: 2)
+        let frames = v["frames"] as! [[String: Any]]
+        XCTAssertEqual(frames.count, 3)
+        for frame in frames.prefix(2) {
+            XCTAssertEqual(try decryptor.pushFrame(frame: Self.hex(frame, "frame_hex")).data.count, 32)
+        }
+        XCTAssertThrowsError(try decryptor.finish(), "missing authenticated last frame must reject promotion")
+    }
+
     func testChunkDecryptorUsesTheFileKeyHandle() throws {
         let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
         let registry = SharedKeyRegistry<FileKeyHandle>()

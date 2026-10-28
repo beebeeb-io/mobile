@@ -106,6 +106,27 @@ struct PreviewChunkPipelineTest {
       expect(preserved == Data("previous".utf8), "trailing failure removed or changed existing output")
     }
 
+    // F1: even forged size/count headers cannot authorize an unfinished core stream.
+    let truncatedOutput = tempRoot.appendingPathComponent("truncated.bin")
+    var finishCalls = 0
+    let truncated = try PreviewChunkPipeline(
+      plan: try PreviewChunkPlan(chunkCount: 2, originalSize: 64, plaintextChunkSize: 32),
+      outputURL: truncatedOutput,
+      decryptFrame: { frame in Data(frame.suffix(32)) },
+      finishDecryption: {
+        finishCalls += 1
+        throw NSError(domain: "CoreMissingAuthenticatedLastFrame", code: 1)
+      },
+      onChunkDecrypted: { _, _ in }
+    )
+    try truncated.receive(makeFrame(Data(repeating: 1, count: 32)))
+    try truncated.receive(makeFrame(Data(repeating: 2, count: 32)))
+    expectThrows("published an unfinished core stream") { _ = try truncated.finish() }
+    expect(finishCalls == 1, "core finish was not called")
+    expect(!FileManager.default.fileExists(atPath: truncatedOutput.path), "truncated plaintext was published")
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: tempRoot.path)
+    expect(!leftovers.contains { $0.contains("truncated.bin") }, "truncated temporary plaintext survived")
+
     expectThrows("accepted zero chunks") {
       _ = try PreviewChunkPlan(chunkCount: 0, originalSize: 1, plaintextChunkSize: 1)
     }

@@ -69,3 +69,13 @@ test('android_offline_decrypt_uses_an_opaque_file_handle', () => {
   expect(chunks).toContain('fileKey: FileKeyHandle')
   expect(chunks).toContain('fileKey.decryptChunk')
 })
+
+// F1: ported from rv-mobile236's native-source probe. Real crypto is in the iOS KAT.
+test('preview_core_finish_precedes_plaintext_promotion', () => {
+  const delegate = read(swift).split('private final class PreviewStreamingDownloadDelegate')[1].split('public class BeebeebCryptoModule')[0]
+  expect(delegate).toContain('decryptor.pushFrame')
+  expect(delegate.includes('finishDecryption: { _ = try decryptor.finish() }')).toBe(true)
+  const pipeline = read('ios/PreviewChunkPipeline.swift').split('func finish() throws -> Result')[1].split('func cleanup()')[0]
+  expect(pipeline.indexOf('try finishDecryption()')).toBeGreaterThan(0)
+  expect(pipeline.indexOf('try finishDecryption()')).toBeLessThan(pipeline.indexOf('moveItem(at: tmpURL, to: outputURL)'))
+})

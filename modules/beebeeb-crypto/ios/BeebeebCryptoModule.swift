@@ -484,6 +484,7 @@ private final class PreviewStreamingDownloadDelegate: NSObject, URLSessionDataDe
         decryptFrame: { frame in
           try decryptor.pushFrame(frame: frame).data
         },
+        finishDecryption: { _ = try decryptor.finish() },
         onChunkDecrypted: { [progress] completed, total in
           progress.onChunkDecrypted(chunkIndex: UInt32(completed), totalChunks: UInt32(total))
         }
