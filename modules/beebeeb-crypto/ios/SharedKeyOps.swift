@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-struct SharedKeyEntryNative { let fileId: String; let wrapped: Data }
+struct SharedKeyEntryNative { let fileId: String; let wrapped: Data; let kind: UInt8 }
 struct FolderLinkMintNative {
     let kc: String
     let wrappedFolderKey: Data
@@ -49,11 +49,12 @@ enum SharedKeyOps {
     static func loadFileKeys(folderId: Int, entries: [SharedKeyEntryNative],
                              registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> (loaded: [String], failed: [String]) {
         let epoch = registry.generation
-        let key = try folder(folderId, registry: registry).handle
+        let folder = try folder(folderId, registry: registry)
         var loaded: [String] = [], failed: [String] = []
         for entry in entries {
             do {
-                let opened = try unwrap(key, entry.wrapped)
+                guard entry.wrapped.count == 60, entry.kind == 1 || entry.kind == 2 else { throw SharedKeyError.invalidWrap }
+                let opened = try folder.handle.unwrapFolderChild(sharedFolderId: folder.folderId, itemId: entry.fileId, kind: entry.kind, nonce: Data(entry.wrapped.prefix(12)), ciphertext: Data(entry.wrapped.dropFirst(12)))
                 if registry.storeFile(entry.fileId, opened, generation: epoch) { loaded.append(entry.fileId) }
                 else { failed.append(entry.fileId) }
             } catch { failed.append(entry.fileId) }
@@ -66,10 +67,11 @@ enum SharedKeyOps {
         do { return registry.storeFile(fileId, try unwrap(master.deriveFileKey(fileId: Data(fileId.utf8)), wrapped), generation: epoch) }
         catch { return false }
     }
-    static func wrapChildKeys(master: MasterKeyHandle, folderId: Int, fileIds: [String],
+    static func wrapChildKeys(master: MasterKeyHandle, folderId: Int, fileIds: [String], kind: UInt8 = 1,
                               registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> [SharedKeyEntryNative] {
-        let key = try folder(folderId, registry: registry).handle
-        return try fileIds.map { id in SharedKeyEntryNative(fileId: id, wrapped: try wire(key.wrapKey(inner: master.deriveFileKey(fileId: Data(id.utf8))))) }
+        let folder = try folder(folderId, registry: registry)
+        guard kind == 1 || kind == 2 else { throw SharedKeyError.invalidWrap }
+        return try fileIds.map { id in SharedKeyEntryNative(fileId: id, wrapped: try wire(folder.handle.wrapFolderChild(sharedFolderId: folder.folderId, itemId: id, kind: kind, inner: master.deriveFileKey(fileId: Data(id.utf8)))), kind: kind) }
     }
     static func adoptWrap(master: MasterKeyHandle, fileId: String,
                           registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> Data {

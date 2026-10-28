@@ -2304,7 +2304,7 @@ export async function sharedFolderRelease(folderHandleId: number): Promise<void>
 }
 export async function sharedFileKeysLoad(masterHandleId: number, folderHandleId: number, entries: SharedKeyEntry[]): Promise<{ loaded: string[]; failed: string[] }> {
   return BeebeebCryptoModule.sharedFileKeysLoad(masterHandleId, folderHandleId,
-    entries.map(entry => ({ fileId: entry.fileId, wrapped: Array.from(entry.wrapped) })))
+    entries.map(entry => ({ fileId: entry.fileId, kind: entry.kind, wrapped: Array.from(entry.wrapped) })))
 }
 export async function sharedFileKeyOpenOwnerWrap(masterHandleId: number, fileId: string, ownerWrapped: Uint8Array): Promise<boolean> {
   return BeebeebCryptoModule.sharedFileKeyOpenOwnerWrap(masterHandleId, fileId, ownerWrapped)
@@ -2312,9 +2312,9 @@ export async function sharedFileKeyOpenOwnerWrap(masterHandleId: number, fileId:
 export function sharedFileKeyIsLoaded(fileId: string): boolean {
   return BeebeebCryptoModule.sharedFileKeyIsLoaded(fileId)
 }
-export async function sharedWrapChildKeys(masterHandleId: number, folderHandleId: number, fileIds: string[]): Promise<SharedKeyEntry[]> {
-  const rows = await BeebeebCryptoModule.sharedWrapChildKeys(masterHandleId, folderHandleId, fileIds)
-  return rows.map((row: { fileId: string; wrapped: Uint8Array | string }) => ({ fileId: row.fileId, wrapped: coerceBytes(row.wrapped) }))
+export async function sharedWrapChildKeys(masterHandleId: number, folderHandleId: number, fileIds: string[], kind: 1 | 2 = 1): Promise<SharedKeyEntry[]> {
+  const rows = await BeebeebCryptoModule.sharedWrapChildKeys(masterHandleId, folderHandleId, fileIds, kind)
+  return rows.map((row: { fileId: string; wrapped: Uint8Array | string; kind: 1 | 2 }) => ({ fileId: row.fileId, kind: row.kind, wrapped: coerceBytes(row.wrapped) }))
 }
 export async function sharedAdoptWrap(masterHandleId: number, fileId: string): Promise<Uint8Array> {
   return coerceBytes(await BeebeebCryptoModule.sharedAdoptWrap(masterHandleId, fileId))

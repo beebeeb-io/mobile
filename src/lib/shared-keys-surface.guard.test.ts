@@ -50,3 +50,31 @@ test('owner_wrapping_keeps_master_bytes_inside_Rust', () => {
     expect(readFileSync(resolve(root, 'modules/beebeeb-crypto', relative), 'utf8')).not.toContain('exportForKeychain')
   }
 })
+
+test('L7_child_paths_bind_root_item_and_kind_without_legacy_retry', () => {
+  for (const relative of ['ios/SharedKeyOps.swift', 'android/src/main/java/expo/modules/beebeebcrypto/SharedKeyOps.kt']) {
+    const source = readFileSync(resolve(root, 'modules/beebeeb-crypto', relative), 'utf8')
+    const load = source.split('func loadFileKeys')[1]?.split('func openOwnerFileKey')[0] ?? source.split('fun loadFileKeys')[1]?.split('fun openOwnerFileKey')[0]
+    expect(load).toContain('unwrapFolderChild')
+    expect(load).toContain('entry.kind')
+    expect(load).toContain('folder.folderId')
+    expect(load).not.toMatch(/unwrap\(key|unwrapKey/)
+    const wrap = source.split('func wrapChildKeys')[1]?.split('func adoptWrap')[0] ?? source.split('fun wrapChildKeys')[1]?.split('fun adoptWrap')[0]
+    expect(wrap).toContain('wrapFolderChild')
+    expect(wrap).toContain('folder.folderId')
+    expect(wrap).not.toContain('wrapKey(')
+  }
+})
+test('L7_bridge_preserves_kind_on_read', async () => {
+  let args: any[] = []
+  native.sharedFileKeysLoad = (...a) => { args = a; return {loaded: [], failed: []} }
+  await bridge.sharedFileKeysLoad(1, 2, [{fileId: 'item', kind: 2, wrapped: new Uint8Array([3])}])
+  expect(args[2]).toEqual([{fileId: 'item', kind: 2, wrapped: [3]}])
+})
+test('L7_bridge_preserves_kind_on_write', async () => {
+  let args: any[] = []
+  native.sharedWrapChildKeys = (...a) => { args = a; return [{fileId: 'item', kind: 2, wrapped: new Uint8Array([3])}] }
+  const rows = await bridge.sharedWrapChildKeys(1, 2, ['item'], 2)
+  expect(args[3]).toBe(2)
+  expect(rows[0].kind).toBe(2)
+})

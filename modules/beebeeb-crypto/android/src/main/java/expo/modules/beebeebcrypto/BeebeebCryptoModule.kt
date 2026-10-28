@@ -929,7 +929,7 @@ class BeebeebCryptoModule : Module() {
           is List<*> -> value.map { (it as? Number)?.toByte() ?: 0 }.toByteArray()
           else -> byteArrayOf()
         }
-        SharedKeyEntryNative(row["fileId"] as? String ?: "", bytes)
+        SharedKeyEntryNative(row["fileId"] as? String ?: "", bytes, (row["kind"] as? Number)?.toDouble()?.takeIf { it == 1.0 || it == 2.0 }?.toInt() ?: 0)
       }
       val result = SharedKeyOps.loadFileKeys(folderId, rows)
       mapOf("loaded" to result.first, "failed" to result.second)
@@ -938,8 +938,8 @@ class BeebeebCryptoModule : Module() {
       SharedKeyOps.openOwnerFileKey(sharedMaster(masterId), fileId, wrapped)
     }
     Function("sharedFileKeyIsLoaded") { fileId: String -> sharedKeys.file(fileId) != null }
-    AsyncFunction("sharedWrapChildKeys") { masterId: Int, folderId: Int, fileIds: List<String> ->
-      SharedKeyOps.wrapChildKeys(sharedMaster(masterId), folderId, fileIds).map { mapOf("fileId" to it.fileId, "wrapped" to it.wrapped) }
+    AsyncFunction("sharedWrapChildKeys") { masterId: Int, folderId: Int, fileIds: List<String>, kind: Int ->
+      SharedKeyOps.wrapChildKeys(sharedMaster(masterId), folderId, fileIds, kind = kind).map { mapOf("fileId" to it.fileId, "wrapped" to it.wrapped, "kind" to it.kind) }
     }
     AsyncFunction("sharedAdoptWrap") { masterId: Int, fileId: String -> SharedKeyOps.adoptWrap(sharedMaster(masterId), fileId) }
     AsyncFunction("sharedFolderEncryptName") { folderId: Int, text: String ->

@@ -160,7 +160,7 @@ export interface ConstellationFrame {
 }
 
 /** Ciphertext envelopes only; plaintext folder/file keys stay in native handles. */
-export interface SharedKeyEntry { fileId: string; wrapped: Uint8Array }
+export interface SharedKeyEntry { fileId: string; wrapped: Uint8Array; kind: 1 | 2 }
 export interface FolderLinkMint {
   kc: string
   wrappedFolderKey: Uint8Array

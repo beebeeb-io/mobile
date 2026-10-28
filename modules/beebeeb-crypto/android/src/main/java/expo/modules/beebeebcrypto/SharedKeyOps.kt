@@ -4,7 +4,7 @@ import uniffi.beebeeb_uniffi.*
 import java.security.SecureRandom
 import java.util.Base64
 
-data class SharedKeyEntryNative(val fileId: String, val wrapped: ByteArray)
+data class SharedKeyEntryNative(val fileId: String, val wrapped: ByteArray, val kind: Int)
 data class FolderLinkMintNative(val kc: String, val wrappedFolderKey: ByteArray,
   val ownerWrappedKey: ByteArray, val ownerWrappedToken: ByteArray)
 
@@ -34,11 +34,12 @@ object SharedKeyOps {
   fun loadFileKeys(folderId: Int, entries: List<SharedKeyEntryNative>,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): Pair<List<String>, List<String>> {
     val epoch = registry.generation
-    val key = folder(folderId, registry).handle
+    val folder = folder(folderId, registry)
     val loaded = mutableListOf<String>(); val failed = mutableListOf<String>()
     for (entry in entries) {
       try {
-        val opened = unwrap(key, entry.wrapped)
+        require(entry.wrapped.size == 60 && entry.kind in 1..2) { "Invalid shared key wrap" }
+        val opened = folder.handle.unwrapFolderChild(folder.folderId, entry.fileId, entry.kind.toUByte(), entry.wrapped.copyOfRange(0,12), entry.wrapped.copyOfRange(12,entry.wrapped.size))
         if (registry.storeFile(entry.fileId, opened, epoch)) loaded.add(entry.fileId) else failed.add(entry.fileId)
       } catch (_: Exception) { failed.add(entry.fileId) }
     }
@@ -51,9 +52,10 @@ object SharedKeyOps {
     catch (_: Exception) { false }
   }
   fun wrapChildKeys(master: MasterKeyHandle, folderId: Int, fileIds: List<String>,
-    registry: SharedKeyRegistry<FileKeyHandle> = this.registry): List<SharedKeyEntryNative> {
-    val key = folder(folderId, registry).handle
-    return fileIds.map { SharedKeyEntryNative(it, wire(key.wrapKey(master.deriveFileKey(it.toByteArray(Charsets.UTF_8))))) }
+    registry: SharedKeyRegistry<FileKeyHandle> = this.registry, kind: Int = 1): List<SharedKeyEntryNative> {
+    val folder = folder(folderId, registry)
+    require(kind in 1..2) { "Invalid shared key kind" }
+    return fileIds.map { SharedKeyEntryNative(it, wire(folder.handle.wrapFolderChild(folder.folderId, it, kind.toUByte(), master.deriveFileKey(it.toByteArray(Charsets.UTF_8)))), kind) }
   }
   fun adoptWrap(master: MasterKeyHandle, fileId: String,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): ByteArray {

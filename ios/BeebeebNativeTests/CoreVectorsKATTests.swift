@@ -601,19 +601,19 @@ final class CoreVectorsKATTests: XCTestCase {
     func testSharedKeyOpsRoundTrip() throws {
         let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
         let registry = SharedKeyRegistry<FileKeyHandle>()
-        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "root", registry: registry)
-        let opened = try SharedKeyOps.openOwnerFolderKey(master: master, folderId: "root", wrapped: folder.ownerWrapped, registry: registry)
-        let rows = try SharedKeyOps.wrapChildKeys(master: master, folderId: opened, fileIds: ["file"], registry: registry)
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "2237c000-0000-4000-8000-000000000001", registry: registry)
+        let opened = try SharedKeyOps.openOwnerFolderKey(master: master, folderId: "2237c000-0000-4000-8000-000000000001", wrapped: folder.ownerWrapped, registry: registry)
+        let rows = try SharedKeyOps.wrapChildKeys(master: master, folderId: opened, fileIds: ["2237c000-0000-4000-8000-000000000002"], registry: registry)
         let loaded = try SharedKeyOps.loadFileKeys(folderId: opened,
-            entries: rows + [SharedKeyEntryNative(fileId: "bad", wrapped: Data())], registry: registry)
-        XCTAssertEqual(loaded.loaded, ["file"])
+            entries: rows + [SharedKeyEntryNative(fileId: "bad", wrapped: Data(), kind: 1)], registry: registry)
+        XCTAssertEqual(loaded.loaded, ["2237c000-0000-4000-8000-000000000002"])
         XCTAssertEqual(loaded.failed, ["bad"])
-        let derived = try master.deriveFileKey(fileId: Data("file".utf8))
+        let derived = try master.deriveFileKey(fileId: Data("2237c000-0000-4000-8000-000000000002".utf8))
         let encrypted = try derived.encryptChunk(plaintext: Data("round trip".utf8))
-        let key = try SharedKeyOps.fileKey(master: master, fileId: "file", registry: registry)
+        let key = try SharedKeyOps.fileKey(master: master, fileId: "2237c000-0000-4000-8000-000000000002", registry: registry)
         XCTAssertEqual(try key.decryptChunk(nonce: encrypted.nonce, ciphertext: encrypted.ciphertext), Data("round trip".utf8))
-        let adopted = try SharedKeyOps.adoptWrap(master: master, fileId: "file", registry: registry)
-        XCTAssertTrue(SharedKeyOps.openOwnerFileKey(master: master, fileId: "file", wrapped: adopted, registry: registry))
+        let adopted = try SharedKeyOps.adoptWrap(master: master, fileId: "2237c000-0000-4000-8000-000000000002", registry: registry)
+        XCTAssertTrue(SharedKeyOps.openOwnerFileKey(master: master, fileId: "2237c000-0000-4000-8000-000000000002", wrapped: adopted, registry: registry))
     }
 
     func testMintLinkMatchesTheVector() throws {
@@ -649,18 +649,18 @@ final class CoreVectorsKATTests: XCTestCase {
         let registry = SharedKeyRegistry<FileKeyHandle>()
         let key = try FileKeyHandle.generate()
         let name = try key.encryptNameFor(filename: "guest.txt", mimeType: "text/plain", recordedPin: 0)
-        let items = [BatchNameItem(fileId: "guest", nameEncrypted: name)]
+        let items = [BatchNameItem(fileId: "2237c000-0000-4000-8000-000000000002", nameEncrypted: name)]
         XCTAssertNotNil(try SharedKeyOps.decryptNames(master: master, items: items, registry: registry)[0].error)
-        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "root", registry: registry)
-        let wrapped = try SharedKeyOps.wire(registry.folder(folder.handleId)!.handle.wrapKey(inner: key))
-        _ = try SharedKeyOps.loadFileKeys(folderId: folder.handleId, entries: [SharedKeyEntryNative(fileId: "guest", wrapped: wrapped)], registry: registry)
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "2237c000-0000-4000-8000-000000000001", registry: registry)
+        let wrapped = try SharedKeyOps.wire(registry.folder(folder.handleId)!.handle.wrapFolderChild(sharedFolderId: "2237c000-0000-4000-8000-000000000001", itemId: "2237c000-0000-4000-8000-000000000002", kind: 1, inner: key))
+        _ = try SharedKeyOps.loadFileKeys(folderId: folder.handleId, entries: [SharedKeyEntryNative(fileId: "2237c000-0000-4000-8000-000000000002", wrapped: wrapped, kind: 1)], registry: registry)
         let opened = try SharedKeyOps.decryptNames(master: master, items: items, registry: registry)
         XCTAssertEqual(opened[0].name, "guest.txt")
         XCTAssertEqual(opened[0].mimeType, "text/plain")
         XCTAssertNil(opened[0].error)
-        let ownerName = try master.encryptName(fileId: "guest", filename: "owner", mimeType: nil)
+        let ownerName = try master.encryptName(fileId: "2237c000-0000-4000-8000-000000000002", filename: "owner", mimeType: nil)
         let rejected = try SharedKeyOps.decryptNames(master: master,
-            items: [BatchNameItem(fileId: "guest", nameEncrypted: ownerName)], registry: registry)
+            items: [BatchNameItem(fileId: "2237c000-0000-4000-8000-000000000002", nameEncrypted: ownerName)], registry: registry)
         XCTAssertNotNil(rejected[0].error, "a table decrypt failure must not fall back to the master")
     }
 

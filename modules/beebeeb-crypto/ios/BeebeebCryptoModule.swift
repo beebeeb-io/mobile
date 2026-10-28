@@ -2740,7 +2740,8 @@ public class BeebeebCryptoModule: Module {
       _ = try self.sharedMaster(masterId)
       let rows = entries.map { row in
         SharedKeyEntryNative(fileId: row["fileId"] as? String ?? "",
-          wrapped: row["wrapped"] as? Data ?? Data(row["wrapped"] as? [UInt8] ?? []))
+          wrapped: row["wrapped"] as? Data ?? Data(row["wrapped"] as? [UInt8] ?? []),
+          kind: UInt8(exactly: row["kind"] as? Int ?? 0) ?? 0)
       }
       let result = try SharedKeyOps.loadFileKeys(folderId: folderId, entries: rows)
       return ["loaded": result.loaded, "failed": result.failed]
@@ -2749,9 +2750,9 @@ public class BeebeebCryptoModule: Module {
       SharedKeyOps.openOwnerFileKey(master: try self.sharedMaster(masterId), fileId: fileId, wrapped: wrapped)
     }
     Function("sharedFileKeyIsLoaded") { [self] (fileId: String) -> Bool in self.sharedKeys.file(fileId) != nil }
-    AsyncFunction("sharedWrapChildKeys") { [self] (masterId: Int, folderId: Int, fileIds: [String]) throws -> [[String: Any]] in
-      try SharedKeyOps.wrapChildKeys(master: self.sharedMaster(masterId), folderId: folderId, fileIds: fileIds)
-        .map { ["fileId": $0.fileId, "wrapped": $0.wrapped] }
+    AsyncFunction("sharedWrapChildKeys") { [self] (masterId: Int, folderId: Int, fileIds: [String], kind: Int) throws -> [[String: Any]] in
+      try SharedKeyOps.wrapChildKeys(master: self.sharedMaster(masterId), folderId: folderId, fileIds: fileIds, kind: UInt8(exactly: kind) ?? 0)
+        .map { ["fileId": $0.fileId, "wrapped": $0.wrapped, "kind": Int($0.kind)] }
     }
     AsyncFunction("sharedAdoptWrap") { [self] (masterId: Int, fileId: String) throws -> Data in
       try SharedKeyOps.adoptWrap(master: self.sharedMaster(masterId), fileId: fileId)

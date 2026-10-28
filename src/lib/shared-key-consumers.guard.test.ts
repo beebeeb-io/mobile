@@ -1,3 +1,4 @@
+// @ts-nocheck — source guards run in Bun; app tsconfig has no Bun ambient types.
 import { test, expect } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve, relative } from 'node:path'
