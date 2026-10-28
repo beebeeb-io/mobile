@@ -26,10 +26,6 @@ enum SharedKeyOps {
         return folder
     }
     static func wire(_ encrypted: EncryptedData) -> Data { encrypted.nonce + encrypted.ciphertext }
-    static func unwrap(_ wrapper: FileKeyHandle, _ wrapped: Data) throws -> FileKeyHandle {
-        guard wrapped.count == 60 else { throw SharedKeyError.invalidWrap }
-        return try wrapper.unwrapKey(nonce: Data(wrapped.prefix(12)), ciphertext: Data(wrapped.dropFirst(12)))
-    }
     static func openOwnerFolderKey(master: MasterKeyHandle, folderId: String, wrapped: Data,
                                    registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> Int {
         let epoch = registry.generation

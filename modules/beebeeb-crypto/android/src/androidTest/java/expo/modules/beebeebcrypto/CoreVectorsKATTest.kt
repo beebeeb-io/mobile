@@ -463,7 +463,7 @@ class CoreVectorsKATTest {
         val minted = SharedKeyOps.mintLink(master, folder.first, token, passphrase, "share", registry)
         val kc = java.util.Base64.getUrlDecoder().decode(minted.kc)
         val link = FileKeyHandle.fromFolderLinkPassphrase(kc, passphrase, token)
-        assertTrue(SharedKeyOps.unwrap(link, minted.wrappedFolderKey).keyId().contentEquals(registry.folder(folder.first)!!.handle.keyId()))
+        assertTrue(openWrap(link, minted.wrappedFolderKey).keyId().contentEquals(registry.folder(folder.first)!!.handle.keyId()))
         assertEquals(minted.kc, SharedKeyOps.recoverKc(master, folder.first, minted.ownerWrappedKey, "share", registry))
         assertNull(SharedKeyOps.recoverKc(master, folder.first, minted.ownerWrappedKey, "wrong", registry))
         assertThrows(Exception::class.java) { SharedKeyOps.mintLink(master, folder.first, token, "", "share", registry) }
@@ -559,4 +559,11 @@ class CoreVectorsKATTest {
         val frame = key.encryptChunk("guest frame".toByteArray())
         assertTrue(SharedKeyOps.fileKey(master, "guest", registry).decryptChunk(frame.nonce, frame.ciphertext).contentEquals("guest frame".toByteArray()))
     }
+
+  /** Test-only 60-byte wrap opener (nonce(12) || ciphertext(48)) for link-wrap vectors. Production code
+   *  has no generic opener: every wrap is opened by a purpose-bound core function. */
+  private fun openWrap(wrapper: FileKeyHandle, wrapped: ByteArray): FileKeyHandle {
+    assertEquals(60, wrapped.size)
+    return wrapper.unwrapKey(wrapped.copyOfRange(0, 12), wrapped.copyOfRange(12, wrapped.size))
+  }
 }

@@ -13,10 +13,6 @@ object SharedKeyOps {
   fun folder(id: Int, registry: SharedKeyRegistry<FileKeyHandle> = this.registry) =
     registry.folder(id) ?: error("Vault is locked")
   fun wire(encrypted: EncryptedData) = encrypted.nonce + encrypted.ciphertext
-  fun unwrap(wrapper: FileKeyHandle, wrapped: ByteArray): FileKeyHandle {
-    require(wrapped.size == 60) { "Invalid shared key wrap" }
-    return wrapper.unwrapKey(wrapped.copyOfRange(0, 12), wrapped.copyOfRange(12, wrapped.size))
-  }
   fun openOwnerFolderKey(master: MasterKeyHandle, folderId: String, wrapped: ByteArray,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): Int {
     val epoch = registry.generation

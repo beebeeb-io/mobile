@@ -51,10 +51,11 @@ mock.module('expo-file-system/legacy', () => ({
 // module at import time — offline-manager.ts imports it; the stub covers
 // getItemAsync/setItemAsync/deleteItemAsync (the only calls account-cleanup's
 // graph makes).
+const secureItems = new Map<string, string>();
 mock.module('expo-secure-store', () => ({
-  getItemAsync: async () => null,
-  setItemAsync: async () => {},
-  deleteItemAsync: async () => {},
+  getItemAsync: async (key: string) => secureItems.get(key) ?? null,
+  setItemAsync: async (key: string, value: string) => { secureItems.set(key, value); },
+  deleteItemAsync: async (key: string) => { secureItems.delete(key); },
 }));
 
 // react-native must be mocked HERE too: `./account-cleanup` transitively pulls
@@ -151,15 +152,11 @@ mock.module('./local-identifier-map', () => ({
   clearLocalIdentifierMap: async () => {},
 }));
 
-// Task 2237c L7c: the sign-out purge also clears the shared-folder custody memory (a
-// SecureStore record per account). Mocked at the leaf so the call is observable.
-let custodyClear = async () => { purgeCalls.push('custody'); };
-mock.module('./shared-folder-custody', () => ({
-  clearCustodyMemory: () => custodyClear(),
-}));
-
 const { purgeThenSignOut, purgeAllPlaintextCaches, purgeDecryptedCaches } = await import('./account-cleanup');
 const { plaintextGate } = await import('./plaintext-gate');
+const { createCustodyMemory, secureStoreCustodyPort, settleMissingCustody, CustodyUnavailableError } = await import('./shared-folder-custody');
+const { advanceAccountEpoch } = await import('./account-epoch');
+const { setExpectedUserId } = await import('./expected-user');
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -173,24 +170,7 @@ describe('purgeAllPlaintextCaches (task 1593 — plaintext survived sign-out)', 
     // The registry sweep runs after the in-flight-aware clears.
     expect(purgeCalls.indexOf('caches-registry')).toBeGreaterThan(purgeCalls.indexOf('previews'));
     expect(purgeCalls.indexOf('caches-registry')).toBeGreaterThan(purgeCalls.indexOf('photos'));
-    expect([...purgeCalls].sort()).toEqual(['caches-registry', 'custody', 'names', 'native', 'photos', 'previews', 'thumbnails']);
-  });
-
-  test('L7c: sign-out clears the custody memory, and a failing clear never blocks the rest of sign-out', async () => {
-    purgeCalls.length = 0;
-    custodyClear = async () => { throw new Error('keychain'); };
-    await expect(purgeAllPlaintextCaches()).resolves.toEqual({ removed: 0, failed: 0 });
-    expect(purgeCalls).toContain('caches-registry');
-    custodyClear = async () => { purgeCalls.push('custody'); };
-    purgeCalls.length = 0;
-    await purgeAllPlaintextCaches();
-    expect(purgeCalls).toContain('custody');
-  });
-
-  test('purgeDecryptedCaches leaves the custody memory alone (it is cleared at sign-out, not at lock)', async () => {
-    purgeCalls.length = 0;
-    await purgeDecryptedCaches();
-    expect(purgeCalls).not.toContain('custody');
+    expect([...purgeCalls].sort()).toEqual(['caches-registry', 'names', 'native', 'photos', 'previews', 'thumbnails']);
   });
 
   test('a failing preview purge never blocks the rest of sign-out', async () => {
@@ -206,6 +186,28 @@ describe('purgeAllPlaintextCaches (task 1593 — plaintext survived sign-out)', 
     purgeCalls.length = 0;
     await purgeDecryptedCaches();
     expect([...purgeCalls].sort()).toEqual(['caches-registry', 'names', 'photos', 'previews', 'thumbnails']);
+  });
+});
+
+// L7d: the custody memory belongs to the device. One 401 runs the signed-out purge; it must not let a
+// server downgrade a folder this device already opened custody for.
+describe('L7d: a forced sign-out does not shrink the custody memory', () => {
+  const FOLDER = '11111111-2222-4333-8444-555555555555';
+  test('seen, then a 401 sign-out purge, then another sign-in, then a custody 404 still refuses', async () => {
+    const first = createCustodyMemory(secureStoreCustodyPort, { exists: async () => false, write: async () => {} });
+    await first.markSeen(FOLDER);
+    plaintextGate.open();
+    setExpectedUserId('acct-a'); advanceAccountEpoch(); // the 401: sign-out boundary
+    setExpectedUserId(null);
+    await purgeAllPlaintextCaches();
+    advanceAccountEpoch(); setExpectedUserId('acct-b'); // sign-in, here as someone else
+    plaintextGate.open();
+    const restarted = createCustodyMemory(secureStoreCustodyPort, { exists: async () => false, write: async () => {} });
+    await expect(settleMissingCustody(restarted, FOLDER)).rejects.toBeInstanceOf(CustodyUnavailableError);
+    expect(secureItems.has('beebeeb.custody-seen.v1')).toBe(true);
+  });
+  test('the sign-out purge source does not touch the custody memory', () => {
+    expect(readFileSync(join(import.meta.dir, 'account-cleanup.ts'), 'utf8')).not.toMatch(/custody/i);
   });
 });
 

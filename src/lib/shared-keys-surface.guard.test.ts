@@ -91,6 +91,12 @@ for (const [path, fn] of [['ios/SharedKeyOps.swift', 'func'], ['android/src/main
     expect(open.includes('unwrapKey(')).toBe(false)
     expect(seal.includes('wrapOwnerFileKey')).toBe(true)
     expect(seal.includes('deriveFileKey')).toBe(false)
+    // Neither owner-wrap block may reach a generic opener, a derived file key or a borrowed one.
+    for (const block of [open, seal]) expect(block).not.toMatch(/\b(unwrap|fileKey|borrowFileKey)\(/)
+  })
+  test(`${path}: no generic 60-byte wrap opener lives in production sources`, () => {
+    const source = readFileSync(resolve(root, 'modules/beebeeb-crypto', path), 'utf8')
+    expect(source).not.toMatch(new RegExp(`${fn} unwrap\\(`))
   })
 }
 test('core_pin_and_fixtures_are_the_exact_L8_merge', () => {

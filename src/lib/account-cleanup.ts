@@ -44,8 +44,6 @@ import { clearLocalIdentifierMap } from './local-identifier-map';
 // Task 1683f — sign-out sweeps the upload resume states (SecureStore keys that
 // survive sign-out AND account switches otherwise; cross-account leak).
 import { sweepAllUploadResumeStates } from './api';
-// Task 2237c L7c — the shared-folder custody memory is cleared with the keys, per account.
-import { clearCustodyMemory } from './shared-folder-custody';
 import { clearNameCache } from './name-cache';
 import { clearPreviewCache } from './native-decrypt';
 import { clearPhotoCache } from './photo-cache';
@@ -235,9 +233,6 @@ export async function purgeAllPlaintextCaches(options: PurgeAllOptions = {}): Pr
   // survive sign-out AND account switches otherwise; cross-account leak).
   // Best-effort: never breaks the sign-out flow, counted or not.
   await sweepAllUploadResumeStates().catch(() => {});
-  // Task 2237c L7c: custody seen on this device is forgotten at sign-out (never inherited by
-  // the next account). Best-effort: a leftover record is only ever read by its own account.
-  await clearCustodyMemory().catch(() => {});
   // Task 1962 Bug 4: the backup folder ids are per account. Round 9: after an
   // account deletion a folder cache that is still there is a failed purge.
   if (purge.mode === 'account-deleted') {

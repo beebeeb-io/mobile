@@ -113,6 +113,13 @@ final class CoreVectorsKATTests: XCTestCase {
         return v
     }
 
+    /// Test-only 60-byte wrap opener (nonce(12) || ciphertext(48)) for link-wrap vectors. Production code
+    /// has no generic opener: every wrap is opened by a purpose-bound core function.
+    private static func openWrap(_ wrapper: FileKeyHandle, _ wrapped: Data) throws -> FileKeyHandle {
+        XCTAssertEqual(wrapped.count, 60)
+        return try wrapper.unwrapKey(nonce: Data(wrapped.prefix(12)), ciphertext: Data(wrapped.dropFirst(12)))
+    }
+
     private static func str(_ v: [String: Any], _ field: String) throws -> String {
         guard let s = v[field] as? String else {
             throw NSError(domain: "CoreVectorsKATTests", code: 5,
@@ -677,7 +684,7 @@ final class CoreVectorsKATTests: XCTestCase {
         let minted = try SharedKeyOps.mintLink(master: master, folderId: folder.handleId, token: token, passphrase: passphrase, shareId: "share", registry: registry)
         let kc = Data(base64Encoded: minted.kc.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "=")!
         let link = try FileKeyHandle.fromFolderLinkPassphrase(kC: kc, passphrase: passphrase, token: token)
-        let opened = try SharedKeyOps.unwrap(link, minted.wrappedFolderKey)
+        let opened = try Self.openWrap(link, minted.wrappedFolderKey)
         XCTAssertEqual(try opened.keyId(), try registry.folder(folder.handleId)!.handle.keyId())
         XCTAssertEqual(try SharedKeyOps.recoverKc(master: master, folderId: folder.handleId, wrapped: minted.ownerWrappedKey, shareId: "share", registry: registry), minted.kc)
         XCTAssertNil(try SharedKeyOps.recoverKc(master: master, folderId: folder.handleId, wrapped: minted.ownerWrappedKey, shareId: "wrong", registry: registry))
