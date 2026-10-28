@@ -1,3 +1,4 @@
+import { clearAdopted } from './shared-folder-adoption';
 import { clearSharedKeys } from './shared-folder-keys';
 /**
  * Purges every on-disk plaintext cache this app writes, for BOTH regular
@@ -155,6 +156,7 @@ export function resolvePurgeMode(options: PurgeAllOptions = {}): {
 async function sweepDecryptedCaches(): Promise<{ removed: string[]; failed: string[] }> {
   clearSharedKeys();
   await Promise.allSettled([
+    clearAdopted(),
     clearThumbnailCache(),
     clearNameCache(),
     clearPreviewCache(),

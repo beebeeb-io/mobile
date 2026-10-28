@@ -1360,6 +1360,11 @@ export async function findFile(
   );
 }
 
+/** Write-once owner wrap; callers MUST verify authenticated file data first. */
+export async function adoptOwnerFileKey(fileId: string, ownerWrappedFileKey: string): Promise<{ adopted: boolean }> {
+  return request('POST', `/api/v1/files/${fileId}/owner-key`, { owner_wrapped_file_key: ownerWrappedFileKey });
+}
+
 export async function getFile(id: string): Promise<FileEntry> {
   return request<FileEntry>('GET', `/api/v1/files/${id}`);
 }

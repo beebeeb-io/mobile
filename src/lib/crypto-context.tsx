@@ -1,3 +1,4 @@
+import { adoptVerified, adoptDecryptedNames } from './shared-folder-adoption'
 import * as SharedNative from '../../modules/beebeeb-crypto'
 import { configureSharedKeys, clearSharedKeys, assertFileKeyExportable, resolveSharedNames, retrySharedDecrypt, type SharedKeysApi, type SharedKeysNative } from './shared-folder-keys'
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
@@ -1305,7 +1306,9 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
 
   const decryptMetadataFn = useCallback(
     async (fileId: string, nonce: Uint8Array, ct: Uint8Array): Promise<string> => {
-      return retrySharedDecrypt(fileId, () => handleDecryptMetadata(requireHandleId(), fileId, nonce, ct))
+      const value = await retrySharedDecrypt(fileId, () => handleDecryptMetadata(requireHandleId(), fileId, nonce, ct))
+      void adoptVerified([fileId])
+      return value
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -1313,7 +1316,9 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
 
   const decryptNamesFn = useCallback(
     async (items: BatchNameItem[]): Promise<BatchNameResult[]> => {
-      return resolveSharedNames(items, batch => decryptNames(requireHandleId(), batch))
+      const results = await resolveSharedNames(items, batch => decryptNames(requireHandleId(), batch))
+      void adoptDecryptedNames(items, results)
+      return results
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
