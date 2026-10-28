@@ -807,9 +807,19 @@ RustBuffer uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_thumbnail_for(u
 RustBuffer uniffi_beebeeb_uniffi_fn_method_filekeyhandle_key_id(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_METHOD_FILEKEYHANDLE_UNWRAP_FOLDER_CHILD
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_METHOD_FILEKEYHANDLE_UNWRAP_FOLDER_CHILD
+uint64_t uniffi_beebeeb_uniffi_fn_method_filekeyhandle_unwrap_folder_child(uint64_t ptr, RustBuffer shared_folder_id, RustBuffer item_id, uint8_t kind, RustBuffer nonce, RustBuffer ciphertext, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_METHOD_FILEKEYHANDLE_UNWRAP_KEY
 #define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_METHOD_FILEKEYHANDLE_UNWRAP_KEY
 uint64_t uniffi_beebeeb_uniffi_fn_method_filekeyhandle_unwrap_key(uint64_t ptr, RustBuffer nonce, RustBuffer ciphertext, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_METHOD_FILEKEYHANDLE_WRAP_FOLDER_CHILD
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_METHOD_FILEKEYHANDLE_WRAP_FOLDER_CHILD
+RustBuffer uniffi_beebeeb_uniffi_fn_method_filekeyhandle_wrap_folder_child(uint64_t ptr, RustBuffer shared_folder_id, RustBuffer item_id, uint8_t kind, uint64_t inner, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_FN_METHOD_FILEKEYHANDLE_WRAP_KEY
@@ -2628,9 +2638,21 @@ uint16_t uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_key_id(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_METHOD_FILEKEYHANDLE_UNWRAP_FOLDER_CHILD
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_METHOD_FILEKEYHANDLE_UNWRAP_FOLDER_CHILD
+uint16_t uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_unwrap_folder_child(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_METHOD_FILEKEYHANDLE_UNWRAP_KEY
 #define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_METHOD_FILEKEYHANDLE_UNWRAP_KEY
 uint16_t uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_unwrap_key(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_METHOD_FILEKEYHANDLE_WRAP_FOLDER_CHILD
+#define UNIFFI_FFIDEF_UNIFFI_BEEBEEB_UNIFFI_CHECKSUM_METHOD_FILEKEYHANDLE_WRAP_FOLDER_CHILD
+uint16_t uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_wrap_folder_child(void
     
 );
 #endif

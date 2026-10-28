@@ -63,7 +63,7 @@ class CoreVectorsKATTest {
     companion object {
         /** `sha256sum` of the vendored asset (v10, matching iOS pin 2026-09-22). */
         private const val EXPECTED_SHA256 =
-            "631bf4dc9cdb780fe7f2c83d5af75bd8b7cec8586d18e55a532e9f4c46101eb0"
+            "8782d9636391f73c14f941350ab47ac6882f2dc956dcc2d6bdc247a718dcf662"
         private const val EXPECTED_VERSION = 10
         private val REQUIRED_VECTOR_NAMES = listOf(
             "master_key_from_password",
@@ -351,6 +351,22 @@ class CoreVectorsKATTest {
         println("[CoreVectorsKAT] folder_link_passphrase_nfd: 1 row")
     }
 
+
+    @Test
+    fun folderChildVectorsBindEveryContextField() {
+        for (name in listOf("folder_child_file_v1", "folder_child_folder_v1")) {
+            val v = vector(loadRoot(), name)
+            val key = FileKeyHandle.fromKeyBytes(v.getString("folder_key_hex").hexToBytes())
+            val wire = v.getString("wrapped_hex").hexToBytes()
+            val root = v.getString("shared_folder_id"); val item = v.getString("item_id"); val kind = v.getInt("kind").toUByte()
+            val opened = key.unwrapFolderChild(root, item, kind, wire.copyOfRange(0,12), wire.copyOfRange(12,wire.size))
+            assertTrue(opened.keyId().contentEquals(FileKeyHandle.fromKeyBytes(v.getString("child_key_hex").hexToBytes()).keyId()))
+            for ((r,i,k) in listOf(Triple("00000000-0000-4000-8000-000000000099",item,kind), Triple(root,"00000000-0000-4000-8000-000000000099",kind), Triple(root,item,(3-kind.toInt()).toUByte()))) {
+                assertThrows(Exception::class.java) { key.unwrapFolderChild(r,i,k,wire.copyOfRange(0,12),wire.copyOfRange(12,wire.size)) }
+            }
+            println("[CoreVectorsKAT] $name: 1 row")
+        }
+    }
 
     @Test
     fun sharedKeyOpsRoundTrip() {

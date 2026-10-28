@@ -2686,10 +2686,17 @@ public protocol FileKeyHandleProtocol: AnyObject, Sendable {
      */
     func keyId() throws  -> Data
     
+    func unwrapFolderChild(sharedFolderId: String, itemId: String, kind: UInt8, nonce: Data, ciphertext: Data) throws  -> FileKeyHandle
+    
     /**
      * Authenticate a wrap and keep its exactly 32-byte plaintext in a handle.
      */
     func unwrapKey(nonce: Data, ciphertext: Data) throws  -> FileKeyHandle
+    
+    /**
+     * L7 authenticated child wrap. IDs are UUID strings; AAD uses their 16 raw bytes.
+     */
+    func wrapFolderChild(sharedFolderId: String, itemId: String, kind: UInt8, inner: FileKeyHandle) throws  -> EncryptedData
     
     /**
      * AES-256-GCM key wrap, no AAD: 12-byte nonce and 48-byte ciphertext.
@@ -3038,6 +3045,19 @@ open func keyId()throws  -> Data  {
 })
 }
     
+open func unwrapFolderChild(sharedFolderId: String, itemId: String, kind: UInt8, nonce: Data, ciphertext: Data)throws  -> FileKeyHandle  {
+    return try  FfiConverterTypeFileKeyHandle_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_filekeyhandle_unwrap_folder_child(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sharedFolderId),
+        FfiConverterString.lower(itemId),
+        FfiConverterUInt8.lower(kind),
+        FfiConverterData.lower(nonce),
+        FfiConverterData.lower(ciphertext),$0
+    )
+})
+}
+    
     /**
      * Authenticate a wrap and keep its exactly 32-byte plaintext in a handle.
      */
@@ -3047,6 +3067,21 @@ open func unwrapKey(nonce: Data, ciphertext: Data)throws  -> FileKeyHandle  {
             self.uniffiCloneHandle(),
         FfiConverterData.lower(nonce),
         FfiConverterData.lower(ciphertext),$0
+    )
+})
+}
+    
+    /**
+     * L7 authenticated child wrap. IDs are UUID strings; AAD uses their 16 raw bytes.
+     */
+open func wrapFolderChild(sharedFolderId: String, itemId: String, kind: UInt8, inner: FileKeyHandle)throws  -> EncryptedData  {
+    return try  FfiConverterTypeEncryptedData_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_filekeyhandle_wrap_folder_child(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sharedFolderId),
+        FfiConverterString.lower(itemId),
+        FfiConverterUInt8.lower(kind),
+        FfiConverterTypeFileKeyHandle_lower(inner),$0
     )
 })
 }
@@ -12296,7 +12331,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_key_id() != 12051) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_unwrap_folder_child() != 38035) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_unwrap_key() != 46173) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_wrap_folder_child() != 38562) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_wrap_key() != 2716) {

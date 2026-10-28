@@ -34,7 +34,7 @@ final class CoreVectorsKATTests: XCTestCase {
 
     /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v10, 2026-09-22).
     private static let expectedSha256Hex =
-        "631bf4dc9cdb780fe7f2c83d5af75bd8b7cec8586d18e55a532e9f4c46101eb0"
+        "8782d9636391f73c14f941350ab47ac6882f2dc956dcc2d6bdc247a718dcf662"
     private static let expectedVersion = 10
     private static let requiredVectorNames = [
         "master_key_from_password",
@@ -63,6 +63,8 @@ final class CoreVectorsKATTests: XCTestCase {
         "folder_custody_v1",
         "link_owner_key_v1",
         "link_owner_token_v1",
+        "folder_child_file_v1",
+        "folder_child_folder_v1",
     ]
 
     // MARK: - Vector loading
@@ -579,6 +581,21 @@ final class CoreVectorsKATTests: XCTestCase {
         XCTAssertEqual(try actual.keyId(), try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "link_key_hex")).keyId())
         XCTAssertThrowsError(try FileKeyHandle.fromFolderLinkPassphrase(kC: Self.hex(v, "k_c_hex"), passphrase: "", token: Self.str(v, "token")))
         print("[CoreVectorsKAT] folder_link_passphrase_nfd: 1 row")
+    }
+
+    func testFolderChildVectorsBindEveryContextField() throws {
+        for name in ["folder_child_file_v1", "folder_child_folder_v1"] {
+            let v = try Self.vector(Self.loadVectors(), named: name)
+            let key = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "folder_key_hex"))
+            let wire = try Self.hex(v, "wrapped_hex"), root = try Self.str(v, "shared_folder_id"), item = try Self.str(v, "item_id")
+            let kind = UInt8(v["kind"] as! Int)
+            let opened = try key.unwrapFolderChild(sharedFolderId: root, itemId: item, kind: kind, nonce: Data(wire.prefix(12)), ciphertext: Data(wire.dropFirst(12)))
+            XCTAssertEqual(try opened.keyId(), try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "child_key_hex")).keyId())
+            for (r, i, k) in [("00000000-0000-4000-8000-000000000099", item, kind), (root, "00000000-0000-4000-8000-000000000099", kind), (root, item, 3-kind)] {
+                XCTAssertThrowsError(try key.unwrapFolderChild(sharedFolderId: r, itemId: i, kind: k, nonce: Data(wire.prefix(12)), ciphertext: Data(wire.dropFirst(12))))
+            }
+            print("[CoreVectorsKAT] \(name): 1 row")
+        }
     }
 
     func testSharedKeyOpsRoundTrip() throws {

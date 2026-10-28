@@ -1000,7 +1000,11 @@ external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_thumbna
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_key_id(
 ): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_unwrap_folder_child(
+): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_unwrap_key(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_wrap_folder_child(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_wrap_key(
 ): Short
@@ -1377,8 +1381,12 @@ external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_thumbnail_for
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_key_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_unwrap_folder_child(`ptr`: Long,`sharedFolderId`: RustBuffer.ByValue,`itemId`: RustBuffer.ByValue,`kind`: Byte,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
 external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_unwrap_key(`ptr`: Long,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_wrap_folder_child(`ptr`: Long,`sharedFolderId`: RustBuffer.ByValue,`itemId`: RustBuffer.ByValue,`kind`: Byte,`inner`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_wrap_key(`ptr`: Long,`inner`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_clone_fileprovidercachehandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -2201,7 +2209,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_key_id() != 12051.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_unwrap_folder_child() != 38035.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_unwrap_key() != 46173.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_wrap_folder_child() != 38562.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_wrap_key() != 2716.toShort()) {
@@ -6289,10 +6303,17 @@ public interface FileKeyHandleInterface {
      */
     fun `keyId`(): kotlin.ByteArray
     
+    fun `unwrapFolderChild`(`sharedFolderId`: kotlin.String, `itemId`: kotlin.String, `kind`: kotlin.UByte, `nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): FileKeyHandle
+    
     /**
      * Authenticate a wrap and keep its exactly 32-byte plaintext in a handle.
      */
     fun `unwrapKey`(`nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): FileKeyHandle
+    
+    /**
+     * L7 authenticated child wrap. IDs are UUID strings; AAD uses their 16 raw bytes.
+     */
+    fun `wrapFolderChild`(`sharedFolderId`: kotlin.String, `itemId`: kotlin.String, `kind`: kotlin.UByte, `inner`: FileKeyHandle): EncryptedData
     
     /**
      * AES-256-GCM key wrap, no AAD: 12-byte nonce and 48-byte ciphertext.
@@ -6696,6 +6717,20 @@ open class FileKeyHandle: Disposable, AutoCloseable, FileKeyHandleInterface
     
 
     
+    @Throws(CryptoException::class)override fun `unwrapFolderChild`(`sharedFolderId`: kotlin.String, `itemId`: kotlin.String, `kind`: kotlin.UByte, `nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): FileKeyHandle {
+            return FfiConverterTypeFileKeyHandle.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_unwrap_folder_child(
+        it,
+        FfiConverterString.lower(`sharedFolderId`),FfiConverterString.lower(`itemId`),FfiConverterUByte.lower(`kind`),FfiConverterByteArray.lower(`nonce`),FfiConverterByteArray.lower(`ciphertext`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     /**
      * Authenticate a wrap and keep its exactly 32-byte plaintext in a handle.
      */
@@ -6706,6 +6741,23 @@ open class FileKeyHandle: Disposable, AutoCloseable, FileKeyHandleInterface
     UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_unwrap_key(
         it,
         FfiConverterByteArray.lower(`nonce`),FfiConverterByteArray.lower(`ciphertext`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * L7 authenticated child wrap. IDs are UUID strings; AAD uses their 16 raw bytes.
+     */
+    @Throws(CryptoException::class)override fun `wrapFolderChild`(`sharedFolderId`: kotlin.String, `itemId`: kotlin.String, `kind`: kotlin.UByte, `inner`: FileKeyHandle): EncryptedData {
+            return FfiConverterTypeEncryptedData.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_wrap_folder_child(
+        it,
+        FfiConverterString.lower(`sharedFolderId`),FfiConverterString.lower(`itemId`),FfiConverterUByte.lower(`kind`),FfiConverterTypeFileKeyHandle.lower(`inner`),_status)
 }
     }
     )
