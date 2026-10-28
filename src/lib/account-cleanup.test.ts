@@ -151,6 +151,13 @@ mock.module('./local-identifier-map', () => ({
   clearLocalIdentifierMap: async () => {},
 }));
 
+// Task 2237c L7c: the sign-out purge also clears the shared-folder custody memory (a
+// SecureStore record per account). Mocked at the leaf so the call is observable.
+let custodyClear = async () => { purgeCalls.push('custody'); };
+mock.module('./shared-folder-custody', () => ({
+  clearCustodyMemory: () => custodyClear(),
+}));
+
 const { purgeThenSignOut, purgeAllPlaintextCaches, purgeDecryptedCaches } = await import('./account-cleanup');
 const { plaintextGate } = await import('./plaintext-gate');
 import { readFileSync } from 'node:fs';
@@ -166,7 +173,24 @@ describe('purgeAllPlaintextCaches (task 1593 — plaintext survived sign-out)', 
     // The registry sweep runs after the in-flight-aware clears.
     expect(purgeCalls.indexOf('caches-registry')).toBeGreaterThan(purgeCalls.indexOf('previews'));
     expect(purgeCalls.indexOf('caches-registry')).toBeGreaterThan(purgeCalls.indexOf('photos'));
-    expect([...purgeCalls].sort()).toEqual(['caches-registry', 'names', 'native', 'photos', 'previews', 'thumbnails']);
+    expect([...purgeCalls].sort()).toEqual(['caches-registry', 'custody', 'names', 'native', 'photos', 'previews', 'thumbnails']);
+  });
+
+  test('L7c: sign-out clears the custody memory, and a failing clear never blocks the rest of sign-out', async () => {
+    purgeCalls.length = 0;
+    custodyClear = async () => { throw new Error('keychain'); };
+    await expect(purgeAllPlaintextCaches()).resolves.toEqual({ removed: 0, failed: 0 });
+    expect(purgeCalls).toContain('caches-registry');
+    custodyClear = async () => { purgeCalls.push('custody'); };
+    purgeCalls.length = 0;
+    await purgeAllPlaintextCaches();
+    expect(purgeCalls).toContain('custody');
+  });
+
+  test('purgeDecryptedCaches leaves the custody memory alone (it is cleared at sign-out, not at lock)', async () => {
+    purgeCalls.length = 0;
+    await purgeDecryptedCaches();
+    expect(purgeCalls).not.toContain('custody');
   });
 
   test('a failing preview purge never blocks the rest of sign-out', async () => {
