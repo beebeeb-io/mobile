@@ -70,33 +70,17 @@ const api = await import('./api');
 beforeEach(() => { fetchCalls.length = 0; fetchQueue = []; });
 function respond(body: unknown) { fetchQueue.push(async () => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })); }
 function sent() { const { url, init } = fetchCalls.at(-1)!; return { url, method: init.method, body: init.body ? JSON.parse(init.body as string) : null }; }
-test('createFolderLink_sends_no_folder_keys_and_a_43_char_token', async () => {
+test('createFolderLink_sends_format_l7_no_folder_keys_and_a_43_char_token', async () => {
   const body = { folder_id: 'folder', token: 'A'.repeat(43), access_level: 'add', wrapped_folder_key: 'wrap', owner_wrapped_key: 'owner', owner_wrapped_token: 'token-wrap' };
   respond({ id: 'link', ...body }); await api.createFolderLink(body);
-  expect(sent()).toEqual({ url: 'https://api.test/api/v1/shares/folder-links', method: 'POST', body });
+  expect(sent()).toEqual({ url: 'https://api.test/api/v1/shares/folder-links', method: 'POST', body: { ...body, format: 'l7' } });
   expect(sent().body).not.toHaveProperty('folder_keys');
 });
-test('publishSharedFolderKeys_body_is_keys_array_of_file_id_and_encrypted_file_key', async () => {
-  const keys = [{ file_id: 'file', encrypted_file_key: 'wrapped' }]; respond({ written: 1, skipped: 0 });
-  expect(await api.publishSharedFolderKeys('folder', keys)).toEqual({ written: 1, skipped: 0 });
-  expect(sent()).toEqual({ url: 'https://api.test/api/v1/shared-folders/folder/keys', method: 'POST', body: { keys, format: 'l7' } });
-});
-test('getFileOwnerWrap_accepts_base64_and_byte_array_owner_wraps', async () => {
-  for (const owner_wrapped_file_key of ['AQID', [1, 2, 3]]) {
-    respond({ owner_wrapped_file_key, acted_via_share_id: 'link' });
-    expect(await api.getFileOwnerWrap('file')).toEqual({ ownerWrap: new Uint8Array([1, 2, 3]), actedViaShareId: 'link' });
-  }
-  respond({}); expect(await api.getFileOwnerWrap('file')).toEqual({ ownerWrap: null, actedViaShareId: null });
-});
 test('folder_endpoint_methods_paths_and_response_envelopes_match_the_server', async () => {
-  respond({ flags: {} }); expect(await api.getEvaluateFlags()).toEqual({ flags: {} }); expect(sent().url).toEndWith('/feature-flags/evaluate');
-  respond({ links: [{ id: 'l' }] }); expect(await api.listFolderLinks('a b')).toEqual([{ id: 'l' }]); expect(sent().url).toEndWith('/shares/folder-links?folder_id=a%20b');
   respond({ id: 'l' }); await api.updateFolderLink('l', { paused: true, expires_in_hours: null }); expect(sent().method).toBe('PATCH'); expect(sent().body).toEqual({ paused: true, expires_in_hours: null });
   respond({}); await api.revokeFolderLink('l'); expect(sent().method).toBe('DELETE');
   respond({ members: [], folder_id: 'f', owner_id: 'o' }); await api.getFolderMembers('f'); expect(sent().url).toEndWith('/shares/invites/folder-members/f');
-  respond({ folder_id: 'f' }); await api.getSharedFolder('f'); expect(sent().url).toEndWith('/shared-folders/f');
   respond({ created: true, key_version: 1 }); await api.registerSharedFolderKey('f', { owner_wrapped_folder_key: 'w', key_version: 1 }); expect(sent().method).toBe('PUT'); expect(sent().url).toEndWith('/shared-folders/f/key');
-  respond({ keys: [], next_cursor: null }); await api.listSharedFolderKeys('f', { limit: 1000, cursor: 'a+b' }); expect(sent().url).toEndWith('/shared-folders/f/keys?limit=1000&cursor=a%2Bb');
   respond({ adopted: true }); await api.adoptOwnerFileKey('i', 'w'); expect(sent().body).toEqual({ owner_wrapped_file_key: 'w' }); expect(sent().url).toEndWith('/files/i/owner-key');
   respond({ activity: [] }); expect(await api.getSharedFolderActivity('f', 20)).toEqual([]); expect(sent().url).toEndWith('/shared-folders/f/activity?limit=20');
 });

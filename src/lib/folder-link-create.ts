@@ -131,6 +131,8 @@ export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, por
       // answering 404/405/501 now is not proof there is none), or one that needs the owner's upgrade.
       await assertMayRegisterCustody(ports.custody, input.folderId); assertCurrent();
       // Any ancestor that was seen as custody means this folder lives inside a shared folder: no custody of its own.
+      // Advisory only: the server's nested_share (409) is the real rule; this just never mints a key of its own
+      // under a folder the server may be pretending is unshared.
       for (const ancestor of ports.ancestors(input.folderId)) {
         if (await ports.custody.hasSeen(ancestor)) throw new Error('This folder is already inside a shared folder.');
         assertCurrent();
