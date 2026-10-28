@@ -3442,25 +3442,6 @@ export async function getSentInvites(): Promise<ShareInvite[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Folder presence (collaborators currently viewing a folder)
-// ---------------------------------------------------------------------------
-
-export interface PresenceUser {
-  id: string;
-  email: string;
-  initials: string;
-}
-
-/**
- * Returns the list of users currently active in a shared folder.
- * The endpoint is best-effort — returns an empty list if it is unavailable
- * (e.g. server has not been upgraded yet, or the folder is not shared).
- */
-export async function getFolderPresence(folderId: string): Promise<PresenceUser[]> {
-  return request<PresenceUser[]>('GET', `/api/v1/files/${folderId}/presence`).catch(() => []);
-}
-
-// ---------------------------------------------------------------------------
 // Storage usage
 // ---------------------------------------------------------------------------
 
