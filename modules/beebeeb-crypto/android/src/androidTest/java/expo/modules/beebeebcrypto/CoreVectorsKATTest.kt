@@ -26,7 +26,7 @@ import java.security.MessageDigest
 /**
  * Android half of the core known-answer-vector gate (task 1683, mirroring the
  * iOS `CoreVectorsKATTests.swift` from task 1382). Drives `beebeeb-core`'s
- * cross-platform vectors (`test-vectors/vectors.json`, v4, 12 families through
+ * cross-platform vectors (`test-vectors/vectors.json`, v10, 22 families through
  * the SAME production UniFFI Kotlin bindings the app links — the generated
  * `uniffi.beebeeb_uniffi` sources and the deployed `libbeebeeb_uniffi.so`).
  *
@@ -36,9 +36,9 @@ import java.security.MessageDigest
  * the pinning decision in the design spec — UniFFI 0.31.1).
  *
  * ## Refreshing the vendored vector file
- * `src/androidTest/assets/core-vectors.v4.json` is a vendored COPY of
+ * `src/androidTest/assets/core-vectors.v10.json` is a vendored COPY of
  * `repos/core/test-vectors/vectors.json`. To refresh after core bumps it:
- * 1. `cp ../../../core/test-vectors/vectors.json modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v4.json`
+ * 1. `cp ../../../core/test-vectors/vectors.json modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v10.json`
  * 2. `sha256sum` the new copy and update [EXPECTED_SHA256] (see the task file).
  * 3. If core bumped the version, update [EXPECTED_VERSION] and [REQUIRED_VECTOR_NAMES].
  *
@@ -56,10 +56,10 @@ import java.security.MessageDigest
 class CoreVectorsKATTest {
 
     companion object {
-        /** `sha256sum` of the vendored asset (v4, matching iOS pin 2026-09-22). */
+        /** `sha256sum` of the vendored asset (v10, matching iOS pin 2026-09-22). */
         private const val EXPECTED_SHA256 =
-            "a8f5320a0dbd06fa3a26ede7109f3c24295197061f13f81519c010b30157f6e5"
-        private const val EXPECTED_VERSION = 4
+            "4e3396f9705f427728f2eadf2f52dcb4ba62f1b718c794403087ac5971e2dd3f"
+        private const val EXPECTED_VERSION = 10
         private val REQUIRED_VECTOR_NAMES = listOf(
             "master_key_from_password",
             "file_key_derivation",
@@ -73,15 +73,25 @@ class CoreVectorsKATTest {
             "file_request_seal_open",
             "share_key_wrap",
             "thumbnail_encrypt",
+        "chunk_v2_stream",
+        "chunk_v2_single_frame",
+        "metadata_v2_name",
+        "metadata_v2_name_filekey",
+        "metadata_v1_name_filekey",
+        "folder_key_id",
+        "shared_folder_index_key",
+        "combine_folder_link_key",
+        "key_wrap_v1",
+        "folder_link_passphrase",
         )
 
         private fun loadRoot(): JSONObject {
             val assets = InstrumentationRegistry.getInstrumentation().context.assets
-            val bytes = assets.open("core-vectors.v4.json").readBytes()
+            val bytes = assets.open("core-vectors.v10.json").readBytes()
             val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
             val hex = digest.joinToString("") { "%02x".format(it) }
             assertEquals(
-                "vendored core-vectors.v4.json drifted from the pinned sha256 — see this file's header",
+                "vendored core-vectors.v10.json drifted from the pinned sha256 — see this file's header",
                 EXPECTED_SHA256,
                 hex,
             )
@@ -94,7 +104,7 @@ class CoreVectorsKATTest {
                 val v = vectors.getJSONObject(i)
                 if (v.optString("name") == name) return v
             }
-            throw AssertionError("vector '$name' not found in core-vectors.v4.json")
+            throw AssertionError("vector '$name' not found in core-vectors.v10.json")
         }
 
         private fun String.hexToBytes(): ByteArray {

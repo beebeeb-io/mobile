@@ -2,7 +2,7 @@ import XCTest
 import CryptoKit
 
 /// Task 1382 (audit item K2) — mobile half. Drives `beebeeb-core`'s cross-platform known-answer
-/// vectors (`test-vectors/vectors.json`, v4, 12 families) through the SAME production UniFFI Swift
+/// vectors (`test-vectors/vectors.json`, v10, 22 families) through the SAME production UniFFI Swift
 /// bindings the app links (`modules/beebeeb-crypto/ios/beebeeb_uniffi.swift`, compiled directly into
 /// this target's Sources build phase — see the `CoreVectorsKATTests` target in `Beebeeb.xcodeproj`,
 /// mirroring the host-less `ProvenanceHeadersTests` target added in task 1439). No app host, no
@@ -16,13 +16,13 @@ import CryptoKit
 /// minutes reasons, so this suite does NOT run in CI. See `CLAUDE.md` "Tests" section.
 ///
 /// ## Refreshing the vendored vector file
-/// `Vectors/core-vectors.v4.json` is a vendored COPY of `repos/core/test-vectors/vectors.json` — it
+/// `Vectors/core-vectors.v10.json` is a vendored COPY of `repos/core/test-vectors/vectors.json` — it
 /// has to be a copy (not a symlink out of the repo) so this xctest bundle can embed it as a Resource.
 /// To refresh after core bumps the vector file:
-/// 1. `cp ../../core/test-vectors/vectors.json ios/BeebeebNativeTests/Vectors/core-vectors.v4.json`
+/// 1. `cp ../../core/test-vectors/vectors.json ios/BeebeebNativeTests/Vectors/core-vectors.v10.json`
 ///    (run from the mobile repo's `ios/` directory in the standard `<workspace>/repos/{core,mobile}`
 ///    layout — NOT from an isolated `git worktree`, which has no sibling `repos/core` checkout).
-/// 2. `shasum -a 256 ios/BeebeebNativeTests/Vectors/core-vectors.v4.json` and paste the new hex into
+/// 2. `shasum -a 256 ios/BeebeebNativeTests/Vectors/core-vectors.v10.json` and paste the new hex into
 ///    `expectedSha256Hex` below.
 /// 3. If core bumped `version`, update `expectedVersion` and `requiredVectorNames` here to match
 ///    `vector_file_version_check` in `cross_platform_vectors.rs`.
@@ -32,10 +32,10 @@ final class CoreVectorsKATTests: XCTestCase {
 
     // MARK: - Pin
 
-    /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v4, 2026-09-22).
+    /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v10, 2026-09-22).
     private static let expectedSha256Hex =
-        "a8f5320a0dbd06fa3a26ede7109f3c24295197061f13f81519c010b30157f6e5"
-    private static let expectedVersion = 4
+        "4e3396f9705f427728f2eadf2f52dcb4ba62f1b718c794403087ac5971e2dd3f"
+    private static let expectedVersion = 10
     private static let requiredVectorNames = [
         "master_key_from_password",
         "file_key_derivation",
@@ -49,16 +49,26 @@ final class CoreVectorsKATTests: XCTestCase {
         "file_request_seal_open",
         "share_key_wrap",
         "thumbnail_encrypt",
+        "chunk_v2_stream",
+        "chunk_v2_single_frame",
+        "metadata_v2_name",
+        "metadata_v2_name_filekey",
+        "metadata_v1_name_filekey",
+        "folder_key_id",
+        "shared_folder_index_key",
+        "combine_folder_link_key",
+        "key_wrap_v1",
+        "folder_link_passphrase",
     ]
 
     // MARK: - Vector loading
 
     private static func bundledVectorsURL() throws -> URL {
         guard let url = Bundle(for: CoreVectorsKATTests.self)
-            .url(forResource: "core-vectors.v4", withExtension: "json") else {
+            .url(forResource: "core-vectors.v10", withExtension: "json") else {
             throw NSError(
                 domain: "CoreVectorsKATTests", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "core-vectors.v4.json missing from test bundle resources"]
+                userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json missing from test bundle resources"]
             )
         }
         return url
@@ -72,7 +82,7 @@ final class CoreVectorsKATTests: XCTestCase {
         let data = try loadVectorsData()
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw NSError(domain: "CoreVectorsKATTests", code: 2,
-                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v4.json did not decode to an object"])
+                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json did not decode to an object"])
         }
         return root
     }
@@ -80,7 +90,7 @@ final class CoreVectorsKATTests: XCTestCase {
     private static func loadVectors() throws -> [[String: Any]] {
         guard let vectors = try loadRoot()["vectors"] as? [[String: Any]] else {
             throw NSError(domain: "CoreVectorsKATTests", code: 3,
-                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v4.json 'vectors' is not an array"])
+                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json 'vectors' is not an array"])
         }
         return vectors
     }
@@ -168,7 +178,7 @@ final class CoreVectorsKATTests: XCTestCase {
         let hex = digest.map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(
             hex, Self.expectedSha256Hex,
-            "vendored Vectors/core-vectors.v4.json drifted from the pinned sha256 — see this file's " +
+            "vendored Vectors/core-vectors.v10.json drifted from the pinned sha256 — see this file's " +
             "header for the refresh procedure before changing expectedSha256Hex"
         )
     }
@@ -186,7 +196,7 @@ final class CoreVectorsKATTests: XCTestCase {
         let bundledData = try Self.loadVectorsData()
         XCTAssertEqual(
             siblingData, bundledData,
-            "vendored Vectors/core-vectors.v4.json diverged from repos/core/test-vectors/vectors.json " +
+            "vendored Vectors/core-vectors.v10.json diverged from repos/core/test-vectors/vectors.json " +
             "— re-vendor the copy and re-pin the sha256 (see this file's header)"
         )
     }

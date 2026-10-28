@@ -726,7 +726,15 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckContractApiVersion(this)
         uniffiCheckApiChecksums(this)
     }
-    external fun uniffi_beebeeb_uniffi_checksum_func_compute_recovery_check(
+    external fun uniffi_beebeeb_uniffi_checksum_func_breach_verdict_allows_proceeding(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_breach_verdict_check_failed(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_ceremony_step_spec_id(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_classify_direct_answer(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_compute_recovery_check(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_func_constellation_encode(
 ): Short
@@ -764,6 +772,28 @@ external fun uniffi_beebeeb_uniffi_checksum_func_derive_x25519_private(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_func_derive_x25519_public(
 ): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_direct_background_put_resource_timeout_ms(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_direct_check_storage_url(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_direct_discovery_offers_download(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_direct_download_grants_path(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_direct_pinned_retry_decision(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_direct_redact_url(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_direct_resume_transport(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_direct_scrub_text(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_direct_storage_get_total_ms(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_direct_storage_put_total_ms(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_direct_transfer_constants(
+): Short
 external fun uniffi_beebeeb_uniffi_checksum_func_download_and_decrypt_file(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_func_encrypt_blob(
@@ -773,6 +803,10 @@ external fun uniffi_beebeeb_uniffi_checksum_func_encrypt_chunk(
 external fun uniffi_beebeeb_uniffi_checksum_func_encrypt_metadata(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_func_encrypt_name(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_evaluate_password(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_folder_key_id(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_func_generate_recovery_pdf(
 ): Short
@@ -801,6 +835,8 @@ external fun uniffi_beebeeb_uniffi_checksum_func_opaque_registration_finish(
 external fun uniffi_beebeeb_uniffi_checksum_func_opaque_registration_start(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_func_open_request_upload(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_func_parse_direct_discovery(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_func_parse_encrypted_metadata(
 ): Short
@@ -844,9 +880,23 @@ external fun uniffi_beebeeb_uniffi_checksum_func_wrap_request_private(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_func_x25519_shared_secret(
 ): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_breachcheckhandle_evaluate(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_breachcheckhandle_prefix(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_chunk_format(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_finish(
+): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_next_chunk(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_push_frame(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_version_id(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_apply_recorded_pin(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_chunk_format(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_chunk_plan(
 ): Short
@@ -860,6 +910,8 @@ external fun uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_next_chu
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_push_chunk(
 ): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_resume_policy(
+): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_frames_ingested(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_ingest_frame(
@@ -870,13 +922,87 @@ external fun uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_re
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_shards_collected(
 ): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdiscoverycachehandle_lookup(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdiscoverycachehandle_record(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_api_fetch_failed(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_chunk_unauthentic(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_consumed(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_consumed_count(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_fetch_failed(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_fetch_ok(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_geometry(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_in_flight(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_pinned_version(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_poll(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_set_max_in_flight_bytes(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_storage_given_up(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_window_answered(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_window_failed(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_window_malformed(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directhealthhandle_gave_up(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directhealthhandle_last_gave_up_ms(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directhealthhandle_may_start(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directhealthhandle_may_start_file(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directhealthhandle_restore(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directsignedurl_raw(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_directsignedurl_redacted(
+): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_chunk(
 ): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_chunk_frame(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_file_metadata(
+): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_metadata(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_name_metadata(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_note(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_thumbnail(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_chunk(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_metadata(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_name_for(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_note(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_note_for(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_thumbnail(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_thumbnail_for(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_key_id(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_unwrap_key(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_wrap_key(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_fileprovidercachehandle_clear(
 ): Short
@@ -894,7 +1020,11 @@ external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_compute_recov
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_file(
 ): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_file_metadata(
+): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_name(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_name_metadata(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_name_with_mime(
 ): Short
@@ -907,6 +1037,8 @@ external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_derive_x25519
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_encrypt_file(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_encrypt_name(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_encrypt_name_with_chunk_format(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_export_for_keychain(
 ): Short
@@ -924,7 +1056,45 @@ external fun uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_remove(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_upsert(
 ): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_abandon(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_account_created(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_acknowledge_phrase(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_begin_phrase(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_challenge_positions(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_confirm_phrase(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_email_changed(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_email_ticket_invalidated(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_email_verified(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_finish_registration(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_pending_steps(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_phrase(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_registration_failed(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_set_password(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_start_registration(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_step(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_breachcheckhandle_new(
+): Short
 external fun uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_for_push(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_for_push_with_file_key(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_for_push_with_file_key_handle(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_from_file(
 ): Short
@@ -933,6 +1103,22 @@ external fun uniffi_beebeeb_uniffi_checksum_constructor_chunkencryptorhandle_for
 external fun uniffi_beebeeb_uniffi_checksum_constructor_chunkencryptorhandle_from_file(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_constructor_constellationdecoderhandle_new(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_directdiscoverycachehandle_new(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_directdownloadplannerhandle_new(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_directhealthhandle_new(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_directsignedurl_new(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_filekeyhandle_from_folder_link(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_filekeyhandle_from_folder_link_passphrase(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_filekeyhandle_from_key_bytes(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_filekeyhandle_generate(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_constructor_fileprovidercachehandle_open(
 ): Short
@@ -945,6 +1131,8 @@ external fun uniffi_beebeeb_uniffi_checksum_constructor_searchindexhandle_build(
 external fun uniffi_beebeeb_uniffi_checksum_constructor_searchindexhandle_from_encrypted_shards(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_constructor_searchindexhandle_new(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_constructor_signupceremonyhandle_new(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_downloadprogresscallback_on_chunk_decrypted(
 ): Short
@@ -981,17 +1169,37 @@ internal object UniffiLib {
         uniffiCallbackInterfaceUploadProgressCallback.register(this)
         
     }
-    external fun uniffi_beebeeb_uniffi_fn_clone_chunkdecryptorhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_beebeeb_uniffi_fn_clone_breachcheckhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_free_breachcheckhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_constructor_breachcheckhandle_new(`password`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_method_breachcheckhandle_evaluate(`ptr`: Long,`requestedPrefix`: RustBuffer.ByValue,`body`: RustBuffer.ByValue,`failOpen`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_breachcheckhandle_prefix(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_clone_chunkdecryptorhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 external fun uniffi_beebeeb_uniffi_fn_free_chunkdecryptorhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-external fun uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_for_push(`masterKey`: Long,`fileId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+external fun uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_for_push(`masterKey`: Long,`fileId`: RustBuffer.ByValue,`expectedChunkFormat`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
-external fun uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_from_file(`masterKey`: Long,`fileId`: RustBuffer.ByValue,`chunkSizeBytes`: Long,`inputPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+external fun uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_for_push_with_file_key(`fileKey`: RustBuffer.ByValue,`fileId`: RustBuffer.ByValue,`expectedChunkFormat`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
+external fun uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_for_push_with_file_key_handle(`fileKey`: Long,`fileId`: RustBuffer.ByValue,`expectedChunkFormat`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_from_file(`masterKey`: Long,`fileId`: RustBuffer.ByValue,`expectedChunkFormat`: Byte,`chunkSizeBytes`: Long,`inputPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_method_chunkdecryptorhandle_chunk_format(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_chunkdecryptorhandle_finish(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_chunkdecryptorhandle_next_chunk(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_chunkdecryptorhandle_push_frame(`ptr`: Long,`frame`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_chunkdecryptorhandle_version_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_clone_chunkencryptorhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
@@ -1001,6 +1209,10 @@ external fun uniffi_beebeeb_uniffi_fn_constructor_chunkencryptorhandle_for_push(
 ): Long
 external fun uniffi_beebeeb_uniffi_fn_constructor_chunkencryptorhandle_from_file(`masterKey`: Long,`fileId`: RustBuffer.ByValue,`inputPath`: RustBuffer.ByValue,`profile`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
+external fun uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_apply_recorded_pin(`ptr`: Long,`recordedPin`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_chunk_format(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
 external fun uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_chunk_plan(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_chunks_emitted(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -1012,6 +1224,8 @@ external fun uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_finish(`ptr`: 
 external fun uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_next_chunk(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_push_chunk(`ptr`: Long,`plaintext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_resume_policy(`ptr`: Long,`storedFormat`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_clone_constellationdecoderhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
@@ -1029,17 +1243,127 @@ external fun uniffi_beebeeb_uniffi_fn_method_constellationdecoderhandle_reset(`p
 ): Unit
 external fun uniffi_beebeeb_uniffi_fn_method_constellationdecoderhandle_shards_collected(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Int
+external fun uniffi_beebeeb_uniffi_fn_clone_directdiscoverycachehandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_free_directdiscoverycachehandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_constructor_directdiscoverycachehandle_new(uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_method_directdiscoverycachehandle_lookup(`ptr`: Long,`nowMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_directdiscoverycachehandle_record(`ptr`: Long,`outcome`: RustBuffer.ByValue,`body`: RustBuffer.ByValue,`nowMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_clone_directdownloadplannerhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_free_directdownloadplannerhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_constructor_directdownloadplannerhandle_new(`discovery`: RustBuffer.ByValue,`apiBase`: RustBuffer.ByValue,`fileId`: RustBuffer.ByValue,`jitterSeed`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_api_fetch_failed(`ptr`: Long,`index`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_chunk_unauthentic(`ptr`: Long,`index`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_consumed(`ptr`: Long,`index`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_consumed_count(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Int
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_fetch_failed(`ptr`: Long,`index`: Int,`nowMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_fetch_ok(`ptr`: Long,`index`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_geometry(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_in_flight(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Int
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_pinned_version(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_poll(`ptr`: Long,`nowMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_set_max_in_flight_bytes(`ptr`: Long,`bytes`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_storage_given_up(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_window_answered(`ptr`: Long,`body`: RustBuffer.ByValue,`nowMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_window_failed(`ptr`: Long,`outcome`: RustBuffer.ByValue,`nowMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_window_malformed(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_clone_directhealthhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_free_directhealthhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_constructor_directhealthhandle_new(uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_method_directhealthhandle_gave_up(`ptr`: Long,`direction`: RustBuffer.ByValue,`nowMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_directhealthhandle_last_gave_up_ms(`ptr`: Long,`direction`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_directhealthhandle_may_start(`ptr`: Long,`direction`: RustBuffer.ByValue,`nowMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+external fun uniffi_beebeeb_uniffi_fn_method_directhealthhandle_may_start_file(`ptr`: Long,`direction`: RustBuffer.ByValue,`nowMs`: Long,`fileGaveUp`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+external fun uniffi_beebeeb_uniffi_fn_method_directhealthhandle_restore(`ptr`: Long,`direction`: RustBuffer.ByValue,`lastGaveUpMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_clone_directsignedurl(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_free_directsignedurl(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_constructor_directsignedurl_new(`url`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_method_directsignedurl_raw(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_directsignedurl_redacted(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_directsignedurl_uniffi_trait_debug(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_directsignedurl_uniffi_trait_display(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_clone_filekeyhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 external fun uniffi_beebeeb_uniffi_fn_free_filekeyhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+external fun uniffi_beebeeb_uniffi_fn_constructor_filekeyhandle_from_folder_link(`kC`: RustBuffer.ByValue,`passphraseStretch`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_constructor_filekeyhandle_from_folder_link_passphrase(`kC`: RustBuffer.ByValue,`passphrase`: RustBuffer.ByValue,`token`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_constructor_filekeyhandle_from_key_bytes(`key`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_constructor_filekeyhandle_generate(uniffi_out_err: UniffiRustCallStatus, 
+): Long
 external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_chunk(`ptr`: Long,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_chunk_frame(`ptr`: Long,`fileId`: RustBuffer.ByValue,`versionId`: RustBuffer.ByValue,`index`: Int,`isLast`: Byte,`format`: Byte,`frame`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_file_metadata(`ptr`: Long,`nameEncrypted`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_metadata(`ptr`: Long,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_name_metadata(`ptr`: Long,`nameEncrypted`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_note(`ptr`: Long,`noteEncrypted`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_thumbnail(`ptr`: Long,`frame`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_chunk(`ptr`: Long,`plaintext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_metadata(`ptr`: Long,`metadata`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_name_for(`ptr`: Long,`filename`: RustBuffer.ByValue,`mimeType`: RustBuffer.ByValue,`recordedPin`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_note(`ptr`: Long,`note`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_note_for(`ptr`: Long,`note`: RustBuffer.ByValue,`recordedPin`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_thumbnail(`ptr`: Long,`plaintext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_thumbnail_for(`ptr`: Long,`plaintext`: RustBuffer.ByValue,`recordedPin`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_key_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_unwrap_key(`ptr`: Long,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_method_filekeyhandle_wrap_key(`ptr`: Long,`inner`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_clone_fileprovidercachehandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
@@ -1069,9 +1393,13 @@ external fun uniffi_beebeeb_uniffi_fn_constructor_masterkeyhandle_from_recovery_
 ): Long
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_compute_recovery_check(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_file(`ptr`: Long,`fileId`: RustBuffer.ByValue,`chunkPaths`: RustBuffer.ByValue,`outputPath`: RustBuffer.ByValue,`callback`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_file(`ptr`: Long,`fileId`: RustBuffer.ByValue,`expectedChunkFormat`: Byte,`chunkPaths`: RustBuffer.ByValue,`outputPath`: RustBuffer.ByValue,`callback`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_file_metadata(`ptr`: Long,`fileId`: RustBuffer.ByValue,`nameEncrypted`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_name(`ptr`: Long,`fileId`: RustBuffer.ByValue,`nameEncrypted`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_name_metadata(`ptr`: Long,`fileId`: RustBuffer.ByValue,`nameEncrypted`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_name_with_mime(`ptr`: Long,`fileId`: RustBuffer.ByValue,`nameEncrypted`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1084,6 +1412,8 @@ external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_derive_x25519_priva
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_encrypt_file(`ptr`: Long,`fileId`: RustBuffer.ByValue,`inputPath`: RustBuffer.ByValue,`outputDir`: RustBuffer.ByValue,`profile`: RustBuffer.ByValue,`callback`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_encrypt_name(`ptr`: Long,`fileId`: RustBuffer.ByValue,`filename`: RustBuffer.ByValue,`mimeType`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_encrypt_name_with_chunk_format(`ptr`: Long,`fileId`: RustBuffer.ByValue,`filename`: RustBuffer.ByValue,`mimeType`: RustBuffer.ByValue,`chunkFormat`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_export_for_keychain(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1111,12 +1441,58 @@ external fun uniffi_beebeeb_uniffi_fn_method_searchindexhandle_remove(`ptr`: Lon
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_searchindexhandle_upsert(`ptr`: Long,`fileId`: RustBuffer.ByValue,`name`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_clone_signupceremonyhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_free_signupceremonyhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_constructor_signupceremonyhandle_new(`minLength`: Int,`emailVerificationRequired`: Byte,`verifyWordCount`: Int,`breachCheckRequired`: Byte,`breachFailOpen`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_abandon(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_account_created(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_acknowledge_phrase(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_begin_phrase(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_challenge_positions(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_confirm_phrase(`ptr`: Long,`answers`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_email_changed(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_email_ticket_invalidated(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_email_verified(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_finish_registration(`ptr`: Long,`serverMessage`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_pending_steps(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_phrase(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_registration_failed(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_set_password(`ptr`: Long,`password`: RustBuffer.ByValue,`confirmation`: RustBuffer.ByValue,`breach`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_start_registration(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_step(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_init_callback_vtable_downloadprogresscallback(`vtable`: UniffiVTableCallbackInterfaceDownloadProgressCallback,
 ): Unit
 external fun uniffi_beebeeb_uniffi_fn_init_callback_vtable_fileprogresscallback(`vtable`: UniffiVTableCallbackInterfaceFileProgressCallback,
 ): Unit
 external fun uniffi_beebeeb_uniffi_fn_init_callback_vtable_uploadprogresscallback(`vtable`: UniffiVTableCallbackInterfaceUploadProgressCallback,
 ): Unit
+external fun uniffi_beebeeb_uniffi_fn_func_breach_verdict_allows_proceeding(`verdict`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+external fun uniffi_beebeeb_uniffi_fn_func_breach_verdict_check_failed(`verdict`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+external fun uniffi_beebeeb_uniffi_fn_func_ceremony_step_spec_id(`step`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_func_classify_direct_answer(`call`: RustBuffer.ByValue,`status`: Short,`contentType`: RustBuffer.ByValue,`body`: RustBuffer.ByValue,`retryAfter`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_func_compute_recovery_check(`masterKey`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_func_constellation_encode(`payload`: RustBuffer.ByValue,`frameIndex`: Int,uniffi_out_err: UniffiRustCallStatus, 
@@ -1131,9 +1507,9 @@ external fun uniffi_beebeeb_uniffi_fn_func_decrypt_blob(`key`: RustBuffer.ByValu
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_func_decrypt_chunk(`key`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-external fun uniffi_beebeeb_uniffi_fn_func_decrypt_chunks_to_file(`key`: RustBuffer.ByValue,`chunks`: RustBuffer.ByValue,`outputPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+external fun uniffi_beebeeb_uniffi_fn_func_decrypt_chunks_to_file(`key`: RustBuffer.ByValue,`fileId`: RustBuffer.ByValue,`expectedChunkFormat`: Byte,`chunks`: RustBuffer.ByValue,`outputPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
-external fun uniffi_beebeeb_uniffi_fn_func_decrypt_contiguous_to_file(`fileKey`: RustBuffer.ByValue,`body`: RustBuffer.ByValue,`chunkSize`: Long,`outputPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+external fun uniffi_beebeeb_uniffi_fn_func_decrypt_contiguous_to_file(`fileKey`: RustBuffer.ByValue,`fileId`: RustBuffer.ByValue,`expectedChunkFormat`: Byte,`body`: RustBuffer.ByValue,`chunkSize`: Long,`outputPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 external fun uniffi_beebeeb_uniffi_fn_func_decrypt_metadata(`key`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1155,7 +1531,29 @@ external fun uniffi_beebeeb_uniffi_fn_func_derive_x25519_private(`masterKey`: Ru
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_func_derive_x25519_public(`privateKey`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-external fun uniffi_beebeeb_uniffi_fn_func_download_and_decrypt_file(`apiUrl`: RustBuffer.ByValue,`token`: RustBuffer.ByValue,`masterKeyHandle`: Long,`fileId`: RustBuffer.ByValue,`outputPath`: RustBuffer.ByValue,`callback`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+external fun uniffi_beebeeb_uniffi_fn_func_direct_background_put_resource_timeout_ms(uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_func_direct_check_storage_url(`url`: RustBuffer.ByValue,`discovery`: RustBuffer.ByValue,`apiBase`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_beebeeb_uniffi_fn_func_direct_discovery_offers_download(`discovery`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+external fun uniffi_beebeeb_uniffi_fn_func_direct_download_grants_path(`fileId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_func_direct_pinned_retry_decision(`outcome`: RustBuffer.ByValue,`attempt`: Int,`waitedMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_func_direct_redact_url(`url`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_func_direct_resume_transport(`recorded`: RustBuffer.ByValue,`discovery`: RustBuffer.ByValue,`forcedApi`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_func_direct_scrub_text(`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_func_direct_storage_get_total_ms(`len`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_func_direct_storage_put_total_ms(`len`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_func_direct_transfer_constants(uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_func_download_and_decrypt_file(`apiUrl`: RustBuffer.ByValue,`token`: RustBuffer.ByValue,`masterKeyHandle`: Long,`fileId`: RustBuffer.ByValue,`expectedChunkFormat`: Byte,`outputPath`: RustBuffer.ByValue,`callback`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_func_encrypt_blob(`key`: RustBuffer.ByValue,`plaintext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1164,6 +1562,10 @@ external fun uniffi_beebeeb_uniffi_fn_func_encrypt_chunk(`key`: RustBuffer.ByVal
 external fun uniffi_beebeeb_uniffi_fn_func_encrypt_metadata(`key`: RustBuffer.ByValue,`metadata`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_func_encrypt_name(`masterKey`: RustBuffer.ByValue,`fileId`: RustBuffer.ByValue,`filename`: RustBuffer.ByValue,`mimeType`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_func_evaluate_password(`password`: RustBuffer.ByValue,`minLength`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_func_folder_key_id(`folderKey`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_func_generate_recovery_pdf(`title`: RustBuffer.ByValue,`words`: RustBuffer.ByValue,`metadataKeys`: RustBuffer.ByValue,`metadataValues`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1192,6 +1594,8 @@ external fun uniffi_beebeeb_uniffi_fn_func_opaque_registration_finish(`clientSta
 external fun uniffi_beebeeb_uniffi_fn_func_opaque_registration_start(`password`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_func_open_request_upload(`rPriv`: RustBuffer.ByValue,`ePub`: RustBuffer.ByValue,`fileId`: RustBuffer.ByValue,`wrappedKey`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_func_parse_direct_discovery(`body`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_func_parse_encrypted_metadata(`payload`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1354,6 +1758,18 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_breach_verdict_allows_proceeding() != 57433.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_breach_verdict_check_failed() != 45507.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_ceremony_step_spec_id() != 23509.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_classify_direct_answer() != 47917.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_beebeeb_uniffi_checksum_func_compute_recovery_check() != 28278.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1375,10 +1791,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_beebeeb_uniffi_checksum_func_decrypt_chunk() != 1418.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_beebeeb_uniffi_checksum_func_decrypt_chunks_to_file() != 41753.toShort()) {
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_decrypt_chunks_to_file() != 35278.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_beebeeb_uniffi_checksum_func_decrypt_contiguous_to_file() != 62659.toShort()) {
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_decrypt_contiguous_to_file() != 29182.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_func_decrypt_metadata() != 59510.toShort()) {
@@ -1411,7 +1827,40 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_beebeeb_uniffi_checksum_func_derive_x25519_public() != 3860.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_beebeeb_uniffi_checksum_func_download_and_decrypt_file() != 8703.toShort()) {
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_direct_background_put_resource_timeout_ms() != 64703.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_direct_check_storage_url() != 37576.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_direct_discovery_offers_download() != 47622.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_direct_download_grants_path() != 38361.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_direct_pinned_retry_decision() != 23908.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_direct_redact_url() != 8126.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_direct_resume_transport() != 37116.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_direct_scrub_text() != 49435.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_direct_storage_get_total_ms() != 62965.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_direct_storage_put_total_ms() != 48397.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_direct_transfer_constants() != 20976.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_download_and_decrypt_file() != 13725.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_func_encrypt_blob() != 15197.toShort()) {
@@ -1424,6 +1873,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_func_encrypt_name() != 54015.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_evaluate_password() != 50314.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_folder_key_id() != 44432.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_func_generate_recovery_pdf() != 58665.toShort()) {
@@ -1466,6 +1921,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_func_open_request_upload() != 62082.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_func_parse_direct_discovery() != 11833.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_func_parse_encrypted_metadata() != 44121.toShort()) {
@@ -1531,10 +1989,31 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_beebeeb_uniffi_checksum_func_x25519_shared_secret() != 52845.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_breachcheckhandle_evaluate() != 6329.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_breachcheckhandle_prefix() != 34418.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_chunk_format() != 50766.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_finish() != 43578.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_next_chunk() != 20032.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_push_frame() != 40122.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_chunkdecryptorhandle_version_id() != 23865.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_apply_recorded_pin() != 19376.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_chunk_format() != 59364.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_chunk_plan() != 33166.toShort()) {
@@ -1555,6 +2034,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_push_chunk() != 41028.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_chunkencryptorhandle_resume_policy() != 18674.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_frames_ingested() != 10893.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1570,16 +2052,127 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_beebeeb_uniffi_checksum_method_constellationdecoderhandle_shards_collected() != 56364.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdiscoverycachehandle_lookup() != 14.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdiscoverycachehandle_record() != 54400.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_api_fetch_failed() != 34853.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_chunk_unauthentic() != 20797.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_consumed() != 27083.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_consumed_count() != 7807.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_fetch_failed() != 9399.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_fetch_ok() != 55977.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_geometry() != 44024.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_in_flight() != 41415.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_pinned_version() != 22329.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_poll() != 20104.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_set_max_in_flight_bytes() != 8572.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_storage_given_up() != 43725.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_window_answered() != 10453.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_window_failed() != 49491.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_window_malformed() != 62818.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directhealthhandle_gave_up() != 51195.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directhealthhandle_last_gave_up_ms() != 18887.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directhealthhandle_may_start() != 51037.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directhealthhandle_may_start_file() != 45343.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directhealthhandle_restore() != 16132.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directsignedurl_raw() != 23451.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_directsignedurl_redacted() != 58321.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_chunk() != 50441.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_chunk_frame() != 11989.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_file_metadata() != 61159.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_metadata() != 41867.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_name_metadata() != 61502.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_note() != 63135.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_thumbnail() != 51244.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_chunk() != 10384.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_metadata() != 60336.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_name_for() != 26823.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_note() != 32953.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_note_for() != 26115.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_thumbnail() != 50799.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_encrypt_thumbnail_for() != 63311.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_key_id() != 12051.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_unwrap_key() != 46173.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_wrap_key() != 2716.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_fileprovidercachehandle_clear() != 34269.toShort()) {
@@ -1603,10 +2196,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_compute_recovery_check() != 4155.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_file() != 23201.toShort()) {
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_file() != 46481.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_file_metadata() != 11722.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_name() != 40318.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_name_metadata() != 25626.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_decrypt_name_with_mime() != 23459.toShort()) {
@@ -1625,6 +2224,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_encrypt_name() != 53513.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_encrypt_name_with_chunk_format() != 26947.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_export_for_keychain() != 50366.toShort()) {
@@ -1651,10 +2253,67 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_upsert() != 22759.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_for_push() != 48588.toShort()) {
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_abandon() != 65431.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_from_file() != 31798.toShort()) {
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_account_created() != 6715.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_acknowledge_phrase() != 41460.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_begin_phrase() != 57511.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_challenge_positions() != 57102.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_confirm_phrase() != 37171.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_email_changed() != 2686.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_email_ticket_invalidated() != 40825.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_email_verified() != 10743.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_finish_registration() != 607.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_pending_steps() != 29905.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_phrase() != 55422.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_registration_failed() != 47031.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_set_password() != 30731.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_start_registration() != 11713.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_signupceremonyhandle_step() != 23549.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_breachcheckhandle_new() != 51691.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_for_push() != 49279.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_for_push_with_file_key() != 53433.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_for_push_with_file_key_handle() != 50643.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_chunkdecryptorhandle_from_file() != 38225.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_constructor_chunkencryptorhandle_for_push() != 9385.toShort()) {
@@ -1664,6 +2323,30 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_constructor_constellationdecoderhandle_new() != 21598.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_directdiscoverycachehandle_new() != 16642.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_directdownloadplannerhandle_new() != 18802.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_directhealthhandle_new() != 34232.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_directsignedurl_new() != 57713.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_filekeyhandle_from_folder_link() != 22577.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_filekeyhandle_from_folder_link_passphrase() != 65362.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_filekeyhandle_from_key_bytes() != 50246.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_filekeyhandle_generate() != 28342.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_constructor_fileprovidercachehandle_open() != 22658.toShort()) {
@@ -1682,6 +2365,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_constructor_searchindexhandle_new() != 39475.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_constructor_signupceremonyhandle_new() != 22479.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_downloadprogresscallback_on_chunk_decrypted() != 37523.toShort()) {
@@ -2227,9 +2913,353 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 
 
 /**
+ * k-anonymity breach check for one password. Core hashes and matches; **the app
+ * makes the HTTP call**, to the endpoint the onboarding document declares in
+ * `policy.password.breach_check.endpoint` (Beebeeb's own API, never a third
+ * party). Only `prefix()` (5 hex chars) may be sent. The rest of the digest
+ * stays in this handle and is zeroized when it is released.
+ *
+ * The handle is bound to the password it was made from and remembers the
+ * answer: pass it to `SignupCeremonyHandle.set_password`, which refuses a
+ * check made for a different password. A response body over 262144 bytes is
+ * treated as an outage, so stop reading the response at that size.
+ */
+public interface BreachCheckHandleInterface {
+    
+    /**
+     * Record the answer and return the verdict for display. `body` is the
+     * response text of a 2xx answer, or `None` when the request failed
+     * (network error, timeout, non-2xx). An empty body counts as a failed
+     * request. `fail_open` is `policy.password.breach_check.fail_open` and
+     * only shapes this display value: the ceremony applies the value it was
+     * constructed with.
+     *
+     * `requested_prefix` is the prefix the request URL (or the cache entry)
+     * actually used. If it is not this password's prefix this throws
+     * `BreachPrefixMismatch` and records nothing: a body for another prefix
+     * would otherwise evaluate as clean.
+     */
+    fun `evaluate`(`requestedPrefix`: kotlin.String, `body`: kotlin.String?, `failOpen`: kotlin.Boolean): BreachVerdictDto
+    
+    /**
+     * The 5 upper-case hex characters to send to the server.
+     */
+    fun `prefix`(): kotlin.String
+    
+    companion object
+}
+
+/**
+ * k-anonymity breach check for one password. Core hashes and matches; **the app
+ * makes the HTTP call**, to the endpoint the onboarding document declares in
+ * `policy.password.breach_check.endpoint` (Beebeeb's own API, never a third
+ * party). Only `prefix()` (5 hex chars) may be sent. The rest of the digest
+ * stays in this handle and is zeroized when it is released.
+ *
+ * The handle is bound to the password it was made from and remembers the
+ * answer: pass it to `SignupCeremonyHandle.set_password`, which refuses a
+ * check made for a different password. A response body over 262144 bytes is
+ * treated as an outage, so stop reading the response at that size.
+ */
+open class BreachCheckHandle: Disposable, AutoCloseable, BreachCheckHandleInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+    constructor(`password`: kotlin.String) :
+        this(UniffiWithHandle, 
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_breachcheckhandle_new(
+    
+        FfiConverterString.lower(`password`),_status)
+}
+    )
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_beebeeb_uniffi_fn_free_breachcheckhandle(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_beebeeb_uniffi_fn_clone_breachcheckhandle(handle, status)
+        }
+    }
+
+    
+    /**
+     * Record the answer and return the verdict for display. `body` is the
+     * response text of a 2xx answer, or `None` when the request failed
+     * (network error, timeout, non-2xx). An empty body counts as a failed
+     * request. `fail_open` is `policy.password.breach_check.fail_open` and
+     * only shapes this display value: the ceremony applies the value it was
+     * constructed with.
+     *
+     * `requested_prefix` is the prefix the request URL (or the cache entry)
+     * actually used. If it is not this password's prefix this throws
+     * `BreachPrefixMismatch` and records nothing: a body for another prefix
+     * would otherwise evaluate as clean.
+     */
+    @Throws(OnboardingException::class)override fun `evaluate`(`requestedPrefix`: kotlin.String, `body`: kotlin.String?, `failOpen`: kotlin.Boolean): BreachVerdictDto {
+            return FfiConverterTypeBreachVerdictDto.lift(
+    callWithHandle {
+    uniffiRustCallWithError(OnboardingException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_breachcheckhandle_evaluate(
+        it,
+        FfiConverterString.lower(`requestedPrefix`),FfiConverterOptionalString.lower(`body`),FfiConverterBoolean.lower(`failOpen`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The 5 upper-case hex characters to send to the server.
+     */override fun `prefix`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_breachcheckhandle_prefix(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+
+    
+
+
+    
+    
+    /**
+     * @suppress
+     */
+    companion object
+    
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeBreachCheckHandle: FfiConverter<BreachCheckHandle, Long> {
+    override fun lower(value: BreachCheckHandle): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): BreachCheckHandle {
+        return BreachCheckHandle(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): BreachCheckHandle {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: BreachCheckHandle) = 8UL
+
+    override fun write(value: BreachCheckHandle, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
  * Stateful streaming decryptor handle. Single-consumer (see module note).
  */
 public interface ChunkDecryptorHandleInterface {
+    
+    /**
+     * The file's chunk format (1 = v1 legacy, 2 = v2) once chunk 0 has been
+     * opened; `None` before.
+     */
+    fun `chunkFormat`(): kotlin.UByte?
+    
+    /**
+     * End-of-stream check, consuming the decryptor. MUST be called after the
+     * last pushed frame: it fails if no frame was pushed or if a v2 file ended
+     * before its last chunk (truncation). Treat an `Err` as a failed download
+     * and discard the plaintext. The pull form runs the same check at EOF.
+     */
+    fun `finish`(): ChunkDecryptorSummaryDto
     
     /**
      * PULL: emit the next decrypted chunk, or `None` at clean EOF.
@@ -2240,6 +3270,13 @@ public interface ChunkDecryptorHandleInterface {
      * PUSH: decrypt one caller-provided wire frame (`nonce || ciphertext || tag`).
      */
     fun `pushFrame`(`frame`: kotlin.ByteArray): DecryptedChunkDto
+    
+    /**
+     * v2: the upload's version id (chunk 0's 12-byte nonce) once chunk 0 has
+     * authenticated — what a seeking reader passes to
+     * `FileKeyHandle.decrypt_chunk_frame`. `None` before chunk 0 and for v1.
+     */
+    fun `versionId`(): kotlin.ByteArray?
     
     companion object
 }
@@ -2345,6 +3382,44 @@ open class ChunkDecryptorHandle: Disposable, AutoCloseable, ChunkDecryptorHandle
 
     
     /**
+     * The file's chunk format (1 = v1 legacy, 2 = v2) once chunk 0 has been
+     * opened; `None` before.
+     */
+    @Throws(CryptoException::class)override fun `chunkFormat`(): kotlin.UByte? {
+            return FfiConverterOptionalUByte.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_chunkdecryptorhandle_chunk_format(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * End-of-stream check, consuming the decryptor. MUST be called after the
+     * last pushed frame: it fails if no frame was pushed or if a v2 file ended
+     * before its last chunk (truncation). Treat an `Err` as a failed download
+     * and discard the plaintext. The pull form runs the same check at EOF.
+     */
+    @Throws(CryptoException::class)override fun `finish`(): ChunkDecryptorSummaryDto {
+            return FfiConverterTypeChunkDecryptorSummaryDto.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_chunkdecryptorhandle_finish(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * PULL: emit the next decrypted chunk, or `None` at clean EOF.
      */
     @Throws(CryptoException::class)override fun `nextChunk`(): DecryptedChunkDto? {
@@ -2378,6 +3453,25 @@ open class ChunkDecryptorHandle: Disposable, AutoCloseable, ChunkDecryptorHandle
     
 
     
+    /**
+     * v2: the upload's version id (chunk 0's 12-byte nonce) once chunk 0 has
+     * authenticated — what a seeking reader passes to
+     * `FileKeyHandle.decrypt_chunk_frame`. `None` before chunk 0 and for v1.
+     */
+    @Throws(CryptoException::class)override fun `versionId`(): kotlin.ByteArray? {
+            return FfiConverterOptionalByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_chunkdecryptorhandle_version_id(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
 
     
 
@@ -2389,13 +3483,53 @@ open class ChunkDecryptorHandle: Disposable, AutoCloseable, ChunkDecryptorHandle
      * PUSH constructor: the caller feeds wire frames via
      * [`push_frame`](Self::push_frame). Each frame is self-describing, so no chunk
      * size is needed.
+     *
+     * `expected_chunk_format` (task 1908) comes from the file's encrypted
+     * metadata (`decrypt_file_metadata`): 0 = unrecorded, 2 = v2.
      */
-    @Throws(CryptoException::class) fun `forPush`(`masterKey`: MasterKeyHandle, `fileId`: kotlin.String): ChunkDecryptorHandle {
+    @Throws(CryptoException::class) fun `forPush`(`masterKey`: MasterKeyHandle, `fileId`: kotlin.String, `expectedChunkFormat`: kotlin.UByte): ChunkDecryptorHandle {
             return FfiConverterTypeChunkDecryptorHandle.lift(
     uniffiRustCallWithError(CryptoException) { _status ->
     UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_for_push(
     
-        FfiConverterTypeMasterKeyHandle.lower(`masterKey`),FfiConverterString.lower(`fileId`),_status)
+        FfiConverterTypeMasterKeyHandle.lower(`masterKey`),FfiConverterString.lower(`fileId`),FfiConverterUByte.lower(`expectedChunkFormat`),_status)
+}
+    )
+    }
+    
+
+        
+    /**
+     * PUSH constructor from a raw 32-byte file key, for hosts that only have
+     * the bytes. Prefer [`for_push_with_file_key_handle`](Self::for_push_with_file_key_handle).
+     * The owned copy that crosses the FFI is zeroized here; the host's own
+     * copy is the host's to wipe.
+     */
+    @Throws(CryptoException::class) fun `forPushWithFileKey`(`fileKey`: kotlin.ByteArray, `fileId`: kotlin.String, `expectedChunkFormat`: kotlin.UByte): ChunkDecryptorHandle {
+            return FfiConverterTypeChunkDecryptorHandle.lift(
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_for_push_with_file_key(
+    
+        FfiConverterByteArray.lower(`fileKey`),FfiConverterString.lower(`fileId`),FfiConverterUByte.lower(`expectedChunkFormat`),_status)
+}
+    )
+    }
+    
+
+        
+    /**
+     * PUSH constructor from a [`FileKeyHandle`] — for callers that hold the
+     * file key but not the owner's master key (share / shared-link recipients).
+     * Preferred over [`for_push_with_file_key`](Self::for_push_with_file_key):
+     * the raw key never reaches Swift/Kotlin. `file_id` must be the id the file
+     * was uploaded under (bound into every v2 frame).
+     */
+    @Throws(CryptoException::class) fun `forPushWithFileKeyHandle`(`fileKey`: FileKeyHandle, `fileId`: kotlin.String, `expectedChunkFormat`: kotlin.UByte): ChunkDecryptorHandle {
+            return FfiConverterTypeChunkDecryptorHandle.lift(
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_for_push_with_file_key_handle(
+    
+        FfiConverterTypeFileKeyHandle.lower(`fileKey`),FfiConverterString.lower(`fileId`),FfiConverterUByte.lower(`expectedChunkFormat`),_status)
 }
     )
     }
@@ -2406,13 +3540,16 @@ open class ChunkDecryptorHandle: Disposable, AutoCloseable, ChunkDecryptorHandle
      * PULL constructor: stream-decrypt an encrypted file from disk.
      * `chunk_size_bytes` is the PLAINTEXT chunk size used at encryption (the wire
      * frame is `nonce(12) + chunk_size + tag(16)`). Errors if it is 0.
+     *
+     * `expected_chunk_format` (task 1908) comes from the file's encrypted
+     * metadata (`decrypt_file_metadata`): 0 = unrecorded, 2 = v2.
      */
-    @Throws(CryptoException::class) fun `fromFile`(`masterKey`: MasterKeyHandle, `fileId`: kotlin.String, `chunkSizeBytes`: kotlin.ULong, `inputPath`: kotlin.String): ChunkDecryptorHandle {
+    @Throws(CryptoException::class) fun `fromFile`(`masterKey`: MasterKeyHandle, `fileId`: kotlin.String, `expectedChunkFormat`: kotlin.UByte, `chunkSizeBytes`: kotlin.ULong, `inputPath`: kotlin.String): ChunkDecryptorHandle {
             return FfiConverterTypeChunkDecryptorHandle.lift(
     uniffiRustCallWithError(CryptoException) { _status ->
     UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_chunkdecryptorhandle_from_file(
     
-        FfiConverterTypeMasterKeyHandle.lower(`masterKey`),FfiConverterString.lower(`fileId`),FfiConverterULong.lower(`chunkSizeBytes`),FfiConverterString.lower(`inputPath`),_status)
+        FfiConverterTypeMasterKeyHandle.lower(`masterKey`),FfiConverterString.lower(`fileId`),FfiConverterUByte.lower(`expectedChunkFormat`),FfiConverterULong.lower(`chunkSizeBytes`),FfiConverterString.lower(`inputPath`),_status)
 }
     )
     }
@@ -2552,6 +3689,34 @@ public object FfiConverterTypeChunkDecryptorHandle: FfiConverter<ChunkDecryptorH
 public interface ChunkEncryptorHandleInterface {
     
     /**
+     * Replace / new version of an EXISTING file (task 1908 round 4, I-1):
+     * write in the format the file's recorded pin requires. `recorded_pin` =
+     * the `chunk_format` that `decrypt_file_metadata` returned for the file
+     * (0 = unrecorded, 2 = v2) — never a server field. A v2 pin forces v2
+     * frames even during the read-only phase (the server keeps the v2
+     * metadata on replace, so v1 frames would never open); 0 keeps the default
+     * write format. Call it right after the constructor, before the first
+     * chunk (afterwards it errors and the handle stays usable as it was). Any
+     * other code is an error.
+     *
+     * **New-file rule (lead ruling 2026-10-17):** pass 2 ONLY when it was
+     * read from an EXISTING file's authenticated metadata. A brand-new file
+     * makes NO call (the default write format applies) and records
+     * `chunk_format()` in its name; passing 2 for a new file would create a
+     * v2 file before the switch. Core cannot enforce this; each client keeps
+     * a test that its new-file path never calls this with 2.
+     */
+    fun `applyRecordedPin`(`recordedPin`: kotlin.UByte)
+    
+    /**
+     * The chunk format this encryptor writes: 1 = v1, 2 = v2 (task 1908).
+     * Still 1 during the read-only rollout phase. Record it at upload via
+     * `encrypt_name_with_chunk_format` (2 if this is 2, else 0) so readers
+     * can pin it.
+     */
+    fun `chunkFormat`(): kotlin.UByte
+    
+    /**
      * The chunk plan (size + count) this encryptor follows.
      */
     fun `chunkPlan`(): ChunkPlanResult
@@ -2582,6 +3747,20 @@ public interface ChunkEncryptorHandleInterface {
      * PUSH: encrypt one caller-provided plaintext chunk.
      */
     fun `pushChunk`(`plaintext`: kotlin.ByteArray): EncryptedChunkDto
+    
+    /**
+     * Resuming an interrupted upload (task 1908 round 3): may THIS (new)
+     * encryptor continue the old server upload session? `stored_format` is the
+     * `chunk_format()` the client persisted next to the session id when it
+     * opened the session (1 = v1, 2 = v2), or `None` when the resume record
+     * does not say. Only a v1 session resumed by a v1 encryptor may continue;
+     * everything else (always for v2) must abandon the session and upload
+     * from chunk 0 into a FRESH session — a v2 upload's frames all bind one
+     * version id, and a new encryptor has a new one. Restart = `POST
+     * /api/v1/files/{id}/upload/abandon` (or wait for the lease to expire),
+     * then init again; on a 409 retry that, never fall back to the old session.
+     */
+    fun `resumePolicy`(`storedFormat`: kotlin.UByte?): SessionResumeAction
     
     companion object
 }
@@ -2690,6 +3869,57 @@ open class ChunkEncryptorHandle: Disposable, AutoCloseable, ChunkEncryptorHandle
 
     
     /**
+     * Replace / new version of an EXISTING file (task 1908 round 4, I-1):
+     * write in the format the file's recorded pin requires. `recorded_pin` =
+     * the `chunk_format` that `decrypt_file_metadata` returned for the file
+     * (0 = unrecorded, 2 = v2) — never a server field. A v2 pin forces v2
+     * frames even during the read-only phase (the server keeps the v2
+     * metadata on replace, so v1 frames would never open); 0 keeps the default
+     * write format. Call it right after the constructor, before the first
+     * chunk (afterwards it errors and the handle stays usable as it was). Any
+     * other code is an error.
+     *
+     * **New-file rule (lead ruling 2026-10-17):** pass 2 ONLY when it was
+     * read from an EXISTING file's authenticated metadata. A brand-new file
+     * makes NO call (the default write format applies) and records
+     * `chunk_format()` in its name; passing 2 for a new file would create a
+     * v2 file before the switch. Core cannot enforce this; each client keeps
+     * a test that its new-file path never calls this with 2.
+     */
+    @Throws(CryptoException::class)override fun `applyRecordedPin`(`recordedPin`: kotlin.UByte)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_apply_recorded_pin(
+        it,
+        FfiConverterUByte.lower(`recordedPin`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * The chunk format this encryptor writes: 1 = v1, 2 = v2 (task 1908).
+     * Still 1 during the read-only rollout phase. Record it at upload via
+     * `encrypt_name_with_chunk_format` (2 if this is 2, else 0) so readers
+     * can pin it.
+     */
+    @Throws(CryptoException::class)override fun `chunkFormat`(): kotlin.UByte {
+            return FfiConverterUByte.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_chunk_format(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * The chunk plan (size + count) this encryptor follows.
      */
     @Throws(CryptoException::class)override fun `chunkPlan`(): ChunkPlanResult {
@@ -2786,6 +4016,32 @@ open class ChunkEncryptorHandle: Disposable, AutoCloseable, ChunkEncryptorHandle
     UniffiLib.uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_push_chunk(
         it,
         FfiConverterByteArray.lower(`plaintext`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Resuming an interrupted upload (task 1908 round 3): may THIS (new)
+     * encryptor continue the old server upload session? `stored_format` is the
+     * `chunk_format()` the client persisted next to the session id when it
+     * opened the session (1 = v1, 2 = v2), or `None` when the resume record
+     * does not say. Only a v1 session resumed by a v1 encryptor may continue;
+     * everything else (always for v2) must abandon the session and upload
+     * from chunk 0 into a FRESH session — a v2 upload's frames all bind one
+     * version id, and a new encryptor has a new one. Restart = `POST
+     * /api/v1/files/{id}/upload/abandon` (or wait for the lease to expire),
+     * then init again; on a 409 retry that, never fall back to the old session.
+     */
+    @Throws(CryptoException::class)override fun `resumePolicy`(`storedFormat`: kotlin.UByte?): SessionResumeAction {
+            return FfiConverterTypeSessionResumeAction.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_chunkencryptorhandle_resume_policy(
+        it,
+        FfiConverterOptionalUByte.lower(`storedFormat`),_status)
 }
     }
     )
@@ -3291,23 +4547,1709 @@ public object FfiConverterTypeConstellationDecoderHandle: FfiConverter<Constella
 
 
 /**
- * Opaque handle to a FileKey. Created via `MasterKeyHandle::derive_file_key`.
+ * How long a discovery answer is trusted (10 minutes), and whether to ask
+ * again. A JSON 404 and two failed attempts are each remembered for the same ten minutes, then the
+ * client probes again; within a trust period a failed attempt is retried once.
  */
-public interface FileKeyHandleInterface {
+public interface DirectDiscoveryCacheHandleInterface {
     
-    fun `decryptChunk`(`nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): kotlin.ByteArray
+    fun `lookup`(`nowMs`: kotlin.Long): DirectLookupDto
     
-    fun `decryptMetadata`(`nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): kotlin.String
-    
-    fun `encryptChunk`(`plaintext`: kotlin.ByteArray): EncryptedData
-    
-    fun `encryptMetadata`(`metadata`: kotlin.String): EncryptedData
+    /**
+     * Record the result of a discovery call: the `classify_direct_answer`
+     * outcome and the response body (or `None`).
+     */
+    fun `record`(`outcome`: DirectOutcomeDto, `body`: kotlin.ByteArray?, `nowMs`: kotlin.Long)
     
     companion object
 }
 
 /**
- * Opaque handle to a FileKey. Created via `MasterKeyHandle::derive_file_key`.
+ * How long a discovery answer is trusted (10 minutes), and whether to ask
+ * again. A JSON 404 and two failed attempts are each remembered for the same ten minutes, then the
+ * client probes again; within a trust period a failed attempt is retried once.
+ */
+open class DirectDiscoveryCacheHandle: Disposable, AutoCloseable, DirectDiscoveryCacheHandleInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+    constructor() :
+        this(UniffiWithHandle, 
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_directdiscoverycachehandle_new(
+    
+        _status)
+}
+    )
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_beebeeb_uniffi_fn_free_directdiscoverycachehandle(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_beebeeb_uniffi_fn_clone_directdiscoverycachehandle(handle, status)
+        }
+    }
+
+    override fun `lookup`(`nowMs`: kotlin.Long): DirectLookupDto {
+            return FfiConverterTypeDirectLookupDto.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdiscoverycachehandle_lookup(
+        it,
+        FfiConverterLong.lower(`nowMs`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Record the result of a discovery call: the `classify_direct_answer`
+     * outcome and the response body (or `None`).
+     */override fun `record`(`outcome`: DirectOutcomeDto, `body`: kotlin.ByteArray?, `nowMs`: kotlin.Long)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdiscoverycachehandle_record(
+        it,
+        FfiConverterTypeDirectOutcomeDto.lower(`outcome`),FfiConverterOptionalByteArray.lower(`body`),FfiConverterLong.lower(`nowMs`),_status)
+}
+    }
+    
+    
+
+    
+
+    
+
+
+    
+    
+    /**
+     * @suppress
+     */
+    companion object
+    
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectDiscoveryCacheHandle: FfiConverter<DirectDiscoveryCacheHandle, Long> {
+    override fun lower(value: DirectDiscoveryCacheHandle): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): DirectDiscoveryCacheHandle {
+        return DirectDiscoveryCacheHandle(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): DirectDiscoveryCacheHandle {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: DirectDiscoveryCacheHandle) = 8UL
+
+    override fun write(value: DirectDiscoveryCacheHandle, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
+ * The download planner for ONE file: when to ask the API for a window of
+ * links, which chunk to fetch next (at most 4 in flight, in order), when to
+ * renew a link, and when a chunk goes to the pinned API route. It performs no
+ * I/O and holds no clock. See `DirectPollDto` for what each poll asks of you;
+ * decrypt chunks in order and report each with `consumed`, or `chunk_unauthentic`
+ * when one does not authenticate.
+ */
+public interface DirectDownloadPlannerHandleInterface {
+    
+    /**
+     * The pinned API route failed for chunk `index` after the caller's own retries.
+     */
+    fun `apiFetchFailed`(`index`: kotlin.UInt)
+    
+    /**
+     * Chunk `index` arrived but did not authenticate when decrypted.
+     */
+    fun `chunkUnauthentic`(`index`: kotlin.UInt)
+    
+    /**
+     * Chunk `index` has been decrypted and written. Strictly in order.
+     */
+    fun `consumed`(`index`: kotlin.UInt)
+    
+    /**
+     * Chunks decrypted and written so far.
+     */
+    fun `consumedCount`(): kotlin.UInt
+    
+    /**
+     * The transfer of chunk `index` from storage failed (any non-200, a short
+     * body, a wrong length, a network error, an expired link).
+     */
+    fun `fetchFailed`(`index`: kotlin.UInt, `nowMs`: kotlin.Long)
+    
+    /**
+     * Chunk `index` arrived whole (status 200 and the right length).
+     */
+    fun `fetchOk`(`index`: kotlin.UInt)
+    
+    /**
+     * The version's geometry, once the first window was accepted.
+     */
+    fun `geometry`(): DirectGeometryDto?
+    
+    /**
+     * Chunk requests (storage or API) currently outstanding.
+     */
+    fun `inFlight`(): kotlin.UInt
+    
+    /**
+     * The pinned `object_version_id`, once the first window was accepted.
+     */
+    fun `pinnedVersion`(): kotlin.String?
+    
+    /**
+     * What to do now. Call again after every report.
+     */
+    fun `poll`(`nowMs`: kotlin.Long): DirectPollDto
+    
+    /**
+     * Cap the ciphertext bytes held at once (fetching, or fetched and waiting to be decrypted in order):
+     * the planner then holds `clamp(floor(bytes / (chunk_size + 28)), 1, 4)` chunks. Call it before the first `poll`.
+     */
+    fun `setMaxInFlightBytes`(`bytes`: kotlin.ULong)
+    
+    /**
+     * Did the storage breaker trip? It does when a chunk used up its renewals and no chunk of this transfer has
+     * come whole from storage: from then on every remaining chunk is a `FetchViaApi` poll. When the file ends
+     * with this `true`, record `DirectHealthHandle.gave_up(Download, now_ms)`.
+     */
+    fun `storageGivenUp`(): kotlin.Boolean
+    
+    /**
+     * The window answer for the outstanding request, as the raw response body.
+     */
+    fun `windowAnswered`(`body`: kotlin.ByteArray, `nowMs`: kotlin.Long): DirectWindowAnswerDto
+    
+    /**
+     * The window request failed; `outcome` is what `classify_direct_answer`
+     * returned (or `UseApiNow` for a network error).
+     */
+    fun `windowFailed`(`outcome`: DirectOutcomeDto, `nowMs`: kotlin.Long)
+    
+    /**
+     * A 2xx window response whose body could not be decoded at all.
+     */
+    fun `windowMalformed`()
+    
+    companion object
+}
+
+/**
+ * The download planner for ONE file: when to ask the API for a window of
+ * links, which chunk to fetch next (at most 4 in flight, in order), when to
+ * renew a link, and when a chunk goes to the pinned API route. It performs no
+ * I/O and holds no clock. See `DirectPollDto` for what each poll asks of you;
+ * decrypt chunks in order and report each with `consumed`, or `chunk_unauthentic`
+ * when one does not authenticate.
+ */
+open class DirectDownloadPlannerHandle: Disposable, AutoCloseable, DirectDownloadPlannerHandleInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+    /**
+     * `discovery` is what `parse_direct_discovery` returned; `jitter_seed` any
+     * integer (random in production).
+     */
+    constructor(`discovery`: DirectDiscoveryDto, `apiBase`: kotlin.String, `fileId`: kotlin.String, `jitterSeed`: kotlin.ULong) :
+        this(UniffiWithHandle, 
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_directdownloadplannerhandle_new(
+    
+        FfiConverterTypeDirectDiscoveryDto.lower(`discovery`),FfiConverterString.lower(`apiBase`),FfiConverterString.lower(`fileId`),FfiConverterULong.lower(`jitterSeed`),_status)
+}
+    )
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_beebeeb_uniffi_fn_free_directdownloadplannerhandle(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_beebeeb_uniffi_fn_clone_directdownloadplannerhandle(handle, status)
+        }
+    }
+
+    
+    /**
+     * The pinned API route failed for chunk `index` after the caller's own retries.
+     */
+    @Throws(DirectTransferException::class)override fun `apiFetchFailed`(`index`: kotlin.UInt)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(DirectTransferException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_api_fetch_failed(
+        it,
+        FfiConverterUInt.lower(`index`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Chunk `index` arrived but did not authenticate when decrypted.
+     */
+    @Throws(DirectTransferException::class)override fun `chunkUnauthentic`(`index`: kotlin.UInt)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(DirectTransferException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_chunk_unauthentic(
+        it,
+        FfiConverterUInt.lower(`index`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Chunk `index` has been decrypted and written. Strictly in order.
+     */
+    @Throws(DirectTransferException::class)override fun `consumed`(`index`: kotlin.UInt)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(DirectTransferException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_consumed(
+        it,
+        FfiConverterUInt.lower(`index`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Chunks decrypted and written so far.
+     */override fun `consumedCount`(): kotlin.UInt {
+            return FfiConverterUInt.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_consumed_count(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The transfer of chunk `index` from storage failed (any non-200, a short
+     * body, a wrong length, a network error, an expired link).
+     */
+    @Throws(DirectTransferException::class)override fun `fetchFailed`(`index`: kotlin.UInt, `nowMs`: kotlin.Long)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(DirectTransferException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_fetch_failed(
+        it,
+        FfiConverterUInt.lower(`index`),FfiConverterLong.lower(`nowMs`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Chunk `index` arrived whole (status 200 and the right length).
+     */
+    @Throws(DirectTransferException::class)override fun `fetchOk`(`index`: kotlin.UInt)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(DirectTransferException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_fetch_ok(
+        it,
+        FfiConverterUInt.lower(`index`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * The version's geometry, once the first window was accepted.
+     */override fun `geometry`(): DirectGeometryDto? {
+            return FfiConverterOptionalTypeDirectGeometryDto.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_geometry(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Chunk requests (storage or API) currently outstanding.
+     */override fun `inFlight`(): kotlin.UInt {
+            return FfiConverterUInt.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_in_flight(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The pinned `object_version_id`, once the first window was accepted.
+     */override fun `pinnedVersion`(): kotlin.String? {
+            return FfiConverterOptionalString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_pinned_version(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * What to do now. Call again after every report.
+     */override fun `poll`(`nowMs`: kotlin.Long): DirectPollDto {
+            return FfiConverterTypeDirectPollDto.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_poll(
+        it,
+        FfiConverterLong.lower(`nowMs`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Cap the ciphertext bytes held at once (fetching, or fetched and waiting to be decrypted in order):
+     * the planner then holds `clamp(floor(bytes / (chunk_size + 28)), 1, 4)` chunks. Call it before the first `poll`.
+     */override fun `setMaxInFlightBytes`(`bytes`: kotlin.ULong)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_set_max_in_flight_bytes(
+        it,
+        FfiConverterULong.lower(`bytes`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Did the storage breaker trip? It does when a chunk used up its renewals and no chunk of this transfer has
+     * come whole from storage: from then on every remaining chunk is a `FetchViaApi` poll. When the file ends
+     * with this `true`, record `DirectHealthHandle.gave_up(Download, now_ms)`.
+     */override fun `storageGivenUp`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_storage_given_up(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The window answer for the outstanding request, as the raw response body.
+     */override fun `windowAnswered`(`body`: kotlin.ByteArray, `nowMs`: kotlin.Long): DirectWindowAnswerDto {
+            return FfiConverterTypeDirectWindowAnswerDto.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_window_answered(
+        it,
+        FfiConverterByteArray.lower(`body`),FfiConverterLong.lower(`nowMs`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The window request failed; `outcome` is what `classify_direct_answer`
+     * returned (or `UseApiNow` for a network error).
+     */override fun `windowFailed`(`outcome`: DirectOutcomeDto, `nowMs`: kotlin.Long)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_window_failed(
+        it,
+        FfiConverterTypeDirectOutcomeDto.lower(`outcome`),FfiConverterLong.lower(`nowMs`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * A 2xx window response whose body could not be decoded at all.
+     */override fun `windowMalformed`()
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_window_malformed(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+
+    
+
+
+    
+    
+    /**
+     * @suppress
+     */
+    companion object
+    
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectDownloadPlannerHandle: FfiConverter<DirectDownloadPlannerHandle, Long> {
+    override fun lower(value: DirectDownloadPlannerHandle): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): DirectDownloadPlannerHandle {
+        return DirectDownloadPlannerHandle(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): DirectDownloadPlannerHandle {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: DirectDownloadPlannerHandle) = 8UL
+
+    override fun write(value: DirectDownloadPlannerHandle, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
+ * Whether this client may start a direct transfer now, per direction: after a transfer gave up direct, no
+ * new one of that direction starts for ten minutes. One per API base and account. `now_ms` is Unix
+ * milliseconds (or a monotonic clock, used consistently). `last_gave_up_ms` / `restore` let a client that
+ * relaunches often persist the two timestamps. A recorded time later than "now" counts as expired.
+ */
+public interface DirectHealthHandleInterface {
+    
+    /**
+     * A transfer of `direction` gave up direct.
+     */
+    fun `gaveUp`(`direction`: DirectDirectionDto, `nowMs`: kotlin.Long)
+    
+    /**
+     * When the last give-up of `direction` was recorded.
+     */
+    fun `lastGaveUpMs`(`direction`: DirectDirectionDto): kotlin.Long?
+    
+    /**
+     * May a new direct transfer of `direction` start now?
+     */
+    fun `mayStart`(`direction`: DirectDirectionDto, `nowMs`: kotlin.Long): kotlin.Boolean
+    
+    /**
+     * As `may_start`, for a file that may already have given up direct: it never may again (`file_gave_up`).
+     */
+    fun `mayStartFile`(`direction`: DirectDirectionDto, `nowMs`: kotlin.Long, `fileGaveUp`: kotlin.Boolean): kotlin.Boolean
+    
+    /**
+     * Put back a timestamp `last_gave_up_ms` returned earlier.
+     */
+    fun `restore`(`direction`: DirectDirectionDto, `lastGaveUpMs`: kotlin.Long)
+    
+    companion object
+}
+
+/**
+ * Whether this client may start a direct transfer now, per direction: after a transfer gave up direct, no
+ * new one of that direction starts for ten minutes. One per API base and account. `now_ms` is Unix
+ * milliseconds (or a monotonic clock, used consistently). `last_gave_up_ms` / `restore` let a client that
+ * relaunches often persist the two timestamps. A recorded time later than "now" counts as expired.
+ */
+open class DirectHealthHandle: Disposable, AutoCloseable, DirectHealthHandleInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+    constructor() :
+        this(UniffiWithHandle, 
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_directhealthhandle_new(
+    
+        _status)
+}
+    )
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_beebeeb_uniffi_fn_free_directhealthhandle(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_beebeeb_uniffi_fn_clone_directhealthhandle(handle, status)
+        }
+    }
+
+    
+    /**
+     * A transfer of `direction` gave up direct.
+     */override fun `gaveUp`(`direction`: DirectDirectionDto, `nowMs`: kotlin.Long)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directhealthhandle_gave_up(
+        it,
+        FfiConverterTypeDirectDirectionDto.lower(`direction`),FfiConverterLong.lower(`nowMs`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * When the last give-up of `direction` was recorded.
+     */override fun `lastGaveUpMs`(`direction`: DirectDirectionDto): kotlin.Long? {
+            return FfiConverterOptionalLong.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directhealthhandle_last_gave_up_ms(
+        it,
+        FfiConverterTypeDirectDirectionDto.lower(`direction`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * May a new direct transfer of `direction` start now?
+     */override fun `mayStart`(`direction`: DirectDirectionDto, `nowMs`: kotlin.Long): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directhealthhandle_may_start(
+        it,
+        FfiConverterTypeDirectDirectionDto.lower(`direction`),FfiConverterLong.lower(`nowMs`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * As `may_start`, for a file that may already have given up direct: it never may again (`file_gave_up`).
+     */override fun `mayStartFile`(`direction`: DirectDirectionDto, `nowMs`: kotlin.Long, `fileGaveUp`: kotlin.Boolean): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directhealthhandle_may_start_file(
+        it,
+        FfiConverterTypeDirectDirectionDto.lower(`direction`),FfiConverterLong.lower(`nowMs`),FfiConverterBoolean.lower(`fileGaveUp`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Put back a timestamp `last_gave_up_ms` returned earlier.
+     */override fun `restore`(`direction`: DirectDirectionDto, `lastGaveUpMs`: kotlin.Long)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directhealthhandle_restore(
+        it,
+        FfiConverterTypeDirectDirectionDto.lower(`direction`),FfiConverterLong.lower(`lastGaveUpMs`),_status)
+}
+    }
+    
+    
+
+    
+
+    
+
+
+    
+    
+    /**
+     * @suppress
+     */
+    companion object
+    
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectHealthHandle: FfiConverter<DirectHealthHandle, Long> {
+    override fun lower(value: DirectHealthHandle): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): DirectHealthHandle {
+        return DirectHealthHandle(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): DirectHealthHandle {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: DirectHealthHandle) = 8UL
+
+    override fun write(value: DirectHealthHandle, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
+ * A presigned storage link: a bearer capability until it expires (it carries the signature in its
+ * query). It is an OBJECT, not a string, so that no generated `toString()` (Kotlin), `description`
+ * (Swift) or `print` can show it: its `Debug` and `Display` are the redacted form (scheme and host),
+ * and so is the derived `Debug`/`toString()` of every record that holds one. The only way to the
+ * link is [`DirectSignedUrl::raw`], by name, so it shows up in a review: pass it to the HTTP client
+ * and nowhere else.
+ *
+ * On Kotlin, `toString()` of the object, or of a record that holds one, throws
+ * `IllegalStateException` once the object has been `destroy()`ed or `close()`d, like any call on a
+ * released object: do not log a grant after releasing it.
+ *
+ * It exports no `Eq` or `Hash` on purpose. UniFFI 0.31.1 generates Kotlin `equals` and `hashCode`
+ * that lower the object's handle with no check that it was destroyed, so comparing or hashing a
+ * released link (or a grant or poll that holds one) would be a use-after-free in native code.
+ * Compare the links' text (`raw()`) when a comparison is needed.
+ */
+public interface DirectSignedUrlInterface {
+    
+    /**
+     * The full presigned link, to hand to the HTTP client. Never log it.
+     */
+    fun `raw`(): kotlin.String
+    
+    /**
+     * Scheme and host only: safe for a log line.
+     */
+    fun `redacted`(): kotlin.String
+    
+    companion object
+}
+
+/**
+ * A presigned storage link: a bearer capability until it expires (it carries the signature in its
+ * query). It is an OBJECT, not a string, so that no generated `toString()` (Kotlin), `description`
+ * (Swift) or `print` can show it: its `Debug` and `Display` are the redacted form (scheme and host),
+ * and so is the derived `Debug`/`toString()` of every record that holds one. The only way to the
+ * link is [`DirectSignedUrl::raw`], by name, so it shows up in a review: pass it to the HTTP client
+ * and nowhere else.
+ *
+ * On Kotlin, `toString()` of the object, or of a record that holds one, throws
+ * `IllegalStateException` once the object has been `destroy()`ed or `close()`d, like any call on a
+ * released object: do not log a grant after releasing it.
+ *
+ * It exports no `Eq` or `Hash` on purpose. UniFFI 0.31.1 generates Kotlin `equals` and `hashCode`
+ * that lower the object's handle with no check that it was destroyed, so comparing or hashing a
+ * released link (or a grant or poll that holds one) would be a use-after-free in native code.
+ * Compare the links' text (`raw()`) when a comparison is needed.
+ */
+open class DirectSignedUrl: Disposable, AutoCloseable, DirectSignedUrlInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+    /**
+     * A link from its text. The engine builds its own; this is for an app's tests (a `Fetch` poll
+     * made by hand). The text is not checked: `direct_check_storage_url` is the check.
+     */
+    constructor(`url`: kotlin.String) :
+        this(UniffiWithHandle, 
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_directsignedurl_new(
+    
+        FfiConverterString.lower(`url`),_status)
+}
+    )
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_beebeeb_uniffi_fn_free_directsignedurl(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_beebeeb_uniffi_fn_clone_directsignedurl(handle, status)
+        }
+    }
+
+    
+    /**
+     * The full presigned link, to hand to the HTTP client. Never log it.
+     */override fun `raw`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directsignedurl_raw(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Scheme and host only: safe for a log line.
+     */override fun `redacted`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directsignedurl_redacted(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+
+    
+
+    // The local Rust `Display`/`Debug` implementation.
+    override fun toString(): String {
+        return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_directsignedurl_uniffi_trait_display(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+    
+    
+    /**
+     * @suppress
+     */
+    companion object
+    
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectSignedUrl: FfiConverter<DirectSignedUrl, Long> {
+    override fun lower(value: DirectSignedUrl): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): DirectSignedUrl {
+        return DirectSignedUrl(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): DirectSignedUrl {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: DirectSignedUrl) = 8UL
+
+    override fun write(value: DirectSignedUrl, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
+ * Opaque handle to a FileKey. Created via `MasterKeyHandle::derive_file_key`
+ * for a key derived from the account's master key, or via
+ * [`FileKeyHandle::from_key_bytes`] for one the app holds as 32 bytes.
+ */
+public interface FileKeyHandleInterface {
+    
+    fun `decryptChunk`(`nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): kotlin.ByteArray
+    
+    /**
+     * Random-access open of ONE file-content frame (`nonce || ct || tag`) at a
+     * known position — for seeking readers (video streaming) that cannot use
+     * the sequential [`ChunkDecryptorHandle`]. `index` is the chunk the caller
+     * asked for and `is_last` is `index == chunk_count - 1`; a server that
+     * serves another chunk or lies about the count fails the tag.
+     *
+     * `format` (1 = v1 legacy, 2 = v2) must come from authenticated data — 2
+     * when the encrypted metadata records v2, else the `chunk_format()` of a
+     * decryptor that opened chunk 0 — never from a server field.
+     * `version_id` (12 bytes, v2 only; ignored for v1) is the `version_id()` of
+     * a decryptor that opened chunk 0, or chunk 0's first 12 bytes: frames of
+     * another upload of the same file id fail.
+     */
+    fun `decryptChunkFrame`(`fileId`: kotlin.String, `versionId`: kotlin.ByteArray, `index`: kotlin.UInt, `isLast`: kotlin.Boolean, `format`: kotlin.UByte, `frame`: kotlin.ByteArray): kotlin.ByteArray
+    
+    /**
+     * [`MasterKeyHandle::decrypt_file_metadata`] with this file key: refuses a
+     * plaintext `name_encrypted` (task 1908 round 3). Use it for files.
+     */
+    fun `decryptFileMetadata`(`nameEncrypted`: kotlin.String): NameMetadataDto
+    
+    fun `decryptMetadata`(`nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): kotlin.String
+    
+    /**
+     * [`MasterKeyHandle::decrypt_name_metadata`] with this file key (share
+     * recipients, file-request content keys) — task 1908.
+     */
+    fun `decryptNameMetadata`(`nameEncrypted`: kotlin.String): NameMetadataDto
+    
+    /**
+     * Open a `note_encrypted` envelope: the note subkey first, then the
+     * legacy raw file key (notes stored before the switch). A plaintext value
+     * is an error. The ONLY way to open a note — not `decrypt_chunk` or the
+     * name readers.
+     */
+    fun `decryptNote`(`noteEncrypted`: kotlin.String): kotlin.String
+    
+    /**
+     * Open a thumbnail frame (`nonce || ct || tag`): the thumbnail subkey
+     * first, then the legacy raw file key (every thumbnail stored before the
+     * switch). The ONLY way to open a thumbnail — not `decrypt_chunk`.
+     */
+    fun `decryptThumbnail`(`frame`: kotlin.ByteArray): kotlin.ByteArray
+    
+    fun `encryptChunk`(`plaintext`: kotlin.ByteArray): EncryptedData
+    
+    fun `encryptMetadata`(`metadata`: kotlin.String): EncryptedData
+    
+    /**
+     * Seal the name/MIME envelope under THIS file key, by the rule of a
+     * recorded pin (task 1958). The only name writer that takes a key, so it
+     * serves keys not derived from the master key (file-request uploads,
+     * shared-folder files). A v2 pin records `chunk_format: 2` and is always
+     * sealed under the name subkey; 0 follows the current write rule. Any
+     * other code is an error. `recorded_pin`:
+     * - an EXISTING file (rename): the `chunk_format` that
+     * `decrypt_file_metadata` returned for this file (0 = unrecorded,
+     * 2 = v2), never a server field;
+     * - a NEW file (e.g. a file-request upload): the pin of the format its
+     * content was written in, `recorded_for(encryptor.format())` (2 for a v2
+     * upload, 0 for v1), as at any upload. Nothing else is allowed for a new
+     * file.
+     */
+    fun `encryptNameFor`(`filename`: kotlin.String, `mimeType`: kotlin.String?, `recordedPin`: kotlin.UByte): kotlin.String
+    
+    /**
+     * Seal a file note for a file with no recorded pin yet (task 1908 round
+     * 5): returns the canonical `EncryptedBlob` JSON to store in
+     * `note_encrypted`. Follows the gated seal switch, like
+     * `encrypt_thumbnail`. For a note on an EXISTING file use
+     * `encrypt_note_for` with the file's recorded pin. The ONLY way to seal a
+     * note — not `encrypt_chunk` / an `encrypt_metadata`-style call under the
+     * file key (a raw-key note can stand in for a v2 file's name and content).
+     */
+    fun `encryptNote`(`note`: kotlin.String): kotlin.String
+    
+    /**
+     * Seal a note of an EXISTING file under the rule of its recorded pin
+     * (task 1908 round 5): `recorded_pin` = the `chunk_format` that
+     * `decrypt_file_metadata` returned for this file (0 = unrecorded, 2 = v2),
+     * never a server field. A v2 pin is always sealed under the note subkey;
+     * 0 behaves like `encrypt_note`. Any other code is an error.
+     */
+    fun `encryptNoteFor`(`note`: kotlin.String, `recordedPin`: kotlin.UByte): kotlin.String
+    
+    /**
+     * Seal a thumbnail (already-encoded image bytes) for upload: `nonce(12) ||
+     * ciphertext || tag(16)`, the wire format thumbnails already use. The ONLY
+     * way to seal a thumbnail (task 1908 round 3) — not `encrypt_chunk`: after
+     * the gated seal switch it uses the thumbnail subkey, so a thumbnail can
+     * never be served as file content.
+     */
+    fun `encryptThumbnail`(`plaintext`: kotlin.ByteArray): kotlin.ByteArray
+    
+    /**
+     * Seal a thumbnail of an EXISTING file (replace / new version /
+     * regenerated thumbnail) under the rule of its recorded pin (task 1908
+     * round 4): `recorded_pin` = the `chunk_format` that
+     * `decrypt_file_metadata` returned (0 = unrecorded, 2 = v2). A v2 pin is
+     * always sealed under the thumbnail subkey; 0 behaves like
+     * `encrypt_thumbnail`. Any other code is an error.
+     */
+    fun `encryptThumbnailFor`(`plaintext`: kotlin.ByteArray, `recordedPin`: kotlin.UByte): kotlin.ByteArray
+    
+    /**
+     * One-way public key identifier; never exports the key itself.
+     */
+    fun `keyId`(): kotlin.ByteArray
+    
+    /**
+     * Authenticate a wrap and keep its exactly 32-byte plaintext in a handle.
+     */
+    fun `unwrapKey`(`nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): FileKeyHandle
+    
+    /**
+     * AES-256-GCM key wrap, no AAD: 12-byte nonce and 48-byte ciphertext.
+     */
+    fun `wrapKey`(`inner`: FileKeyHandle): EncryptedData
+    
+    companion object
+}
+
+/**
+ * Opaque handle to a FileKey. Created via `MasterKeyHandle::derive_file_key`
+ * for a key derived from the account's master key, or via
+ * [`FileKeyHandle::from_key_bytes`] for one the app holds as 32 bytes.
  */
 open class FileKeyHandle: Disposable, AutoCloseable, FileKeyHandleInterface
 {
@@ -3420,6 +6362,52 @@ open class FileKeyHandle: Disposable, AutoCloseable, FileKeyHandleInterface
     
 
     
+    /**
+     * Random-access open of ONE file-content frame (`nonce || ct || tag`) at a
+     * known position — for seeking readers (video streaming) that cannot use
+     * the sequential [`ChunkDecryptorHandle`]. `index` is the chunk the caller
+     * asked for and `is_last` is `index == chunk_count - 1`; a server that
+     * serves another chunk or lies about the count fails the tag.
+     *
+     * `format` (1 = v1 legacy, 2 = v2) must come from authenticated data — 2
+     * when the encrypted metadata records v2, else the `chunk_format()` of a
+     * decryptor that opened chunk 0 — never from a server field.
+     * `version_id` (12 bytes, v2 only; ignored for v1) is the `version_id()` of
+     * a decryptor that opened chunk 0, or chunk 0's first 12 bytes: frames of
+     * another upload of the same file id fail.
+     */
+    @Throws(CryptoException::class)override fun `decryptChunkFrame`(`fileId`: kotlin.String, `versionId`: kotlin.ByteArray, `index`: kotlin.UInt, `isLast`: kotlin.Boolean, `format`: kotlin.UByte, `frame`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_chunk_frame(
+        it,
+        FfiConverterString.lower(`fileId`),FfiConverterByteArray.lower(`versionId`),FfiConverterUInt.lower(`index`),FfiConverterBoolean.lower(`isLast`),FfiConverterUByte.lower(`format`),FfiConverterByteArray.lower(`frame`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * [`MasterKeyHandle::decrypt_file_metadata`] with this file key: refuses a
+     * plaintext `name_encrypted` (task 1908 round 3). Use it for files.
+     */
+    @Throws(CryptoException::class)override fun `decryptFileMetadata`(`nameEncrypted`: kotlin.String): NameMetadataDto {
+            return FfiConverterTypeNameMetadataDto.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_file_metadata(
+        it,
+        FfiConverterString.lower(`nameEncrypted`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(CryptoException::class)override fun `decryptMetadata`(`nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): kotlin.String {
             return FfiConverterString.lift(
     callWithHandle {
@@ -3427,6 +6415,63 @@ open class FileKeyHandle: Disposable, AutoCloseable, FileKeyHandleInterface
     UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_metadata(
         it,
         FfiConverterByteArray.lower(`nonce`),FfiConverterByteArray.lower(`ciphertext`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * [`MasterKeyHandle::decrypt_name_metadata`] with this file key (share
+     * recipients, file-request content keys) — task 1908.
+     */
+    @Throws(CryptoException::class)override fun `decryptNameMetadata`(`nameEncrypted`: kotlin.String): NameMetadataDto {
+            return FfiConverterTypeNameMetadataDto.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_name_metadata(
+        it,
+        FfiConverterString.lower(`nameEncrypted`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Open a `note_encrypted` envelope: the note subkey first, then the
+     * legacy raw file key (notes stored before the switch). A plaintext value
+     * is an error. The ONLY way to open a note — not `decrypt_chunk` or the
+     * name readers.
+     */
+    @Throws(CryptoException::class)override fun `decryptNote`(`noteEncrypted`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_note(
+        it,
+        FfiConverterString.lower(`noteEncrypted`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Open a thumbnail frame (`nonce || ct || tag`): the thumbnail subkey
+     * first, then the legacy raw file key (every thumbnail stored before the
+     * switch). The ONLY way to open a thumbnail — not `decrypt_chunk`.
+     */
+    @Throws(CryptoException::class)override fun `decryptThumbnail`(`frame`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_decrypt_thumbnail(
+        it,
+        FfiConverterByteArray.lower(`frame`),_status)
 }
     }
     )
@@ -3462,16 +6507,251 @@ open class FileKeyHandle: Disposable, AutoCloseable, FileKeyHandleInterface
     
 
     
-
+    /**
+     * Seal the name/MIME envelope under THIS file key, by the rule of a
+     * recorded pin (task 1958). The only name writer that takes a key, so it
+     * serves keys not derived from the master key (file-request uploads,
+     * shared-folder files). A v2 pin records `chunk_format: 2` and is always
+     * sealed under the name subkey; 0 follows the current write rule. Any
+     * other code is an error. `recorded_pin`:
+     * - an EXISTING file (rename): the `chunk_format` that
+     * `decrypt_file_metadata` returned for this file (0 = unrecorded,
+     * 2 = v2), never a server field;
+     * - a NEW file (e.g. a file-request upload): the pin of the format its
+     * content was written in, `recorded_for(encryptor.format())` (2 for a v2
+     * upload, 0 for v1), as at any upload. Nothing else is allowed for a new
+     * file.
+     */
+    @Throws(CryptoException::class)override fun `encryptNameFor`(`filename`: kotlin.String, `mimeType`: kotlin.String?, `recordedPin`: kotlin.UByte): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_name_for(
+        it,
+        FfiConverterString.lower(`filename`),FfiConverterOptionalString.lower(`mimeType`),FfiConverterUByte.lower(`recordedPin`),_status)
+}
+    }
+    )
+    }
     
 
-
-    
     
     /**
-     * @suppress
+     * Seal a file note for a file with no recorded pin yet (task 1908 round
+     * 5): returns the canonical `EncryptedBlob` JSON to store in
+     * `note_encrypted`. Follows the gated seal switch, like
+     * `encrypt_thumbnail`. For a note on an EXISTING file use
+     * `encrypt_note_for` with the file's recorded pin. The ONLY way to seal a
+     * note — not `encrypt_chunk` / an `encrypt_metadata`-style call under the
+     * file key (a raw-key note can stand in for a v2 file's name and content).
      */
-    companion object
+    @Throws(CryptoException::class)override fun `encryptNote`(`note`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_note(
+        it,
+        FfiConverterString.lower(`note`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Seal a note of an EXISTING file under the rule of its recorded pin
+     * (task 1908 round 5): `recorded_pin` = the `chunk_format` that
+     * `decrypt_file_metadata` returned for this file (0 = unrecorded, 2 = v2),
+     * never a server field. A v2 pin is always sealed under the note subkey;
+     * 0 behaves like `encrypt_note`. Any other code is an error.
+     */
+    @Throws(CryptoException::class)override fun `encryptNoteFor`(`note`: kotlin.String, `recordedPin`: kotlin.UByte): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_note_for(
+        it,
+        FfiConverterString.lower(`note`),FfiConverterUByte.lower(`recordedPin`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Seal a thumbnail (already-encoded image bytes) for upload: `nonce(12) ||
+     * ciphertext || tag(16)`, the wire format thumbnails already use. The ONLY
+     * way to seal a thumbnail (task 1908 round 3) — not `encrypt_chunk`: after
+     * the gated seal switch it uses the thumbnail subkey, so a thumbnail can
+     * never be served as file content.
+     */
+    @Throws(CryptoException::class)override fun `encryptThumbnail`(`plaintext`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_thumbnail(
+        it,
+        FfiConverterByteArray.lower(`plaintext`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Seal a thumbnail of an EXISTING file (replace / new version /
+     * regenerated thumbnail) under the rule of its recorded pin (task 1908
+     * round 4): `recorded_pin` = the `chunk_format` that
+     * `decrypt_file_metadata` returned (0 = unrecorded, 2 = v2). A v2 pin is
+     * always sealed under the thumbnail subkey; 0 behaves like
+     * `encrypt_thumbnail`. Any other code is an error.
+     */
+    @Throws(CryptoException::class)override fun `encryptThumbnailFor`(`plaintext`: kotlin.ByteArray, `recordedPin`: kotlin.UByte): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_encrypt_thumbnail_for(
+        it,
+        FfiConverterByteArray.lower(`plaintext`),FfiConverterUByte.lower(`recordedPin`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * One-way public key identifier; never exports the key itself.
+     */
+    @Throws(CryptoException::class)override fun `keyId`(): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_key_id(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Authenticate a wrap and keep its exactly 32-byte plaintext in a handle.
+     */
+    @Throws(CryptoException::class)override fun `unwrapKey`(`nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): FileKeyHandle {
+            return FfiConverterTypeFileKeyHandle.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_unwrap_key(
+        it,
+        FfiConverterByteArray.lower(`nonce`),FfiConverterByteArray.lower(`ciphertext`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * AES-256-GCM key wrap, no AAD: 12-byte nonce and 48-byte ciphertext.
+     */
+    @Throws(CryptoException::class)override fun `wrapKey`(`inner`: FileKeyHandle): EncryptedData {
+            return FfiConverterTypeEncryptedData.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_filekeyhandle_wrap_key(
+        it,
+        FfiConverterTypeFileKeyHandle.lower(`inner`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+
+    
+
+
+    
+    companion object {
+        
+    /**
+     * Combine a link fragment and optional 32-byte Argon2id stretch in core.
+     * Owned secret inputs are wiped on success and every error path.
+     */
+    @Throws(CryptoException::class) fun `fromFolderLink`(`kC`: kotlin.ByteArray, `passphraseStretch`: kotlin.ByteArray?): FileKeyHandle {
+            return FfiConverterTypeFileKeyHandle.lift(
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_filekeyhandle_from_folder_link(
+    
+        FfiConverterByteArray.lower(`kC`),FfiConverterOptionalByteArray.lower(`passphraseStretch`),_status)
+}
+    )
+    }
+    
+
+        
+    /**
+     * Stretch then combine; memory/KDF errors propagate without a plain-link fallback.
+     */
+    @Throws(CryptoException::class) fun `fromFolderLinkPassphrase`(`kC`: kotlin.ByteArray, `passphrase`: kotlin.String, `token`: kotlin.String): FileKeyHandle {
+            return FfiConverterTypeFileKeyHandle.lift(
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_filekeyhandle_from_folder_link_passphrase(
+    
+        FfiConverterByteArray.lower(`kC`),FfiConverterString.lower(`passphrase`),FfiConverterString.lower(`token`),_status)
+}
+    )
+    }
+    
+
+        
+    /**
+     * A handle for a per-file key the app holds as raw bytes and that is NOT
+     * derived from the account's master key: a file-request upload's content
+     * key (`open_request_upload`), a shared file's key. Task 1958 round 4: the
+     * with-key name, note and thumbnail functions of this handle
+     * (`encrypt_name_for`, `decrypt_file_metadata`, `encrypt_note_for`, ...)
+     * were reachable only through `MasterKeyHandle::derive_file_key`, so not
+     * for these keys. The WASM side takes the same bytes (`fileKey`).
+     *
+     * Exactly 32 bytes, anything else is an `InvalidInput` error. The input is
+     * zeroized once copied into the key.
+     */
+    @Throws(CryptoException::class) fun `fromKeyBytes`(`key`: kotlin.ByteArray): FileKeyHandle {
+            return FfiConverterTypeFileKeyHandle.lift(
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_filekeyhandle_from_key_bytes(
+    
+        FfiConverterByteArray.lower(`key`),_status)
+}
+    )
+    }
+    
+
+        
+    /**
+     * A fresh random key, independent of the account master key.
+     */
+    @Throws(CryptoException::class) fun `generate`(): FileKeyHandle {
+            return FfiConverterTypeFileKeyHandle.lift(
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_filekeyhandle_generate(
+    
+        _status)
+}
+    )
+    }
+    
+
+        
+    }
     
 }
 
@@ -4002,13 +7282,33 @@ public interface MasterKeyHandleInterface {
      *
      * Reads each chunk file (containing `nonce || ciphertext`), decrypts,
      * and writes plaintext to output. Atomic rename at end.
+     *
+     * `expected_chunk_format` (task 1908) comes from the file's encrypted
+     * metadata (`decrypt_file_metadata`): 0 = unrecorded, 2 = v2.
      */
-    fun `decryptFile`(`fileId`: kotlin.String, `chunkPaths`: List<kotlin.String>, `outputPath`: kotlin.String, `callback`: FileProgressCallback?): DecryptedFileInfo
+    fun `decryptFile`(`fileId`: kotlin.String, `expectedChunkFormat`: kotlin.UByte, `chunkPaths`: List<kotlin.String>, `outputPath`: kotlin.String, `callback`: FileProgressCallback?): DecryptedFileInfo
+    
+    /**
+     * The metadata reader for FILES (task 1908 round 3): exactly
+     * `decrypt_name_metadata`, except that a plaintext (non-JSON)
+     * `name_encrypted` is refused. A plaintext name carries no chunk-format
+     * pin, so accepting it for a file lets a server re-enable frame-0
+     * detection. Take the content reader's `chunk_format` from THIS for every
+     * file; `decrypt_name_metadata` stays for folders / display.
+     */
+    fun `decryptFileMetadata`(`fileId`: kotlin.String, `nameEncrypted`: kotlin.String): NameMetadataDto
     
     /**
      * Decrypt a `name_encrypted` envelope using the handle's master key.
      */
     fun `decryptName`(`fileId`: kotlin.String, `nameEncrypted`: kotlin.String): kotlin.String
+    
+    /**
+     * Decrypt a `name_encrypted` envelope into name, MIME type and the
+     * `chunk_format` every content reader of this file must be given
+     * (0 = unrecorded, 2 = v2) — task 1908.
+     */
+    fun `decryptNameMetadata`(`fileId`: kotlin.String, `nameEncrypted`: kotlin.String): NameMetadataDto
     
     /**
      * Decrypt a `name_encrypted` envelope and return both filename and MIME type.
@@ -4049,6 +7349,16 @@ public interface MasterKeyHandleInterface {
      * Encrypt a filename + optional MIME type using the handle's master key.
      */
     fun `encryptName`(`fileId`: kotlin.String, `filename`: kotlin.String, `mimeType`: kotlin.String?): kotlin.String
+    
+    /**
+     * [`encrypt_name`](Self::encrypt_name) that also records the file's chunk
+     * format in the encrypted metadata (task 1908): `chunk_format` 2 = every
+     * upload of this file id is v2, 0 = record nothing (identical to
+     * `encrypt_name`). New file: the encryptor's format (2 only if it wrote
+     * v2). Rename / replace: the value `decrypt_file_metadata` returned for the
+     * file — never upgrade a file with v1 history, never drop a recorded 2.
+     */
+    fun `encryptNameWithChunkFormat`(`fileId`: kotlin.String, `filename`: kotlin.String, `mimeType`: kotlin.String?, `chunkFormat`: kotlin.UByte): kotlin.String
     
     /**
      * Export the raw 32-byte key for writing to the OS keychain.
@@ -4182,14 +7492,39 @@ open class MasterKeyHandle: Disposable, AutoCloseable, MasterKeyHandleInterface
      *
      * Reads each chunk file (containing `nonce || ciphertext`), decrypts,
      * and writes plaintext to output. Atomic rename at end.
+     *
+     * `expected_chunk_format` (task 1908) comes from the file's encrypted
+     * metadata (`decrypt_file_metadata`): 0 = unrecorded, 2 = v2.
      */
-    @Throws(CryptoException::class)override fun `decryptFile`(`fileId`: kotlin.String, `chunkPaths`: List<kotlin.String>, `outputPath`: kotlin.String, `callback`: FileProgressCallback?): DecryptedFileInfo {
+    @Throws(CryptoException::class)override fun `decryptFile`(`fileId`: kotlin.String, `expectedChunkFormat`: kotlin.UByte, `chunkPaths`: List<kotlin.String>, `outputPath`: kotlin.String, `callback`: FileProgressCallback?): DecryptedFileInfo {
             return FfiConverterTypeDecryptedFileInfo.lift(
     callWithHandle {
     uniffiRustCallWithError(CryptoException) { _status ->
     UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_file(
         it,
-        FfiConverterString.lower(`fileId`),FfiConverterSequenceString.lower(`chunkPaths`),FfiConverterString.lower(`outputPath`),FfiConverterOptionalTypeFileProgressCallback.lower(`callback`),_status)
+        FfiConverterString.lower(`fileId`),FfiConverterUByte.lower(`expectedChunkFormat`),FfiConverterSequenceString.lower(`chunkPaths`),FfiConverterString.lower(`outputPath`),FfiConverterOptionalTypeFileProgressCallback.lower(`callback`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The metadata reader for FILES (task 1908 round 3): exactly
+     * `decrypt_name_metadata`, except that a plaintext (non-JSON)
+     * `name_encrypted` is refused. A plaintext name carries no chunk-format
+     * pin, so accepting it for a file lets a server re-enable frame-0
+     * detection. Take the content reader's `chunk_format` from THIS for every
+     * file; `decrypt_name_metadata` stays for folders / display.
+     */
+    @Throws(CryptoException::class)override fun `decryptFileMetadata`(`fileId`: kotlin.String, `nameEncrypted`: kotlin.String): NameMetadataDto {
+            return FfiConverterTypeNameMetadataDto.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_file_metadata(
+        it,
+        FfiConverterString.lower(`fileId`),FfiConverterString.lower(`nameEncrypted`),_status)
 }
     }
     )
@@ -4205,6 +7540,25 @@ open class MasterKeyHandle: Disposable, AutoCloseable, MasterKeyHandleInterface
     callWithHandle {
     uniffiRustCallWithError(CryptoException) { _status ->
     UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_name(
+        it,
+        FfiConverterString.lower(`fileId`),FfiConverterString.lower(`nameEncrypted`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Decrypt a `name_encrypted` envelope into name, MIME type and the
+     * `chunk_format` every content reader of this file must be given
+     * (0 = unrecorded, 2 = v2) — task 1908.
+     */
+    @Throws(CryptoException::class)override fun `decryptNameMetadata`(`fileId`: kotlin.String, `nameEncrypted`: kotlin.String): NameMetadataDto {
+            return FfiConverterTypeNameMetadataDto.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_decrypt_name_metadata(
         it,
         FfiConverterString.lower(`fileId`),FfiConverterString.lower(`nameEncrypted`),_status)
 }
@@ -4319,6 +7673,28 @@ open class MasterKeyHandle: Disposable, AutoCloseable, MasterKeyHandleInterface
     UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_encrypt_name(
         it,
         FfiConverterString.lower(`fileId`),FfiConverterString.lower(`filename`),FfiConverterOptionalString.lower(`mimeType`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * [`encrypt_name`](Self::encrypt_name) that also records the file's chunk
+     * format in the encrypted metadata (task 1908): `chunk_format` 2 = every
+     * upload of this file id is v2, 0 = record nothing (identical to
+     * `encrypt_name`). New file: the encryptor's format (2 only if it wrote
+     * v2). Rename / replace: the value `decrypt_file_metadata` returned for the
+     * file — never upgrade a file with v1 history, never drop a recorded 2.
+     */
+    @Throws(CryptoException::class)override fun `encryptNameWithChunkFormat`(`fileId`: kotlin.String, `filename`: kotlin.String, `mimeType`: kotlin.String?, `chunkFormat`: kotlin.UByte): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_encrypt_name_with_chunk_format(
+        it,
+        FfiConverterString.lower(`fileId`),FfiConverterString.lower(`filename`),FfiConverterOptionalString.lower(`mimeType`),FfiConverterUByte.lower(`chunkFormat`),_status)
 }
     }
     )
@@ -4849,6 +8225,636 @@ public object FfiConverterTypeSearchIndexHandle: FfiConverter<SearchIndexHandle,
 }
 
 
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
+ * The signup ceremony state machine, one per signup attempt. Single-consumer:
+ * drive it from one sequence (the `Mutex` is only the `Send + Sync` backstop
+ * UniFFI requires). Call `abandon()` when the flow is left (back, cancel,
+ * error): releasing the handle also wipes the password, phrase and master key
+ * it holds, but only when ARC or the GC gets round to it.
+ */
+public interface SignupCeremonyHandleInterface {
+    
+    /**
+     * Abandon the signup: wipe the password, phrase and master key and return
+     * to a fresh ceremony. Call on back, cancel and error exits.
+     */
+    fun `abandon`()
+    
+    /**
+     * The server accepted `register-finish`. Returns the master key as a
+     * handle (the bytes never cross FFI); the ceremony wipes everything else.
+     */
+    fun `accountCreated`(): MasterKeyHandle
+    
+    /**
+     * The user confirms they saved the phrase.
+     */
+    fun `acknowledgePhrase`()
+    
+    /**
+     * Generate the recovery phrase and master key (Argon2id, about a second).
+     * Idempotent.
+     */
+    fun `beginPhrase`()
+    
+    /**
+     * 1-based word positions to ask for, ascending, stable for this phrase.
+     */
+    fun `challengePositions`(): List<kotlin.UInt>
+    
+    /**
+     * `answers` in `challenge_positions` order. Throws `PhraseWordMismatch` /
+     * `PhraseAnswerCount`; retryable.
+     */
+    fun `confirmPhrase`(`answers`: List<kotlin.String>)
+    
+    /**
+     * The user changed the email address after it was verified: back to the
+     * code step, password and confirmed phrase kept.
+     */
+    fun `emailChanged`()
+    
+    /**
+     * The server reported the signup ticket expired: back to the code step,
+     * password and confirmed phrase kept.
+     */
+    fun `emailTicketInvalidated`()
+    
+    /**
+     * The server accepted the email code.
+     */
+    fun `emailVerified`()
+    
+    /**
+     * OPAQUE step 2, from the server's `register-start` response.
+     */
+    fun `finishRegistration`(`serverMessage`: kotlin.ByteArray): RegistrationFinishDto
+    
+    /**
+     * Every pending step in canonical order.
+     */
+    fun `pendingSteps`(): List<CeremonyStepDto>
+    
+    /**
+     * The phrase to show. Throws `PhraseUnavailable` before `begin_phrase` or
+     * after the phrase was confirmed (it is wiped then). The returned string
+     * is a plain copy owned by the host runtime and cannot be wiped: call this
+     * only while rendering the phrase and drop the reference afterwards.
+     */
+    fun `phrase`(): kotlin.String
+    
+    /**
+     * The server rejected `register-finish` in a retryable way.
+     */
+    fun `registrationFailed`()
+    
+    /**
+     * Validate and store the password. `breach` is the `BreachCheckHandle`
+     * made for **this** password, after `evaluate` recorded the endpoint's
+     * answer; pass `None` when the document declares no breach check. Throws
+     * `PasswordMismatch`, `PasswordTooShort`, `BreachCheckMissing`,
+     * `BreachCheckStale`, `PasswordBreached` or `BreachCheckBlocked`.
+     */
+    fun `setPassword`(`password`: kotlin.String, `confirmation`: kotlin.String, `breach`: BreachCheckHandle?): PasswordEvaluationDto
+    
+    /**
+     * OPAQUE step 1: the `RegistrationRequest` for `opaque/register-start`.
+     * Throws `StepNotDone` until every other required step is done.
+     */
+    fun `startRegistration`(): kotlin.ByteArray
+    
+    /**
+     * First pending step, or `Done`.
+     */
+    fun `step`(): CeremonyStepDto
+    
+    companion object
+}
+
+/**
+ * The signup ceremony state machine, one per signup attempt. Single-consumer:
+ * drive it from one sequence (the `Mutex` is only the `Send + Sync` backstop
+ * UniFFI requires). Call `abandon()` when the flow is left (back, cancel,
+ * error): releasing the handle also wipes the password, phrase and master key
+ * it holds, but only when ARC or the GC gets round to it.
+ */
+open class SignupCeremonyHandle: Disposable, AutoCloseable, SignupCeremonyHandleInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = null
+    }
+    /**
+     * `min_length` = `policy.password.min_length`; `email_verification_required`
+     * = the document lists a required `verify_email_code`; `verify_word_count`
+     * = `policy.recovery_phrase.verify_word_count`; `breach_check_required` =
+     * the document declares a breach check, with `breach_fail_open` =
+     * `policy.password.breach_check.fail_open` (applied by the ceremony, not
+     * by the caller).
+     */
+    constructor(`minLength`: kotlin.UInt, `emailVerificationRequired`: kotlin.Boolean, `verifyWordCount`: kotlin.UInt, `breachCheckRequired`: kotlin.Boolean, `breachFailOpen`: kotlin.Boolean) :
+        this(UniffiWithHandle, 
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_constructor_signupceremonyhandle_new(
+    
+        FfiConverterUInt.lower(`minLength`),FfiConverterBoolean.lower(`emailVerificationRequired`),FfiConverterUInt.lower(`verifyWordCount`),FfiConverterBoolean.lower(`breachCheckRequired`),FfiConverterBoolean.lower(`breachFailOpen`),_status)
+}
+    )
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable?
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable?.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_beebeeb_uniffi_fn_free_signupceremonyhandle(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_beebeeb_uniffi_fn_clone_signupceremonyhandle(handle, status)
+        }
+    }
+
+    
+    /**
+     * Abandon the signup: wipe the password, phrase and master key and return
+     * to a fresh ceremony. Call on back, cancel and error exits.
+     */override fun `abandon`()
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_abandon(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * The server accepted `register-finish`. Returns the master key as a
+     * handle (the bytes never cross FFI); the ceremony wipes everything else.
+     */
+    @Throws(OnboardingException::class)override fun `accountCreated`(): MasterKeyHandle {
+            return FfiConverterTypeMasterKeyHandle.lift(
+    callWithHandle {
+    uniffiRustCallWithError(OnboardingException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_account_created(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The user confirms they saved the phrase.
+     */
+    @Throws(OnboardingException::class)override fun `acknowledgePhrase`()
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(OnboardingException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_acknowledge_phrase(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Generate the recovery phrase and master key (Argon2id, about a second).
+     * Idempotent.
+     */
+    @Throws(OnboardingException::class)override fun `beginPhrase`()
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(OnboardingException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_begin_phrase(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * 1-based word positions to ask for, ascending, stable for this phrase.
+     */
+    @Throws(OnboardingException::class)override fun `challengePositions`(): List<kotlin.UInt> {
+            return FfiConverterSequenceUInt.lift(
+    callWithHandle {
+    uniffiRustCallWithError(OnboardingException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_challenge_positions(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `answers` in `challenge_positions` order. Throws `PhraseWordMismatch` /
+     * `PhraseAnswerCount`; retryable.
+     */
+    @Throws(OnboardingException::class)override fun `confirmPhrase`(`answers`: List<kotlin.String>)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(OnboardingException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_confirm_phrase(
+        it,
+        FfiConverterSequenceString.lower(`answers`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * The user changed the email address after it was verified: back to the
+     * code step, password and confirmed phrase kept.
+     */override fun `emailChanged`()
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_email_changed(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * The server reported the signup ticket expired: back to the code step,
+     * password and confirmed phrase kept.
+     */override fun `emailTicketInvalidated`()
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_email_ticket_invalidated(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * The server accepted the email code.
+     */override fun `emailVerified`()
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_email_verified(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * OPAQUE step 2, from the server's `register-start` response.
+     */
+    @Throws(OnboardingException::class)override fun `finishRegistration`(`serverMessage`: kotlin.ByteArray): RegistrationFinishDto {
+            return FfiConverterTypeRegistrationFinishDto.lift(
+    callWithHandle {
+    uniffiRustCallWithError(OnboardingException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_finish_registration(
+        it,
+        FfiConverterByteArray.lower(`serverMessage`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Every pending step in canonical order.
+     */override fun `pendingSteps`(): List<CeremonyStepDto> {
+            return FfiConverterSequenceTypeCeremonyStepDto.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_pending_steps(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The phrase to show. Throws `PhraseUnavailable` before `begin_phrase` or
+     * after the phrase was confirmed (it is wiped then). The returned string
+     * is a plain copy owned by the host runtime and cannot be wiped: call this
+     * only while rendering the phrase and drop the reference afterwards.
+     */
+    @Throws(OnboardingException::class)override fun `phrase`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(OnboardingException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_phrase(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The server rejected `register-finish` in a retryable way.
+     */override fun `registrationFailed`()
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_registration_failed(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Validate and store the password. `breach` is the `BreachCheckHandle`
+     * made for **this** password, after `evaluate` recorded the endpoint's
+     * answer; pass `None` when the document declares no breach check. Throws
+     * `PasswordMismatch`, `PasswordTooShort`, `BreachCheckMissing`,
+     * `BreachCheckStale`, `PasswordBreached` or `BreachCheckBlocked`.
+     */
+    @Throws(OnboardingException::class)override fun `setPassword`(`password`: kotlin.String, `confirmation`: kotlin.String, `breach`: BreachCheckHandle?): PasswordEvaluationDto {
+            return FfiConverterTypePasswordEvaluationDto.lift(
+    callWithHandle {
+    uniffiRustCallWithError(OnboardingException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_set_password(
+        it,
+        FfiConverterString.lower(`password`),FfiConverterString.lower(`confirmation`),FfiConverterOptionalTypeBreachCheckHandle.lower(`breach`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * OPAQUE step 1: the `RegistrationRequest` for `opaque/register-start`.
+     * Throws `StepNotDone` until every other required step is done.
+     */
+    @Throws(OnboardingException::class)override fun `startRegistration`(): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(OnboardingException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_start_registration(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * First pending step, or `Done`.
+     */override fun `step`(): CeremonyStepDto {
+            return FfiConverterTypeCeremonyStepDto.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_signupceremonyhandle_step(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+
+    
+
+
+    
+    
+    /**
+     * @suppress
+     */
+    companion object
+    
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeSignupCeremonyHandle: FfiConverter<SignupCeremonyHandle, Long> {
+    override fun lower(value: SignupCeremonyHandle): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): SignupCeremonyHandle {
+        return SignupCeremonyHandle(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): SignupCeremonyHandle {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: SignupCeremonyHandle) = 8UL
+
+    override fun write(value: SignupCeremonyHandle, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
 
 /**
  * A single entry inside an archive (TAR, GZ, TGZ).
@@ -5062,6 +9068,51 @@ public object FfiConverterTypeCachedFileEntryData: FfiConverterRustBuffer<Cached
             FfiConverterBoolean.write(value.`isFolder`, buf)
             FfiConverterOptionalString.write(value.`createdAt`, buf)
             FfiConverterOptionalString.write(value.`updatedAt`, buf)
+    }
+}
+
+
+
+/**
+ * Summary returned by [`ChunkDecryptorHandle::finish`] after the end-of-stream
+ * check (task 1908).
+ */
+data class ChunkDecryptorSummaryDto (
+    var `chunkCount`: kotlin.UInt
+    , 
+    /**
+     * 1 = v1 legacy, 2 = v2 (position-bound).
+     */
+    var `format`: kotlin.UByte
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeChunkDecryptorSummaryDto: FfiConverterRustBuffer<ChunkDecryptorSummaryDto> {
+    override fun read(buf: ByteBuffer): ChunkDecryptorSummaryDto {
+        return ChunkDecryptorSummaryDto(
+            FfiConverterUInt.read(buf),
+            FfiConverterUByte.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ChunkDecryptorSummaryDto) = (
+            FfiConverterUInt.allocationSize(value.`chunkCount`) +
+            FfiConverterUByte.allocationSize(value.`format`)
+    )
+
+    override fun write(value: ChunkDecryptorSummaryDto, buf: ByteBuffer) {
+            FfiConverterUInt.write(value.`chunkCount`, buf)
+            FfiConverterUByte.write(value.`format`, buf)
     }
 }
 
@@ -5544,6 +9595,370 @@ public object FfiConverterTypeDecryptedNameWithMime: FfiConverterRustBuffer<Decr
 
 
 /**
+ * One presigned link. `url` is a bearer capability, and cannot be printed by accident: see
+ * [`DirectSignedUrl`].
+ */
+data class DirectChunkGrantDto (
+    var `index`: kotlin.UInt
+    , 
+    var `method`: kotlin.String
+    , 
+    var `url`: DirectSignedUrl
+    , 
+    var `length`: kotlin.ULong
+    , 
+    var `expiresAt`: kotlin.String
+    
+): Disposable{
+    
+
+    
+
+    
+    @Suppress("UNNECESSARY_SAFE_CALL") // codegen is much simpler if we unconditionally emit safe calls here
+    override fun destroy() {
+        
+    Disposable.destroy(
+        this.`index`,
+        this.`method`,
+        this.`url`,
+        this.`length`,
+        this.`expiresAt`
+    )
+    }
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectChunkGrantDto: FfiConverterRustBuffer<DirectChunkGrantDto> {
+    override fun read(buf: ByteBuffer): DirectChunkGrantDto {
+        return DirectChunkGrantDto(
+            FfiConverterUInt.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeDirectSignedUrl.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DirectChunkGrantDto) = (
+            FfiConverterUInt.allocationSize(value.`index`) +
+            FfiConverterString.allocationSize(value.`method`) +
+            FfiConverterTypeDirectSignedUrl.allocationSize(value.`url`) +
+            FfiConverterULong.allocationSize(value.`length`) +
+            FfiConverterString.allocationSize(value.`expiresAt`)
+    )
+
+    override fun write(value: DirectChunkGrantDto, buf: ByteBuffer) {
+            FfiConverterUInt.write(value.`index`, buf)
+            FfiConverterString.write(value.`method`, buf)
+            FfiConverterTypeDirectSignedUrl.write(value.`url`, buf)
+            FfiConverterULong.write(value.`length`, buf)
+            FfiConverterString.write(value.`expiresAt`, buf)
+    }
+}
+
+
+
+/**
+ * The contract's names and numbers, so no client re-types them.
+ */
+data class DirectConstantsDto (
+    var `capObjectDownloadV1`: kotlin.String
+    , 
+    var `capObjectUploadV1`: kotlin.String
+    , 
+    var `capabilitiesHeader`: kotlin.String
+    , 
+    var `discoveryPath`: kotlin.String
+    , 
+    var `maxWindow`: kotlin.UInt
+    , 
+    var `defaultWindow`: kotlin.UInt
+    , 
+    var `chunkOverhead`: kotlin.UInt
+    , 
+    /**
+     * The time bounds every client applies (clients design 6.2), in milliseconds.
+     */
+    var `storageConnectTimeoutMs`: kotlin.UInt
+    , 
+    var `storageGetIdleMs`: kotlin.UInt
+    , 
+    var `discoveryTimeoutMs`: kotlin.UInt
+    , 
+    var `apiCallTimeoutMs`: kotlin.UInt
+    , 
+    var `backgroundPutResourceTimeoutMs`: kotlin.UInt
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectConstantsDto: FfiConverterRustBuffer<DirectConstantsDto> {
+    override fun read(buf: ByteBuffer): DirectConstantsDto {
+        return DirectConstantsDto(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DirectConstantsDto) = (
+            FfiConverterString.allocationSize(value.`capObjectDownloadV1`) +
+            FfiConverterString.allocationSize(value.`capObjectUploadV1`) +
+            FfiConverterString.allocationSize(value.`capabilitiesHeader`) +
+            FfiConverterString.allocationSize(value.`discoveryPath`) +
+            FfiConverterUInt.allocationSize(value.`maxWindow`) +
+            FfiConverterUInt.allocationSize(value.`defaultWindow`) +
+            FfiConverterUInt.allocationSize(value.`chunkOverhead`) +
+            FfiConverterUInt.allocationSize(value.`storageConnectTimeoutMs`) +
+            FfiConverterUInt.allocationSize(value.`storageGetIdleMs`) +
+            FfiConverterUInt.allocationSize(value.`discoveryTimeoutMs`) +
+            FfiConverterUInt.allocationSize(value.`apiCallTimeoutMs`) +
+            FfiConverterUInt.allocationSize(value.`backgroundPutResourceTimeoutMs`)
+    )
+
+    override fun write(value: DirectConstantsDto, buf: ByteBuffer) {
+            FfiConverterString.write(value.`capObjectDownloadV1`, buf)
+            FfiConverterString.write(value.`capObjectUploadV1`, buf)
+            FfiConverterString.write(value.`capabilitiesHeader`, buf)
+            FfiConverterString.write(value.`discoveryPath`, buf)
+            FfiConverterUInt.write(value.`maxWindow`, buf)
+            FfiConverterUInt.write(value.`defaultWindow`, buf)
+            FfiConverterUInt.write(value.`chunkOverhead`, buf)
+            FfiConverterUInt.write(value.`storageConnectTimeoutMs`, buf)
+            FfiConverterUInt.write(value.`storageGetIdleMs`, buf)
+            FfiConverterUInt.write(value.`discoveryTimeoutMs`, buf)
+            FfiConverterUInt.write(value.`apiCallTimeoutMs`, buf)
+            FfiConverterUInt.write(value.`backgroundPutResourceTimeoutMs`, buf)
+    }
+}
+
+
+
+/**
+ * The answer of `GET /api/v1/transfer/capabilities`.
+ */
+data class DirectDiscoveryDto (
+    var `download`: List<kotlin.String>
+    , 
+    var `upload`: List<kotlin.String>
+    , 
+    var `storageHosts`: List<kotlin.String>
+    , 
+    var `storageBuckets`: List<DirectStorageBucketDto>
+    , 
+    var `maxWindow`: kotlin.UInt?
+    , 
+    var `urlTtlSeconds`: kotlin.ULong?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectDiscoveryDto: FfiConverterRustBuffer<DirectDiscoveryDto> {
+    override fun read(buf: ByteBuffer): DirectDiscoveryDto {
+        return DirectDiscoveryDto(
+            FfiConverterSequenceString.read(buf),
+            FfiConverterSequenceString.read(buf),
+            FfiConverterSequenceString.read(buf),
+            FfiConverterSequenceTypeDirectStorageBucketDto.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+            FfiConverterOptionalULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DirectDiscoveryDto) = (
+            FfiConverterSequenceString.allocationSize(value.`download`) +
+            FfiConverterSequenceString.allocationSize(value.`upload`) +
+            FfiConverterSequenceString.allocationSize(value.`storageHosts`) +
+            FfiConverterSequenceTypeDirectStorageBucketDto.allocationSize(value.`storageBuckets`) +
+            FfiConverterOptionalUInt.allocationSize(value.`maxWindow`) +
+            FfiConverterOptionalULong.allocationSize(value.`urlTtlSeconds`)
+    )
+
+    override fun write(value: DirectDiscoveryDto, buf: ByteBuffer) {
+            FfiConverterSequenceString.write(value.`download`, buf)
+            FfiConverterSequenceString.write(value.`upload`, buf)
+            FfiConverterSequenceString.write(value.`storageHosts`, buf)
+            FfiConverterSequenceTypeDirectStorageBucketDto.write(value.`storageBuckets`, buf)
+            FfiConverterOptionalUInt.write(value.`maxWindow`, buf)
+            FfiConverterOptionalULong.write(value.`urlTtlSeconds`, buf)
+    }
+}
+
+
+
+/**
+ * The version's geometry, once the first window was accepted.
+ */
+data class DirectGeometryDto (
+    var `chunkCount`: kotlin.UInt
+    , 
+    var `chunkSize`: kotlin.ULong
+    , 
+    var `encryptedSize`: kotlin.ULong
+    , 
+    var `originalSize`: kotlin.ULong
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectGeometryDto: FfiConverterRustBuffer<DirectGeometryDto> {
+    override fun read(buf: ByteBuffer): DirectGeometryDto {
+        return DirectGeometryDto(
+            FfiConverterUInt.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DirectGeometryDto) = (
+            FfiConverterUInt.allocationSize(value.`chunkCount`) +
+            FfiConverterULong.allocationSize(value.`chunkSize`) +
+            FfiConverterULong.allocationSize(value.`encryptedSize`) +
+            FfiConverterULong.allocationSize(value.`originalSize`)
+    )
+
+    override fun write(value: DirectGeometryDto, buf: ByteBuffer) {
+            FfiConverterUInt.write(value.`chunkCount`, buf)
+            FfiConverterULong.write(value.`chunkSize`, buf)
+            FfiConverterULong.write(value.`encryptedSize`, buf)
+            FfiConverterULong.write(value.`originalSize`, buf)
+    }
+}
+
+
+
+/**
+ * `POST /api/v1/files/{id}/download-grants` body.
+ */
+data class DirectGrantRequestDto (
+    var `objectVersionId`: kotlin.String?
+    , 
+    var `startIndex`: kotlin.UInt
+    , 
+    var `count`: kotlin.UInt
+    , 
+    var `renewal`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectGrantRequestDto: FfiConverterRustBuffer<DirectGrantRequestDto> {
+    override fun read(buf: ByteBuffer): DirectGrantRequestDto {
+        return DirectGrantRequestDto(
+            FfiConverterOptionalString.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DirectGrantRequestDto) = (
+            FfiConverterOptionalString.allocationSize(value.`objectVersionId`) +
+            FfiConverterUInt.allocationSize(value.`startIndex`) +
+            FfiConverterUInt.allocationSize(value.`count`) +
+            FfiConverterBoolean.allocationSize(value.`renewal`)
+    )
+
+    override fun write(value: DirectGrantRequestDto, buf: ByteBuffer) {
+            FfiConverterOptionalString.write(value.`objectVersionId`, buf)
+            FfiConverterUInt.write(value.`startIndex`, buf)
+            FfiConverterUInt.write(value.`count`, buf)
+            FfiConverterBoolean.write(value.`renewal`, buf)
+    }
+}
+
+
+
+data class DirectStorageBucketDto (
+    var `host`: kotlin.String
+    , 
+    var `bucket`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectStorageBucketDto: FfiConverterRustBuffer<DirectStorageBucketDto> {
+    override fun read(buf: ByteBuffer): DirectStorageBucketDto {
+        return DirectStorageBucketDto(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DirectStorageBucketDto) = (
+            FfiConverterString.allocationSize(value.`host`) +
+            FfiConverterString.allocationSize(value.`bucket`)
+    )
+
+    override fun write(value: DirectStorageBucketDto, buf: ByteBuffer) {
+            FfiConverterString.write(value.`host`, buf)
+            FfiConverterString.write(value.`bucket`, buf)
+    }
+}
+
+
+
+/**
  * Result of a successful file download + decrypt.
  */
 data class DownloadResultData (
@@ -5950,6 +10365,53 @@ public object FfiConverterTypeMasterKeyResult: FfiConverterRustBuffer<MasterKeyR
 
 
 
+/**
+ * Decrypted name metadata (task 1908): `chunk_format` is what every content
+ * reader of the file must be given (0 = unrecorded, 2 = v2).
+ */
+data class NameMetadataDto (
+    var `name`: kotlin.String
+    , 
+    var `mimeType`: kotlin.String?
+    , 
+    var `chunkFormat`: kotlin.UByte
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeNameMetadataDto: FfiConverterRustBuffer<NameMetadataDto> {
+    override fun read(buf: ByteBuffer): NameMetadataDto {
+        return NameMetadataDto(
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterUByte.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: NameMetadataDto) = (
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterOptionalString.allocationSize(value.`mimeType`) +
+            FfiConverterUByte.allocationSize(value.`chunkFormat`)
+    )
+
+    override fun write(value: NameMetadataDto, buf: ByteBuffer) {
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterOptionalString.write(value.`mimeType`, buf)
+            FfiConverterUByte.write(value.`chunkFormat`, buf)
+    }
+}
+
+
+
 data class ObservedNodeDto (
     var `idx`: kotlin.UInt
     , 
@@ -6081,6 +10543,86 @@ public object FfiConverterTypeOpaqueStartResult: FfiConverterRustBuffer<OpaqueSt
 
 
 /**
+ * Result of evaluating a password against the server's policy. Contains no
+ * part of the password.
+ */
+data class PasswordEvaluationDto (
+    var `length`: kotlin.UInt
+    , 
+    var `minLength`: kotlin.UInt
+    , 
+    var `missingCharacters`: kotlin.UInt
+    , 
+    var `meetsMinimum`: kotlin.Boolean
+    , 
+    var `hasMixedCase`: kotlin.Boolean
+    , 
+    var `hasNumberOrSymbol`: kotlin.Boolean
+    , 
+    var `strength`: PasswordStrengthDto
+    , 
+    /**
+     * Meter level 1 (too short) to 4 (strong).
+     */
+    var `level`: kotlin.UByte
+    , 
+    var `hint`: PasswordHintDto
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePasswordEvaluationDto: FfiConverterRustBuffer<PasswordEvaluationDto> {
+    override fun read(buf: ByteBuffer): PasswordEvaluationDto {
+        return PasswordEvaluationDto(
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterTypePasswordStrengthDto.read(buf),
+            FfiConverterUByte.read(buf),
+            FfiConverterTypePasswordHintDto.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PasswordEvaluationDto) = (
+            FfiConverterUInt.allocationSize(value.`length`) +
+            FfiConverterUInt.allocationSize(value.`minLength`) +
+            FfiConverterUInt.allocationSize(value.`missingCharacters`) +
+            FfiConverterBoolean.allocationSize(value.`meetsMinimum`) +
+            FfiConverterBoolean.allocationSize(value.`hasMixedCase`) +
+            FfiConverterBoolean.allocationSize(value.`hasNumberOrSymbol`) +
+            FfiConverterTypePasswordStrengthDto.allocationSize(value.`strength`) +
+            FfiConverterUByte.allocationSize(value.`level`) +
+            FfiConverterTypePasswordHintDto.allocationSize(value.`hint`)
+    )
+
+    override fun write(value: PasswordEvaluationDto, buf: ByteBuffer) {
+            FfiConverterUInt.write(value.`length`, buf)
+            FfiConverterUInt.write(value.`minLength`, buf)
+            FfiConverterUInt.write(value.`missingCharacters`, buf)
+            FfiConverterBoolean.write(value.`meetsMinimum`, buf)
+            FfiConverterBoolean.write(value.`hasMixedCase`, buf)
+            FfiConverterBoolean.write(value.`hasNumberOrSymbol`, buf)
+            FfiConverterTypePasswordStrengthDto.write(value.`strength`, buf)
+            FfiConverterUByte.write(value.`level`, buf)
+            FfiConverterTypePasswordHintDto.write(value.`hint`, buf)
+    }
+}
+
+
+
+/**
  * Result of generating a recovery phrase.
  */
 data class RecoveryPhraseResult (
@@ -6116,6 +10658,53 @@ public object FfiConverterTypeRecoveryPhraseResult: FfiConverterRustBuffer<Recov
     override fun write(value: RecoveryPhraseResult, buf: ByteBuffer) {
             FfiConverterString.write(value.`phrase`, buf)
             FfiConverterByteArray.write(value.`masterKey`, buf)
+    }
+}
+
+
+
+/**
+ * What `opaque/register-finish` takes from the client. No `Debug`: the
+ * recovery binding must not end up in a log line by accident.
+ */
+data class RegistrationFinishDto (
+    var `upload`: kotlin.ByteArray
+    , 
+    var `x25519Public`: kotlin.ByteArray
+    , 
+    var `recoveryCheck`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRegistrationFinishDto: FfiConverterRustBuffer<RegistrationFinishDto> {
+    override fun read(buf: ByteBuffer): RegistrationFinishDto {
+        return RegistrationFinishDto(
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: RegistrationFinishDto) = (
+            FfiConverterByteArray.allocationSize(value.`upload`) +
+            FfiConverterByteArray.allocationSize(value.`x25519Public`) +
+            FfiConverterByteArray.allocationSize(value.`recoveryCheck`)
+    )
+
+    override fun write(value: RegistrationFinishDto, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`upload`, buf)
+            FfiConverterByteArray.write(value.`x25519Public`, buf)
+            FfiConverterByteArray.write(value.`recoveryCheck`, buf)
     }
 }
 
@@ -6482,6 +11071,163 @@ public object FfiConverterTypeWrappedRequestPrivate: FfiConverterRustBuffer<Wrap
 
 
 
+/**
+ * Verdict of a breach check. `NotRequired` is constructed by the app when the
+ * onboarding document declares no breach check.
+ */
+sealed class BreachVerdictDto {
+    
+    object Clean : BreachVerdictDto()
+    
+    
+    data class Breached(
+        val `count`: kotlin.ULong) : BreachVerdictDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+    object CheckFailedAllowed : BreachVerdictDto()
+    
+    
+    object CheckFailedBlocked : BreachVerdictDto()
+    
+    
+    object NotRequired : BreachVerdictDto()
+    
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeBreachVerdictDto : FfiConverterRustBuffer<BreachVerdictDto>{
+    override fun read(buf: ByteBuffer): BreachVerdictDto {
+        return when(buf.getInt()) {
+            1 -> BreachVerdictDto.Clean
+            2 -> BreachVerdictDto.Breached(
+                FfiConverterULong.read(buf),
+                )
+            3 -> BreachVerdictDto.CheckFailedAllowed
+            4 -> BreachVerdictDto.CheckFailedBlocked
+            5 -> BreachVerdictDto.NotRequired
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: BreachVerdictDto) = when(value) {
+        is BreachVerdictDto.Clean -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is BreachVerdictDto.Breached -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`count`)
+            )
+        }
+        is BreachVerdictDto.CheckFailedAllowed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is BreachVerdictDto.CheckFailedBlocked -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is BreachVerdictDto.NotRequired -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: BreachVerdictDto, buf: ByteBuffer) {
+        when(value) {
+            is BreachVerdictDto.Clean -> {
+                buf.putInt(1)
+                Unit
+            }
+            is BreachVerdictDto.Breached -> {
+                buf.putInt(2)
+                FfiConverterULong.write(value.`count`, buf)
+                Unit
+            }
+            is BreachVerdictDto.CheckFailedAllowed -> {
+                buf.putInt(3)
+                Unit
+            }
+            is BreachVerdictDto.CheckFailedBlocked -> {
+                buf.putInt(4)
+                Unit
+            }
+            is BreachVerdictDto.NotRequired -> {
+                buf.putInt(5)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+
+enum class CeremonyStepDto {
+    
+    VERIFY_EMAIL,
+    SET_PASSWORD,
+    SAVE_PHRASE,
+    CONFIRM_PHRASE,
+    CREATE_ACCOUNT,
+    DONE;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeCeremonyStepDto: FfiConverterRustBuffer<CeremonyStepDto> {
+    override fun read(buf: ByteBuffer) = try {
+        CeremonyStepDto.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: CeremonyStepDto) = 4UL
+
+    override fun write(value: CeremonyStepDto, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
 
 
 sealed class CryptoException: kotlin.Exception() {
@@ -6673,6 +11419,1695 @@ public object FfiConverterTypeCryptoError : FfiConverterRustBuffer<CryptoExcepti
 
 
 
+/**
+ * Which way the bytes go.
+ */
+
+enum class DirectDirectionDto {
+    
+    DOWNLOAD,
+    UPLOAD;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectDirectionDto: FfiConverterRustBuffer<DirectDirectionDto> {
+    override fun read(buf: ByteBuffer) = try {
+        DirectDirectionDto.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: DirectDirectionDto) = 4UL
+
+    override fun write(value: DirectDirectionDto, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * What the client learned from discovery when it asked just now.
+ */
+sealed class DirectDiscoveryStateDto {
+    
+    /**
+     * The server answered; `upload`: it lists the direct upload transport.
+     */
+    data class Offers(
+        val `upload`: kotlin.Boolean) : DirectDiscoveryStateDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * A JSON 404: the server has no direct transfer at all.
+     */
+    object NotSupported : DirectDiscoveryStateDto()
+    
+    
+    /**
+     * No usable answer (a 5xx, a timeout, a bare 404, a body that did not decode).
+     */
+    object Unknown : DirectDiscoveryStateDto()
+    
+    
+    /**
+     * 401 or 403: the login is not valid.
+     */
+    object Unauthorized : DirectDiscoveryStateDto()
+    
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectDiscoveryStateDto : FfiConverterRustBuffer<DirectDiscoveryStateDto>{
+    override fun read(buf: ByteBuffer): DirectDiscoveryStateDto {
+        return when(buf.getInt()) {
+            1 -> DirectDiscoveryStateDto.Offers(
+                FfiConverterBoolean.read(buf),
+                )
+            2 -> DirectDiscoveryStateDto.NotSupported
+            3 -> DirectDiscoveryStateDto.Unknown
+            4 -> DirectDiscoveryStateDto.Unauthorized
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: DirectDiscoveryStateDto) = when(value) {
+        is DirectDiscoveryStateDto.Offers -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterBoolean.allocationSize(value.`upload`)
+            )
+        }
+        is DirectDiscoveryStateDto.NotSupported -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectDiscoveryStateDto.Unknown -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectDiscoveryStateDto.Unauthorized -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: DirectDiscoveryStateDto, buf: ByteBuffer) {
+        when(value) {
+            is DirectDiscoveryStateDto.Offers -> {
+                buf.putInt(1)
+                FfiConverterBoolean.write(value.`upload`, buf)
+                Unit
+            }
+            is DirectDiscoveryStateDto.NotSupported -> {
+                buf.putInt(2)
+                Unit
+            }
+            is DirectDiscoveryStateDto.Unknown -> {
+                buf.putInt(3)
+                Unit
+            }
+            is DirectDiscoveryStateDto.Unauthorized -> {
+                buf.putInt(4)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+/**
+ * What to do about discovery right now.
+ */
+sealed class DirectLookupDto {
+    
+    /**
+     * Ask the server.
+     */
+    object Fetch : DirectLookupDto()
+    
+    
+    /**
+     * Use this answer (it may still say the server offers nothing).
+     */
+    data class Cached(
+        val `discovery`: uniffi.beebeeb_uniffi.DirectDiscoveryDto) : DirectLookupDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * Do not ask; use the API.
+     */
+    object UseApi : DirectLookupDto()
+    
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectLookupDto : FfiConverterRustBuffer<DirectLookupDto>{
+    override fun read(buf: ByteBuffer): DirectLookupDto {
+        return when(buf.getInt()) {
+            1 -> DirectLookupDto.Fetch
+            2 -> DirectLookupDto.Cached(
+                FfiConverterTypeDirectDiscoveryDto.read(buf),
+                )
+            3 -> DirectLookupDto.UseApi
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: DirectLookupDto) = when(value) {
+        is DirectLookupDto.Fetch -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectLookupDto.Cached -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeDirectDiscoveryDto.allocationSize(value.`discovery`)
+            )
+        }
+        is DirectLookupDto.UseApi -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: DirectLookupDto, buf: ByteBuffer) {
+        when(value) {
+            is DirectLookupDto.Fetch -> {
+                buf.putInt(1)
+                Unit
+            }
+            is DirectLookupDto.Cached -> {
+                buf.putInt(2)
+                FfiConverterTypeDirectDiscoveryDto.write(value.`discovery`, buf)
+                Unit
+            }
+            is DirectLookupDto.UseApi -> {
+                buf.putInt(3)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+/**
+ * What an API answer means.
+ */
+sealed class DirectOutcomeDto {
+    
+    /**
+     * 2xx: decode the body and go on.
+     */
+    object Proceed : DirectOutcomeDto()
+    
+    
+    /**
+     * Discovery only: this server has no direct transport; cache that.
+     */
+    object NotSupported : DirectOutcomeDto()
+    
+    
+    /**
+     * No direct transport right now: use the API for this file now.
+     */
+    object UseApiNow : DirectOutcomeDto()
+    
+    
+    /**
+     * This file is served over the API. For an UPLOAD call it means this session cannot go direct:
+     * abandon the session and init again WITHOUT the capability token.
+     */
+    object ApiForThisFile : DirectOutcomeDto()
+    
+    
+    /**
+     * `version_unavailable`: discard and restart from fresh metadata.
+     */
+    object Restart : DirectOutcomeDto()
+    
+    
+    /**
+     * 429 / `replace_in_progress` / `commit_in_progress`: wait, then ask again.
+     */
+    data class Backoff(
+        val `millis`: kotlin.ULong) : DirectOutcomeDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * 401, 403 or a JSON 404: do not fall back.
+     */
+    data class Terminal(
+        val `status`: kotlin.UShort, 
+        val `error`: kotlin.String?) : DirectOutcomeDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * The pinned chunk route and the upload calls: a failure that may pass (5xx, no answer). For the
+     * pinned route the bounded backoff is `direct_pinned_retry_decision`; the retry rules of an upload
+     * chunk (the grant cap, the attempts, the waits) are core's `UploadChunkState`, which is not
+     * exported yet, so do NOT pass an upload outcome to `direct_pinned_retry_decision` (it knows no
+     * grant cap and answers give-up for `Regrant`).
+     */
+    object Retry : DirectOutcomeDto()
+    
+    
+    /**
+     * `upload_commit` only: the staged chunk is not there; ask for a new link and send it again.
+     */
+    object Regrant : DirectOutcomeDto()
+    
+    
+    /**
+     * `upload_commit` only (409 `commit_in_progress`): the server holds the chunk's commit lock, up to
+     * 420 s after a failed copy. Wait (`millis` is the server's stated wait, `None` when it sent none)
+     * and commit again; it is not a failure. core's `UploadChunkState` bounds the wait (the lock TTL
+     * plus 30 s = 450 s, polls no faster than once a second) but is not exported yet: a host that
+     * handles this itself must bound it the same way, and not count a hold as one of its failures.
+     */
+    data class Held(
+        val `millis`: kotlin.ULong?) : DirectOutcomeDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectOutcomeDto : FfiConverterRustBuffer<DirectOutcomeDto>{
+    override fun read(buf: ByteBuffer): DirectOutcomeDto {
+        return when(buf.getInt()) {
+            1 -> DirectOutcomeDto.Proceed
+            2 -> DirectOutcomeDto.NotSupported
+            3 -> DirectOutcomeDto.UseApiNow
+            4 -> DirectOutcomeDto.ApiForThisFile
+            5 -> DirectOutcomeDto.Restart
+            6 -> DirectOutcomeDto.Backoff(
+                FfiConverterULong.read(buf),
+                )
+            7 -> DirectOutcomeDto.Terminal(
+                FfiConverterUShort.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            8 -> DirectOutcomeDto.Retry
+            9 -> DirectOutcomeDto.Regrant
+            10 -> DirectOutcomeDto.Held(
+                FfiConverterOptionalULong.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: DirectOutcomeDto) = when(value) {
+        is DirectOutcomeDto.Proceed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectOutcomeDto.NotSupported -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectOutcomeDto.UseApiNow -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectOutcomeDto.ApiForThisFile -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectOutcomeDto.Restart -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectOutcomeDto.Backoff -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`millis`)
+            )
+        }
+        is DirectOutcomeDto.Terminal -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterUShort.allocationSize(value.`status`)
+                + FfiConverterOptionalString.allocationSize(value.`error`)
+            )
+        }
+        is DirectOutcomeDto.Retry -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectOutcomeDto.Regrant -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectOutcomeDto.Held -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterOptionalULong.allocationSize(value.`millis`)
+            )
+        }
+    }
+
+    override fun write(value: DirectOutcomeDto, buf: ByteBuffer) {
+        when(value) {
+            is DirectOutcomeDto.Proceed -> {
+                buf.putInt(1)
+                Unit
+            }
+            is DirectOutcomeDto.NotSupported -> {
+                buf.putInt(2)
+                Unit
+            }
+            is DirectOutcomeDto.UseApiNow -> {
+                buf.putInt(3)
+                Unit
+            }
+            is DirectOutcomeDto.ApiForThisFile -> {
+                buf.putInt(4)
+                Unit
+            }
+            is DirectOutcomeDto.Restart -> {
+                buf.putInt(5)
+                Unit
+            }
+            is DirectOutcomeDto.Backoff -> {
+                buf.putInt(6)
+                FfiConverterULong.write(value.`millis`, buf)
+                Unit
+            }
+            is DirectOutcomeDto.Terminal -> {
+                buf.putInt(7)
+                FfiConverterUShort.write(value.`status`, buf)
+                FfiConverterOptionalString.write(value.`error`, buf)
+                Unit
+            }
+            is DirectOutcomeDto.Retry -> {
+                buf.putInt(8)
+                Unit
+            }
+            is DirectOutcomeDto.Regrant -> {
+                buf.putInt(9)
+                Unit
+            }
+            is DirectOutcomeDto.Held -> {
+                buf.putInt(10)
+                FfiConverterOptionalULong.write(value.`millis`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+/**
+ * What the app must do now.
+ */
+sealed class DirectPollDto: Disposable  {
+    
+    /**
+     * `POST` this body to `direct_download_grants_path(file_id)` with the
+     * capability header, then report the answer.
+     */
+    data class RequestWindow(
+        val `request`: uniffi.beebeeb_uniffi.DirectGrantRequestDto) : DirectPollDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * `GET grant.url.raw()` (`grant.url` is a `DirectSignedUrl`, not a string) with a client that
+     * sends nothing else (no cookies, no `Authorization`), redirects off; accept only `200` whose
+     * `Content-Length` is `grant.length`.
+     */
+    data class Fetch(
+        val `index`: kotlin.UInt, 
+        val `grant`: uniffi.beebeeb_uniffi.DirectChunkGrantDto) : DirectPollDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * `GET /api/v1/files/{id}/chunks/{index}?object_version_id=<pinned>`.
+     */
+    data class FetchViaApi(
+        val `index`: kotlin.UInt, 
+        val `objectVersionId`: kotlin.String) : DirectPollDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * Nothing to start. `until_ms` is the next moment the planner can act by
+     * itself; `None` means it waits for a request that is outstanding.
+     */
+    data class Wait(
+        val `untilMs`: kotlin.Long?) : DirectPollDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * Every chunk has been consumed.
+     */
+    object Done : DirectPollDto()
+    
+    
+    /**
+     * Cannot go on directly.
+     */
+    data class Stop(
+        val `verdict`: uniffi.beebeeb_uniffi.DirectVerdictDto) : DirectPollDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+    @Suppress("UNNECESSARY_SAFE_CALL") // codegen is much simpler if we unconditionally emit safe calls here
+    override fun destroy() {
+        when(this) {
+            is DirectPollDto.RequestWindow -> {
+                
+    Disposable.destroy(
+        this.`request`
+    )
+                
+            }
+            is DirectPollDto.Fetch -> {
+                
+    Disposable.destroy(
+        this.`index`,
+        this.`grant`
+    )
+                
+            }
+            is DirectPollDto.FetchViaApi -> {
+                
+    Disposable.destroy(
+        this.`index`,
+        this.`objectVersionId`
+    )
+                
+            }
+            is DirectPollDto.Wait -> {
+                
+    Disposable.destroy(
+        this.`untilMs`
+    )
+                
+            }
+            is DirectPollDto.Done -> {// Nothing to destroy
+            }
+            is DirectPollDto.Stop -> {
+                
+    Disposable.destroy(
+        this.`verdict`
+    )
+                
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectPollDto : FfiConverterRustBuffer<DirectPollDto>{
+    override fun read(buf: ByteBuffer): DirectPollDto {
+        return when(buf.getInt()) {
+            1 -> DirectPollDto.RequestWindow(
+                FfiConverterTypeDirectGrantRequestDto.read(buf),
+                )
+            2 -> DirectPollDto.Fetch(
+                FfiConverterUInt.read(buf),
+                FfiConverterTypeDirectChunkGrantDto.read(buf),
+                )
+            3 -> DirectPollDto.FetchViaApi(
+                FfiConverterUInt.read(buf),
+                FfiConverterString.read(buf),
+                )
+            4 -> DirectPollDto.Wait(
+                FfiConverterOptionalLong.read(buf),
+                )
+            5 -> DirectPollDto.Done
+            6 -> DirectPollDto.Stop(
+                FfiConverterTypeDirectVerdictDto.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: DirectPollDto) = when(value) {
+        is DirectPollDto.RequestWindow -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeDirectGrantRequestDto.allocationSize(value.`request`)
+            )
+        }
+        is DirectPollDto.Fetch -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterUInt.allocationSize(value.`index`)
+                + FfiConverterTypeDirectChunkGrantDto.allocationSize(value.`grant`)
+            )
+        }
+        is DirectPollDto.FetchViaApi -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterUInt.allocationSize(value.`index`)
+                + FfiConverterString.allocationSize(value.`objectVersionId`)
+            )
+        }
+        is DirectPollDto.Wait -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterOptionalLong.allocationSize(value.`untilMs`)
+            )
+        }
+        is DirectPollDto.Done -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectPollDto.Stop -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypeDirectVerdictDto.allocationSize(value.`verdict`)
+            )
+        }
+    }
+
+    override fun write(value: DirectPollDto, buf: ByteBuffer) {
+        when(value) {
+            is DirectPollDto.RequestWindow -> {
+                buf.putInt(1)
+                FfiConverterTypeDirectGrantRequestDto.write(value.`request`, buf)
+                Unit
+            }
+            is DirectPollDto.Fetch -> {
+                buf.putInt(2)
+                FfiConverterUInt.write(value.`index`, buf)
+                FfiConverterTypeDirectChunkGrantDto.write(value.`grant`, buf)
+                Unit
+            }
+            is DirectPollDto.FetchViaApi -> {
+                buf.putInt(3)
+                FfiConverterUInt.write(value.`index`, buf)
+                FfiConverterString.write(value.`objectVersionId`, buf)
+                Unit
+            }
+            is DirectPollDto.Wait -> {
+                buf.putInt(4)
+                FfiConverterOptionalLong.write(value.`untilMs`, buf)
+                Unit
+            }
+            is DirectPollDto.Done -> {
+                buf.putInt(5)
+                Unit
+            }
+            is DirectPollDto.Stop -> {
+                buf.putInt(6)
+                FfiConverterTypeDirectVerdictDto.write(value.`verdict`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+/**
+ * The transport a resume record names.
+ */
+
+enum class DirectRecordedTransportDto {
+    
+    API,
+    DIRECT;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectRecordedTransportDto: FfiConverterRustBuffer<DirectRecordedTransportDto> {
+    override fun read(buf: ByteBuffer) = try {
+        DirectRecordedTransportDto.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: DirectRecordedTransportDto) = 4UL
+
+    override fun write(value: DirectRecordedTransportDto, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * What to do with the unfinished upload.
+ */
+
+enum class DirectResumeActionDto {
+    
+    CONTINUE_API,
+    CONTINUE_DIRECT,
+    /**
+     * Abandon the session, clear the record, start again on the API.
+     */
+    ABANDON_TO_API,
+    /**
+     * Keep the record and fail the file for this run.
+     */
+    KEEP_RECORD_AND_FAIL,
+    /**
+     * Keep the record and ask the user to sign in again.
+     */
+    KEEP_RECORD_AND_REAUTHENTICATE;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectResumeActionDto: FfiConverterRustBuffer<DirectResumeActionDto> {
+    override fun read(buf: ByteBuffer) = try {
+        DirectResumeActionDto.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: DirectResumeActionDto) = 4UL
+
+    override fun write(value: DirectResumeActionDto, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * What to do after a failed attempt on the pinned per-chunk route.
+ */
+sealed class DirectRetryDecisionDto {
+    
+    /**
+     * Wait this long, then try again.
+     */
+    data class Wait(
+        val `millis`: kotlin.ULong) : DirectRetryDecisionDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * Stop: act on the outcome (restart, terminal) or hand the file to the API stream.
+     */
+    object GiveUp : DirectRetryDecisionDto()
+    
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectRetryDecisionDto : FfiConverterRustBuffer<DirectRetryDecisionDto>{
+    override fun read(buf: ByteBuffer): DirectRetryDecisionDto {
+        return when(buf.getInt()) {
+            1 -> DirectRetryDecisionDto.Wait(
+                FfiConverterULong.read(buf),
+                )
+            2 -> DirectRetryDecisionDto.GiveUp
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: DirectRetryDecisionDto) = when(value) {
+        is DirectRetryDecisionDto.Wait -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterULong.allocationSize(value.`millis`)
+            )
+        }
+        is DirectRetryDecisionDto.GiveUp -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: DirectRetryDecisionDto, buf: ByteBuffer) {
+        when(value) {
+            is DirectRetryDecisionDto.Wait -> {
+                buf.putInt(1)
+                FfiConverterULong.write(value.`millis`, buf)
+                Unit
+            }
+            is DirectRetryDecisionDto.GiveUp -> {
+                buf.putInt(2)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+
+
+/**
+ * Why a call into the direct-transfer rules failed. Every variant carries a
+ * stable `code`; none carries a URL.
+ */
+sealed class DirectTransferException: kotlin.Exception() {
+    
+    /**
+     * A storage link was refused: `malformed`, `not_https`, `userinfo`,
+     * `ip_literal`, `loopback`, `bad_host`, `port`, `host_not_listed`,
+     * `bucket_not_listed`, `bad_path`.
+     */
+    class LinkRefused(
+        
+        val `code`: kotlin.String
+        ) : DirectTransferException() {
+        override val message
+            get() = "code=${ `code` }"
+    }
+    
+    /**
+     * The discovery body could not be decoded: `discovery_too_large`,
+     * `discovery_malformed`.
+     */
+    class Discovery(
+        
+        val `code`: kotlin.String
+        ) : DirectTransferException() {
+        override val message
+            get() = "code=${ `code` }"
+    }
+    
+    /**
+     * A call that does not fit the planner's state (a bug in the caller):
+     * `not_in_flight`, `not_fetched`, `out_of_order`, `api_route_failure`.
+     */
+    class Plan(
+        
+        val `code`: kotlin.String
+        ) : DirectTransferException() {
+        override val message
+            get() = "code=${ `code` }"
+    }
+    
+    /**
+     * `call` was none of `discovery`, `download_grant`, `pinned_chunk`.
+     */
+    class UnknownCall(
+        ) : DirectTransferException() {
+        override val message
+            get() = ""
+    }
+    
+
+    
+
+
+    companion object ErrorHandler : UniffiRustCallStatusErrorHandler<DirectTransferException> {
+        override fun lift(error_buf: RustBuffer.ByValue): DirectTransferException = FfiConverterTypeDirectTransferError.lift(error_buf)
+    }
+
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectTransferError : FfiConverterRustBuffer<DirectTransferException> {
+    override fun read(buf: ByteBuffer): DirectTransferException {
+        
+
+        return when(buf.getInt()) {
+            1 -> DirectTransferException.LinkRefused(
+                FfiConverterString.read(buf),
+                )
+            2 -> DirectTransferException.Discovery(
+                FfiConverterString.read(buf),
+                )
+            3 -> DirectTransferException.Plan(
+                FfiConverterString.read(buf),
+                )
+            4 -> DirectTransferException.UnknownCall()
+            else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: DirectTransferException): ULong {
+        return when(value) {
+            is DirectTransferException.LinkRefused -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`code`)
+            )
+            is DirectTransferException.Discovery -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`code`)
+            )
+            is DirectTransferException.Plan -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`code`)
+            )
+            is DirectTransferException.UnknownCall -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: DirectTransferException, buf: ByteBuffer) {
+        when(value) {
+            is DirectTransferException.LinkRefused -> {
+                buf.putInt(1)
+                FfiConverterString.write(value.`code`, buf)
+                Unit
+            }
+            is DirectTransferException.Discovery -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`code`, buf)
+                Unit
+            }
+            is DirectTransferException.Plan -> {
+                buf.putInt(3)
+                FfiConverterString.write(value.`code`, buf)
+                Unit
+            }
+            is DirectTransferException.UnknownCall -> {
+                buf.putInt(4)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+
+}
+
+
+
+/**
+ * How a file ends when it cannot go on directly.
+ */
+sealed class DirectVerdictDto {
+    
+    /**
+     * Discard any partial output and download the file again on the API path.
+     */
+    object ApiForFile : DirectVerdictDto()
+    
+    
+    /**
+     * The pinned version changed: discard and restart from fresh metadata.
+     */
+    object Restart : DirectVerdictDto()
+    
+    
+    /**
+     * An authorization answer: do not fall back.
+     */
+    data class Terminal(
+        val `status`: kotlin.UShort, 
+        val `error`: kotlin.String?) : DirectVerdictDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * A chunk failed authentication from storage and from the API: a hard error.
+     */
+    object Corrupt : DirectVerdictDto()
+    
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectVerdictDto : FfiConverterRustBuffer<DirectVerdictDto>{
+    override fun read(buf: ByteBuffer): DirectVerdictDto {
+        return when(buf.getInt()) {
+            1 -> DirectVerdictDto.ApiForFile
+            2 -> DirectVerdictDto.Restart
+            3 -> DirectVerdictDto.Terminal(
+                FfiConverterUShort.read(buf),
+                FfiConverterOptionalString.read(buf),
+                )
+            4 -> DirectVerdictDto.Corrupt
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: DirectVerdictDto) = when(value) {
+        is DirectVerdictDto.ApiForFile -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectVerdictDto.Restart -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectVerdictDto.Terminal -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterUShort.allocationSize(value.`status`)
+                + FfiConverterOptionalString.allocationSize(value.`error`)
+            )
+        }
+        is DirectVerdictDto.Corrupt -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: DirectVerdictDto, buf: ByteBuffer) {
+        when(value) {
+            is DirectVerdictDto.ApiForFile -> {
+                buf.putInt(1)
+                Unit
+            }
+            is DirectVerdictDto.Restart -> {
+                buf.putInt(2)
+                Unit
+            }
+            is DirectVerdictDto.Terminal -> {
+                buf.putInt(3)
+                FfiConverterUShort.write(value.`status`, buf)
+                FfiConverterOptionalString.write(value.`error`, buf)
+                Unit
+            }
+            is DirectVerdictDto.Corrupt -> {
+                buf.putInt(4)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+/**
+ * The outcome of handing a window answer to the planner.
+ */
+sealed class DirectWindowAnswerDto {
+    
+    object Accepted : DirectWindowAnswerDto()
+    
+    
+    /**
+     * The body was not the contract's JSON; handled like any window the server
+     * could not serve. Poll again.
+     */
+    object Malformed : DirectWindowAnswerDto()
+    
+    
+    /**
+     * The answer broke the contract (`transport`, `file_mismatch`,
+     * `version_changed`, `geometry`, `grants`, `length`, `method`,
+     * `authority_<refusal>`, `expiry`, `unexpected`). Poll again.
+     */
+    data class Refused(
+        val `code`: kotlin.String) : DirectWindowAnswerDto()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirectWindowAnswerDto : FfiConverterRustBuffer<DirectWindowAnswerDto>{
+    override fun read(buf: ByteBuffer): DirectWindowAnswerDto {
+        return when(buf.getInt()) {
+            1 -> DirectWindowAnswerDto.Accepted
+            2 -> DirectWindowAnswerDto.Malformed
+            3 -> DirectWindowAnswerDto.Refused(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: DirectWindowAnswerDto) = when(value) {
+        is DirectWindowAnswerDto.Accepted -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectWindowAnswerDto.Malformed -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is DirectWindowAnswerDto.Refused -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`code`)
+            )
+        }
+    }
+
+    override fun write(value: DirectWindowAnswerDto, buf: ByteBuffer) {
+        when(value) {
+            is DirectWindowAnswerDto.Accepted -> {
+                buf.putInt(1)
+                Unit
+            }
+            is DirectWindowAnswerDto.Malformed -> {
+                buf.putInt(2)
+                Unit
+            }
+            is DirectWindowAnswerDto.Refused -> {
+                buf.putInt(3)
+                FfiConverterString.write(value.`code`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
+
+
+
+
+
+/**
+ * Errors from the signup ceremony. Distinct from [`CryptoError`] so the UI can
+ * branch on the cause (too short, breached, wrong word) without parsing text.
+ */
+sealed class OnboardingException: kotlin.Exception() {
+    
+    class StepNotDone(
+        
+        val `action`: kotlin.String, 
+        
+        val `blocking`: CeremonyStepDto
+        ) : OnboardingException() {
+        override val message
+            get() = "action=${ `action` }, blocking=${ `blocking` }"
+    }
+    
+    class InvalidState(
+        
+        val `action`: kotlin.String, 
+        
+        val `reason`: kotlin.String
+        ) : OnboardingException() {
+        override val message
+            get() = "action=${ `action` }, reason=${ `reason` }"
+    }
+    
+    class PasswordMismatch(
+        ) : OnboardingException() {
+        override val message
+            get() = ""
+    }
+    
+    class PasswordTooShort(
+        
+        val `length`: kotlin.UInt, 
+        
+        val `minLength`: kotlin.UInt
+        ) : OnboardingException() {
+        override val message
+            get() = "length=${ `length` }, minLength=${ `minLength` }"
+    }
+    
+    class PasswordBreached(
+        
+        val `count`: kotlin.ULong
+        ) : OnboardingException() {
+        override val message
+            get() = "count=${ `count` }"
+    }
+    
+    class BreachCheckBlocked(
+        ) : OnboardingException() {
+        override val message
+            get() = ""
+    }
+    
+    class BreachCheckMissing(
+        ) : OnboardingException() {
+        override val message
+            get() = ""
+    }
+    
+    class BreachCheckStale(
+        ) : OnboardingException() {
+        override val message
+            get() = ""
+    }
+    
+    class BreachPrefixMismatch(
+        ) : OnboardingException() {
+        override val message
+            get() = ""
+    }
+    
+    class PhraseUnavailable(
+        ) : OnboardingException() {
+        override val message
+            get() = ""
+    }
+    
+    class PhraseAnswerCount(
+        
+        val `expected`: kotlin.UInt, 
+        
+        val `got`: kotlin.UInt
+        ) : OnboardingException() {
+        override val message
+            get() = "expected=${ `expected` }, got=${ `got` }"
+    }
+    
+    class PhraseWordMismatch(
+        ) : OnboardingException() {
+        override val message
+            get() = ""
+    }
+    
+    class Crypto(
+        
+        val `detail`: kotlin.String
+        ) : OnboardingException() {
+        override val message
+            get() = "detail=${ `detail` }"
+    }
+    
+
+    
+
+
+    companion object ErrorHandler : UniffiRustCallStatusErrorHandler<OnboardingException> {
+        override fun lift(error_buf: RustBuffer.ByValue): OnboardingException = FfiConverterTypeOnboardingError.lift(error_buf)
+    }
+
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeOnboardingError : FfiConverterRustBuffer<OnboardingException> {
+    override fun read(buf: ByteBuffer): OnboardingException {
+        
+
+        return when(buf.getInt()) {
+            1 -> OnboardingException.StepNotDone(
+                FfiConverterString.read(buf),
+                FfiConverterTypeCeremonyStepDto.read(buf),
+                )
+            2 -> OnboardingException.InvalidState(
+                FfiConverterString.read(buf),
+                FfiConverterString.read(buf),
+                )
+            3 -> OnboardingException.PasswordMismatch()
+            4 -> OnboardingException.PasswordTooShort(
+                FfiConverterUInt.read(buf),
+                FfiConverterUInt.read(buf),
+                )
+            5 -> OnboardingException.PasswordBreached(
+                FfiConverterULong.read(buf),
+                )
+            6 -> OnboardingException.BreachCheckBlocked()
+            7 -> OnboardingException.BreachCheckMissing()
+            8 -> OnboardingException.BreachCheckStale()
+            9 -> OnboardingException.BreachPrefixMismatch()
+            10 -> OnboardingException.PhraseUnavailable()
+            11 -> OnboardingException.PhraseAnswerCount(
+                FfiConverterUInt.read(buf),
+                FfiConverterUInt.read(buf),
+                )
+            12 -> OnboardingException.PhraseWordMismatch()
+            13 -> OnboardingException.Crypto(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: OnboardingException): ULong {
+        return when(value) {
+            is OnboardingException.StepNotDone -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`action`)
+                + FfiConverterTypeCeremonyStepDto.allocationSize(value.`blocking`)
+            )
+            is OnboardingException.InvalidState -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`action`)
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+            is OnboardingException.PasswordMismatch -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is OnboardingException.PasswordTooShort -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterUInt.allocationSize(value.`length`)
+                + FfiConverterUInt.allocationSize(value.`minLength`)
+            )
+            is OnboardingException.PasswordBreached -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterULong.allocationSize(value.`count`)
+            )
+            is OnboardingException.BreachCheckBlocked -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is OnboardingException.BreachCheckMissing -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is OnboardingException.BreachCheckStale -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is OnboardingException.BreachPrefixMismatch -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is OnboardingException.PhraseUnavailable -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is OnboardingException.PhraseAnswerCount -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterUInt.allocationSize(value.`expected`)
+                + FfiConverterUInt.allocationSize(value.`got`)
+            )
+            is OnboardingException.PhraseWordMismatch -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is OnboardingException.Crypto -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`detail`)
+            )
+        }
+    }
+
+    override fun write(value: OnboardingException, buf: ByteBuffer) {
+        when(value) {
+            is OnboardingException.StepNotDone -> {
+                buf.putInt(1)
+                FfiConverterString.write(value.`action`, buf)
+                FfiConverterTypeCeremonyStepDto.write(value.`blocking`, buf)
+                Unit
+            }
+            is OnboardingException.InvalidState -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`action`, buf)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
+            is OnboardingException.PasswordMismatch -> {
+                buf.putInt(3)
+                Unit
+            }
+            is OnboardingException.PasswordTooShort -> {
+                buf.putInt(4)
+                FfiConverterUInt.write(value.`length`, buf)
+                FfiConverterUInt.write(value.`minLength`, buf)
+                Unit
+            }
+            is OnboardingException.PasswordBreached -> {
+                buf.putInt(5)
+                FfiConverterULong.write(value.`count`, buf)
+                Unit
+            }
+            is OnboardingException.BreachCheckBlocked -> {
+                buf.putInt(6)
+                Unit
+            }
+            is OnboardingException.BreachCheckMissing -> {
+                buf.putInt(7)
+                Unit
+            }
+            is OnboardingException.BreachCheckStale -> {
+                buf.putInt(8)
+                Unit
+            }
+            is OnboardingException.BreachPrefixMismatch -> {
+                buf.putInt(9)
+                Unit
+            }
+            is OnboardingException.PhraseUnavailable -> {
+                buf.putInt(10)
+                Unit
+            }
+            is OnboardingException.PhraseAnswerCount -> {
+                buf.putInt(11)
+                FfiConverterUInt.write(value.`expected`, buf)
+                FfiConverterUInt.write(value.`got`, buf)
+                Unit
+            }
+            is OnboardingException.PhraseWordMismatch -> {
+                buf.putInt(12)
+                Unit
+            }
+            is OnboardingException.Crypto -> {
+                buf.putInt(13)
+                FfiConverterString.write(value.`detail`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+
+}
+
+
+
+
+enum class PasswordHintDto {
+    
+    NONE,
+    NEED_MORE_CHARACTERS,
+    MIX_CASE_AND_ADD_NUMBER_OR_SYMBOL,
+    MIX_CASE,
+    ADD_NUMBER_OR_SYMBOL;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePasswordHintDto: FfiConverterRustBuffer<PasswordHintDto> {
+    override fun read(buf: ByteBuffer) = try {
+        PasswordHintDto.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: PasswordHintDto) = 4UL
+
+    override fun write(value: PasswordHintDto, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+
+enum class PasswordStrengthDto {
+    
+    TOO_SHORT,
+    FAIR,
+    GOOD,
+    STRONG;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePasswordStrengthDto: FfiConverterRustBuffer<PasswordStrengthDto> {
+    override fun read(buf: ByteBuffer) = try {
+        PasswordStrengthDto.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: PasswordStrengthDto) = 4UL
+
+    override fun write(value: PasswordStrengthDto, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * What to do with an interrupted upload session — see
+ * [`ChunkEncryptorHandle::resume_policy`] (task 1908 round 3).
+ */
+
+enum class SessionResumeAction {
+    
+    /**
+     * Keep the session; re-PUT from chunk 0 (the server skips stored frames).
+     */
+    CONTINUE_SESSION,
+    /**
+     * Never PUT to the old session again; upload from chunk 0 into a new one.
+     */
+    RESTART_WITH_FRESH_SESSION;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeSessionResumeAction: FfiConverterRustBuffer<SessionResumeAction> {
+    override fun read(buf: ByteBuffer) = try {
+        SessionResumeAction.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: SessionResumeAction) = 4UL
+
+    override fun write(value: SessionResumeAction, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
 
 
 /**
@@ -6817,20 +13252,20 @@ sealed class UploadException: kotlin.Exception() {
         
         val `status`: kotlin.UShort, 
         
-        val `reason`: kotlin.String
+        val `message`: kotlin.String
         ) : UploadException() {
         override val message
-            get() = "status=${ `status` }, reason=${ `reason` }"
+            get() = "status=${ `status` }, message=${ `message` }"
     }
     
     class ClientException(
         
         val `status`: kotlin.UShort, 
         
-        val `reason`: kotlin.String
+        val `message`: kotlin.String
         ) : UploadException() {
         override val message
-            get() = "status=${ `status` }, reason=${ `reason` }"
+            get() = "status=${ `status` }, message=${ `message` }"
     }
     
     class RateLimited(
@@ -6936,13 +13371,13 @@ public object FfiConverterTypeUploadError : FfiConverterRustBuffer<UploadExcepti
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterUShort.allocationSize(value.`status`)
-                + FfiConverterString.allocationSize(value.`reason`)
+                + FfiConverterString.allocationSize(value.`message`)
             )
             is UploadException.ClientException -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterUShort.allocationSize(value.`status`)
-                + FfiConverterString.allocationSize(value.`reason`)
+                + FfiConverterString.allocationSize(value.`message`)
             )
             is UploadException.RateLimited -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
@@ -6983,13 +13418,13 @@ public object FfiConverterTypeUploadError : FfiConverterRustBuffer<UploadExcepti
             is UploadException.ServerException -> {
                 buf.putInt(2)
                 FfiConverterUShort.write(value.`status`, buf)
-                FfiConverterString.write(value.`reason`, buf)
+                FfiConverterString.write(value.`message`, buf)
                 Unit
             }
             is UploadException.ClientException -> {
                 buf.putInt(3)
                 FfiConverterUShort.write(value.`status`, buf)
-                FfiConverterString.write(value.`reason`, buf)
+                FfiConverterString.write(value.`message`, buf)
                 Unit
             }
             is UploadException.RateLimited -> {
@@ -7278,6 +13713,134 @@ public object FfiConverterTypeUploadProgressCallback: FfiConverterCallbackInterf
 /**
  * @suppress
  */
+public object FfiConverterOptionalUByte: FfiConverterRustBuffer<kotlin.UByte?> {
+    override fun read(buf: ByteBuffer): kotlin.UByte? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUByte.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UByte?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUByte.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UByte?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUByte.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
+    override fun read(buf: ByteBuffer): kotlin.UInt? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUInt.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UInt?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUInt.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UInt?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUInt.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalULong: FfiConverterRustBuffer<kotlin.ULong?> {
+    override fun read(buf: ByteBuffer): kotlin.ULong? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterULong.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.ULong?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterULong.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.ULong?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterULong.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalLong: FfiConverterRustBuffer<kotlin.Long?> {
+    override fun read(buf: ByteBuffer): kotlin.Long? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterLong.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.Long?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterLong.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.Long?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterLong.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
     override fun read(buf: ByteBuffer): kotlin.String? {
         if (buf.get().toInt() == 0) {
@@ -7300,6 +13863,70 @@ public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?>
         } else {
             buf.put(1)
             FfiConverterString.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalByteArray: FfiConverterRustBuffer<kotlin.ByteArray?> {
+    override fun read(buf: ByteBuffer): kotlin.ByteArray? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterByteArray.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.ByteArray?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterByteArray.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.ByteArray?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterByteArray.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeBreachCheckHandle: FfiConverterRustBuffer<BreachCheckHandle?> {
+    override fun read(buf: ByteBuffer): BreachCheckHandle? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeBreachCheckHandle.read(buf)
+    }
+
+    override fun allocationSize(value: BreachCheckHandle?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeBreachCheckHandle.allocationSize(value)
+        }
+    }
+
+    override fun write(value: BreachCheckHandle?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeBreachCheckHandle.write(value, buf)
         }
     }
 }
@@ -7396,6 +14023,38 @@ public object FfiConverterOptionalTypeDecryptedChunkDto: FfiConverterRustBuffer<
         } else {
             buf.put(1)
             FfiConverterTypeDecryptedChunkDto.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeDirectGeometryDto: FfiConverterRustBuffer<DirectGeometryDto?> {
+    override fun read(buf: ByteBuffer): DirectGeometryDto? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeDirectGeometryDto.read(buf)
+    }
+
+    override fun allocationSize(value: DirectGeometryDto?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeDirectGeometryDto.allocationSize(value)
+        }
+    }
+
+    override fun write(value: DirectGeometryDto?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeDirectGeometryDto.write(value, buf)
         }
     }
 }
@@ -7758,6 +14417,34 @@ public object FfiConverterSequenceTypeConstellationNodeDto: FfiConverterRustBuff
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeDirectStorageBucketDto: FfiConverterRustBuffer<List<DirectStorageBucketDto>> {
+    override fun read(buf: ByteBuffer): List<DirectStorageBucketDto> {
+        val len = buf.getInt()
+        return List<DirectStorageBucketDto>(len) {
+            FfiConverterTypeDirectStorageBucketDto.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<DirectStorageBucketDto>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeDirectStorageBucketDto.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<DirectStorageBucketDto>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeDirectStorageBucketDto.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeEncryptedChunkData: FfiConverterRustBuffer<List<EncryptedChunkData>> {
     override fun read(buf: ByteBuffer): List<EncryptedChunkData> {
         val len = buf.getInt()
@@ -7947,6 +14634,91 @@ public object FfiConverterSequenceTypeShardRefDto: FfiConverterRustBuffer<List<S
         }
     }
 }
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeCeremonyStepDto: FfiConverterRustBuffer<List<CeremonyStepDto>> {
+    override fun read(buf: ByteBuffer): List<CeremonyStepDto> {
+        val len = buf.getInt()
+        return List<CeremonyStepDto>(len) {
+            FfiConverterTypeCeremonyStepDto.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<CeremonyStepDto>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeCeremonyStepDto.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<CeremonyStepDto>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeCeremonyStepDto.write(it, buf)
+        }
+    }
+}
+        /**
+         * Whether the app may let the user continue with this password. `Breached`
+         * and `CheckFailedBlocked` stop it. Kept in core so apps do not re-derive it.
+         */ fun `breachVerdictAllowsProceeding`(`verdict`: BreachVerdictDto): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_breach_verdict_allows_proceeding(
+    
+        FfiConverterTypeBreachVerdictDto.lower(`verdict`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * True when the corpus was not actually consulted (outage, either policy).
+         */ fun `breachVerdictCheckFailed`(`verdict`: BreachVerdictDto): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_breach_verdict_check_failed(
+    
+        FfiConverterTypeBreachVerdictDto.lower(`verdict`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * The server step id a ceremony step belongs to (`save_recovery_phrase` for
+         * both phrase parts).
+         */ fun `ceremonyStepSpecId`(`step`: CeremonyStepDto): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_ceremony_step_spec_id(
+    
+        FfiConverterTypeCeremonyStepDto.lower(`step`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Classify an API answer. `call` is `"discovery"`, `"download_grant"`, `"pinned_chunk"`,
+         * `"upload_grant"` or `"upload_commit"`; pass `status` 0 when there was no HTTP answer. `body` is whatever was read of the
+         * body (at most 64 KiB is looked at); `retry_after` is the raw header value.
+         */
+    @Throws(DirectTransferException::class) fun `classifyDirectAnswer`(`call`: kotlin.String, `status`: kotlin.UShort, `contentType`: kotlin.String?, `body`: kotlin.ByteArray, `retryAfter`: kotlin.String?): DirectOutcomeDto {
+            return FfiConverterTypeDirectOutcomeDto.lift(
+    uniffiRustCallWithError(DirectTransferException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_classify_direct_answer(
+    
+        FfiConverterString.lower(`call`),FfiConverterUShort.lower(`status`),FfiConverterOptionalString.lower(`contentType`),FfiConverterByteArray.lower(`body`),FfiConverterOptionalString.lower(`retryAfter`),_status)
+}
+    )
+    }
+    
+
         /**
          * Compute a recovery check value from a master key. Returns 32-byte check value.
          * This is stored server-side so we can verify a recovery phrase produces the
@@ -8060,13 +14832,21 @@ public object FfiConverterSequenceTypeShardRefDto: FfiConverterRustBuffer<List<S
          * cache layer does not treat the partial file as complete.
          *
          * Returns the total number of plaintext bytes written.
+         *
+         * **Task 1908:** `file_id` (the id the file was uploaded under) and
+         * `expected_chunk_format` (from the file's encrypted metadata,
+         * `decrypt_file_metadata`: 0 = unrecorded, 2 = v2) are required: the chunks
+         * are opened as one file's ordered stream — v2 frames are bound to (file id,
+         * upload, index, last), v1 files still open when the metadata records no
+         * format. Reordered, spliced, duplicated, dropped or truncated v2 chunks fail.
+         * The output is atomic (core `.tmp` + rename).
          */
-    @Throws(CryptoException::class) fun `decryptChunksToFile`(`key`: kotlin.ByteArray, `chunks`: List<EncryptedChunkData>, `outputPath`: kotlin.String): kotlin.ULong {
+    @Throws(CryptoException::class) fun `decryptChunksToFile`(`key`: kotlin.ByteArray, `fileId`: kotlin.String, `expectedChunkFormat`: kotlin.UByte, `chunks`: List<EncryptedChunkData>, `outputPath`: kotlin.String): kotlin.ULong {
             return FfiConverterULong.lift(
     uniffiRustCallWithError(CryptoException) { _status ->
     UniffiLib.uniffi_beebeeb_uniffi_fn_func_decrypt_chunks_to_file(
     
-        FfiConverterByteArray.lower(`key`),FfiConverterSequenceTypeEncryptedChunkData.lower(`chunks`),FfiConverterString.lower(`outputPath`),_status)
+        FfiConverterByteArray.lower(`key`),FfiConverterString.lower(`fileId`),FfiConverterUByte.lower(`expectedChunkFormat`),FfiConverterSequenceTypeEncryptedChunkData.lower(`chunks`),FfiConverterString.lower(`outputPath`),_status)
 }
     )
     }
@@ -8095,13 +14875,20 @@ public object FfiConverterSequenceTypeShardRefDto: FfiConverterRustBuffer<List<S
          * `output_path` is never created/overwritten. Callers no longer need to clean
          * up a partial file on `Err`, and an existence-based cache cannot serve a
          * truncated decrypt.
+         *
+         * **Task 1908:** `file_id` (the id the file was uploaded under) is required —
+         * it is bound into every v2 frame together with the upload's version id, the
+         * chunk index and the last-chunk flag — and so is `expected_chunk_format`
+         * from the file's encrypted metadata (0 = unrecorded, 2 = v2). v1 files still
+         * open when the metadata records no format. A reordered/spliced/truncated v2
+         * body fails.
          */
-    @Throws(CryptoException::class) fun `decryptContiguousToFile`(`fileKey`: kotlin.ByteArray, `body`: kotlin.ByteArray, `chunkSize`: kotlin.ULong, `outputPath`: kotlin.String): kotlin.ULong {
+    @Throws(CryptoException::class) fun `decryptContiguousToFile`(`fileKey`: kotlin.ByteArray, `fileId`: kotlin.String, `expectedChunkFormat`: kotlin.UByte, `body`: kotlin.ByteArray, `chunkSize`: kotlin.ULong, `outputPath`: kotlin.String): kotlin.ULong {
             return FfiConverterULong.lift(
     uniffiRustCallWithError(CryptoException) { _status ->
     UniffiLib.uniffi_beebeeb_uniffi_fn_func_decrypt_contiguous_to_file(
     
-        FfiConverterByteArray.lower(`fileKey`),FfiConverterByteArray.lower(`body`),FfiConverterULong.lower(`chunkSize`),FfiConverterString.lower(`outputPath`),_status)
+        FfiConverterByteArray.lower(`fileKey`),FfiConverterString.lower(`fileId`),FfiConverterUByte.lower(`expectedChunkFormat`),FfiConverterByteArray.lower(`body`),FfiConverterULong.lower(`chunkSize`),FfiConverterString.lower(`outputPath`),_status)
 }
     )
     }
@@ -8259,19 +15046,171 @@ public object FfiConverterSequenceTypeShardRefDto: FfiConverterRustBuffer<List<S
     
 
         /**
+         * A background URL session's resource timeout for a storage PUT, in milliseconds. No app timer runs in
+         * the background, so this is the only bound; it stays under the server's late-write fence from any
+         * start up to the link's expiry.
+         */ fun `directBackgroundPutResourceTimeoutMs`(): kotlin.ULong {
+            return FfiConverterULong.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_direct_background_put_resource_timeout_ms(
+    
+        _status)
+}
+    )
+    }
+    
+
+        /**
+         * May the app follow this storage link? `api_base` is the API origin in use.
+         * Throws `LinkRefused` with the refusal code; the message never contains the URL.
+         */
+    @Throws(DirectTransferException::class) fun `directCheckStorageUrl`(`url`: kotlin.String, `discovery`: DirectDiscoveryDto, `apiBase`: kotlin.String)
+        = 
+    uniffiRustCallWithError(DirectTransferException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_direct_check_storage_url(
+    
+        FfiConverterString.lower(`url`),FfiConverterTypeDirectDiscoveryDto.lower(`discovery`),FfiConverterString.lower(`apiBase`),_status)
+}
+    
+    
+
+        /**
+         * Does the server offer direct downloads, and how many grants to ask per window.
+         */ fun `directDiscoveryOffersDownload`(`discovery`: DirectDiscoveryDto): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_direct_discovery_offers_download(
+    
+        FfiConverterTypeDirectDiscoveryDto.lower(`discovery`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * `/api/v1/files/{id}/download-grants` for `file_id`.
+         */ fun `directDownloadGrantsPath`(`fileId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_direct_download_grants_path(
+    
+        FfiConverterString.lower(`fileId`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * The shared retry policy of the pinned per-chunk route (4 attempts, 150 s of waiting in all, a
+         * stated `Retry-After` kept, otherwise 1 s doubling). `outcome` is `classify_direct_answer`'s
+         * answer for `"pinned_chunk"`; `attempt` is the 1-based number of the attempt that just failed;
+         * `waited_ms` is the total waited so far.
+         */ fun `directPinnedRetryDecision`(`outcome`: DirectOutcomeDto, `attempt`: kotlin.UInt, `waitedMs`: kotlin.ULong): DirectRetryDecisionDto {
+            return FfiConverterTypeDirectRetryDecisionDto.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_direct_pinned_retry_decision(
+    
+        FfiConverterTypeDirectOutcomeDto.lower(`outcome`),FfiConverterUInt.lower(`attempt`),FfiConverterULong.lower(`waitedMs`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * A URL for a log line: scheme and host only.
+         */ fun `directRedactUrl`(`url`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_direct_redact_url(
+    
+        FfiConverterString.lower(`url`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * What to do with an unfinished upload found on disk. A recorded direct session is given up only on a
+         * definite no: the user forced the API (`forced_api`), or the server says it offers no direct uploads. It is
+         * never given up because discovery could not be read this time. One rule, so no client writes it by hand.
+         */ fun `directResumeTransport`(`recorded`: DirectRecordedTransportDto, `discovery`: DirectDiscoveryStateDto, `forcedApi`: kotlin.Boolean): DirectResumeActionDto {
+            return FfiConverterTypeDirectResumeActionDto.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_direct_resume_transport(
+    
+        FfiConverterTypeDirectRecordedTransportDto.lower(`recorded`),FfiConverterTypeDirectDiscoveryStateDto.lower(`discovery`),FfiConverterBoolean.lower(`forcedApi`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Text that may contain URLs, made safe to print.
+         */ fun `directScrubText`(`text`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_direct_scrub_text(
+    
+        FfiConverterString.lower(`text`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * The most a storage GET of `len` ciphertext bytes may take, in milliseconds (the same formula as a PUT).
+         */ fun `directStorageGetTotalMs`(`len`: kotlin.ULong): kotlin.ULong {
+            return FfiConverterULong.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_direct_storage_get_total_ms(
+    
+        FfiConverterULong.lower(`len`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * The most a storage PUT of `len` ciphertext bytes may take, in milliseconds: a minute plus the
+         * chunk at 1 Mbit/s (`60 s + ceil(len / 131072) s`). Any length is safe: a huge one is a long timeout.
+         */ fun `directStoragePutTotalMs`(`len`: kotlin.ULong): kotlin.ULong {
+            return FfiConverterULong.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_direct_storage_put_total_ms(
+    
+        FfiConverterULong.lower(`len`),_status)
+}
+    )
+    }
+    
+ fun `directTransferConstants`(): DirectConstantsDto {
+            return FfiConverterTypeDirectConstantsDto.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_direct_transfer_constants(
+    
+        _status)
+}
+    )
+    }
+    
+
+        /**
          * Download an encrypted file, decrypt it, and write plaintext to disk.
          * Blocking — call from Swift `Task { }` or Kotlin `withContext(Dispatchers.IO)`.
          *
          * Uses the MasterKeyHandle to derive the per-file key via HKDF, then
          * fetches `GET /api/v1/files/{file_id}/download`, splits into chunks,
          * decrypts each with AES-256-GCM, and writes to `output_path`.
+         *
+         * `expected_chunk_format` (task 1908) comes from the file's encrypted
+         * metadata (`decrypt_file_metadata`): 0 = unrecorded, 2 = v2.
          */
-    @Throws(UploadException::class) fun `downloadAndDecryptFile`(`apiUrl`: kotlin.String, `token`: kotlin.String, `masterKeyHandle`: MasterKeyHandle, `fileId`: kotlin.String, `outputPath`: kotlin.String, `callback`: DownloadProgressCallback?): DownloadResultData {
+    @Throws(UploadException::class) fun `downloadAndDecryptFile`(`apiUrl`: kotlin.String, `token`: kotlin.String, `masterKeyHandle`: MasterKeyHandle, `fileId`: kotlin.String, `expectedChunkFormat`: kotlin.UByte, `outputPath`: kotlin.String, `callback`: DownloadProgressCallback?): DownloadResultData {
             return FfiConverterTypeDownloadResultData.lift(
     uniffiRustCallWithError(UploadException) { _status ->
     UniffiLib.uniffi_beebeeb_uniffi_fn_func_download_and_decrypt_file(
     
-        FfiConverterString.lower(`apiUrl`),FfiConverterString.lower(`token`),FfiConverterTypeMasterKeyHandle.lower(`masterKeyHandle`),FfiConverterString.lower(`fileId`),FfiConverterString.lower(`outputPath`),FfiConverterOptionalTypeDownloadProgressCallback.lower(`callback`),_status)
+        FfiConverterString.lower(`apiUrl`),FfiConverterString.lower(`token`),FfiConverterTypeMasterKeyHandle.lower(`masterKeyHandle`),FfiConverterString.lower(`fileId`),FfiConverterUByte.lower(`expectedChunkFormat`),FfiConverterString.lower(`outputPath`),FfiConverterOptionalTypeDownloadProgressCallback.lower(`callback`),_status)
 }
     )
     }
@@ -8333,6 +15272,37 @@ public object FfiConverterSequenceTypeShardRefDto: FfiConverterRustBuffer<List<S
     UniffiLib.uniffi_beebeeb_uniffi_fn_func_encrypt_name(
     
         FfiConverterByteArray.lower(`masterKey`),FfiConverterString.lower(`fileId`),FfiConverterString.lower(`filename`),FfiConverterOptionalString.lower(`mimeType`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Evaluate a password against the server's `policy.password.min_length`
+         * (clamped up to the core floor of 12).
+         */ fun `evaluatePassword`(`password`: kotlin.String, `minLength`: kotlin.UInt): PasswordEvaluationDto {
+            return FfiConverterTypePasswordEvaluationDto.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_evaluate_password(
+    
+        FfiConverterString.lower(`password`),FfiConverterUInt.lower(`minLength`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * A shared folder's key id (task 2133): a one-way id of the folder's 32-byte
+         * key, for a server to compare folder keys without learning them (HKDF-SHA256,
+         * info `beebeeb/folder-key-id/v1`). Returns 32 bytes; not secret, and never a
+         * key. Wipes the copy of the key this function owns.
+         */
+    @Throws(CryptoException::class) fun `folderKeyId`(`folderKey`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_folder_key_id(
+    
+        FfiConverterByteArray.lower(`folderKey`),_status)
 }
     )
     }
@@ -8543,6 +15513,20 @@ public object FfiConverterSequenceTypeShardRefDto: FfiConverterRustBuffer<List<S
     UniffiLib.uniffi_beebeeb_uniffi_fn_func_open_request_upload(
     
         FfiConverterByteArray.lower(`rPriv`),FfiConverterByteArray.lower(`ePub`),FfiConverterByteArray.lower(`fileId`),FfiConverterByteArray.lower(`wrappedKey`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Decode a discovery body. Unknown fields are ignored, missing lists are empty.
+         */
+    @Throws(DirectTransferException::class) fun `parseDirectDiscovery`(`body`: kotlin.ByteArray): DirectDiscoveryDto {
+            return FfiConverterTypeDirectDiscoveryDto.lift(
+    uniffiRustCallWithError(DirectTransferException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_func_parse_direct_discovery(
+    
+        FfiConverterByteArray.lower(`body`),_status)
 }
     )
     }
