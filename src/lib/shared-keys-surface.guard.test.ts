@@ -31,6 +31,7 @@ test('releaseHandle_clears_the_shared_registry', () => {
   for (const name of ['releaseHandle', 'clearCachedMasterKey', 'purgePlaintextStorage']) {
     const block = s.split(`AsyncFunction("${name}")`)[1]?.split(/\n    (?:AsyncFunction|Function)\(/)[0]
     expect(block).toContain('sharedKeys.clear()')
+    if (name === 'releaseHandle') expect(block.indexOf('sharedKeys.clear()')).toBeLessThan(block.indexOf('if self.masterKeyHandles.isEmpty'))
   }
 })
 test('android_release_and_clear_are_wired_to_shared_clear', () => {

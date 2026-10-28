@@ -3054,8 +3054,7 @@ public class BeebeebCryptoModule: Module {
       self.cancelAllPreviewStreams()
       self.masterKeyHandles.removeValue(forKey: handleId)
       if self.masterKeyHandles.isEmpty {
-        self.sharedKeys.clear()
-      BeebeebCryptoBridge.clearCachedMasterKey()
+        BeebeebCryptoBridge.clearCachedMasterKey()
       }
     }
 
