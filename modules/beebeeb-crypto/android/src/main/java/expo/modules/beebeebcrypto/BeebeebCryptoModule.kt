@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.beebeeb_uniffi.BatchNameItem
 import uniffi.beebeeb_uniffi.EncryptedData
+import uniffi.beebeeb_uniffi.FileKeyHandle
 import uniffi.beebeeb_uniffi.MasterKeyHandle
 import uniffi.beebeeb_uniffi.computeRecoveryCheck
 import uniffi.beebeeb_uniffi.decryptChunk
@@ -542,7 +543,7 @@ class BeebeebCryptoModule : Module() {
       chunksTotal = meta.chunkCount,
     )
 
-    val fileKey = master.deriveFileKey(fileIdBytes(fileId))
+    val fileKey = SharedKeyOps.fileKey(master, fileId)
     try {
       RandomAccessFile(encFile, "r").use { raf ->
         FileOutputStream(tmpFile).use { out ->
@@ -631,7 +632,7 @@ class BeebeebCryptoModule : Module() {
 
   private fun decryptLocalFileChunks(
     progress: PreviewDownloadProgress,
-    fileKey: ByteArray,
+    fileKey: FileKeyHandle,
     inputPath: String,
     outputFile: File,
     chunkSizeBytes: Long,
@@ -688,7 +689,7 @@ class BeebeebCryptoModule : Module() {
             raf.readFully(window)
             val nonce = window.copyOfRange(0, NONCE_BYTES)
             val ciphertext = window.copyOfRange(NONCE_BYTES, window.size)
-            val plaintext = decryptChunk(fileKey, nonce, ciphertext)
+            val plaintext = fileKey.decryptChunk(nonce, ciphertext)
             out.write(plaintext)
             chunkStart += windowSize
             progress.onChunkDecrypted(index + 1, chunkCount)
@@ -864,21 +865,21 @@ class BeebeebCryptoModule : Module() {
     }
 
     AsyncFunction("handleEncryptChunk") { handleId: Int, fileId: String, plaintext: ByteArray ->
-      val fileKey = handles.get(handleId).deriveFileKey(fileIdBytes(fileId))
+      val fileKey = SharedKeyOps.fileKey(handles.get(handleId), fileId)
       encryptDataToMap(fileKey.encryptChunk(plaintext))
     }
 
     AsyncFunction("handleDecryptChunk") { handleId: Int, fileId: String, nonce: ByteArray, ciphertext: ByteArray ->
-      handles.get(handleId).deriveFileKey(fileIdBytes(fileId)).decryptChunk(nonce, ciphertext)
+      SharedKeyOps.fileKey(handles.get(handleId), fileId).decryptChunk(nonce, ciphertext)
     }
 
     AsyncFunction("handleEncryptMetadata") { handleId: Int, fileId: String, metadata: String ->
-      val fileKey = handles.get(handleId).deriveFileKey(fileIdBytes(fileId))
+      val fileKey = SharedKeyOps.fileKey(handles.get(handleId), fileId)
       encryptDataToMap(fileKey.encryptMetadata(metadata))
     }
 
     AsyncFunction("handleDecryptMetadata") { handleId: Int, fileId: String, nonce: ByteArray, ciphertext: ByteArray ->
-      handles.get(handleId).deriveFileKey(fileIdBytes(fileId)).decryptMetadata(nonce, ciphertext)
+      SharedKeyOps.fileKey(handles.get(handleId), fileId).decryptMetadata(nonce, ciphertext)
     }
 
     AsyncFunction("decryptNames") { handleId: Int, items: List<Map<String, Any?>> ->
@@ -888,7 +889,7 @@ class BeebeebCryptoModule : Module() {
           nameEncrypted = item["nameEncrypted"] as? String ?: "",
         )
       }
-      handles.get(handleId).decryptNames(batch).map { result ->
+      SharedKeyOps.decryptNames(handles.get(handleId), batch).map { result ->
         mapOf(
           "name" to result.name,
           "mimeType" to result.mimeType,
@@ -1212,8 +1213,13 @@ class BeebeebCryptoModule : Module() {
       scope.launch {
         val requestId = params["requestId"] as? String ?: ""
         try {
-          val fileKey = params["fileKey"] as? ByteArray
-            ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires fileKey", null)
+          val fileId = params["fileId"] as? String ?: ""
+          val fileKey = pickKey(sharedKeys.file(fileId)) {
+            val masterId = (params["masterHandleId"] as? Number ?: params["handleId"] as? Number)?.toInt()
+            if (masterId != null) SharedKeyOps.fileKey(sharedMaster(masterId), fileId)
+            else FileKeyHandle.fromKeyBytes(params["fileKey"] as? ByteArray
+              ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires a key handle or fileKey", null))
+          }
           val inputPath = filePathFromUri(
             params["inputUri"] as? String
               ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires inputUri", null),
@@ -1360,6 +1366,8 @@ class BeebeebCryptoModule : Module() {
           val written = withContext(Dispatchers.IO) {
             uniffi.beebeeb_uniffi.decryptContiguousToFile(
               fileKey = fileKey,
+              fileId = "", // Legacy raw-key bridge has no v2 file-id context.
+              expectedChunkFormat = 0u,
               body = body,
               chunkSize = chunkSize.toLong().toULong(),
               outputPath = resolvedPath,

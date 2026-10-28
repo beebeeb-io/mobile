@@ -484,7 +484,7 @@ internal class VideoStreamSession(
     try {
       if (stopRequested() || complete.get()) return false
       if (fileKey == null) {
-        fileKey = masterKey.deriveFileKey(fileId.toByteArray(Charsets.UTF_8))
+        fileKey = SharedKeyOps.fileKey(masterKey, fileId)
       }
       val windowSize = VideoChunkMath.windowSize(index, count, chunkSize, size)
       val window = ByteArray(windowSize.toInt())

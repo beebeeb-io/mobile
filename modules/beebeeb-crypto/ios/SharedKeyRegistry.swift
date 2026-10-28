@@ -47,3 +47,10 @@ func pickKey<H>(table: H?, derive: () throws -> H) rethrows -> H {
     if let table { return table }
     return try derive()
 }
+
+/// Each input index occurs exactly once; preserve per-item values, including errors.
+func mergeNameResults<T>(count: Int, fromTable: [(index: Int, value: T)], fromMaster: [(index: Int, value: T)]) -> [T] {
+    let ordered = (fromTable + fromMaster).sorted { $0.index < $1.index }
+    precondition(ordered.map { $0.index } == Array(0..<count))
+    return ordered.map { $0.value }
+}

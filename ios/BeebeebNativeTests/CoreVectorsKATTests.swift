@@ -627,6 +627,36 @@ final class CoreVectorsKATTests: XCTestCase {
         XCTAssertNil(try SharedKeyOps.recoverKc(master: master, folderId: folder.handleId, wrapped: legacy, shareId: "share", registry: registry))
     }
 
+    func testDecryptNamesPrefersTheTableKey() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let key = try FileKeyHandle.generate()
+        let name = try key.encryptNameFor(filename: "guest.txt", mimeType: "text/plain", recordedPin: 0)
+        let items = [BatchNameItem(fileId: "guest", nameEncrypted: name)]
+        XCTAssertNotNil(try SharedKeyOps.decryptNames(master: master, items: items, registry: registry)[0].error)
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "root", registry: registry)
+        let wrapped = try SharedKeyOps.wire(registry.folder(folder.handleId)!.handle.wrapKey(inner: key))
+        _ = try SharedKeyOps.loadFileKeys(folderId: folder.handleId, entries: [SharedKeyEntryNative(fileId: "guest", wrapped: wrapped)], registry: registry)
+        let opened = try SharedKeyOps.decryptNames(master: master, items: items, registry: registry)
+        XCTAssertEqual(opened[0].name, "guest.txt")
+        XCTAssertEqual(opened[0].mimeType, "text/plain")
+        XCTAssertNil(opened[0].error)
+        let ownerName = try master.encryptName(fileId: "guest", filename: "owner", mimeType: nil)
+        let rejected = try SharedKeyOps.decryptNames(master: master,
+            items: [BatchNameItem(fileId: "guest", nameEncrypted: ownerName)], registry: registry)
+        XCTAssertNotNil(rejected[0].error, "a table decrypt failure must not fall back to the master")
+    }
+
+    func testChunkDecryptorUsesTheFileKeyHandle() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let key = try FileKeyHandle.generate()
+        registry.storeFile("guest", key)
+        let frame = try SharedKeyOps.wire(key.encryptChunk(plaintext: Data("guest frame".utf8)))
+        let decryptor = try SharedKeyOps.chunkDecryptor(master: master, fileId: "guest", registry: registry)
+        XCTAssertEqual(try decryptor.pushFrame(frame: frame).data, Data("guest frame".utf8))
+    }
+
 }
 
 // MARK: - Hex <-> Data

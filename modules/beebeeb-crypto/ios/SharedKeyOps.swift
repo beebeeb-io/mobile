@@ -112,6 +112,24 @@ enum SharedKeyOps {
         if try FileKeyHandle.fromKeyBytes(key: candidate).keyId() == key.keyId() { return nil }
         return base64url(candidate)
     }
+    static func decryptNames(master: MasterKeyHandle, items: [BatchNameItem],
+                             registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> [BatchNameResult] {
+        var fromTable: [(index: Int, value: BatchNameResult)] = []
+        var remaining: [BatchNameItem] = [], indices: [Int] = []
+        for (index, item) in items.enumerated() {
+            if let key = registry.file(item.fileId) {
+                do {
+                    let value = try key.decryptNameMetadata(nameEncrypted: item.nameEncrypted)
+                    fromTable.append((index, BatchNameResult(name: value.name, mimeType: value.mimeType, error: nil)))
+                } catch {
+                    // A present but wrong table key is an error; never retry with the master.
+                    fromTable.append((index, BatchNameResult(name: nil, mimeType: nil, error: String(describing: error))))
+                }
+            } else { remaining.append(item); indices.append(index) }
+        }
+        let results = remaining.isEmpty ? [] : try master.decryptNames(items: remaining)
+        return mergeNameResults(count: items.count, fromTable: fromTable, fromMaster: Array(zip(indices, results)))
+    }
     private static func base64url(_ data: Data) -> String {
         data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
     }

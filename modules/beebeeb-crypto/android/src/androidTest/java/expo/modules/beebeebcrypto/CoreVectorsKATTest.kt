@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -393,5 +394,34 @@ class CoreVectorsKATTest {
         val wrong = SharedKeyOps.wire(master.wrapLinkOwnerKey("share", key))
         assertNull(SharedKeyOps.recoverKc(master, folder.first, wrong, "share", registry))
         assertNull(SharedKeyOps.recoverKc(master, folder.first, SharedKeyOps.wire(master.wrapKey(key)), "share", registry))
+    }
+
+    @Test
+    fun decryptNamesPrefersTheTableKey() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val key = FileKeyHandle.generate()
+        val name = key.encryptNameFor("guest.txt", "text/plain", 0u)
+        val items = listOf(uniffi.beebeeb_uniffi.BatchNameItem("guest", name))
+        assertNotNull(SharedKeyOps.decryptNames(master, items, registry)[0].error)
+        val folder = SharedKeyOps.generateFolderKey(master, "root", registry)
+        val wrapped = SharedKeyOps.wire(registry.folder(folder.first)!!.handle.wrapKey(key))
+        SharedKeyOps.loadFileKeys(folder.first, listOf(SharedKeyEntryNative("guest", wrapped)), registry)
+        val opened = SharedKeyOps.decryptNames(master, items, registry)
+        assertEquals("guest.txt", opened[0].name)
+        assertEquals("text/plain", opened[0].mimeType)
+        assertNull(opened[0].error)
+        val ownerName = master.encryptName("guest", "owner", null)
+        assertNotNull(SharedKeyOps.decryptNames(master, listOf(uniffi.beebeeb_uniffi.BatchNameItem("guest", ownerName)), registry)[0].error)
+    }
+
+    @Test
+    fun chunkDecryptorUsesTheFileKeyHandle() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val key = FileKeyHandle.generate()
+        registry.storeFile("guest", key)
+        val frame = key.encryptChunk("guest frame".toByteArray())
+        assertTrue(SharedKeyOps.fileKey(master, "guest", registry).decryptChunk(frame.nonce, frame.ciphertext).contentEquals("guest frame".toByteArray()))
     }
 }

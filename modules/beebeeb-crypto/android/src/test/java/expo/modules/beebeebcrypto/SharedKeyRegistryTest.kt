@@ -42,4 +42,8 @@ class SharedKeyRegistryTest {
     r.release(-1); assertEquals(1, calls)
     r.clear(); assertEquals(2, calls)
   }
+  @Test fun decrypt_names_merges_table_and_master_results_in_order() {
+    assertEquals(listOf("owner", "guest", "error:bad", "last"),
+      mergeNameResults(4, listOf(1 to "guest"), listOf(0 to "owner", 2 to "error:bad", 3 to "last")))
+  }
 }

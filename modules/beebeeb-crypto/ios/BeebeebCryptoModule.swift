@@ -477,7 +477,7 @@ private final class PreviewStreamingDownloadDelegate: NSObject, URLSessionDataDe
           ]
         )
       }
-      let decryptor = try ChunkDecryptorHandle.forPush(masterKey: master, fileId: fileId)
+      let decryptor = try SharedKeyOps.chunkDecryptor(master: master, fileId: fileId)
       pipeline = try PreviewChunkPipeline(
         plan: plan,
         outputURL: outputURL,
@@ -2972,7 +2972,7 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("handleEncryptChunk") { [self] (handleId: Int, fileId: String, plaintext: Data) throws -> [String: Any] in
       let master = try self.getHandle(handleId)
-      let fk = try master.deriveFileKey(fileId: Data(fileId.utf8))
+      let fk = try SharedKeyOps.fileKey(master: master, fileId: fileId)
       let enc = try fk.encryptChunk(plaintext: plaintext)
       return [
         "cipherSuite": enc.cipherSuite,
@@ -2983,13 +2983,13 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("handleDecryptChunk") { [self] (handleId: Int, fileId: String, nonce: Data, ciphertext: Data) throws -> Data in
       let master = try self.getHandle(handleId)
-      let fk = try master.deriveFileKey(fileId: Data(fileId.utf8))
+      let fk = try SharedKeyOps.fileKey(master: master, fileId: fileId)
       return try fk.decryptChunk(nonce: nonce, ciphertext: ciphertext)
     }
 
     AsyncFunction("handleEncryptMetadata") { [self] (handleId: Int, fileId: String, metadata: String) throws -> [String: Any] in
       let master = try self.getHandle(handleId)
-      let fk = try master.deriveFileKey(fileId: Data(fileId.utf8))
+      let fk = try SharedKeyOps.fileKey(master: master, fileId: fileId)
       let enc = try fk.encryptMetadata(metadata: metadata)
       return [
         "cipherSuite": enc.cipherSuite,
@@ -3000,7 +3000,7 @@ public class BeebeebCryptoModule: Module {
 
     AsyncFunction("handleDecryptMetadata") { [self] (handleId: Int, fileId: String, nonce: Data, ciphertext: Data) throws -> String in
       let master = try self.getHandle(handleId)
-      let fk = try master.deriveFileKey(fileId: Data(fileId.utf8))
+      let fk = try SharedKeyOps.fileKey(master: master, fileId: fileId)
       return try fk.decryptMetadata(nonce: nonce, ciphertext: ciphertext)
     }
 
@@ -3013,7 +3013,7 @@ public class BeebeebCryptoModule: Module {
       let batchItems = items.map { item in
         BatchNameItem(fileId: item["fileId"] ?? "", nameEncrypted: item["nameEncrypted"] ?? "")
       }
-      let results = try master.decryptNames(items: batchItems)
+      let results = try SharedKeyOps.decryptNames(master: master, items: batchItems)
       return results.map { result -> [String: Any] in
         [
           "name": result.name as Any,
@@ -4251,7 +4251,7 @@ public class BeebeebCryptoModule: Module {
       // UniFFI emits this as a top-level function in `beebeeb_uniffi.swift`,
       // not under a namespace — call it directly.
       return try decryptContiguousToFile(
-        fileKey: fileKey, body: body, chunkSize: chunkSize, outputPath: resolvedPath
+        fileKey: fileKey, fileId: "", expectedChunkFormat: 0, body: body, chunkSize: chunkSize, outputPath: resolvedPath
       )
     }
 
@@ -4829,7 +4829,7 @@ public class BeebeebCryptoModule: Module {
       // 4. Decrypt via Rust to a temp file
       let decryptedPath = tempDir + "decrypted"
       let _ = try masterKey.decryptFile(
-        fileId: fileId, chunkPaths: chunkPaths,
+        fileId: fileId, expectedChunkFormat: 0, chunkPaths: chunkPaths,
         outputPath: decryptedPath, callback: nil
       )
 

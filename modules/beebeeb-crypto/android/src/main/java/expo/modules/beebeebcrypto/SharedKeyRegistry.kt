@@ -25,3 +25,9 @@ class SharedKeyRegistry<H : Any> {
 }
 
 fun <H> pickKey(table: H?, derive: () -> H): H = table ?: derive()
+
+fun <T> mergeNameResults(count: Int, fromTable: List<Pair<Int, T>>, fromMaster: List<Pair<Int, T>>): List<T> {
+  val ordered = (fromTable + fromMaster).sortedBy { it.first }
+  require(ordered.map { it.first } == (0 until count).toList())
+  return ordered.map { it.second }
+}

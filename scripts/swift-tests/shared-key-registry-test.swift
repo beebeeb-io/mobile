@@ -32,4 +32,7 @@ DispatchQueue.concurrentPerform(iterations: 8) { worker in
 }
 registry.clear()
 check(registry.file("0-0") == nil, "concurrent_store_and_clear_never_crash")
+let names = mergeNameResults(count: 4, fromTable: [(index: 1, value: "guest")],
+    fromMaster: [(index: 0, value: "owner"), (index: 2, value: "error:bad"), (index: 3, value: "last")])
+check(names == ["owner", "guest", "error:bad", "last"], "decrypt_names_merges_table_and_master_results_in_order")
 print("shared-key-registry: \(assertions) assertions, 0 failed")

@@ -89,5 +89,23 @@ object SharedKeyOps {
         return base64url(candidate)
     } finally { candidate.fill(0) }
   }
+  fun decryptNames(master: MasterKeyHandle, items: List<BatchNameItem>,
+    registry: SharedKeyRegistry<FileKeyHandle> = this.registry): List<BatchNameResult> {
+    val fromTable = mutableListOf<Pair<Int, BatchNameResult>>()
+    val remaining = mutableListOf<BatchNameItem>()
+    val indices = mutableListOf<Int>()
+    for ((index, item) in items.withIndex()) {
+      val key = registry.file(item.fileId)
+      if (key != null) {
+        val result = try {
+          val value = key.decryptNameMetadata(item.nameEncrypted)
+          BatchNameResult(value.name, value.mimeType, null)
+        } catch (error: Exception) { BatchNameResult(null, null, error.message ?: "decryption failed") }
+        fromTable.add(index to result)
+      } else { remaining.add(item); indices.add(index) }
+    }
+    val results = if (remaining.isEmpty()) emptyList() else master.decryptNames(remaining)
+    return mergeNameResults(items.size, fromTable, indices.zip(results))
+  }
   private fun base64url(bytes: ByteArray): String = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 }
