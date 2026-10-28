@@ -1,7 +1,7 @@
 // @ts-nocheck -- C1/C3 promised Interfaces are explicitly mocked through ports.
-import { expect, test } from 'bun:test';
+import { expect, mock, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { createSharedFolderPublisher, isPublishableOwnedFile } from './shared-folder-publish';
+import { createSharedFolderPublisher, isPublishableOwnedFile, retryPending, clearPendingPublishes } from './shared-folder-publish';
 import { clearTree, ingestTree, ancestorsOf } from './shared-folder-tree';
 const DAY = 86_400_000;
 function setup() {
@@ -81,4 +81,69 @@ test('production_hooks_cover_both_upload_engines_unlock_foreground_and_sign_out'
   const upload=source('./encrypted-upload.ts');expect((upload.match(/onOwnerUpload\(/g)??[]).length).toBe(2);
   const crypto=source('./crypto-context.tsx');expect(crypto.includes("addEventListener('change'")).toBe(true);expect(crypto.includes("state === 'active'")).toBe(true);expect((crypto.match(/retryPending\(/g)??[]).length).toBeGreaterThanOrEqual(2);
   expect(source('./account-cleanup.ts').includes('clearPendingPublishes()')).toBe(true);
+});
+
+// End-to-end JS hook wiring with marked native/C3 endpoint mocks.
+const runtimeDisk = new Map<string, string>(), runtimePosts: unknown[] = [];
+let nativeEngine = true, engineWait: (() => Promise<unknown>) | null = null;
+let completedEntry = { id: 'native-result', parent_id: undefined };
+mock.module('expo-file-system/legacy', () => ({
+  cacheDirectory: 'file:///cache/',
+  getInfoAsync: async uri => ({ exists: uri === 'file:///source' || runtimeDisk.has(uri), size: 3 }),
+  readAsStringAsync: async uri => runtimeDisk.get(uri),
+  writeAsStringAsync: async (uri, value) => { runtimeDisk.set(uri, value); },
+  deleteAsync: async uri => { runtimeDisk.delete(uri); },
+  readDirectoryAsync: async () => [...runtimeDisk.keys()].map(uri => uri.split('/').pop()),
+}));
+mock.module('./files-mount-default', () => ({ accountDigest: () => '0123456789abcdef' }));
+const runtimeNative = {
+  isSharedKeysNativeReady: () => true, sharedFileKeyIsLoaded: () => false,
+  generateRandomBytes: async n => new Uint8Array(n),
+  sharedWrapChildKeys: async (master, folder, ids) => {
+    expect(master).toBe(9); expect(folder).toBe(7);
+    return ids.map(fileId => ({ fileId, wrapped: new Uint8Array(60) }));
+  },
+};
+mock.module('../../modules/beebeeb-crypto', () => runtimeNative);
+mock.module('./api', () => ({
+  getEvaluateFlags: async () => ({ flags: { shared_folders_v1: true } }),
+  listFolderLinks: async () => [{ folder_id: 'R' }],
+  publishSharedFolderKeys: async (root, keys) => { runtimePosts.push({root,keys}); return {written:keys.length,skipped:0}; },
+  uploadEncryptedFileNative: async () => engineWait ? engineWait() : nativeEngine ? completedEntry : null,
+  uploadEncryptedChunked: async () => completedEntry,
+  registerUploadAbort: () => new AbortController().signal,
+  settleUploadSignal: () => {}, clearUploadResumeState: async () => {},
+}));
+async function runtimeSession(id = 'owner') {
+  const {setExpectedUserId} = await import('./expected-user');
+  const {advanceAccountEpoch} = await import('./account-epoch');
+  const {configureSharedKeys,setSharedKeyResolver} = await import('./shared-folder-keys');
+  advanceAccountEpoch(); setExpectedUserId(id);
+  configureSharedKeys(runtimeNative, {}, () => 9);
+  setSharedKeyResolver({folderHandleFor:async()=>7,clear:()=>{}});
+}
+const uploadOptions = {fileId:'client-id',uri:'file:///source',name:'private.txt',parentId:'R',masterKeyHandleId:9,
+  encryptChunkFn:async()=>({nonce:new Uint8Array(12),ciphertext:new Uint8Array(16)}),
+  encryptMetadataFn:async()=>({nonce:new Uint8Array(12),ciphertext:new Uint8Array(16)})};
+test('both_actual_upload_engines_publish_the_returned_id_and_parent_fallback',async()=>{
+  await runtimeSession(); runtimePosts.length=0;
+  const {encryptedUpload} = await import('./encrypted-upload');
+  for (const native of [true,false]) {
+    nativeEngine=native; completedEntry={id:native?'native-result':'js-result',parent_id:undefined};
+    expect(await encryptedUpload(uploadOptions)).toBe(completedEntry);
+    await retryPending();
+  }
+  expect(runtimePosts.map(p=>[p.root,p.keys.map(k=>k.file_id)])).toEqual([['R',['native-result']],['R',['js-result']]]);
+  await clearPendingPublishes(); expect(runtimeDisk.size).toBe(0);
+});
+test('an_upload_finishing_after_account_switch_cannot_publish_under_the_new_account',async()=>{
+  await runtimeSession(); runtimePosts.length=0;
+  let release; engineWait=()=>new Promise(r=>release=r);
+  const {encryptedUpload} = await import('./encrypted-upload');
+  const uploading=encryptedUpload(uploadOptions);
+  for(let i=0;i<30&&!release;i++)await Promise.resolve(); expect(typeof release).toBe('function');
+  await runtimeSession('next-account');
+  release({id:'previous-account-file',parent_id:'R'});await uploading;engineWait=null;
+  await retryPending(); expect(runtimePosts).toEqual([]);
+  await clearPendingPublishes();
 });
