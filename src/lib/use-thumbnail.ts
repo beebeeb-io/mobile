@@ -1,3 +1,5 @@
+import { sharedFileKeyIsLoaded } from './shared-folder-keys';
+import type { ThumbnailDecrypt } from './thumbnail';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { requireOptionalNativeModule } from 'expo-modules-core';
@@ -42,11 +44,11 @@ const ThumbnailServiceNative = requireOptionalNativeModule<{
  */
 export async function fetchThumbnailUriOnce(
   fileId: string,
-  fileKey: Uint8Array,
+  fileKey: Uint8Array | ThumbnailDecrypt,
   opts: { width?: number; height?: number; signal?: AbortSignal } = {},
 ): Promise<string | null> {
   const { width = 256, height = 256, signal } = opts;
-  if (Platform.OS === 'ios' && ThumbnailServiceNative?.getThumbnail) {
+  if (Platform.OS === 'ios' && !sharedFileKeyIsLoaded(fileId) && ThumbnailServiceNative?.getThumbnail) {
     try {
       const result = await ThumbnailServiceNative.getThumbnail(fileId, width, height);
       return result?.uri ?? null;
@@ -68,7 +70,7 @@ export function useThumbnail(
   options: UseThumbnailOptions = {},
 ): ThumbnailHookState {
   const { width = 256, height = 256, enabled = true, mimeType = null, hasThumbnail = true } = options;
-  const { getFileKeyBytes, isUnlocked } = useCrypto();
+  const { getFileKeyBytes, decryptChunk: decryptFileChunk, isUnlocked } = useCrypto();
   const [state, setState] = useState<ThumbnailHookState>({ uri: null, source: null, failed: false });
   const cancelledRef = useRef(false);
   // Decrypted MIME metadata arrives after remote thumbnails can already be
@@ -92,7 +94,13 @@ export function useThumbnail(
       hasThumbnail,
     });
 
-    if (Platform.OS === 'ios' && ThumbnailServiceNative?.getThumbnail) {
+    if (sharedFileKeyIsLoaded(fileId)) {
+      void enqueueThumbnailLoad(fileId, fId => fetchDecryptedThumbnailUri(fId, (n, c) => decryptFileChunk(fId, n, c)))
+        .then(uri => { if (!cancelledRef.current) setState({ uri, source: uri ? 'remote' : null, failed: !uri }); })
+        .catch(() => { if (!cancelledRef.current) setState({ uri: null, source: null, failed: true }); });
+      return () => { cancelledRef.current = true; };
+    }
+    if (Platform.OS === 'ios' && !sharedFileKeyIsLoaded(fileId) && ThumbnailServiceNative?.getThumbnail) {
       ThumbnailServiceNative
         .getThumbnail(fileId, width, height)
         .then((result) => {
@@ -187,7 +195,7 @@ export function useThumbnail(
       });
 
     return () => { cancelledRef.current = true; };
-  }, [fileId, width, height, enabled, isUnlocked, thumbnailMimeType, hasThumbnail, getFileKeyBytes]);
+  }, [fileId, width, height, enabled, isUnlocked, thumbnailMimeType, hasThumbnail, getFileKeyBytes, decryptFileChunk]);
 
   // Subscribe to refresh events on iOS — when a remote thumbnail lands after
   // the initial render, the actor fires `onThumbnailReady` so we can update

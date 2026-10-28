@@ -80,3 +80,9 @@ describe('previewLoadErrorMessage — partial decrypt (task 1687d)', () => {
     expect(PARTIAL_DECRYPT_MESSAGE).toMatch(/try again/i);
   });
 });
+
+test('shared native failure copy is exact', async () => {
+  const { SharedKeyCannotOpenError, SharedKeyUpdateRequiredError } = await import('./preview-load-error');
+  expect(previewLoadErrorMessage(new SharedKeyUpdateRequiredError())).toBe('Update Beebeeb to open this file');
+  expect(previewLoadErrorMessage(new SharedKeyCannotOpenError(null))).toBe("Can't open this file");
+});

@@ -1,4 +1,8 @@
-import { retrySharedDecrypt } from './shared-folder-keys';
+import { retrySharedDecrypt, getSharedKeyResolver, sharedFileKeyIsLoaded } from './shared-folder-keys';
+import { isForeignSharedFile } from './shared-folder-tree';
+import { accountEpoch, StaleAccountError } from './account-epoch';
+import { SharedKeyUpdateRequiredError, SharedKeyCannotOpenError } from './preview-load-error';
+export { SharedKeyUpdateRequiredError, SharedKeyCannotOpenError } from './preview-load-error';
 /**
  * Native decryption wrapper for preview.
  *
@@ -546,6 +550,7 @@ async function decryptToTempFileUnshared(
   options: PreviewDecryptOptions,
 ): Promise<string> {
   if (!isNativeAvailable) {
+    if (isForeignSharedFile(fileId, accountEpoch().accountId)) throw new SharedKeyUpdateRequiredError();
     recordRuntimeTrace('preview.decrypt.native_unavailable', { fileId });
     throw new Error('Preview requires a dev client build with native crypto.');
   }
@@ -679,6 +684,13 @@ async function decryptToTempFileUnshared(
   // A null handle also means “resolve the loaded master key” on Android.
   // Request uploads must explicitly bypass that derivation and use their C.
   if (isNativeAvailable && !options.useProvidedFileKey) {
+    const shared = getSharedKeyResolver();
+    if (shared && isForeignSharedFile(fileId, accountEpoch().accountId)) {
+      const outcome = (await shared.ensureLoaded([fileId])).get(fileId);
+      if (outcome === 'stale') throw new StaleAccountError('shared preview');
+      if (outcome === 'update_required') throw new SharedKeyUpdateRequiredError();
+      if (outcome !== 'loaded') throw new SharedKeyCannotOpenError(await shared.originLabel(fileId));
+    }
     try {
       recordRuntimeTrace('preview.decrypt.native.request', {
         fileId,
@@ -883,8 +895,12 @@ async function decryptToTempFileUnshared(
           elapsedMs: Date.now() - startedAt,
           ...errorTraceFields(error),
         });
+        if (!(error instanceof StaleAccountError) && (sharedFileKeyIsLoaded(fileId) || isForeignSharedFile(fileId, accountEpoch().accountId))) {
+          throw new SharedKeyCannotOpenError(await shared?.originLabel(fileId) ?? null);
+        }
         throw error;
       }
+      if (sharedFileKeyIsLoaded(fileId)) throw new SharedKeyUpdateRequiredError();
       recordRuntimeTrace('preview.decrypt.native.not_available_fallback', { fileId });
     }
   }

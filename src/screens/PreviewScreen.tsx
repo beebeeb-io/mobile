@@ -1,3 +1,5 @@
+import { sharedFileKeyIsLoaded, sharedMasterHandleId } from '../lib/shared-folder-keys';
+import { handleDecryptChunk } from '../../modules/beebeeb-crypto';
 import { bottomAnchorInset } from '../components/glass/tab-bar-inset';
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -776,7 +778,9 @@ async function loadNormalPreviewThumbnail(
   if (!allowRemote) return null;
   if (!isUnlocked) return null;
   try {
-    const fileKey = await getFileKeyBytes(entry.id);
+    const fileKey = sharedFileKeyIsLoaded(entry.id)
+      ? (nonce: Uint8Array, ciphertext: Uint8Array) => handleDecryptChunk(sharedMasterHandleId(), entry.id, nonce, ciphertext)
+      : await getFileKeyBytes(entry.id);
     // 1321 — was fetchDecryptedThumbnailUri, which throws unconditionally on
     // iOS since the BeebeebThumbnails migration. The catch below turned that
     // into a silently missing preview thumbnail.
@@ -807,7 +811,9 @@ async function loadLargePreviewThumbnail(
 
   if (!isUnlocked) return null;
   try {
-    const fileKey = await getFileKeyBytes(entry.id);
+    const fileKey = sharedFileKeyIsLoaded(entry.id)
+      ? (nonce: Uint8Array, ciphertext: Uint8Array) => handleDecryptChunk(sharedMasterHandleId(), entry.id, nonce, ciphertext)
+      : await getFileKeyBytes(entry.id);
     const remote = await fetchDecryptedLargeThumbnailUri(entry.id, fileKey, signal);
     throwIfPreviewAborted(signal);
     return remote ? { uri: remote, kind: 'large', source: 'remote' } : null;

@@ -1,3 +1,6 @@
+import { sharedFileKeyIsLoaded, sharedKeyOutcome, getSharedKeyResolver } from '../lib/shared-folder-keys';
+import { cannotOpenMessage, UPDATE_BEEBEEB_MESSAGE } from '../lib/preview-load-error';
+import { loadFileIndex } from '../lib/file-index-loader';
 import { bottomAnchorInset } from '../components/glass/tab-bar-inset';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -700,6 +703,13 @@ const FileRowItem = React.memo(function FileRowItem({
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
   const category = fileCategory(item);
+  const [sharedLabel, setSharedLabel] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    setSharedLabel(null);
+    if (nameUnavailable) void getSharedKeyResolver()?.originLabel(item.id).then(label => { if (current) setSharedLabel(label); });
+    return () => { current = false; };
+  }, [item.id, nameUnavailable]);
   // Task 1592 — pending → placeholder bar; failed → settled words (never an
   // endless placeholder); otherwise the name.
   const nameDisplay = rowNameDisplay({
@@ -830,6 +840,9 @@ const FileRowItem = React.memo(function FileRowItem({
         </View>
         <Text style={[styles.fileMeta, { color: c.ink3 }]}>
           {(() => {
+            const outcome = sharedKeyOutcome(item.id);
+            if (outcome === 'update_required') return UPDATE_BEEBEEB_MESSAGE;
+            if (outcome && outcome !== 'loaded' && outcome !== 'stale') return cannotOpenMessage(sharedLabel);
             const loc = storageLocation(item.storage_pool_id);
             const locSuffix = loc.shortCode ? `  ·  ${loc.shortCode}` : '';
             if (item.is_folder) return `${formatDate(item.updated_at)}${locSuffix}`;
@@ -950,6 +963,13 @@ const FileGridItem = React.memo(function FileGridItem({
 }: FileGridItemProps) {
   const { colors: c } = useTheme();
   const category = fileCategory(item);
+  const [sharedLabel, setSharedLabel] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    setSharedLabel(null);
+    if (nameUnavailable) void getSharedKeyResolver()?.originLabel(item.id).then(label => { if (current) setSharedLabel(label); });
+    return () => { current = false; };
+  }, [item.id, nameUnavailable]);
   // Task 1592 — pending → placeholder bar; failed → settled words (never an
   // endless placeholder); otherwise the name.
   const nameDisplay = rowNameDisplay({
@@ -966,7 +986,9 @@ const FileGridItem = React.memo(function FileGridItem({
 
   const loc = storageLocation(item.storage_pool_id);
   const locSuffix = loc.shortCode ? ` · ${loc.shortCode}` : '';
-  const metaText = isFolder
+  const outcome = sharedKeyOutcome(item.id);
+  const metaText = outcome === 'update_required' ? UPDATE_BEEBEEB_MESSAGE
+    : outcome && outcome !== 'loaded' && outcome !== 'stale' ? cannotOpenMessage(sharedLabel) : isFolder
     ? `${formatDate(item.updated_at)}${locSuffix}`
     : isPendingUpload
       ? `Upload pending · ${formatSize(item.size_bytes)}${locSuffix}`
@@ -1495,6 +1517,7 @@ export default function FilesScreen() {
 
   // Crypto
   const { isUnlocked, unlock, unlockAttempted, decryptMetadata, decryptNames, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId } = useCrypto();
+  useEffect(() => { if (isUnlocked) void loadFileIndex().catch(() => {}); }, [isUnlocked]);
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
   // Task 1592 — rows whose name the batch decrypt could not decrypt (shown as
   // "Folder — name unavailable" instead of an endless placeholder).
@@ -3476,6 +3499,7 @@ export default function FilesScreen() {
     void (async () => {
       if (!(await ensureFileReady(item))) return;
       exitSelectMode();
+      if (sharedFileKeyIsLoaded(item.id)) { Alert.alert('Share', 'Not available for files added by others yet.'); return; }
       navigation.navigate('ShareSheet', {
         fileId: id,
         fileName: name,
@@ -4147,7 +4171,8 @@ export default function FilesScreen() {
         case 'Share':
           void (async () => {
             if (!(await ensureFileReady(item))) return;
-            navigation.navigate('ShareSheet', {
+            if (sharedFileKeyIsLoaded(item.id)) { Alert.alert('Share', 'Not available for files added by others yet.'); return; }
+      navigation.navigate('ShareSheet', {
               fileId: item.id,
               fileName: name,
               mimeType: itemMimeType ?? undefined,
@@ -4219,7 +4244,9 @@ export default function FilesScreen() {
       testID: sheetActionTestId(opt),
       onPress: () => dispatchAction(opt),
     }));
-    const subtitle = item.is_folder
+    const sharedOutcome = sharedKeyOutcome(item.id);
+    const subtitle = sharedOutcome === 'update_required' ? UPDATE_BEEBEEB_MESSAGE
+      : sharedOutcome && sharedOutcome !== 'loaded' && sharedOutcome !== 'stale' ? cannotOpenMessage(null) : item.is_folder
       ? 'Folder'
       : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`;
     setRowSheet({
@@ -4506,6 +4533,7 @@ export default function FilesScreen() {
     const name = decryptedNames[item.id] ?? displayName(item);
     void (async () => {
       if (!(await ensureFileReady(item))) return;
+      if (sharedFileKeyIsLoaded(item.id)) { Alert.alert('Share', 'Not available for files added by others yet.'); return; }
       navigation.navigate('ShareSheet', {
         fileId: item.id,
         fileName: name,

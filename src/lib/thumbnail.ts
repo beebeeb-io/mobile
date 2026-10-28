@@ -1,3 +1,7 @@
+import * as SharedNativeCrypto from '../../modules/beebeeb-crypto';
+import { sharedFileKeyIsLoaded, getSharedKeyResolver } from './shared-folder-keys';
+import { isForeignSharedFile } from './shared-folder-tree';
+import { accountEpoch } from './account-epoch';
 /**
  * Thumbnail generation for all media uploads: images, videos, and RAW photos.
  *
@@ -673,12 +677,20 @@ export async function pruneThumbnailCache(maxItems = MAX_THUMB_CACHE_ITEMS): Pro
  * Thumbnails are stored in persistent documentDirectory so they survive
  * iOS cache purges and app restarts.
  */
+export type ThumbnailDecrypt = (nonce: Uint8Array, ciphertext: Uint8Array) => Promise<Uint8Array>;
+export async function thumbnailKeyFor(fileId: string, handle: () => number, derive: (id: string) => Promise<Uint8Array>): Promise<Uint8Array | ThumbnailDecrypt> {
+  if (isForeignSharedFile(fileId, accountEpoch().accountId)) {
+    const result = await getSharedKeyResolver()?.ensureLoaded([fileId]);
+    if (result?.get(fileId) !== 'loaded') throw new Error('Shared thumbnail key unavailable');
+  }
+  return sharedFileKeyIsLoaded(fileId) ? (nonce, ciphertext) => SharedNativeCrypto.handleDecryptChunk(handle(), fileId, nonce, ciphertext) : derive(fileId);
+}
 export async function fetchDecryptedThumbnailUri(
   fileId: string,
-  fileKey: Uint8Array,
+  fileKey: Uint8Array | ThumbnailDecrypt,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  if (Platform.OS === 'ios') {
+  if (Platform.OS === 'ios' && typeof fileKey !== 'function') {
     throw new Error('thumbnail.ts iOS path replaced by BeebeebThumbnails — caller should use useThumbnail()');
   }
   if (signal?.aborted) return null;
@@ -735,7 +747,7 @@ export async function fetchDecryptedThumbnailUri(
       if (encryptedBytes.length < 13) return null;
       const nonce = encryptedBytes.slice(0, 12);
       const ciphertext = encryptedBytes.slice(12);
-      plainBytes = await decryptChunk(fileKey, nonce, ciphertext);
+      plainBytes = await (typeof fileKey === 'function' ? fileKey(nonce, ciphertext) : decryptChunk(fileKey, nonce, ciphertext));
     }
 
     // Write decrypted thumbnail to persistent storage so it survives app restarts.
@@ -770,7 +782,7 @@ export async function fetchDecryptedThumbnailUri(
  */
 export async function fetchDecryptedLargeThumbnailUri(
   fileId: string,
-  fileKey: Uint8Array,
+  fileKey: Uint8Array | ThumbnailDecrypt,
   signal?: AbortSignal,
 ): Promise<string | null> {
   if (signal?.aborted) return null;
@@ -792,7 +804,7 @@ export async function fetchDecryptedLargeThumbnailUri(
 
     const nonce = encryptedBytes.slice(0, 12);
     const ciphertext = encryptedBytes.slice(12);
-    const plainBytes = await decryptChunk(fileKey, nonce, ciphertext);
+    const plainBytes = await (typeof fileKey === 'function' ? fileKey(nonce, ciphertext) : decryptChunk(fileKey, nonce, ciphertext));
     return cacheThumbnail(fileId, plainBytes, 'large');
   } catch {
     return null;
@@ -815,7 +827,7 @@ export interface PrefetchOptions {
  */
 export async function prefetchDecryptedThumbnails(
   fileIds: string[],
-  getFileKeyBytes: (fileId: string) => Promise<Uint8Array>,
+  getFileKeyBytes: (fileId: string) => Promise<Uint8Array | ThumbnailDecrypt>,
   options?: PrefetchOptions,
 ): Promise<ThumbnailPrefetchStats> {
   const unique = Array.from(new Set(fileIds)).slice(0, MAX_THUMB_CACHE_ITEMS);

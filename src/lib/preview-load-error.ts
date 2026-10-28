@@ -58,6 +58,7 @@ export function stripNativeExceptionNoise(message: string): string {
 
 /** The message the preview shows for a failed load. */
 export function previewLoadErrorMessage(err: unknown): string {
+  if (err instanceof SharedKeyUpdateRequiredError || err instanceof SharedKeyCannotOpenError) return err.message;
   if (isStillUploadingError(err)) return STILL_UPLOADING_MESSAGE;
   // Task 1687d — a plain Error's honest message (e.g. PARTIAL_DECRYPT_
   // MESSAGE, thrown by native-decrypt's size check) passes through
@@ -69,3 +70,8 @@ export function previewLoadErrorMessage(err: unknown): string {
   const friendly = friendlyError(err);
   return stripNativeExceptionNoise(friendly) || 'Something went wrong. Please try again.';
 }
+
+export const UPDATE_BEEBEEB_MESSAGE = 'Update Beebeeb to open this file';
+export function cannotOpenMessage(label: string | null): string { return `Can't open this file${label ? ` (added via ${label})` : ''}`; }
+export class SharedKeyUpdateRequiredError extends Error { constructor() { super(UPDATE_BEEBEEB_MESSAGE); this.name = 'SharedKeyUpdateRequiredError'; } }
+export class SharedKeyCannotOpenError extends Error { constructor(public label: string | null) { super(cannotOpenMessage(label)); this.name = 'SharedKeyCannotOpenError'; } }

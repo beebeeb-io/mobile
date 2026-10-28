@@ -41,6 +41,8 @@ export function isKeyMismatchError(error: unknown): boolean {
 export class SharedFileKeyNotExportableError extends Error { constructor() { super('Shared file keys stay in native memory'); this.name = 'SharedFileKeyNotExportableError'; } }
 let nativeSurface: Partial<SharedKeysNative> = {};
 let resolver: SharedKeyResolver | null = null;
+let nativeMaster: (() => number) | null = null;
+export function sharedMasterHandleId(): number { if (!nativeMaster) throw new Error('Vault is locked'); return nativeMaster(); }
 const ownerWrapLoaded = new Set<string>();
 const outcomes = new Map<string, SharedKeyOutcome>();
 export function isOwnerWrapLoaded(id: string): boolean { return ownerWrapLoaded.has(id); }
@@ -49,13 +51,13 @@ export function assertFileKeyExportable(id: string, loaded = sharedFileKeyIsLoad
 export function setSharedKeyResolver(value: SharedKeyResolver | null): void { resolver = value; }
 export function getSharedKeyResolver(): SharedKeyResolver | null { return resolver; }
 export function sharedKeyOutcome(id: string): SharedKeyOutcome | undefined { return outcomes.get(id); }
-export function clearSharedKeys(): void { resolver?.clear(); clearTree(); outcomes.clear(); ownerWrapLoaded.clear(); }
+export function clearSharedKeys(): void { nativeMaster = null; resolver?.clear(); clearTree(); outcomes.clear(); ownerWrapLoaded.clear(); }
 onAccountEpochAdvance(clearSharedKeys);
 export function configureSharedKeys(native: Partial<SharedKeysNative>, api: SharedKeysApi, masterHandleId: () => number): SharedKeyResolver {
   nativeSurface = native;
   clearSharedKeys();
   const r = createSharedKeyResolver({ ...api, native: { ...native, isSharedKeysNativeReady: () => native.isSharedKeysNativeReady?.() ?? false } as SharedKeysNative, masterHandleId, epoch: accountEpoch, now: Date.now });
-  setSharedKeyResolver(r); return r;
+  nativeMaster = masterHandleId; setSharedKeyResolver(r); return r;
 }
 
 export function createSharedKeyResolver(p: SharedKeyPorts): SharedKeyResolver {
