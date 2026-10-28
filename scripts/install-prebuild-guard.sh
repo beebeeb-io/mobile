@@ -3,7 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # remote-run and EAS staging directories have no Git metadata.
 [ -e .git ] || exit 0
-current="$(git config --get core.hooksPath || true)"
+# Git expands home-relative paths; only a still-relative value is repo-relative.
+current="$(git config --path --get core.hooksPath || true)"
 hooks="$(git rev-parse --absolute-git-dir)/prebuild-guard-hooks"
 if [ "$current" = "$hooks" ] || [ "$current" = '.githooks' ]; then
   previous="$(git config --get prebuildguard.previousHooksPath)"

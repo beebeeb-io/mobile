@@ -108,3 +108,40 @@ test('pre-commit installation is isolated, idempotent and preserves earlier hook
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('pre-commit installation preserves home-relative hooks using an isolated HOME', () => {
+  const root = mkdtempSync(join(tmpdir(), 'prebuild-hook-repo-'));
+  const home = mkdtempSync(join(tmpdir(), 'prebuild-hook-home-'));
+  try {
+    mkdirSync(join(root, '.githooks'));
+    cpSync(join(ROOT, '.githooks/pre-commit'), join(root, '.githooks/pre-commit'));
+    mkdirSync(join(root, 'scripts'));
+    cpSync(join(ROOT, 'scripts/install-prebuild-guard.sh'), join(root, 'scripts/install-prebuild-guard.sh'));
+    const env = { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+    const run = (args) => {
+      const result = Bun.spawnSync(args, { cwd: root, env });
+      expect(result.exitCode).toBe(0);
+      return result.stdout.toString().trim();
+    };
+    run(['git', 'init', '-q']);
+    const previous = join(home, 'existing-hooks');
+    mkdirSync(previous);
+    writeFileSync(join(previous, 'pre-push'), '#!/bin/sh\nprintf home-hook >> home-hook-ran\n', { mode: 0o755 });
+    run(['git', 'config', 'core.hooksPath', '~/existing-hooks']);
+    expect(run(['git', 'config', '--get', 'core.hooksPath'])).toBe('~/existing-hooks');
+    run(['git', 'hook', 'run', 'pre-push']);
+    expect(readFileSync(join(root, 'home-hook-ran'), 'utf8')).toBe('home-hook');
+    run(['bash', 'scripts/install-prebuild-guard.sh']);
+    const hooks = run(['git', 'config', '--worktree', '--get', 'core.hooksPath']);
+    expect(existsSync(join(hooks, 'pre-push'))).toBe(true);
+    expect(run(['git', 'config', '--get', 'prebuildguard.previousHooksPath'])).toBe(previous);
+    run(['git', 'hook', 'run', 'pre-push']);
+    expect(readFileSync(join(root, 'home-hook-ran'), 'utf8')).toBe('home-hookhome-hook');
+    run(['bash', 'scripts/install-prebuild-guard.sh']);
+    run(['git', 'hook', 'run', 'pre-push']);
+    expect(readFileSync(join(root, 'home-hook-ran'), 'utf8')).toBe('home-hookhome-hookhome-hook');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
