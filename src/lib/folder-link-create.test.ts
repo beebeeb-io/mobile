@@ -9,15 +9,23 @@ mock.module('./file-request-crypto', () => ({
   fromBase64: (s: string) => new Uint8Array(Buffer.from(s, 'base64')),
   toBase64url: (b: Uint8Array) => Buffer.from(b).toString('base64url'),
 }));
+const { createCustodyMemory, CustodyUnavailableError, UpgradeRequiredError } = await import('./shared-folder-custody');
+const { setExpectedUserId } = await import('./expected-user');
 const { createFolderLinkWithKeys: create, recoverLinkUrl, FolderKeyUnverifiedError, FolderTooLargeError, FolderPassphraseError } = await import('./folder-link-create');
-const input = { folderId: 'folder', accessLevel: 'add', label: 'Family', expiresInHours: null, capBytes: null, passphrase: null };
+const FOLDER = '11111111-2222-4333-8444-555555555555', PARENT = '99999999-8888-4777-8666-555555555555';
+const input = { folderId: FOLDER, accessLevel: 'add', label: 'Family', expiresInHours: null, capBytes: null, passphrase: null };
 const wrap = new Uint8Array(60).fill(3);
 const calls: string[] = [];
 let ports: any;
 let random = 0;
+// The Keychain behind the custody memory: a Map, so a "restart" is a new memory over the same Map.
+let keychain: Map<string, string>;
+const noMarker = { exists: async () => false, write: async () => {} };
+const memoryOver = (map: Map<string, string>) => createCustodyMemory({ get: async k => map.get(k) ?? null, set: async (k, v) => { map.set(k, v); } }, noMarker);
 beforeEach(() => {
-  calls.length = 0; random = 0;
+  calls.length = 0; random = 0; keychain = new Map(); setExpectedUserId('acct-a');
   ports = {
+    custody: memoryOver(keychain), ancestors: () => [],
     masterHandleId: () => 7,
     getWebAppUrl: () => 'https://example.test',
     subtreeIds: () => ['a', 'b'],
@@ -53,11 +61,11 @@ test('existing_custody_is_never_overwritten', async () => {
   expect(result.keyVersion).toBe(1); // create response is authoritative
 });
 test('invite_held_key_is_reused_and_registered_as_custody', async () => {
-  ports.getSentInvites = async () => [{ file_id: 'folder', is_folder_share: true, status: 'approved', created_at: '2026-10-28', encrypted_owner_folder_key: 'Aw==' }];
+  ports.getSentInvites = async () => [{ file_id: FOLDER, is_folder_share: true, status: 'approved', created_at: '2026-10-28', encrypted_owner_folder_key: 'Aw==' }];
   await create(input, ports); expect(calls).toContain('open'); expect(calls).toContain('register'); expect(calls).not.toContain('generate');
 });
 test('unopenable_invites_never_mint_a_replacement_key', async () => {
-  ports.getSentInvites = async () => [{ file_id: 'folder', is_folder_share: true, status: 'claimed', encrypted_owner_folder_key: 'Aw==' }];
+  ports.getSentInvites = async () => [{ file_id: FOLDER, is_folder_share: true, status: 'claimed', encrypted_owner_folder_key: 'Aw==' }];
   ports.native.sharedFolderOpenOwnerKey = async () => { throw new Error('cannot open'); };
   await expect(create(input, ports)).rejects.toBeInstanceOf(FolderKeyUnverifiedError); expect(calls).not.toContain('generate');
 });
@@ -137,4 +145,71 @@ test('default_ports_bind_the_existing_native_master_handle', async () => {
   mock.module('./shared-folder-keys', () => ({ sharedMasterHandleId: () => 7 }));
   const { createFolderLinkPorts } = await import('./folder-link-create');
   expect(createFolderLinkPorts().masterHandleId()).toBe(7);
+});
+
+// L7c / L10 / L11 (plan C, contract-2237-format-l7.md): custody is one-way; no fresh key over a seen
+// or upgrade-required folder; 409 upgrade_required is its own honest state, never a legacy retry.
+const custodyRecord = () => ({ role: 'owner', owner_wrapped_folder_key: Buffer.from(wrap).toString('base64'), key_version: 1 });
+const noWrites = () => { for (const c of ['generate', 'register', 'mint', 'create']) expect(calls).not.toContain(c); expect(calls.some(c => c.startsWith('publish'))).toBe(false); };
+test('a_seen_folder_that_later_answers_404_405_or_501_never_mints_a_fresh_key', async () => {
+  ports.getSharedFolder = async () => custodyRecord(); await create(input, ports); // custody seen and opened
+  for (const status of [404, 405, 501]) {
+    calls.length = 0; ports = { ...ports, custody: memoryOver(keychain), getSharedFolder: async () => { calls.push('custody'); throw { status }; } };
+    await expect(create(input, ports)).rejects.toBeInstanceOf(CustodyUnavailableError); noWrites();
+  }
+});
+test('a_never_seen_folder_answering_405_or_501_is_a_folder_without_custody_like_404', async () => {
+  for (const status of [405, 501]) {
+    calls.length = 0; keychain.clear(); ports.custody = memoryOver(keychain); ports.getSharedFolder = async () => { throw { status }; };
+    await create(input, ports); expect(calls).toContain('generate'); expect(calls).toContain('register');
+  }
+});
+test('custody_is_recorded_durably_before_any_wrap_is_published_when_it_was_opened_or_registered', async () => {
+  for (const existing of [true, false]) {
+    keychain.clear(); ports.custody = memoryOver(keychain); let seenAtPublish: boolean | null = null;
+    ports.getSharedFolder = async () => { if (existing) return custodyRecord(); throw { status: 404 }; };
+    ports.publishSharedFolderKeys = async (_f, keys) => { seenAtPublish = await ports.custody.hasSeen(FOLDER); return { written: keys.length, skipped: 0 }; };
+    await create(input, ports); expect(seenAtPublish).toBe(true);
+  }
+});
+test('a_custody_record_that_cannot_be_stored_is_not_used_and_publishes_nothing', async () => {
+  const failing = { get: async () => null, set: async () => { throw new Error('keychain'); } };
+  ports.custody = createCustodyMemory(failing, noMarker);
+  // The server accepted the registration (mark-after-register: a failed mark never wedges a folder that has no custody), but nothing is wrapped or linked.
+  await expect(create(input, ports)).rejects.toBeInstanceOf(CustodyUnavailableError);
+  for (const c of ['mint', 'create']) expect(calls).not.toContain(c); expect(calls.some(c => c.startsWith('publish'))).toBe(false); expect(calls.at(-1)).toBe('release:8');
+  // An existing record that cannot be stored is refused before anything is minted, registered or wrapped.
+  calls.length = 0; ports.getSharedFolder = async () => custodyRecord();
+  await expect(create(input, ports)).rejects.toBeInstanceOf(CustodyUnavailableError); noWrites(); expect(calls.at(-1)).toBe('release:9');
+});
+test('409_upgrade_required_on_custody_registration_is_the_upgrade_state_and_blocks_any_later_mint', async () => {
+  ports.registerSharedFolderKey = async () => { calls.push('register'); throw { status: 409, code: 'upgrade_required' }; };
+  const first = await create(input, ports).catch(e => e); expect(first).toBeInstanceOf(UpgradeRequiredError);
+  expect(first.message).toBe('The owner must convert this folder first'); for (const c of ['generate_after', 'mint', 'create']) expect(calls).not.toContain(c); expect(calls.some(c => c.startsWith('publish'))).toBe(false);
+  expect(calls.filter(c => c === 'register')).toHaveLength(1); expect(calls.at(-1)).toBe('release:8');
+  calls.length = 0; ports.custody = memoryOver(keychain); // restart: the mark is durable
+  await expect(create(input, ports)).rejects.toBeInstanceOf(UpgradeRequiredError);
+  expect(calls).not.toContain('generate'); expect(calls).not.toContain('register');
+});
+test('409_upgrade_required_on_the_wrap_publish_or_the_link_create_is_the_upgrade_state', async () => {
+  ports.getSharedFolder = async () => custodyRecord();
+  ports.publishSharedFolderKeys = async () => { throw { status: 409, code: 'upgrade_required' }; };
+  await expect(create(input, ports)).rejects.toBeInstanceOf(UpgradeRequiredError); expect(calls).not.toContain('create');
+  calls.length = 0; ports.publishSharedFolderKeys = async (_f, keys) => ({ written: keys.length, skipped: 0 });
+  ports.createFolderLink = async () => { throw { status: 409, code: 'upgrade_required' }; };
+  await expect(create(input, ports)).rejects.toBeInstanceOf(UpgradeRequiredError); expect(calls).not.toContain('generate'); expect(calls.filter(c => c === 'register')).toHaveLength(0);
+});
+test('other_409s_are_not_the_upgrade_state', async () => {
+  ports.createFolderLink = async () => { throw { status: 409, code: 'nested_share' }; };
+  await expect(create(input, ports)).rejects.toThrow('This folder is already inside a shared folder.');
+});
+test('an_account_switch_does_not_empty_the_device_memory', async () => {
+  ports.getSharedFolder = async () => custodyRecord(); await create(input, ports);
+  setExpectedUserId('acct-b'); calls.length = 0; ports.custody = memoryOver(keychain); ports.getSharedFolder = async () => { throw { status: 404 }; };
+  await expect(create(input, ports)).rejects.toBeInstanceOf(CustodyUnavailableError); noWrites();
+});
+test('a_folder_inside_a_seen_shared_folder_never_mints_custody_of_its_own', async () => {
+  await ports.custody.markSeen(PARENT); ports.ancestors = id => (id === FOLDER ? [PARENT] : []);
+  await expect(create(input, ports)).rejects.toThrow('This folder is already inside a shared folder.'); noWrites();
+  ports.ancestors = () => []; await create(input, ports); expect(calls).toContain('generate'); // no seen ancestor: unchanged
 });

@@ -64,6 +64,10 @@ export function parseFolderAccessLevel(value: string): FolderAccessLevel {
   return value === 'add' || value === 'edit' ? value : 'view';
 }
 const linkCodes = ['folder_key_missing', 'too_many_links', 'token_taken', 'nested_share', 'cap_below_used', 'shared_folders_v1'] as const;
+// The 409 codes request() must keep on ApiError.code: link creation branches on them. `shared_folders_v1` is
+// derived from the 501 status, and `key_version_conflict` belongs to the custody registration.
+const serverCodes: readonly string[] = [...linkCodes.filter(code => code !== 'shared_folders_v1'), 'key_version_conflict'];
+export function isFolderLinkServerCode(code: unknown): boolean { return typeof code === 'string' && serverCodes.includes(code); }
 export function linkErrorCode(err: unknown): typeof linkCodes[number] | 'unknown' {
   if (!err || typeof err !== 'object') return 'unknown';
   const { code, status } = err as { code?: unknown; status?: unknown };

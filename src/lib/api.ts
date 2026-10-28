@@ -762,7 +762,9 @@ async function request<T>(
         err.error === STRICT_REGION_REFUSAL ||
         // Task 2237c L10/L11 (contract-2237-format-l7.md): the shared-folder key-write refusals.
         err.error === 'upgrade_required' ||
-        err.error === 'invalid_format'
+        err.error === 'invalid_format' ||
+        // Task 2237c task 9: link creation branches on these (re-mint, re-register, the 20-links and nested lines).
+        isFolderLinkServerCode(err.error)
         ? err.error
         : undefined,
       res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,
@@ -4610,6 +4612,8 @@ export async function closeFileRequest(id: string): Promise<{ id: string; closed
 // Shared-folder owner surface (2237c). Ciphertexts are opaque to these wrappers.
 export type { FolderLink, FolderMember, SharedFolderInfo, SharedFolderActivityRow } from './folder-link-types';
 import type { FolderLink, CreatedFolderLink, FolderMember, SharedFolderInfo, SharedFolderActivityRow, CreateFolderLinkBody, FolderLinkPatch, SharedFolderKeyRow } from './folder-link-types';
+import { isFolderLinkServerCode } from './folder-link-types';
+import { withL7Format } from './shared-folder-custody';
 export function getEvaluateFlags(): Promise<{ flags: Record<string, boolean> }> {
   return request('GET', '/api/v1/feature-flags/evaluate');
 }
@@ -4640,10 +4644,8 @@ export function listSharedFolderKeys(folderId: string, options: { limit: number;
   return request('GET', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/keys?${query}`);
 }
 export function publishSharedFolderKeys(folderId: string, keys: SharedFolderKeyRow[]): Promise<{ written: number; skipped: number }> {
-  return request('POST', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/keys`, { keys });
-}
-export function adoptOwnerFileKey(fileId: string, ownerWrappedFileKey: string): Promise<{ adopted: boolean }> {
-  return request('POST', `/api/v1/files/${encodeURIComponent(fileId)}/owner-key`, { owner_wrapped_file_key: ownerWrappedFileKey });
+  // L10: every wrap this app seals for a custody folder is L7, and the server needs to be told.
+  return request('POST', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/keys`, withL7Format({ keys }));
 }
 export async function getSharedFolderActivity(folderId: string, limit = 50): Promise<SharedFolderActivityRow[]> {
   const data = await request<{ activity: SharedFolderActivityRow[] }>('GET', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/activity?limit=${limit}`);

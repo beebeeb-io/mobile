@@ -4,6 +4,7 @@ import { fromBase64, toBase64, toBase64url } from './file-request-crypto';
 import { buildFullShareLink } from './share-full-link';
 import { linkErrorCode, type FolderAccessLevel, type FolderLink, type SharedFolderInfo } from './folder-link-types';
 import { accountEpoch, isCurrentAccountEpoch, StaleAccountError } from './account-epoch';
+import { assertMayRegisterCustody, custodyMemory, isCustodyAbsentStatus, noteUpgradeRequired, type CustodyMemory } from './shared-folder-custody';
 
 // C1 Task 3 Interfaces, pending merge. Tests use MARKED MOCKS; no JS key fallback.
 export interface FolderLinkNative {
@@ -34,7 +35,11 @@ export interface CreatedLink { id: string; token: string; url: string; level: Fo
 export interface CreateFolderLinkPorts {
   masterHandleId(): number;
   native: FolderLinkNative;
+  /** L7d: which folders this DEVICE already opened custody for (one set, no account). */
+  custody: CustodyMemory;
   subtreeIds(rootId: string): string[];
+  /** The folder's ancestors in the local tree, nearest first. */
+  ancestors(folderId: string): string[];
   getSharedFolder: typeof api.getSharedFolder;
   getSentInvites: typeof api.getSentInvites;
   registerSharedFolderKey: typeof api.registerSharedFolderKey;
@@ -49,9 +54,10 @@ export function createFolderLinkPorts(masterHandleId: () => number = () => (
   require('./shared-folder-keys') as { sharedMasterHandleId(): number }
 ).sharedMasterHandleId()): CreateFolderLinkPorts {
   return {
-    masterHandleId, native: folderLinkNative,
+    masterHandleId, native: folderLinkNative, custody: custodyMemory,
     // C2 Task 5 Interfaces, pending merge. No substitute tree or key derivation.
     subtreeIds: rootId => (require('./shared-folder-tree') as { subtreeIds(id: string): string[] }).subtreeIds(rootId),
+    ancestors: folderId => (require('./shared-folder-tree') as { ancestorsOf(id: string): string[] }).ancestorsOf(folderId),
     getSharedFolder: api.getSharedFolder, getSentInvites: api.getSentInvites,
     registerSharedFolderKey: api.registerSharedFolderKey,
     publishSharedFolderKeys: api.publishSharedFolderKeys,
@@ -88,6 +94,13 @@ export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, por
   if (ids.length > 100_000) throw new FolderTooLargeError();
   if (!ports.native.isSharedKeysNativeReady?.()) throw new FolderLinksUnavailableError();
   const master = ports.masterHandleId();
+  // 409 upgrade_required (contract 2237 §2, L11) is the owner-must-convert state: remembered for the
+  // folder, never retried and never turned into a legacy write.
+  const refuseIfUpgradeRequired = async (err: unknown) => {
+    const upgrade = await noteUpgradeRequired(ports.custody, input.folderId, err);
+    assertCurrent();
+    if (upgrade) throw upgrade;
+  };
   let handle: number | null = null;
   let ownerWrapped: Uint8Array;
   let keyVersion = 1;
@@ -98,14 +111,30 @@ export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, por
     // Assign before checking epoch so finally releases a late native result too.
     handle = await ports.native.sharedFolderOpenOwnerKey(master, input.folderId, ownerWrapped);
     assertCurrent();
+    // L7c: durable BEFORE the folder key wraps anything; a record that cannot be stored is not used.
+    await ports.custody.markSeen(input.folderId);
+    assertCurrent();
   };
   try {
     let info: SharedFolderInfo | null;
     try { info = await checked(ports.getSharedFolder(input.folderId)); }
-    catch (err) { assertCurrent(); if (statusOf(err) !== 404) throw err; info = null; }
+    catch (err) {
+      assertCurrent();
+      if (!isCustodyAbsentStatus(statusOf(err))) throw err;
+      // 404/405/501 is "no custody" here; whether this account may mint over it is decided just below.
+      info = null;
+    }
     if (info) {
       await openCustody(info);
     } else {
+      // L7d/L11: never mint or register over a folder this device already opened custody for (the server
+      // answering 404/405/501 now is not proof there is none), or one that needs the owner's upgrade.
+      await assertMayRegisterCustody(ports.custody, input.folderId); assertCurrent();
+      // Any ancestor that was seen as custody means this folder lives inside a shared folder: no custody of its own.
+      for (const ancestor of ports.ancestors(input.folderId)) {
+        if (await ports.custody.hasSeen(ancestor)) throw new Error('This folder is already inside a shared folder.');
+        assertCurrent();
+      }
       const invites = (await checked(ports.getSentInvites())).filter(row => row.is_folder_share && row.file_id === input.folderId && ['invited', 'claimed', 'approved'].includes(row.status))
         .sort((a, b) => b.created_at.localeCompare(a.created_at));
       if (invites.length) {
@@ -124,8 +153,10 @@ export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, por
       }
       try {
         await checked(ports.registerSharedFolderKey(input.folderId, { owner_wrapped_folder_key: toBase64(ownerWrapped!), key_version: keyVersion }));
+        await ports.custody.markSeen(input.folderId); assertCurrent();
       } catch (err) {
         assertCurrent();
+        await refuseIfUpgradeRequired(err);
         if (statusOf(err) !== 409 || codeOf(err) !== 'key_version_conflict') throw err;
         await ports.native.sharedFolderRelease(handle!); handle = null; assertCurrent();
         await openCustody(await checked(ports.getSharedFolder(input.folderId)));
@@ -138,7 +169,8 @@ export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, por
       if (entries.length !== batch.length || new Set(entries.map(row => row.fileId)).size !== batch.length || entries.some(row => !batch.includes(row.fileId))) {
         throw new Error("Couldn't prepare all the folder's keys. Try again.");
       }
-      await checked(ports.publishSharedFolderKeys(input.folderId, entries.map(row => ({ file_id: row.fileId, encrypted_file_key: toBase64(row.wrapped) }))));
+      try { await checked(ports.publishSharedFolderKeys(input.folderId, entries.map(row => ({ file_id: row.fileId, encrypted_file_key: toBase64(row.wrapped) })))); }
+      catch (err) { assertCurrent(); await refuseIfUpgradeRequired(err); throw err; }
       input.onProgress?.({ phase: 'preparing', done: offset + batch.length, total: ids.length });
     }
     assertCurrent();
@@ -165,13 +197,16 @@ export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, por
         return { id: result.id, token, url: buildFullShareLink(ports.getWebAppUrl(), token, mint.kc, 'f'), level: input.accessLevel, passphraseProtected: !!input.passphrase, keyVersion: result.key_version };
       } catch (err) {
         assertCurrent();
+        await refuseIfUpgradeRequired(err);
         const code = linkErrorCode(err);
         if (code === 'token_taken' && !tokenRetried) {
           tokenRetried = true; token = toBase64url(await checked(ports.native.generateRandomBytes(32))); continue;
         }
         if (code === 'folder_key_missing' && !custodyRetried) {
           custodyRetried = true;
-          await checked(ports.registerSharedFolderKey(input.folderId, { owner_wrapped_folder_key: toBase64(ownerWrapped!), key_version: keyVersion }));
+          // The same wrap again, never a fresh key: the folder is already seen as custody.
+          try { await checked(ports.registerSharedFolderKey(input.folderId, { owner_wrapped_folder_key: toBase64(ownerWrapped!), key_version: keyVersion })); }
+          catch (registerErr) { assertCurrent(); await refuseIfUpgradeRequired(registerErr); throw registerErr; }
           continue;
         }
         if (code === 'too_many_links') throw new Error('A folder can have at most 20 links.');
