@@ -4606,3 +4606,57 @@ export async function closeFileRequest(id: string): Promise<{ id: string; closed
     `/api/v1/file-requests/${id}/close`,
   );
 }
+
+// Shared-folder owner surface (2237c). Ciphertexts are opaque to these wrappers.
+export type { FolderLink, FolderMember, SharedFolderInfo, SharedFolderActivityRow } from './folder-link-types';
+import type { FolderLink, CreatedFolderLink, FolderMember, SharedFolderInfo, SharedFolderActivityRow, CreateFolderLinkBody, FolderLinkPatch, SharedFolderKeyRow } from './folder-link-types';
+export function getEvaluateFlags(): Promise<{ flags: Record<string, boolean> }> {
+  return request('GET', '/api/v1/feature-flags/evaluate');
+}
+export async function listFolderLinks(folderId?: string): Promise<FolderLink[]> {
+  const data = await request<{ links: FolderLink[] }>('GET', `/api/v1/shares/folder-links${folderId ? `?folder_id=${encodeURIComponent(folderId)}` : ''}`);
+  return data.links;
+}
+export function createFolderLink(body: CreateFolderLinkBody): Promise<CreatedFolderLink> {
+  return request('POST', '/api/v1/shares/folder-links', body);
+}
+export function updateFolderLink(id: string, patch: FolderLinkPatch): Promise<FolderLink> {
+  return request('PATCH', `/api/v1/shares/folder-links/${encodeURIComponent(id)}`, patch);
+}
+export async function revokeFolderLink(id: string): Promise<void> {
+  await request('DELETE', `/api/v1/shares/folder-links/${encodeURIComponent(id)}`);
+}
+export function getFolderMembers(folderId: string): Promise<{ members: FolderMember[]; folder_id: string; owner_id: string }> {
+  return request('GET', `/api/v1/shares/invites/folder-members/${encodeURIComponent(folderId)}`);
+}
+export function getSharedFolder(folderId: string): Promise<SharedFolderInfo> {
+  return request('GET', `/api/v1/shared-folders/${encodeURIComponent(folderId)}`);
+}
+export function registerSharedFolderKey(folderId: string, body: { owner_wrapped_folder_key: string; key_version: number }): Promise<{ created: boolean; key_version: number }> {
+  return request('PUT', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/key`, body);
+}
+export function listSharedFolderKeys(folderId: string, options: { limit: number; cursor: string | null }): Promise<{ keys: SharedFolderKeyRow[]; next_cursor: string | null }> {
+  const query = `limit=${options.limit}${options.cursor ? `&cursor=${encodeURIComponent(options.cursor)}` : ''}`;
+  return request('GET', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/keys?${query}`);
+}
+export function publishSharedFolderKeys(folderId: string, keys: SharedFolderKeyRow[]): Promise<{ written: number; skipped: number }> {
+  return request('POST', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/keys`, { keys });
+}
+export function adoptOwnerFileKey(fileId: string, ownerWrappedFileKey: string): Promise<{ adopted: boolean }> {
+  return request('POST', `/api/v1/files/${encodeURIComponent(fileId)}/owner-key`, { owner_wrapped_file_key: ownerWrappedFileKey });
+}
+export async function getSharedFolderActivity(folderId: string, limit = 50): Promise<SharedFolderActivityRow[]> {
+  const data = await request<{ activity: SharedFolderActivityRow[] }>('GET', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/activity?limit=${limit}`);
+  return data.activity;
+}
+export async function getFileOwnerWrap(fileId: string): Promise<{ ownerWrap: Uint8Array | null; actedViaShareId: string | null }> {
+  const row = await request<{ owner_wrapped_file_key?: string | number[] | null; acted_via_share_id?: string | null }>('GET', `/api/v1/files/${encodeURIComponent(fileId)}`);
+  const value = row.owner_wrapped_file_key;
+  let ownerWrap: Uint8Array | null = null;
+  if (typeof value === 'string') {
+    try { ownerWrap = Uint8Array.from(atob(value), char => char.charCodeAt(0)); } catch { /* malformed wrap is unavailable */ }
+  } else if (Array.isArray(value) && value.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+    ownerWrap = new Uint8Array(value);
+  }
+  return { ownerWrap, actedViaShareId: row.acted_via_share_id ?? null };
+}

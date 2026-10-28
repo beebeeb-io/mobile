@@ -51,3 +51,8 @@ describe('buildFullShareLink — always embeds the key as #key= (1690)', () => {
     expect(url).toBe('http://localhost:5173/s/abc#key=xyz');
   });
 });
+
+test('folder links use f while existing file links keep s', () => {
+  expect(buildFullShareLink('https://x', 't', 'k')).toBe('https://x/s/t#key=k');
+  expect(buildFullShareLink('https://x/', 't', 'k', 'f')).toBe('https://x/f/t#key=k');
+});

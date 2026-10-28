@@ -14,6 +14,6 @@
  *
  * Pure module, no imports, so it is unit-testable without native mocks.
  */
-export function buildFullShareLink(baseUrl: string, token: string, decryptionKey: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/s/${token}#key=${encodeURIComponent(decryptionKey)}`;
+export function buildFullShareLink(baseUrl: string, token: string, decryptionKey: string, path: 's' | 'f' = 's'): string {
+  return `${baseUrl.replace(/\/+$/, '')}/${path}/${token}#key=${encodeURIComponent(decryptionKey)}`;
 }
