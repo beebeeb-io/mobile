@@ -306,7 +306,10 @@ describe('source contract', () => {
     expect(source).not.toMatch(/logDiagnostic|trace\(/);
   });
   test('the only durable store is SecureStore, never AsyncStorage (the sign-out purge deletes that)', () => {
-    expect(source).toMatch(/from 'expo-secure-store'/);
+    expect(source).toMatch(/import\('expo-secure-store'\)/);
     expect(source).not.toMatch(/async-storage/);
+  });
+  test('expo-secure-store is loaded lazily, so importing the module (resolver, publisher) needs no native mock', () => {
+    expect(source).not.toMatch(/^import .*['"]expo-secure-store['"]/m);
   });
 });

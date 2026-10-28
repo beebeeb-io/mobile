@@ -38,7 +38,6 @@
  *     "the owner must convert this folder first" state (L11), never a retry as legacy.
  */
 
-import * as SecureStore from 'expo-secure-store';
 import { onAccountEpochAdvance, StaleAccountError } from './account-epoch';
 
 const INDEX_KEY = 'beebeeb.custody-seen.v1.index';
@@ -46,9 +45,6 @@ const RECORD_PREFIX = 'beebeeb.custody-seen.v1.';
 // 5,000 folders is ~190 KB; past that the memory would rather refuse than forget.
 const MAX_FOLDERS_PER_ACCOUNT = 5000;
 interface AccountRecord { folders: Set<string>; upgrade: Set<string> }
-const STORE_OPTIONS: SecureStore.SecureStoreOptions = {
-  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
-};
 
 export class CustodyUnavailableError extends Error {
   constructor() {
@@ -91,10 +87,17 @@ export interface CustodyStorePort {
   delete(key: string): Promise<void>;
 }
 
+// Loaded on first use: the resolver and publisher import this module, and their tests must not
+// need a native SecureStore mock just to load it.
+async function secureStore() {
+  const store = await import('expo-secure-store');
+  return { store, options: { keychainAccessible: store.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY } };
+}
+
 export const secureStoreCustodyPort: CustodyStorePort = {
-  get: key => SecureStore.getItemAsync(key, STORE_OPTIONS),
-  set: (key, value) => SecureStore.setItemAsync(key, value, STORE_OPTIONS),
-  delete: key => SecureStore.deleteItemAsync(key, STORE_OPTIONS),
+  get: async key => { const { store, options } = await secureStore(); return store.getItemAsync(key, options); },
+  set: async (key, value) => { const { store, options } = await secureStore(); await store.setItemAsync(key, value, options); },
+  delete: async key => { const { store, options } = await secureStore(); await store.deleteItemAsync(key, options); },
 };
 
 export interface CustodyMemory {
