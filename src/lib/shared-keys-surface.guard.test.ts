@@ -105,3 +105,25 @@ test('core_pin_and_fixtures_are_the_exact_L8_merge', () => {
   for (const path of ['ios/BeebeebNativeTests/Vectors/core-vectors.v10.json', 'modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v10.json'])
     expect(createHash('sha256').update(readFileSync(resolve(root,path))).digest('hex')).toBe('11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a')
 })
+
+// L7d / P2-2: the custody marker lives in no-backup storage the cache clear and the sign-out sweep never touch.
+test('custody_marker_native_sources_use_no_backup_storage_and_are_wired_to_the_bridge', () => {
+  const swift = readFileSync(resolve(root, 'modules/beebeeb-crypto/ios/CustodyMarker.swift'), 'utf8')
+  expect(swift).toContain('.applicationSupportDirectory')
+  expect(swift).toContain('isExcludedFromBackup = true')
+  expect(swift).not.toMatch(/cachesDirectory|temporaryDirectory|\.documentDirectory/)
+  const module = readFileSync(resolve(root, 'modules/beebeeb-crypto/ios/BeebeebCryptoModule.swift'), 'utf8')
+  expect(module).toContain('AsyncFunction("custodyMarkerExists")')
+  expect(module).toContain('AsyncFunction("writeCustodyMarker")')
+  const kotlin = readFileSync(resolve(root, 'modules/beebeeb-crypto/android/src/main/java/expo/modules/beebeebcrypto/BeebeebCryptoModule.kt'), 'utf8')
+  expect(kotlin).toContain('AsyncFunction("custodyMarkerExists")')
+  expect(kotlin).toContain('AsyncFunction("writeCustodyMarker")')
+  expect(kotlin).toContain('noBackupFilesDir')
+  const bridge = readFileSync(resolve(root, 'modules/beebeeb-crypto/src/BeebeebCrypto.ts'), 'utf8')
+  expect(bridge).toContain('export async function custodyMarkerExists')
+  expect(bridge).toContain('export async function writeCustodyMarker')
+})
+test('the marker source file is a reviewed native source and the cache registry no longer lists a marker', () => {
+  expect(readFileSync(resolve(root, 'src/lib/plaintext-storage.ts'), 'utf8')).toContain("'CustodyMarker.swift'")
+  expect(readFileSync(resolve(root, 'src/lib/caches-plaintext-registry.ts'), 'utf8')).not.toContain('beebeeb-custody-marker')
+})

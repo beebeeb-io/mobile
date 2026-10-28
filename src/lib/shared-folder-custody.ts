@@ -27,10 +27,13 @@
  *
  * Unreadable is not unseen. A SecureStore that cannot be read or written refuses. On Android a lost
  * Keystore key makes expo-secure-store return null, which would read as "never seen"; so the first
- * stored entry also arms a marker OUTSIDE SecureStore (a file in the cache directory: not backed up,
- * not swept at sign-out, holds no ids). Marker present plus a null set is `CustodyUnavailableError`,
- * and only the user removing the app's data recovers it. A readable set re-arms a marker the cache
- * lost ("Clear cache").
+ * stored entry also arms a marker OUTSIDE SecureStore: a native one-byte file in no-backup storage
+ * (Android `noBackupFilesDir`; iOS Application Support, excluded from backup), which the OS does not
+ * purge under storage pressure, the user's "Clear cache" does not delete, and the sign-out sweep never
+ * touches. It holds no ids. Marker present plus a null set is `CustodyUnavailableError`, and only the
+ * user removing the app's data recovers it. A marker that cannot be written the first time fails
+ * `markSeen` (the folder key is not used); once armed, later marker writes are best effort. A readable
+ * set re-arms a marker that went missing.
  *
  * Call order, in the resolver (#233) and link creation (#234):
  *   1. `GET /shared-folders/{id}` returns a record: open it under the L6 key (`sharedFolderOpenOwnerKey`);
@@ -38,9 +41,10 @@
  *   3. only then `sharedFileKeysLoad` and any use of the folder key.
  *   The client's own custody registration (mint, PUT accepted) is followed by `markSeen` before its first
  *   L7 write.
- *   On 404/405/501 (`isCustodyAbsentStatus`): `await settleMissingCustody(memory, folderId)` gives 'legacy'
- *   or throws. "A 200 that does not open means legacy" is OWNER-side only (the owner's custody folder);
- *   a member's read of someone else's folder never reaches it.
+ *   On 404/405/501 (`isCustodyAbsentStatus`), or a 200 record that is not the owner's or does not parse:
+ *   `await settleMissingCustody(memory, folderId)` gives 'legacy' for a folder never seen, or throws. A
+ *   non-owner record reaches it too (mobile ignores member custody in phase 1): never seen = legacy,
+ *   seen = refused.
  *   Before minting + registering custody: `assertMayRegisterCustody`. Every key write for a custody
  *   folder: `withL7Format(body)` (L10). A 409 on a key write or on registering custody:
  *   `noteUpgradeRequired(...)` is the honest "the owner must convert this folder first" state (L11),
@@ -110,21 +114,19 @@ export interface CustodyMarkerPort {
   write(): Promise<void>;
 }
 
-async function markerTarget() {
-  const fs = await import('expo-file-system/legacy');
-  const cacheDir = fs.cacheDirectory;
-  return cacheDir ? { fs, path: `${cacheDir}beebeeb-custody-marker` } : null;
+// The marker is two native calls into no-backup storage (see the header). A build without them throws,
+// which `load` reads as "cannot tell" and `update` as "cannot arm": fail closed.
+async function nativeMarker() {
+  const native = await import('../../modules/beebeeb-crypto');
+  if (typeof native.custodyMarkerExists !== 'function' || typeof native.writeCustodyMarker !== 'function') {
+    throw new Error('The custody marker is not available in this build');
+  }
+  return native;
 }
 
-export const cacheMarkerPort: CustodyMarkerPort = {
-  exists: async () => {
-    const target = await markerTarget();
-    return target ? (await target.fs.getInfoAsync(target.path)).exists : false;
-  },
-  write: async () => {
-    const target = await markerTarget();
-    if (target) await target.fs.writeAsStringAsync(target.path, '1');
-  },
+export const nativeMarkerPort: CustodyMarkerPort = {
+  exists: async () => (await nativeMarker()).custodyMarkerExists(),
+  write: async () => (await nativeMarker()).writeCustodyMarker(),
 };
 
 export interface CustodyMemory {
@@ -140,6 +142,7 @@ export interface CustodyMemory {
 
 interface DeviceRecord { folders: Set<string>; upgrade: Set<string> }
 
+// Case-insensitive on purpose (the server may send either case); the lowercase form is what is stored.
 function canonicalFolderId(folderId: unknown): string {
   const id = typeof folderId === 'string' ? folderId.toLowerCase() : '';
   if (!CANONICAL_UUID.test(id)) throw new CustodyUnavailableError();
@@ -165,8 +168,10 @@ function sameSet(a: Set<string>, b: Set<string>): boolean {
   return a.size === b.size && [...a].every(item => b.has(item));
 }
 
-export function createCustodyMemory(store: CustodyStorePort, marker: CustodyMarkerPort = cacheMarkerPort): CustodyMemory {
+export function createCustodyMemory(store: CustodyStorePort, marker: CustodyMarkerPort = nativeMarkerPort): CustodyMemory {
   let cache: DeviceRecord | null = null;
+  // Whether the marker is known to exist: true after a read or a successful write, null while unknown.
+  let armed: boolean | null = null;
   let queue: Promise<unknown> = Promise.resolve();
 
   // Every read and write takes its turn, so a read never answers from before a write still in flight.
@@ -182,16 +187,17 @@ export function createCustodyMemory(store: CustodyStorePort, marker: CustodyMark
     try { raw = await store.get(RECORD_KEY); } catch { throw new CustodyUnavailableError(); }
     if (raw === null) {
       // A null read is only believable if no set was ever stored here (a lost Keystore key reads null).
-      let armed: boolean;
-      try { armed = await marker.exists(); } catch { throw new CustodyUnavailableError(); }
-      if (armed) throw new CustodyUnavailableError();
+      let present: boolean;
+      try { present = await marker.exists(); } catch { throw new CustodyUnavailableError(); }
+      if (present) throw new CustodyUnavailableError();
+      armed = false;
       cache = { folders: new Set(), upgrade: new Set() };
       return cache;
     }
     const record = parseRecord(raw);
-    // A readable set re-arms a marker the cache lost; best effort, the set itself is the truth.
+    // A readable set re-arms a marker that went missing; best effort, the set itself is the truth.
     if (record.folders.size + record.upgrade.size > 0) {
-      await marker.exists().then(async armed => { if (!armed) await marker.write(); }).catch(() => undefined);
+      armed = await marker.exists().then(async present => { if (!present) await marker.write(); return true; }).catch(() => null);
     }
     cache = record;
     return record;
@@ -202,12 +208,19 @@ export function createCustodyMemory(store: CustodyStorePort, marker: CustodyMark
       const known = await load();
       const next: DeviceRecord = { folders: new Set(known.folders), upgrade: new Set(known.upgrade) };
       change(next);
-      if (sameSet(known.folders, next.folders) && sameSet(known.upgrade, next.upgrade)) return;
-      if (next.folders.size > MAX_FOLDERS || next.upgrade.size > MAX_FOLDERS) throw new CustodyUnavailableError();
-      try { await store.set(RECORD_KEY, JSON.stringify({ v: 1, folders: [...next.folders].sort(), upgrade: [...next.upgrade].sort() })); }
-      catch { throw new CustodyUnavailableError(); }
-      cache = next;
-      await marker.write().catch(() => undefined);
+      if (!(sameSet(known.folders, next.folders) && sameSet(known.upgrade, next.upgrade))) {
+        if (next.folders.size > MAX_FOLDERS || next.upgrade.size > MAX_FOLDERS) throw new CustodyUnavailableError();
+        try { await store.set(RECORD_KEY, JSON.stringify({ v: 1, folders: [...next.folders].sort(), upgrade: [...next.upgrade].sort() })); }
+        catch { throw new CustodyUnavailableError(); }
+        cache = next;
+      }
+      // The marker is owed whenever it is not known to exist, even when the set already held the folder: if the
+      // FIRST write fails the caller must not use the folder key. Once armed, a failed refresh is best effort.
+      if (armed !== true) {
+        try { await marker.write(); armed = true; } catch { throw new CustodyUnavailableError(); }
+      } else {
+        await marker.write().catch(() => undefined);
+      }
     });
   }
 
@@ -235,7 +248,6 @@ export function createCustodyMemory(store: CustodyStorePort, marker: CustodyMark
 /**
  * The folder's custody is missing or unusable. Never seen: 'legacy' (L7b). Seen before: refuse (L7d).
  * Throws `CustodyUnavailableError` when the memory cannot answer, so doubt never reads as legacy.
- * Owner-side only: a member's read of someone else's folder never takes "no custody = legacy" from here.
  */
 export async function settleMissingCustody(memory: CustodyMemory, folderId: string): Promise<'legacy'> {
   if (await memory.hasSeen(folderId)) throw new CustodyUnavailableError();

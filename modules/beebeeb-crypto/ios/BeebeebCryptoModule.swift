@@ -2296,6 +2296,15 @@ public class BeebeebCryptoModule: Module {
       }
     }
 
+    // L7d: the custody-set marker (see CustodyMarker.swift). Survives sign-out on purpose.
+    AsyncFunction("custodyMarkerExists") { () -> Bool in
+      CustodyMarker.exists()
+    }
+
+    AsyncFunction("writeCustodyMarker") { () throws in
+      try CustodyMarker.write()
+    }
+
     AsyncFunction("hardenPlaintextStorage") { () -> [String: Bool] in
       PlaintextStorageProtection.hardenAll()
     }

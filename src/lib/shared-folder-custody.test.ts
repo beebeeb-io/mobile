@@ -31,13 +31,16 @@ mock.module('expo-secure-store', () => ({
   },
   deleteItemAsync: async (key: string) => { keychain.delete(key); },
 }));
-// The default marker lives in the app's cache directory.
-const cacheFiles = new Map<string, string>();
-let cacheDirectory: string | null = 'file:///cache/';
-mock.module('expo-file-system/legacy', () => ({
-  get cacheDirectory() { return cacheDirectory; },
-  getInfoAsync: async (path: string) => ({ exists: cacheFiles.has(path) }),
-  writeAsStringAsync: async (path: string, value: string) => { cacheFiles.set(path, value); },
+// The default marker is two native calls (no-backup storage: iOS Application Support excluded from backup,
+// Android noBackupFilesDir), loaded lazily; mocked here.
+let nativeMarker = false;
+let nativeMarkerReadFails = false;
+let nativeMarkerWriteFails = false;
+let nativeMarkerMissing = false;
+mock.module('../../modules/beebeeb-crypto', () => ({
+  // A build without the native functions makes the JS bridge throw (BeebeebCrypto.ts), so "missing" is a throw here.
+  custodyMarkerExists: async () => { if (nativeMarkerMissing) throw new Error('The custody marker is not available in this build'); if (nativeMarkerReadFails) throw new Error('marker unreadable'); return nativeMarker; },
+  writeCustodyMarker: async () => { if (nativeMarkerMissing) throw new Error('The custody marker is not available in this build'); if (nativeMarkerWriteFails) throw new Error('marker unwritable'); nativeMarker = true; },
 }));
 
 const custody = await import('./shared-folder-custody');
@@ -49,14 +52,15 @@ const RECORD_KEY = 'beebeeb.custody-seen.v1';
 // The Keychain-side port is the production one (SecureStore, mocked above); the marker is a flag.
 let markerPresent = false;
 let markerReadFails = false;
+let markerWriteFails = false;
 let markerWrites = 0;
 const markerPort = {
-  exists: async () => { if (markerReadFails) throw new Error('cache unreadable'); return markerPresent; },
-  write: async () => { markerWrites++; markerPresent = true; },
+  exists: async () => { if (markerReadFails) throw new Error('marker unreadable'); return markerPresent; },
+  write: async () => { if (markerWriteFails) throw new Error('marker unwritable'); markerWrites++; markerPresent = true; },
 };
 beforeEach(() => {
-  keychain.clear(); cacheFiles.clear(); cacheDirectory = 'file:///cache/';
-  failReads = false; failWrites = false; markerPresent = false; markerReadFails = false; markerWrites = 0;
+  keychain.clear(); nativeMarker = false; nativeMarkerReadFails = false; nativeMarkerWriteFails = false; nativeMarkerMissing = false;
+  failReads = false; failWrites = false; markerPresent = false; markerReadFails = false; markerWriteFails = false; markerWrites = 0;
 });
 
 function restart() { return custody.createCustodyMemory(custody.secureStoreCustodyPort, markerPort); }
@@ -237,22 +241,46 @@ describe('P2-2: a lost Android Keystore never reads as "never seen"', () => {
     await expect(restart().hasSeen(FOLDER)).rejects.toBeInstanceOf(custody.CustodyUnavailableError);
   });
 
-  test('a readable set re-arms a marker the cache cleared', async () => {
+  test('a readable set re-arms a marker that went missing', async () => {
     await restart().markSeen(FOLDER);
-    markerPresent = false; markerWrites = 0; // Android "Clear cache"
+    markerPresent = false; markerWrites = 0;
     expect(await restart().hasSeen(FOLDER)).toBe(true);
     expect(markerPresent).toBe(true);
   });
 
-  test('the default marker is a file in the cache directory, named without ids, and survives a missing directory', async () => {
+  test('the FIRST marker write failing fails markSeen: the folder key is not used', async () => {
+    const memory = restart();
+    markerWriteFails = true;
+    await expect(memory.markSeen(FOLDER)).rejects.toBeInstanceOf(custody.CustodyUnavailableError);
+    expect(markerPresent).toBe(false);
+  });
+
+  test('a markSeen retry arms the marker even though the folder is already in the stored set', async () => {
+    const memory = restart();
+    markerWriteFails = true;
+    await expect(memory.markSeen(FOLDER)).rejects.toBeInstanceOf(custody.CustodyUnavailableError);
+    markerWriteFails = false;
+    await memory.markSeen(FOLDER); // the set already holds it; arming is still owed
+    expect(markerPresent).toBe(true);
+    expect(await restart().hasSeen(FOLDER)).toBe(true);
+  });
+
+  test('once the marker is armed, a later marker write failure does not fail markSeen', async () => {
+    const memory = restart();
+    await memory.markSeen(FOLDER);
+    markerWriteFails = true;
+    await memory.markSeen(OTHER_FOLDER);
+    expect(await restart().hasSeen(OTHER_FOLDER)).toBe(true);
+  });
+
+  test('the default marker is the native no-backup marker, and a build without it refuses', async () => {
     const memory = custody.createCustodyMemory(custody.secureStoreCustodyPort); // default marker
     await memory.markSeen(FOLDER);
-    expect([...cacheFiles.keys()]).toEqual(['file:///cache/beebeeb-custody-marker']);
-    expect([...cacheFiles.values()]).toEqual(['1']);
+    expect(nativeMarker).toBe(true);
     keychain.clear();
     await expect(custody.createCustodyMemory(custody.secureStoreCustodyPort).hasSeen(FOLDER)).rejects.toBeInstanceOf(custody.CustodyUnavailableError);
-    cacheDirectory = null; cacheFiles.clear();
-    expect(await custody.createCustodyMemory(custody.secureStoreCustodyPort).hasSeen(FOLDER)).toBe(false);
+    nativeMarker = false; nativeMarkerMissing = true; // an older native build: no marker functions
+    await expect(custody.createCustodyMemory(custody.secureStoreCustodyPort).markSeen(OTHER_FOLDER)).rejects.toBeInstanceOf(custody.CustodyUnavailableError);
   });
 });
 
@@ -349,6 +377,10 @@ describe('source contract', () => {
     expect(source).toMatch(/import\('expo-secure-store'\)/);
     expect(source).not.toMatch(/async-storage/);
     expect(source).not.toMatch(/^import .*['"]expo-secure-store['"]/m);
+  });
+  test('the marker is native no-backup storage, never the cache directory', () => {
+    expect(source).not.toMatch(/cacheDirectory|expo-file-system/);
+    expect(source).toMatch(/import\('..\/..\/modules\/beebeeb-crypto'\)/);
   });
   test('L7d: the code knows no account and has no way to shrink the set', () => {
     const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, ''); // comments explain the rule in words

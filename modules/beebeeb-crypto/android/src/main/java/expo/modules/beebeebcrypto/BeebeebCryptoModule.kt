@@ -735,6 +735,20 @@ class BeebeebCryptoModule : Module() {
 
     // ─────────────────────────────── misc / pure-Kotlin ──────────────────────
 
+    // L7d (task 2237c): the "a shared-folder custody set was stored on this device" marker. A lost Keystore key
+    // makes SecureStore read null, which must not read as "never seen". noBackupFilesDir is internal storage that
+    // is never backed up, never purged under storage pressure and not touched by "Clear cache" or the sign-out
+    // sweep; one byte, no ids. Only "Clear storage" (which also drops the Keystore key) removes it.
+    AsyncFunction("custodyMarkerExists") { ->
+      java.io.File(reactContext.noBackupFilesDir, "beebeeb-custody-marker").exists()
+    }
+
+    AsyncFunction("writeCustodyMarker") { ->
+      val dir = reactContext.noBackupFilesDir
+      dir.mkdirs()
+      java.io.File(dir, "beebeeb-custody-marker").writeBytes(byteArrayOf(0x31))
+    }
+
     AsyncFunction("generateRandomBytes") { length: Int ->
       if (length <= 0 || length > 4096) {
         throw CodedException("INVALID_LENGTH", "Invalid random byte length", null)

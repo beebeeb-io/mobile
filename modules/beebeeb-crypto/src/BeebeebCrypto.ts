@@ -98,6 +98,21 @@ export interface PlaintextStorageAuditRow {
 }
 
 /**
+ * Task 2237c L7d: the "a shared-folder custody set was stored here" marker, in no-backup storage the cache
+ * clear and the sign-out sweep never touch (iOS Application Support excluded from backup; Android
+ * noBackupFilesDir). Both throw when this build lacks the native function: the custody memory fails closed.
+ */
+export async function custodyMarkerExists(): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.custodyMarkerExists !== 'function') throw new Error('The custody marker is not available in this build')
+  return (await BeebeebCryptoModule.custodyMarkerExists()) as boolean
+}
+
+export async function writeCustodyMarker(): Promise<void> {
+  if (typeof BeebeebCryptoModule.writeCustodyMarker !== 'function') throw new Error('The custody marker is not available in this build')
+  await BeebeebCryptoModule.writeCustodyMarker()
+}
+
+/**
  * Apply exclude-from-backup + file protection to every registered path.
  * Idempotent and cheap (~15 stat calls). No-op off iOS.
  */

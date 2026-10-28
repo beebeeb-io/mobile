@@ -51,7 +51,6 @@ export const CACHES_REGISTRY: readonly CachesEntry[] = [
   { match: 'beebeeb-upload-', plaintext: false, contains: 'an ENCRYPTED chunk awaiting PUT', writer: 'lib/api.ts putBinaryBytes' },
   { match: 'beebeeb-transfer/', plaintext: true, contains: "received transfer blob (user-key ciphertext) under the sender's plaintext file-name hint", writer: 'screens/ConstellationScannerScreen.tsx' },
   { match: /\.beebeeb\.enc$/, plaintext: true, contains: 'downloaded ciphertext ("Prove it" export) under the plaintext file name — never deleted by its writer', writer: 'components/EncryptionProof.tsx' },
-  { match: 'beebeeb-custody-marker', plaintext: false, contains: 'a one-byte flag that the shared-folder custody set exists (Keystore-loss detection); no ids, no user content, kept across sign-out on purpose (L7d)', writer: 'lib/shared-folder-custody.ts' },
   { match: 'beebeeb-plaintext-audit.json', plaintext: false, contains: 'path/attribute audit — no user content', writer: 'native PlaintextStorageProtection.writeAuditReport' },
 ];
 
