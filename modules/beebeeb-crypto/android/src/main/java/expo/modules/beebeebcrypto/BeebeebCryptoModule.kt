@@ -913,6 +913,15 @@ class BeebeebCryptoModule : Module() {
       }
     }
 
+    // Task 2263: read a name encrypted under a file key the app holds but did
+    // not derive from its own master key (a received share's key). Core's
+    // `FileKeyHandle.decryptNameMetadata`: name subkey first, legacy raw key
+    // second — the reader web's shared-with-me list uses.
+    AsyncFunction("decryptNameWithKey") { key: ByteArray, nameEncrypted: String ->
+      val meta = FileKeyHandle.fromKeyBytes(key).decryptNameMetadata(nameEncrypted)
+      mapOf("name" to meta.name, "mimeType" to meta.mimeType)
+    }
+
     AsyncFunction("wrapForOwnerWithHandle") { handleId: Int, bytes: ByteArray ->
       val result = handles.get(handleId).wrapBytes(bytes)
       mapOf("wrapped" to result.ciphertext, "nonce" to result.nonce)

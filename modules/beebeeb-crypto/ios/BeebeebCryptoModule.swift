@@ -3036,6 +3036,17 @@ public class BeebeebCryptoModule: Module {
       }
     }
 
+    // Task 2263: read a name encrypted under a file key the app holds but did
+    // not derive from its own master key — a received share's key, unwrapped
+    // from the sender's wrap in JS through the existing X25519 primitives.
+    // Core's `FileKeyHandle.decryptNameMetadata` tries the name subkey first,
+    // then the legacy raw key (the reader web's shared-with-me list uses).
+    AsyncFunction("decryptNameWithKey") { (key: Data, nameEncrypted: String) throws -> [String: Any] in
+      let fileKey = try FileKeyHandle.fromKeyBytes(key: key)
+      let meta = try fileKey.decryptNameMetadata(nameEncrypted: nameEncrypted)
+      return ["name": meta.name, "mimeType": meta.mimeType as Any]
+    }
+
     AsyncFunction("handleDeriveX25519Private") { [self] (handleId: Int) throws -> Data in
       let master = try self.getHandle(handleId)
       return try master.deriveX25519Private()

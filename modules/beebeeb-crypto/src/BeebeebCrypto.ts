@@ -631,6 +631,31 @@ export async function handleEncryptChunk(
 }
 
 /**
+ * Read a name that was encrypted under a file key the app already holds but did
+ * NOT derive from its own master key — a received share's key, unwrapped from
+ * the sender's wrap (task 2263). Delegates to core's
+ * `FileKeyHandle::decrypt_name_metadata`: the name subkey first, then the legacy
+ * raw key, a plaintext legacy name read as itself. The same reader web uses for
+ * the shared-with-me list.
+ *
+ * Throws on a wrong key or a build without the binding; callers show the honest
+ * "Can't show this name" state instead of a placeholder or ciphertext.
+ */
+export async function decryptNameWithKey(
+  fileKey: Uint8Array,
+  nameEncrypted: string,
+): Promise<{ name: string | null; mimeType: string | null }> {
+  if (typeof BeebeebCryptoModule.decryptNameWithKey !== 'function') {
+    throw new Error('decryptNameWithKey is not available in this native build')
+  }
+  const result = await BeebeebCryptoModule.decryptNameWithKey(fileKey, nameEncrypted)
+  return {
+    name: typeof result?.name === 'string' ? result.name : null,
+    mimeType: typeof result?.mimeType === 'string' ? result.mimeType : null,
+  }
+}
+
+/**
  * Decrypt a file chunk using the master key handle.
  */
 export async function handleDecryptChunk(

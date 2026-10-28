@@ -76,11 +76,10 @@ import { canOfferResume, createUploadGate, type UploadGate } from '../lib/upload
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
-import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
 import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
-import { ApiError, listAllFiles, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken, abortUploadForFile, abandonFileUpload, getUploadResumeForFile, forgetUploadResume } from '../lib/api';
+import { ApiError, listAllFiles, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getUploadStatus, getApiUrl, getToken, abortUploadForFile, abandonFileUpload, getUploadResumeForFile, forgetUploadResume } from '../lib/api';
 import type { UploadResumeInfo } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { ensurePhotoPermission } from '../lib/photo-permissions';
@@ -90,7 +89,7 @@ import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-rep
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
 import { knownPoolLocation, newPoolLookupState, resolvePoolLocationsShared } from '../lib/sync-storage-locations';
-import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
+import type { FileEntry, StorageUsage, ProofOfExistence, SyncNode } from '../lib/api';
 import { storageLocationLabel, fileStorageCountry } from '../lib/storage-regions';
 import { loadFileStorageLocation } from '../lib/file-storage-location';
 import { rowNameDisplay } from '../lib/row-name';
@@ -1508,10 +1507,6 @@ export default function FilesScreen() {
   // been read once, so a locked file's image never flashes on a cold launch.
   const [lockStateReady, setLockStateReady] = useState(false);
 
-  // Presence — collaborators currently viewing the folder we're inside.
-  // Empty for the root view; only populated when navigated into a shared folder.
-  const [presence, setPresence] = useState<PresenceUser[]>([]);
-
   // Crypto
   const { isUnlocked, unlock, unlockAttempted, decryptMetadata, decryptNames, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId } = useCrypto();
   useEffect(() => { if (isUnlocked) void loadFileIndex().catch(() => {}); }, [isUnlocked]);
@@ -2339,20 +2334,6 @@ export default function FilesScreen() {
     loginFetchKickedRef.current = true;
     void fetchFiles(currentFolder.id, false);
   }, [isAuthenticated, unlockAttempted, currentFolder.id, fetchFiles]);
-
-  // Load presence for the current folder. The endpoint silently returns []
-  // when the folder isn't shared or the API doesn't exist yet.
-  useEffect(() => {
-    if (!currentFolder.id) {
-      setPresence([]);
-      return;
-    }
-    let cancelled = false;
-    getFolderPresence(currentFolder.id)
-      .then((users) => { if (!cancelled) setPresence(users); })
-      .catch(() => { if (!cancelled) setPresence([]); });
-    return () => { cancelled = true; };
-  }, [currentFolder.id]);
 
   // Storage usage — fetched once on mount, refreshed alongside pull-to-refresh
   const fetchUsage = useCallback(async () => {
@@ -4827,11 +4808,6 @@ export default function FilesScreen() {
               {currentFolder.name}
             </Text>
           </MenuView>
-          {!searchActive && presence.length > 0 && (
-            <View style={styles.presenceWrap}>
-              <PresenceAvatars users={presence} />
-            </View>
-          )}
           <View style={{ flex: 1 }} />
           {!searchActive && files.length > 0 && (
             <TouchableOpacity
@@ -5891,7 +5867,6 @@ const styles = StyleSheet.create({
   fabText: { fontSize: 28, fontWeight: '600', marginTop: -2 },
 
   sharedBadge: { marginLeft: 4 },
-  presenceWrap: { flexDirection: 'row', alignItems: 'center', marginRight: 8 },
 
   // Android new-folder modal
   modalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
