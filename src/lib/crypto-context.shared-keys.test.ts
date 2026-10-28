@@ -17,3 +17,16 @@ test('native_decrypt_retries_once_after_a_key_mismatch_then_gives_up', async () 
  let n=0; const r={ensureLoaded:async()=>new Map([['f','loaded']])} as any;
  await expect(retrySharedDecrypt('f',async()=>{n++;throw new Error('Decryption failed');},r)).rejects.toThrow('Decryption failed'); expect(n).toBe(2);
 });
+
+test('a_successful_metadata_open_is_discarded_after_an_account_switch', async () => {
+ const {advanceAccountEpoch}=await import('./account-epoch');
+ await expect(retrySharedDecrypt('f',async()=>{advanceAccountEpoch();return 'previous-account metadata';},null)).rejects.toThrow('account changed');
+});
+test('a_successful_name_batch_is_discarded_after_an_account_switch', async () => {
+ const {advanceAccountEpoch}=await import('./account-epoch');
+ await expect(resolveSharedNames([{fileId:'f'}],async()=>{advanceAccountEpoch();return [{name:'previous-account name',error:null}];},null)).rejects.toThrow('account changed');
+});
+test('a_successful_metadata_retry_is_discarded_after_an_account_switch', async () => {
+ const {advanceAccountEpoch}=await import('./account-epoch'); let attempts=0;
+ await expect(retrySharedDecrypt('f',async()=>{if(!attempts++)throw Error('Decryption failed');advanceAccountEpoch();return 'previous-account metadata';},{ensureLoaded:async()=>new Map([['f','loaded']])})).rejects.toThrow('account changed');
+});

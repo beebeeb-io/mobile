@@ -152,20 +152,27 @@ export function createSharedKeyResolver(p: SharedKeyPorts): SharedKeyResolver {
 
 export async function retrySharedDecrypt<T>(id: string, operation: () => Promise<T>, r = resolver): Promise<T> {
   const epoch=accountEpoch();
-  try { return await operation(); } catch(error) {
+  try {
+    const value = await operation();
+    if (!sameAccountEpoch(epoch, accountEpoch())) throw new StaleAccountError('shared decrypt');
+    return value;
+  } catch(error) {
     if(!r || !isKeyMismatchError(error)) throw error;
     const result=await r.ensureLoaded([id]);
     if(result.get(id)==='stale' || !sameAccountEpoch(epoch,accountEpoch())) throw new StaleAccountError('shared decrypt');
     if(result.get(id)!=='loaded') throw error;
-    return operation();
+    const value = await operation();
+    if (!sameAccountEpoch(epoch, accountEpoch())) throw new StaleAccountError('shared decrypt');
+    return value;
   }
 }
 export async function resolveSharedNames<T extends {fileId:string}, R extends {error:string|null}>(items: T[], decrypt: (items:T[])=>Promise<R[]>, r=resolver): Promise<R[]> {
   const epoch=accountEpoch();
   // L3: known foreign rows resolve before touching native readers.
   const foreign=items.filter(i=>isForeignSharedFile(i.fileId,epoch.accountId));
-  if(foreign.length && r) { const loaded=await r.ensureLoaded(foreign.map(i=>i.fileId)); if([...loaded.values()].includes('stale')) throw new StaleAccountError('shared names'); }
+  if(foreign.length && r) { const loaded=await r.ensureLoaded(foreign.map(i=>i.fileId)); if([...loaded.values()].includes('stale') || !sameAccountEpoch(epoch,accountEpoch())) throw new StaleAccountError('shared names'); }
   const result=await decrypt(items);
+  if (!sameAccountEpoch(epoch, accountEpoch())) throw new StaleAccountError('shared names');
   const failed=items.filter((_,i)=>isKeyMismatchError(result[i]?.error));
   if(!failed.length || !r) return result;
   const loaded=await r.ensureLoaded(failed.map(i=>i.fileId));
