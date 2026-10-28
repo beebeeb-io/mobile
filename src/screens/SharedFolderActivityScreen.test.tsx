@@ -21,7 +21,7 @@ mock.module('../components/SkeletonRow', () => ({ default: 'Skeleton' }));
 mock.module('./FileRequestsScreen', () => ({ default: 'Requests' }));
 mock.module('../lib/toast-context', () => ({ useToast: () => ({ showToast() {} }) }));
 mock.module('../lib/crypto-context', () => ({ useCrypto: () => ({ isUnlocked: false }) }));
-mock.module('../../modules/beebeeb-crypto', () => ({ unwrapForOwnerWithHandle() {} }));
+mock.module('../../modules/beebeeb-crypto', () => ({ unwrapForOwnerWithHandle() {}, decryptChunk: async () => new Uint8Array(32), decryptNameWithKey: async () => ({ name: null, mimeType: null }), deriveShareKey: async () => new Uint8Array(32), handleDeriveX25519Private: async () => new Uint8Array(32), x25519SharedSecret: async () => new Uint8Array(32) }));
 mock.module('../lib/api', () => ({ getIncomingInvites: async () => [], getSentInvites: async () => [], listMyShares: async () => [], friendlyError: () => 'Try again.' }));
 const { default: Screen } = await import('./SharedFolderActivityScreen');
 const { default: SharedScreen } = await import('./SharedScreen');
