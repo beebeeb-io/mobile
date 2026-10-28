@@ -121,6 +121,8 @@ test('android_registry_explicitly_disposes_released_replaced_and_cleared_handles
   const registry = read('android/src/main/java/expo/modules/beebeebcrypto/SharedKeyRegistry.kt')
   expect(registry.includes('private val dispose: (H) -> Unit')).toBe(true)
   expect(registry.includes('disposeIfUnreferenced')).toBe(true)
+  expect(registry.includes('java.util.IdentityHashMap<H, Int>')).toBe(true)
+  expect(registry.includes('files.values.none')).toBe(false)
   expect(registry.includes('discarded.keys.forEach')).toBe(true)
   expect(registry.includes('try { dispose(it) }')).toBe(true)
   const ops = read('android/src/main/java/expo/modules/beebeebcrypto/SharedKeyOps.kt')

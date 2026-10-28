@@ -7,10 +7,12 @@ class SharedKeyRegistry<H : Any>(
   data class Folder<H>(val handle: H, val folderId: String)
   private val folders = HashMap<Int, Folder<H>>()
   private val files = HashMap<String, H>()
+  private val references = java.util.IdentityHashMap<H, Int>()
   private var nextId = 1
   private var epoch = 0L
   val generation: Long @Synchronized get() = epoch
   @Synchronized fun storeFolder(handle: H, folderId: String): Int {
+    retain(handle)
     val id = nextId++; folders[id] = Folder(handle, folderId); return id
   }
   @Synchronized fun storeFolderIfCurrent(handle: H, folderId: String, generation: Long): Int? =
@@ -19,7 +21,7 @@ class SharedKeyRegistry<H : Any>(
     }
   @Synchronized fun folder(id: Int): Folder<H>? = folders[id]
   @Synchronized fun releaseFolder(id: Int) {
-    folders.remove(id)?.let { disposeIfUnreferenced(it.handle) }
+    folders.remove(id)?.let { releaseOwned(it.handle) }
   }
   @Synchronized fun storeFile(fileId: String, handle: H, generation: Long? = null): Boolean {
     if ((generation != null && generation != epoch) || (fileId !in files && files.size >= maxFiles)) {
@@ -27,26 +29,33 @@ class SharedKeyRegistry<H : Any>(
       return false
     }
     val previous = files.put(fileId, handle)
-    if (previous != null && previous !== handle) disposeIfUnreferenced(previous)
+    if (previous !== handle) {
+      retain(handle)
+      if (previous != null) releaseOwned(previous)
+    }
     return true
   }
   @Synchronized fun file(fileId: String): H? = files[fileId]
   @Synchronized fun clear() {
     epoch++
-    val discarded = java.util.IdentityHashMap<H, Boolean>()
-    folders.values.forEach { discarded[it.handle] = true }
-    files.values.forEach { discarded[it] = true }
-    folders.clear(); files.clear()
-    // UniFFI destroy defers Rust Drop until any active native call returns;
-    // subsequent calls through a revoked borrowed reference fail closed.
+    val discarded = java.util.IdentityHashMap(references)
+    folders.clear(); files.clear(); references.clear()
+    // UniFFI's call counter keeps active native calls alive until they drain.
+    // Revoked handles are no longer available from the registry.
     var failure: Throwable? = null
     discarded.keys.forEach {
       try { dispose(it) } catch (error: Throwable) { if (failure == null) failure = error }
     }
     failure?.let { throw it }
   }
+  private fun retain(handle: H) { references[handle] = (references[handle] ?: 0) + 1 }
+  private fun releaseOwned(handle: H) {
+    val count = references[handle] ?: error("Missing shared-key ownership")
+    if (count == 1) { references.remove(handle); dispose(handle) }
+    else references[handle] = count - 1
+  }
   private fun disposeIfUnreferenced(handle: H) {
-    if (files.values.none { it === handle } && folders.values.none { it.handle === handle }) dispose(handle)
+    if (!references.containsKey(handle)) dispose(handle)
   }
 }
 
