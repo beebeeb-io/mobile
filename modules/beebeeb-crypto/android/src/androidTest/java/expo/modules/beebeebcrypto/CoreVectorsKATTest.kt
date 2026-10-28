@@ -466,7 +466,7 @@ class CoreVectorsKATTest {
         val old = FileKeyHandle.generate(); val replacement = FileKeyHandle.generate()
         registry.storeFile("file", old); registry.storeFile("file", replacement)
         assertThrows(IllegalStateException::class.java) { old.keyId() }
-        assertEquals(16, replacement.keyId().size)
+        assertEquals(32, replacement.keyId().size)
         registry.clear()
         assertThrows(IllegalStateException::class.java) { replacement.keyId() }
     }
