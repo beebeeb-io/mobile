@@ -1,4 +1,6 @@
-import { sharedFileKeyIsLoaded } from './shared-folder-keys';
+import { sharedFileKeyIsLoaded, getSharedKeyResolver } from './shared-folder-keys';
+import { isForeignSharedFile } from './shared-folder-tree';
+import { accountEpoch } from './account-epoch';
 import type { ThumbnailDecrypt } from './thumbnail';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
@@ -94,106 +96,122 @@ export function useThumbnail(
       hasThumbnail,
     });
 
-    if (sharedFileKeyIsLoaded(fileId)) {
-      void enqueueThumbnailLoad(fileId, fId => fetchDecryptedThumbnailUri(fId, (n, c) => decryptFileChunk(fId, n, c)))
-        .then(uri => { if (!cancelledRef.current) setState({ uri, source: uri ? 'remote' : null, failed: !uri }); })
-        .catch(() => { if (!cancelledRef.current) setState({ uri: null, source: null, failed: true }); });
-      return () => { cancelledRef.current = true; };
-    }
-    if (Platform.OS === 'ios' && !sharedFileKeyIsLoaded(fileId) && ThumbnailServiceNative?.getThumbnail) {
-      ThumbnailServiceNative
-        .getThumbnail(fileId, width, height)
-        .then((result) => {
-          if (cancelledRef.current) return;
-          recordRuntimeTrace('thumbnail.hook.native_success', {
-            fileId,
-            source: result.source,
+    // After a relaunch or a lock a shared file can have a cached decrypted name but no loaded native key, and nothing
+    // else has to load it before this hook runs: resolve known foreign files BEFORE choosing the reader, and fail
+    // (never fall to the ordinary reader, which would use the wrong key) when the key cannot be resolved.
+    const start = () => {
+      if (sharedFileKeyIsLoaded(fileId)) {
+        void enqueueThumbnailLoad(fileId, fId => fetchDecryptedThumbnailUri(fId, (n, c) => decryptFileChunk(fId, n, c)))
+          .then(uri => { if (!cancelledRef.current) setState({ uri, source: uri ? 'remote' : null, failed: !uri }); })
+          .catch(() => { if (!cancelledRef.current) setState({ uri: null, source: null, failed: true }); });
+        return;
+      }
+      if (Platform.OS === 'ios' && !sharedFileKeyIsLoaded(fileId) && ThumbnailServiceNative?.getThumbnail) {
+        ThumbnailServiceNative
+          .getThumbnail(fileId, width, height)
+          .then((result) => {
+            if (cancelledRef.current) return;
+            recordRuntimeTrace('thumbnail.hook.native_success', {
+              fileId,
+              source: result.source,
+            });
+            setState({
+              uri: result.uri,
+              source: result.source as ThumbnailHookState['source'],
+              failed: false,
+            });
+          })
+          .catch((err) => {
+            if (cancelledRef.current) return;
+            recordRuntimeTrace('thumbnail.hook.native_failed', {
+              fileId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            console.warn('[useThumbnail] native getThumbnail failed', fileId, err);
+            setState({ uri: null, source: null, failed: true });
           });
-          setState({
-            uri: result.uri,
-            source: result.source as ThumbnailHookState['source'],
-            failed: false,
+        return;
+      }
+
+      // Android (and the unlikely case where the iOS module is unregistered):
+      // fall back to the existing fetch path. This preserves Android behaviour
+      // exactly until the Kotlin worker lands.
+      const cameraRollUri = (() => {
+        const local = getLocalIdentifier(fileId);
+        return local ? `ph://${local}` : null;
+      })();
+
+      getCachedThumbnail(fileId)
+        .then((cachedUri) => {
+          if (cancelledRef.current) return;
+          if (cachedUri) {
+            recordRuntimeTrace('thumbnail.hook.android_cache_hit', { fileId });
+            setState({ uri: cachedUri, source: 'cache', failed: false });
+            return;
+          }
+          if (cameraRollUri) {
+            return cacheLocalThumbnail(fileId, cameraRollUri, thumbnailMimeType).then((localUri) => {
+              if (cancelledRef.current) return;
+              if (localUri) {
+                recordRuntimeTrace('thumbnail.hook.android_photokit_success', { fileId });
+                setState({ uri: localUri, source: 'photoKit', failed: false });
+                return;
+              }
+              if (!hasThumbnail) {
+                setState({ uri: null, source: null, failed: true });
+                return;
+              }
+              return enqueueThumbnailLoad(fileId, async (fId) => {
+                const fileKey = await getFileKeyBytes(fId);
+                return fetchDecryptedThumbnailUri(fId, fileKey);
+              }).then((serverUri) => {
+                if (cancelledRef.current) return;
+                if (serverUri) {
+                  recordRuntimeTrace('thumbnail.hook.android_remote_success', { fileId });
+                  setState({ uri: serverUri, source: 'remote', failed: false });
+                } else {
+                  recordRuntimeTrace('thumbnail.hook.android_remote_empty', { fileId });
+                  setState({ uri: null, source: null, failed: true });
+                }
+              });
+            });
+          }
+          if (!hasThumbnail) {
+            setState({ uri: null, source: null, failed: true });
+            return;
+          }
+          return enqueueThumbnailLoad(fileId, async (fId) => {
+            const fileKey = await getFileKeyBytes(fId);
+            return fetchDecryptedThumbnailUri(fId, fileKey);
+          }).then((serverUri) => {
+            if (cancelledRef.current) return;
+            if (serverUri) {
+              recordRuntimeTrace('thumbnail.hook.remote_success', { fileId });
+              setState({ uri: serverUri, source: 'remote', failed: false });
+            } else {
+              recordRuntimeTrace('thumbnail.hook.remote_empty', { fileId });
+              setState({ uri: null, source: null, failed: true });
+            }
           });
         })
-        .catch((err) => {
+        .catch(() => {
           if (cancelledRef.current) return;
-          recordRuntimeTrace('thumbnail.hook.native_failed', {
-            fileId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          console.warn('[useThumbnail] native getThumbnail failed', fileId, err);
+          recordRuntimeTrace('thumbnail.hook.failed', { fileId });
           setState({ uri: null, source: null, failed: true });
         });
-      return () => { cancelledRef.current = true; };
+    };
+    const resolver = isForeignSharedFile(fileId, accountEpoch().accountId) && !sharedFileKeyIsLoaded(fileId) ? getSharedKeyResolver() : null;
+    if (resolver) {
+      void resolver.ensureLoaded([fileId])
+        .then(result => {
+          if (cancelledRef.current) return;
+          if (result.get(fileId) !== 'loaded') { setState({ uri: null, source: null, failed: true }); return; }
+          start();
+        })
+        .catch(() => { if (!cancelledRef.current) setState({ uri: null, source: null, failed: true }); });
+    } else {
+      start();
     }
-
-    // Android (and the unlikely case where the iOS module is unregistered):
-    // fall back to the existing fetch path. This preserves Android behaviour
-    // exactly until the Kotlin worker lands.
-    const cameraRollUri = (() => {
-      const local = getLocalIdentifier(fileId);
-      return local ? `ph://${local}` : null;
-    })();
-
-    getCachedThumbnail(fileId)
-      .then((cachedUri) => {
-        if (cancelledRef.current) return;
-        if (cachedUri) {
-          recordRuntimeTrace('thumbnail.hook.android_cache_hit', { fileId });
-          setState({ uri: cachedUri, source: 'cache', failed: false });
-          return;
-        }
-        if (cameraRollUri) {
-          return cacheLocalThumbnail(fileId, cameraRollUri, thumbnailMimeType).then((localUri) => {
-            if (cancelledRef.current) return;
-            if (localUri) {
-              recordRuntimeTrace('thumbnail.hook.android_photokit_success', { fileId });
-              setState({ uri: localUri, source: 'photoKit', failed: false });
-              return;
-            }
-            if (!hasThumbnail) {
-              setState({ uri: null, source: null, failed: true });
-              return;
-            }
-            return enqueueThumbnailLoad(fileId, async (fId) => {
-              const fileKey = await getFileKeyBytes(fId);
-              return fetchDecryptedThumbnailUri(fId, fileKey);
-            }).then((serverUri) => {
-              if (cancelledRef.current) return;
-              if (serverUri) {
-                recordRuntimeTrace('thumbnail.hook.android_remote_success', { fileId });
-                setState({ uri: serverUri, source: 'remote', failed: false });
-              } else {
-                recordRuntimeTrace('thumbnail.hook.android_remote_empty', { fileId });
-                setState({ uri: null, source: null, failed: true });
-              }
-            });
-          });
-        }
-        if (!hasThumbnail) {
-          setState({ uri: null, source: null, failed: true });
-          return;
-        }
-        return enqueueThumbnailLoad(fileId, async (fId) => {
-          const fileKey = await getFileKeyBytes(fId);
-          return fetchDecryptedThumbnailUri(fId, fileKey);
-        }).then((serverUri) => {
-          if (cancelledRef.current) return;
-          if (serverUri) {
-            recordRuntimeTrace('thumbnail.hook.remote_success', { fileId });
-            setState({ uri: serverUri, source: 'remote', failed: false });
-          } else {
-            recordRuntimeTrace('thumbnail.hook.remote_empty', { fileId });
-            setState({ uri: null, source: null, failed: true });
-          }
-        });
-      })
-      .catch(() => {
-        if (cancelledRef.current) return;
-        recordRuntimeTrace('thumbnail.hook.failed', { fileId });
-        setState({ uri: null, source: null, failed: true });
-      });
-
     return () => { cancelledRef.current = true; };
   }, [fileId, width, height, enabled, isUnlocked, thumbnailMimeType, hasThumbnail, getFileKeyBytes, decryptFileChunk]);
 

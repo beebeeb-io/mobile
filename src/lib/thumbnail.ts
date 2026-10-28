@@ -752,8 +752,11 @@ export async function fetchDecryptedThumbnailUri(
 
     // Write decrypted thumbnail to persistent storage so it survives app restarts.
     if (getLocalIdentifier(fileId)) return null;
-    const b64 = bytesToBase64(plainBytes);
-    const persistedPath = await cacheThumbnailBase64(fileId, b64);
+    // A decrypt callback is how shared-file thumbnails arrive, and it is allowed on iOS; cacheThumbnailBase64 throws on
+    // every platform but Android, so the callback path uses the platform-neutral writer.
+    const persistedPath = typeof fileKey === 'function'
+      ? await cacheThumbnail(fileId, plainBytes)
+      : await cacheThumbnailBase64(fileId, bytesToBase64(plainBytes));
     thumbCache.set(fileId, persistedPath);
     return persistedPath;
   })();
