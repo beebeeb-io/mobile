@@ -60,14 +60,36 @@ test('existing_custody_is_never_overwritten', async () => {
   expect(calls).toContain('open'); expect(calls).not.toContain('generate'); expect(calls).not.toContain('register');
   expect(result.keyVersion).toBe(1); // create response is authoritative
 });
-test('invite_held_key_is_reused_and_registered_as_custody', async () => {
-  ports.getSentInvites = async () => [{ file_id: FOLDER, is_folder_share: true, status: 'approved', created_at: '2026-10-28', encrypted_owner_folder_key: 'Aw==' }];
-  await create(input, ports); expect(calls).toContain('open'); expect(calls).toContain('register'); expect(calls).not.toContain('generate');
+// Review thread (#234, P1; L11, task 2255): an invite for the folder that carries an owner copy of the folder key means
+// the folder already has a key. Minting a fresh one splits the key. Any live invite (invited, claimed, pending, approved;
+// unknown statuses fail closed) is the same state as the server's 409 upgrade_required: no mint, no seeding.
+const invite = (status: string, extra = {}) => ({ file_id: FOLDER, is_folder_share: true, status, created_at: '2026-10-28', encrypted_owner_folder_key: 'Aw==', ...extra });
+test('any_live_invite_that_holds_the_folder_key_means_the_folder_needs_the_upgrade_and_never_mints', async () => {
+  for (const status of ['invited', 'claimed', 'pending', 'approved', 'some_new_status']) {
+    calls.length = 0; keychain.clear(); ports.custody = memoryOver(keychain); ports.getSentInvites = async () => [invite(status)];
+    const error = await create(input, ports).catch(e => e);
+    expect(error).toBeInstanceOf(UpgradeRequiredError); expect(error.message).toBe('The owner must convert this folder first');
+    noWrites(); expect(calls).not.toContain('open'); expect(await ports.custody.isUpgradeRequired(FOLDER)).toBe(true);
+  }
 });
-test('unopenable_invites_never_mint_a_replacement_key', async () => {
-  ports.getSentInvites = async () => [{ file_id: FOLDER, is_folder_share: true, status: 'claimed', encrypted_owner_folder_key: 'Aw==' }];
-  ports.native.sharedFolderOpenOwnerKey = async () => { throw new Error('cannot open'); };
-  await expect(create(input, ports)).rejects.toBeInstanceOf(FolderKeyUnverifiedError); expect(calls).not.toContain('generate');
+test('the_upgrade_state_is_remembered_so_a_later_attempt_does_not_read_the_invites_again', async () => {
+  ports.getSentInvites = async () => [invite('pending')];
+  await expect(create(input, ports)).rejects.toBeInstanceOf(UpgradeRequiredError);
+  calls.length = 0; ports.custody = memoryOver(keychain); // a restart: the mark is durable
+  ports.getSentInvites = async () => { throw new Error('must not be asked'); };
+  await expect(create(input, ports)).rejects.toBeInstanceOf(UpgradeRequiredError); noWrites();
+});
+test('a_newer_dead_invite_does_not_hide_an_older_live_one', async () => {
+  ports.getSentInvites = async () => [invite('denied', { created_at: '2026-10-29' }), invite('pending', { created_at: '2026-10-01' })];
+  await expect(create(input, ports)).rejects.toBeInstanceOf(UpgradeRequiredError); noWrites();
+});
+test('dead_invites_alone_and_other_folders_invites_do_not_block_a_fresh_folder', async () => {
+  ports.getSentInvites = async () => [invite('denied'), invite('expired'), invite('cancelled'), invite('pending', { file_id: PARENT }), invite('pending', { is_folder_share: false })];
+  await create(input, ports); expect(calls).toContain('generate'); expect(calls).toContain('register');
+});
+test('a_live_invite_without_an_owner_copy_never_mints_either', async () => {
+  ports.getSentInvites = async () => [invite('pending', { encrypted_owner_folder_key: undefined })];
+  await expect(create(input, ports)).rejects.toBeInstanceOf(FolderKeyUnverifiedError); noWrites(); expect(calls).not.toContain('open');
 });
 test('409_key_version_conflict_rereads_and_opens_the_stored_key', async () => {
   let reads = 0;

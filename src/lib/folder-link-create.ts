@@ -4,7 +4,7 @@ import { fromBase64, toBase64, toBase64url } from './file-request-crypto';
 import { buildFullShareLink } from './share-full-link';
 import { linkErrorCode, type FolderAccessLevel, type FolderLink, type SharedFolderInfo } from './folder-link-types';
 import { accountEpoch, isCurrentAccountEpoch, StaleAccountError } from './account-epoch';
-import { assertMayRegisterCustody, custodyMemory, isCustodyAbsentStatus, noteUpgradeRequired, type CustodyMemory } from './shared-folder-custody';
+import { assertMayRegisterCustody, custodyMemory, isCustodyAbsentStatus, noteUpgradeRequired, UpgradeRequiredError, type CustodyMemory } from './shared-folder-custody';
 
 // C1 Task 3 Interfaces, pending merge. Tests use MARKED MOCKS; no JS key fallback.
 export interface FolderLinkNative {
@@ -78,6 +78,7 @@ export class FolderLinksUnavailableError extends Error {
   readonly code = 'shared_folders_v1';
   constructor() { super('Update Beebeeb to manage folder links.'); this.name = 'FolderLinksUnavailableError'; }
 }
+const DEAD_INVITE_STATUSES = ['denied', 'expired', 'cancelled', 'canceled', 'revoked', 'declined'];
 function statusOf(err: unknown): number | undefined { return (err as { status?: number } | null)?.status; }
 function codeOf(err: unknown): string | undefined { return (err as { code?: string } | null)?.code; }
 
@@ -137,22 +138,20 @@ export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, por
         if (await ports.custody.hasSeen(ancestor)) throw new Error('This folder is already inside a shared folder.');
         assertCurrent();
       }
-      const invites = (await checked(ports.getSentInvites())).filter(row => row.is_folder_share && row.file_id === input.folderId && ['invited', 'claimed', 'approved'].includes(row.status))
-        .sort((a, b) => b.created_at.localeCompare(a.created_at));
-      if (invites.length) {
-        for (const invite of invites) {
-          if (!invite.encrypted_owner_folder_key) continue;
-          try {
-            const wrapped = fromBase64(invite.encrypted_owner_folder_key);
-            handle = await ports.native.sharedFolderOpenOwnerKey(master, input.folderId, wrapped);
-            assertCurrent(); ownerWrapped = wrapped; break;
-          } catch (err) { assertCurrent(); if (handle !== null) throw err; }
-        }
-        if (handle === null) throw new FolderKeyUnverifiedError();
-      } else {
-        const generated = await ports.native.sharedFolderGenerate(master, input.folderId);
-        handle = generated.handleId; ownerWrapped = generated.ownerWrapped; assertCurrent();
+      // L11 (task 2255): an invite for this folder that carries an owner copy of the folder key means the folder already
+      // has a key, held by that invite. Minting a fresh one would split the key (the invite's recipients could open
+      // nothing the new wraps cover). Any LIVE invite (invited, claimed, pending, approved; an unknown status fails
+      // closed) is therefore the same state as the server's 409 upgrade_required: no mint, no seeding, and the folder
+      // needs the owner's upgrade. Denied, expired and cancelled invites are the server's call (contract 2237 §2).
+      const live = (await checked(ports.getSentInvites())).filter(row => row.is_folder_share && row.file_id === input.folderId && !DEAD_INVITE_STATUSES.includes(row.status));
+      if (live.some(row => !!row.encrypted_owner_folder_key)) {
+        await ports.custody.markUpgradeRequired(input.folderId).catch(() => undefined);
+        throw new UpgradeRequiredError();
       }
+      // A live invite whose key copy is missing cannot be checked either: never mint over it.
+      if (live.length) throw new FolderKeyUnverifiedError();
+      const generated = await ports.native.sharedFolderGenerate(master, input.folderId);
+      handle = generated.handleId; ownerWrapped = generated.ownerWrapped; assertCurrent();
       try {
         await checked(ports.registerSharedFolderKey(input.folderId, { owner_wrapped_folder_key: toBase64(ownerWrapped!), key_version: keyVersion }));
         await ports.custody.markSeen(input.folderId); assertCurrent();
