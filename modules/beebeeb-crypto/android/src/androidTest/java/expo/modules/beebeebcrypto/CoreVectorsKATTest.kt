@@ -59,7 +59,7 @@ class CoreVectorsKATTest {
     companion object {
         /** `sha256sum` of the vendored asset (v10, matching iOS pin 2026-09-22). */
         private const val EXPECTED_SHA256 =
-            "4e3396f9705f427728f2eadf2f52dcb4ba62f1b718c794403087ac5971e2dd3f"
+            "631bf4dc9cdb780fe7f2c83d5af75bd8b7cec8586d18e55a532e9f4c46101eb0"
         private const val EXPECTED_VERSION = 10
         private val REQUIRED_VECTOR_NAMES = listOf(
             "master_key_from_password",
@@ -84,6 +84,10 @@ class CoreVectorsKATTest {
         "combine_folder_link_key",
         "key_wrap_v1",
         "folder_link_passphrase",
+        "folder_link_passphrase_nfd",
+        "folder_custody_v1",
+        "link_owner_key_v1",
+        "link_owner_token_v1",
         )
 
         private fun loadRoot(): JSONObject {

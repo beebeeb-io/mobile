@@ -15,7 +15,9 @@ paths = [
 symbols = [
  'constructor_filekeyhandle_' + n for n in ['generate', 'from_folder_link', 'from_folder_link_passphrase', 'from_key_bytes']
 ] + ['method_filekeyhandle_' + n for n in ['wrap_key', 'unwrap_key', 'key_id', 'encrypt_name_for', 'decrypt_name_metadata']
-] + ['constructor_chunkdecryptorhandle_for_push_with_file_key_handle']
+] + ['constructor_chunkdecryptorhandle_for_push_with_file_key_handle'] + [
+ 'method_masterkeyhandle_' + n for n in ['wrap_key', 'wrap_bytes', 'wrap_folder_custody', 'unwrap_folder_custody', 'wrap_link_owner_key', 'unwrap_link_owner_key', 'wrap_link_owner_token', 'unwrap_link_owner_token']
+]
 
 def check(base, quiet=False):
     missing = []
@@ -29,7 +31,8 @@ def check(base, quiet=False):
             missing.append(f'{path}: missing {pin}')
     if not quiet:
         for error in missing: print(error)
-        print(f'binding-symbols: {44-len(missing)}/44 present, {len(missing)} missing')
+        total = len(paths) * (len(symbols) + 1)
+        print(f'binding-symbols: {total-len(missing)}/{total} present, {len(missing)} missing')
     return missing
 
 if sys.argv[2] == '--self-test':

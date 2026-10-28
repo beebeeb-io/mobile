@@ -1042,6 +1042,22 @@ external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_encrypt_name_
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_export_for_keychain(
 ): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_folder_custody(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_link_owner_key(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_link_owner_token(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_bytes(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_folder_custody(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_key(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_link_owner_key(
+): Short
+external fun uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_link_owner_token(
+): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_encrypt_buckets(
 ): Short
 external fun uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_encrypt_shards(
@@ -1416,6 +1432,22 @@ external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_encrypt_name(`ptr`:
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_encrypt_name_with_chunk_format(`ptr`: Long,`fileId`: RustBuffer.ByValue,`filename`: RustBuffer.ByValue,`mimeType`: RustBuffer.ByValue,`chunkFormat`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_export_for_keychain(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_folder_custody(`ptr`: Long,`folderId`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_link_owner_key(`ptr`: Long,`shareId`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_link_owner_token(`ptr`: Long,`shareId`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_bytes(`ptr`: Long,`bytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_folder_custody(`ptr`: Long,`folderId`: RustBuffer.ByValue,`inner`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_key(`ptr`: Long,`inner`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_link_owner_key(`ptr`: Long,`shareId`: RustBuffer.ByValue,`inner`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_link_owner_token(`ptr`: Long,`shareId`: RustBuffer.ByValue,`token`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun uniffi_beebeeb_uniffi_fn_clone_searchindexhandle(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
@@ -2230,6 +2262,30 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_export_for_keychain() != 50366.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_folder_custody() != 29894.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_link_owner_key() != 33903.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_link_owner_token() != 21189.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_bytes() != 63264.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_folder_custody() != 30373.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_key() != 6508.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_link_owner_key() != 31672.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_link_owner_token() != 17239.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_beebeeb_uniffi_checksum_method_searchindexhandle_encrypt_buckets() != 883.toShort()) {
@@ -7366,6 +7422,33 @@ public interface MasterKeyHandleInterface {
      */
     fun `exportForKeychain`(): kotlin.ByteArray
     
+    fun `unwrapFolderCustody`(`folderId`: kotlin.String, `nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): FileKeyHandle
+    
+    /**
+     * The link fragment is the deliberate export exception: JS puts K_c in
+     * the URL. The account master key never crosses this boundary.
+     */
+    fun `unwrapLinkOwnerKey`(`shareId`: kotlin.String, `nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): kotlin.ByteArray
+    
+    fun `unwrapLinkOwnerToken`(`shareId`: kotlin.String, `nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): kotlin.ByteArray
+    
+    /**
+     * Wrap bytes without exporting the master key across the FFI boundary.
+     */
+    fun `wrapBytes`(`bytes`: kotlin.ByteArray): EncryptedData
+    
+    fun `wrapFolderCustody`(`folderId`: kotlin.String, `inner`: FileKeyHandle): EncryptedData
+    
+    /**
+     * Legacy direct-master wrap for existing protocols. Folder custody and
+     * link recovery MUST use the purpose-bound methods below instead.
+     */
+    fun `wrapKey`(`inner`: FileKeyHandle): EncryptedData
+    
+    fun `wrapLinkOwnerKey`(`shareId`: kotlin.String, `inner`: FileKeyHandle): EncryptedData
+    
+    fun `wrapLinkOwnerToken`(`shareId`: kotlin.String, `token`: kotlin.ByteArray): EncryptedData
+    
     companion object
 }
 
@@ -7713,6 +7796,129 @@ open class MasterKeyHandle: Disposable, AutoCloseable, MasterKeyHandleInterface
     UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_export_for_keychain(
         it,
         _status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CryptoException::class)override fun `unwrapFolderCustody`(`folderId`: kotlin.String, `nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): FileKeyHandle {
+            return FfiConverterTypeFileKeyHandle.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_folder_custody(
+        it,
+        FfiConverterString.lower(`folderId`),FfiConverterByteArray.lower(`nonce`),FfiConverterByteArray.lower(`ciphertext`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The link fragment is the deliberate export exception: JS puts K_c in
+     * the URL. The account master key never crosses this boundary.
+     */
+    @Throws(CryptoException::class)override fun `unwrapLinkOwnerKey`(`shareId`: kotlin.String, `nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_link_owner_key(
+        it,
+        FfiConverterString.lower(`shareId`),FfiConverterByteArray.lower(`nonce`),FfiConverterByteArray.lower(`ciphertext`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CryptoException::class)override fun `unwrapLinkOwnerToken`(`shareId`: kotlin.String, `nonce`: kotlin.ByteArray, `ciphertext`: kotlin.ByteArray): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_link_owner_token(
+        it,
+        FfiConverterString.lower(`shareId`),FfiConverterByteArray.lower(`nonce`),FfiConverterByteArray.lower(`ciphertext`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Wrap bytes without exporting the master key across the FFI boundary.
+     */
+    @Throws(CryptoException::class)override fun `wrapBytes`(`bytes`: kotlin.ByteArray): EncryptedData {
+            return FfiConverterTypeEncryptedData.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_bytes(
+        it,
+        FfiConverterByteArray.lower(`bytes`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CryptoException::class)override fun `wrapFolderCustody`(`folderId`: kotlin.String, `inner`: FileKeyHandle): EncryptedData {
+            return FfiConverterTypeEncryptedData.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_folder_custody(
+        it,
+        FfiConverterString.lower(`folderId`),FfiConverterTypeFileKeyHandle.lower(`inner`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Legacy direct-master wrap for existing protocols. Folder custody and
+     * link recovery MUST use the purpose-bound methods below instead.
+     */
+    @Throws(CryptoException::class)override fun `wrapKey`(`inner`: FileKeyHandle): EncryptedData {
+            return FfiConverterTypeEncryptedData.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_key(
+        it,
+        FfiConverterTypeFileKeyHandle.lower(`inner`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CryptoException::class)override fun `wrapLinkOwnerKey`(`shareId`: kotlin.String, `inner`: FileKeyHandle): EncryptedData {
+            return FfiConverterTypeEncryptedData.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_link_owner_key(
+        it,
+        FfiConverterString.lower(`shareId`),FfiConverterTypeFileKeyHandle.lower(`inner`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CryptoException::class)override fun `wrapLinkOwnerToken`(`shareId`: kotlin.String, `token`: kotlin.ByteArray): EncryptedData {
+            return FfiConverterTypeEncryptedData.lift(
+    callWithHandle {
+    uniffiRustCallWithError(CryptoException) { _status ->
+    UniffiLib.uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_link_owner_token(
+        it,
+        FfiConverterString.lower(`shareId`),FfiConverterByteArray.lower(`token`),_status)
 }
     }
     )

@@ -251,6 +251,52 @@
       "salt_hex": "ca6bed5537508ec3bc602d7ae7034040",
       "stretch_hex": "1b08b5a91605001c53cacc58aa794aea129e4d450cf8fbdf4e65ae30718037b0",
       "token": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    },
+    {
+      "k_c_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "link_key_hex": "28033d9bbe8781dbbba4508cb6f38972e2fdccb894689c0e41b72d6cad6a4ac4",
+      "name": "folder_link_passphrase_nfd",
+      "note": "NFC-normalize before Argon2id; this NFD spelling equals folder_link_passphrase.",
+      "passphrase": "folder café 2237",
+      "salt_hex": "ca6bed5537508ec3bc602d7ae7034040",
+      "stretch_hex": "1b08b5a91605001c53cacc58aa794aea129e4d450cf8fbdf4e65ae30718037b0",
+      "token": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    },
+    {
+      "context_hex": "626565626565622d666f6c6465722d637573746f64792d7631666f6c6465722d3232333763",
+      "label": "beebeeb-folder-custody-v1",
+      "master_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name": "folder_custody_v1",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "L6: HKDF info and AES-GCM AAD both equal label || UTF-8 record id; fixed nonce for this public test only.",
+      "plaintext_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "purpose_key_hex": "e44b06a0896100a704139abc3d4813109e7c2a59c2d1bc89f914184fb552d042",
+      "record_id": "folder-2237c",
+      "wrapped_hex": "000102030405060708090a0b6b332c3670289fdd1a88d53994bf5ebf632fe0acf76a0101d375cb52bd51b94174dc06b9d761ac09c84c71e919e25bf1"
+    },
+    {
+      "context_hex": "626565626565622d6c696e6b2d6f776e65722d6b65792d763173686172652d3232333763",
+      "label": "beebeeb-link-owner-key-v1",
+      "master_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name": "link_owner_key_v1",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "L6: HKDF info and AES-GCM AAD both equal label || UTF-8 record id; fixed nonce for this public test only.",
+      "plaintext_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "purpose_key_hex": "a4cead3f84cf1154db3511fdd6d20299ea18b350677bd0cc124edaaa12f5e1bc",
+      "record_id": "share-2237c",
+      "wrapped_hex": "000102030405060708090a0b3cc983a3d6454c8c4b26f5e1ad3d7cbe905edfcec428d33dad3c7bcb79878a286f950d2e52aa5cef937f1642cb3f51a9"
+    },
+    {
+      "context_hex": "626565626565622d6c696e6b2d6f776e65722d746f6b656e2d763173686172652d3232333763",
+      "label": "beebeeb-link-owner-token-v1",
+      "master_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name": "link_owner_token_v1",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "L6: HKDF info and AES-GCM AAD both equal label || UTF-8 record id; fixed nonce for this public test only.",
+      "plaintext_hex": "41414543417751464267634943516f4c4441304f4478415245684d554652595847426b6147787764486838",
+      "purpose_key_hex": "be6cc60b99233c10d1be795c60423817cf34d59f9033d8b722551897a1aae001",
+      "record_id": "share-2237c",
+      "wrapped_hex": "000102030405060708090a0b4a39cf0507d4433ca2d1765c4778723a6bdd2a1777d26fe7c2c7c53713add9db4e76efd9ba98b94a9c12708afdefe15e504a8819da09f49b8bc7c2"
     }
   ],
   "version": 10

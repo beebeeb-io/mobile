@@ -34,7 +34,7 @@ final class CoreVectorsKATTests: XCTestCase {
 
     /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v10, 2026-09-22).
     private static let expectedSha256Hex =
-        "4e3396f9705f427728f2eadf2f52dcb4ba62f1b718c794403087ac5971e2dd3f"
+        "631bf4dc9cdb780fe7f2c83d5af75bd8b7cec8586d18e55a532e9f4c46101eb0"
     private static let expectedVersion = 10
     private static let requiredVectorNames = [
         "master_key_from_password",
@@ -59,6 +59,10 @@ final class CoreVectorsKATTests: XCTestCase {
         "combine_folder_link_key",
         "key_wrap_v1",
         "folder_link_passphrase",
+        "folder_link_passphrase_nfd",
+        "folder_custody_v1",
+        "link_owner_key_v1",
+        "link_owner_token_v1",
     ]
 
     // MARK: - Vector loading
