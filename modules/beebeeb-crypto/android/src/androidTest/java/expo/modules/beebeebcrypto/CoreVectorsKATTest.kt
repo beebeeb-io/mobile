@@ -22,6 +22,7 @@ import uniffi.beebeeb_uniffi.openRequestUpload
 import uniffi.beebeeb_uniffi.unwrapRequestPrivate
 import uniffi.beebeeb_uniffi.x25519SharedSecret
 import java.security.MessageDigest
+import uniffi.beebeeb_uniffi.FileKeyHandle
 
 /**
  * Android half of the core known-answer-vector gate (task 1683, mirroring the
@@ -285,4 +286,25 @@ class CoreVectorsKATTest {
         )
         assertHexEquals("file_request: opened content key mismatch", v.getString("content_key_hex"), opened)
     }
+    @Test
+    fun keyWrapV1() {
+        val v = vector(loadRoot(), "key_wrap_v1")
+        val wrapper = FileKeyHandle.fromKeyBytes(v.getString("wrapper_key_hex").hexToBytes())
+        val wire = v.getString("wrapped_hex").hexToBytes()
+        val opened = wrapper.unwrapKey(wire.copyOfRange(0, 12), wire.copyOfRange(12, wire.size))
+        val expected = FileKeyHandle.fromKeyBytes(v.getString("inner_key_hex").hexToBytes())
+        assertTrue(opened.keyId().contentEquals(expected.keyId()))
+        println("[CoreVectorsKAT] key_wrap_v1: 1 row")
+    }
+
+    @Test
+    fun folderLinkPassphrase() {
+        val v = vector(loadRoot(), "folder_link_passphrase")
+        val actual = FileKeyHandle.fromFolderLinkPassphrase(
+            v.getString("k_c_hex").hexToBytes(), v.getString("passphrase"), v.getString("token"))
+        val expected = FileKeyHandle.fromKeyBytes(v.getString("link_key_hex").hexToBytes())
+        assertTrue(actual.keyId().contentEquals(expected.keyId()))
+        println("[CoreVectorsKAT] folder_link_passphrase: 1 row")
+    }
+
 }

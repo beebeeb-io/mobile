@@ -526,6 +526,26 @@ final class CoreVectorsKATTests: XCTestCase {
         expectEqual(decrypted, expectedPlaintext, "thumbnail_encrypt roundtrip: encrypt->decrypt must reproduce the original plaintext", allPassed: &allPassed)
         if allPassed { Self.logPass("thumbnail_encrypt (encrypt roundtrip)") }
     }
+    // v10: exercise actual handle ABI, not a reimplementation of the derivation.
+    func testKeyWrapV1() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "key_wrap_v1")
+        let wrapper = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "wrapper_key_hex"))
+        let wire = try Self.hex(v, "wrapped_hex")
+        let opened = try wrapper.unwrapKey(nonce: Data(wire.prefix(12)), ciphertext: Data(wire.dropFirst(12)))
+        let expected = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "inner_key_hex"))
+        XCTAssertEqual(try opened.keyId(), try expected.keyId())
+        print("[CoreVectorsKAT] key_wrap_v1: 1 row")
+    }
+
+    func testFolderLinkPassphrase() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "folder_link_passphrase")
+        let actual = try FileKeyHandle.fromFolderLinkPassphrase(
+            kC: Self.hex(v, "k_c_hex"), passphrase: Self.str(v, "passphrase"), token: Self.str(v, "token"))
+        let expected = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "link_key_hex"))
+        XCTAssertEqual(try actual.keyId(), try expected.keyId())
+        print("[CoreVectorsKAT] folder_link_passphrase: 1 row")
+    }
+
 }
 
 // MARK: - Hex <-> Data
