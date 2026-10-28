@@ -4,7 +4,12 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -22,11 +27,13 @@ import uniffi.beebeeb_uniffi.openRequestUpload
 import uniffi.beebeeb_uniffi.unwrapRequestPrivate
 import uniffi.beebeeb_uniffi.x25519SharedSecret
 import java.security.MessageDigest
+import uniffi.beebeeb_uniffi.MasterKeyHandle
+import uniffi.beebeeb_uniffi.FileKeyHandle
 
 /**
  * Android half of the core known-answer-vector gate (task 1683, mirroring the
  * iOS `CoreVectorsKATTests.swift` from task 1382). Drives `beebeeb-core`'s
- * cross-platform vectors (`test-vectors/vectors.json`, v4, 12 families through
+ * cross-platform vectors (`test-vectors/vectors.json`, v11, 31 families through
  * the SAME production UniFFI Kotlin bindings the app links — the generated
  * `uniffi.beebeeb_uniffi` sources and the deployed `libbeebeeb_uniffi.so`).
  *
@@ -36,9 +43,9 @@ import java.security.MessageDigest
  * the pinning decision in the design spec — UniFFI 0.31.1).
  *
  * ## Refreshing the vendored vector file
- * `src/androidTest/assets/core-vectors.v4.json` is a vendored COPY of
+ * `src/androidTest/assets/core-vectors.v10.json` is a vendored COPY of
  * `repos/core/test-vectors/vectors.json`. To refresh after core bumps it:
- * 1. `cp ../../../core/test-vectors/vectors.json modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v4.json`
+ * 1. `cp ../../../core/test-vectors/vectors.json modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v10.json`
  * 2. `sha256sum` the new copy and update [EXPECTED_SHA256] (see the task file).
  * 3. If core bumped the version, update [EXPECTED_VERSION] and [REQUIRED_VECTOR_NAMES].
  *
@@ -56,10 +63,11 @@ import java.security.MessageDigest
 class CoreVectorsKATTest {
 
     companion object {
-        /** `sha256sum` of the vendored asset (v4, matching iOS pin 2026-09-22). */
+        /** `sha256sum` of the vendored asset (v11, matching merged core c08defc7). */
         private const val EXPECTED_SHA256 =
-            "a8f5320a0dbd06fa3a26ede7109f3c24295197061f13f81519c010b30157f6e5"
-        private const val EXPECTED_VERSION = 4
+            "11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a"
+        // The v10 asset filename is retained; contents track the pinned core version.
+        private const val EXPECTED_VERSION = 11
         private val REQUIRED_VECTOR_NAMES = listOf(
             "master_key_from_password",
             "file_key_derivation",
@@ -73,15 +81,34 @@ class CoreVectorsKATTest {
             "file_request_seal_open",
             "share_key_wrap",
             "thumbnail_encrypt",
+        "chunk_v2_stream",
+        "chunk_v2_single_frame",
+        "metadata_v2_name",
+        "metadata_v2_name_filekey",
+        "metadata_v1_name_filekey",
+        "folder_key_id",
+        "shared_folder_index_key",
+        "combine_folder_link_key",
+        "key_wrap_v1",
+        "folder_link_passphrase",
+        "folder_link_passphrase_nfd",
+        "folder_custody_v1",
+        "link_owner_key_v1",
+        "link_owner_token_v1",
+        "folder_child_file_v1",
+        "folder_child_folder_v1",
+        "owner_wrapped_file_key",
+        "owner_wrapped_folder_key",
+        "folder_wrapped_file_key",
         )
 
         private fun loadRoot(): JSONObject {
             val assets = InstrumentationRegistry.getInstrumentation().context.assets
-            val bytes = assets.open("core-vectors.v4.json").readBytes()
+            val bytes = assets.open("core-vectors.v10.json").readBytes()
             val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
             val hex = digest.joinToString("") { "%02x".format(it) }
             assertEquals(
-                "vendored core-vectors.v4.json drifted from the pinned sha256 — see this file's header",
+                "vendored core-vectors.v10.json drifted from the pinned sha256 — see this file's header",
                 EXPECTED_SHA256,
                 hex,
             )
@@ -94,7 +121,7 @@ class CoreVectorsKATTest {
                 val v = vectors.getJSONObject(i)
                 if (v.optString("name") == name) return v
             }
-            throw AssertionError("vector '$name' not found in core-vectors.v4.json")
+            throw AssertionError("vector '$name' not found in core-vectors.v10.json")
         }
 
         private fun String.hexToBytes(): ByteArray {
@@ -275,4 +302,268 @@ class CoreVectorsKATTest {
         )
         assertHexEquals("file_request: opened content key mismatch", v.getString("content_key_hex"), opened)
     }
+    @Test
+    fun keyWrapV1() {
+        val v = vector(loadRoot(), "key_wrap_v1")
+        val wrapper = FileKeyHandle.fromKeyBytes(v.getString("wrapper_key_hex").hexToBytes())
+        val wire = v.getString("wrapped_hex").hexToBytes()
+        val opened = wrapper.unwrapKey(wire.copyOfRange(0, 12), wire.copyOfRange(12, wire.size))
+        val expected = FileKeyHandle.fromKeyBytes(v.getString("inner_key_hex").hexToBytes())
+        assertTrue(opened.keyId().contentEquals(expected.keyId()))
+        println("[CoreVectorsKAT] key_wrap_v1: 1 row")
+    }
+
+    @Test
+    fun folderLinkPassphrase() {
+        val v = vector(loadRoot(), "folder_link_passphrase")
+        val actual = FileKeyHandle.fromFolderLinkPassphrase(
+            v.getString("k_c_hex").hexToBytes(), v.getString("passphrase"), v.getString("token"))
+        val expected = FileKeyHandle.fromKeyBytes(v.getString("link_key_hex").hexToBytes())
+        assertTrue(actual.keyId().contentEquals(expected.keyId()))
+        println("[CoreVectorsKAT] folder_link_passphrase: 1 row")
+    }
+
+    @Test
+    fun l6PurposeWrapVectors() {
+        for (name in listOf("folder_custody_v1", "link_owner_key_v1", "link_owner_token_v1")) {
+            val v = vector(loadRoot(), name)
+            val master = MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes())
+            val wire = v.getString("wrapped_hex").hexToBytes()
+            val id = v.getString("record_id")
+            val nonce = wire.copyOfRange(0, 12)
+            val ct = wire.copyOfRange(12, wire.size)
+            val plain = v.getString("plaintext_hex").hexToBytes()
+            when (name) {
+                "folder_custody_v1" -> {
+                    val opened = master.unwrapFolderCustody(id, nonce, ct)
+                    assertTrue(opened.keyId().contentEquals(FileKeyHandle.fromKeyBytes(plain).keyId()))
+                    assertThrows(Exception::class.java) { master.unwrapFolderCustody(id + "wrong", nonce, ct) }
+                }
+                "link_owner_key_v1" -> {
+                    assertTrue(master.unwrapLinkOwnerKey(id, nonce, ct).contentEquals(plain))
+                    assertThrows(Exception::class.java) { master.unwrapLinkOwnerToken(id, nonce, ct) }
+                }
+                else -> assertTrue(master.unwrapLinkOwnerToken(id, nonce, ct).contentEquals(plain))
+            }
+            println("[CoreVectorsKAT] $name: 1 row")
+        }
+    }
+
+    @Test
+    fun folderLinkPassphraseNfd() {
+        val v = vector(loadRoot(), "folder_link_passphrase_nfd")
+        val kc = v.getString("k_c_hex").hexToBytes()
+        val actual = FileKeyHandle.fromFolderLinkPassphrase(kc, v.getString("passphrase"), v.getString("token"))
+        assertTrue(actual.keyId().contentEquals(FileKeyHandle.fromKeyBytes(v.getString("link_key_hex").hexToBytes()).keyId()))
+        assertThrows(Exception::class.java) { FileKeyHandle.fromFolderLinkPassphrase(kc, "", v.getString("token")) }
+        println("[CoreVectorsKAT] folder_link_passphrase_nfd: 1 row")
+    }
+
+
+    @Test
+    fun folderChildVectorsBindEveryContextField() {
+        for (name in listOf("folder_child_file_v1", "folder_child_folder_v1")) {
+            val v = vector(loadRoot(), name)
+            val key = FileKeyHandle.fromKeyBytes(v.getString("folder_key_hex").hexToBytes())
+            val wire = v.getString("wrapped_hex").hexToBytes()
+            val root = v.getString("shared_folder_id"); val item = v.getString("item_id"); val kind = v.getInt("kind").toUByte()
+            val opened = key.unwrapFolderChild(root, item, kind, wire.copyOfRange(0,12), wire.copyOfRange(12,wire.size))
+            assertTrue(opened.keyId().contentEquals(FileKeyHandle.fromKeyBytes(v.getString("child_key_hex").hexToBytes()).keyId()))
+            for ((r,i,k) in listOf(Triple("00000000-0000-4000-8000-000000000099",item,kind), Triple(root,"00000000-0000-4000-8000-000000000099",kind), Triple(root,item,(3-kind.toInt()).toUByte()))) {
+                assertThrows(Exception::class.java) { key.unwrapFolderChild(r,i,k,wire.copyOfRange(0,12),wire.copyOfRange(12,wire.size)) }
+            }
+            println("[CoreVectorsKAT] $name: 1 row")
+        }
+    }
+
+    @Test
+    fun ownerWrapRejectsOwnV1Content() {
+        MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 }).use { master ->
+            val id = "11111111-1111-4111-8111-111111111111"
+            val registry = SharedKeyRegistry<FileKeyHandle> { it.close() }
+            try {
+                val frame = master.deriveFileKey(id.toByteArray()).use { derived ->
+                    SharedKeyOps.wire(derived.encryptChunk(ByteArray(32) { 0x55 }))
+                }
+                assertEquals(60, frame.size)
+                assertFalse(SharedKeyOps.openOwnerFileKey(master, id, frame, registry))
+                assertNull(registry.file(id))
+            } finally { registry.clear() }
+        }
+    }
+
+    @Test
+    fun ownerWrapRejectsLegacyNameEnvelope() {
+        MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 }).use { master ->
+            val id = "11111111-1111-4111-8111-111111111111"
+            val registry = SharedKeyRegistry<FileKeyHandle> { it.close() }
+            try {
+                val blob = JSONObject(master.encryptName(id, "test", null))
+                fun bytes(name: String): ByteArray {
+                    val array = blob.getJSONArray(name)
+                    return ByteArray(array.length()) { array.getInt(it).toByte() }
+                }
+                val frame = bytes("nonce") + bytes("ciphertext")
+                assertEquals(60, frame.size)
+                assertFalse(SharedKeyOps.openOwnerFileKey(master, id, frame, registry))
+                assertNull(registry.file(id))
+            } finally { registry.clear() }
+        }
+    }
+
+    @Test
+    fun l8OwnerWrapVectorAndAdoption() {
+        val v = vector(loadRoot(), "owner_wrapped_file_key")
+        MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes()).use { master ->
+            val id = v.getString("file_id")
+            val registry = SharedKeyRegistry<FileKeyHandle> { it.close() }
+            FileKeyHandle.fromKeyBytes(v.getString("child_key_hex").hexToBytes()).use { expected ->
+                try {
+                    assertTrue(SharedKeyOps.openOwnerFileKey(master, id, v.getString("expected_frame_hex").hexToBytes(), registry))
+                    assertTrue(expected.keyId().contentEquals(registry.file(id)!!.keyId()))
+                    val adopted = SharedKeyOps.adoptWrap(master, id, registry)
+                    assertEquals(60, adopted.size)
+                    registry.clear()
+                    assertTrue(SharedKeyOps.openOwnerFileKey(master, id, adopted, registry))
+                    assertTrue(expected.keyId().contentEquals(registry.file(id)!!.keyId()))
+                    assertFalse(SharedKeyOps.openOwnerFileKey(master, "22222222-2222-4222-8222-222222222222", adopted, registry))
+                    val corrupt = adopted.copyOf()
+                    corrupt[corrupt.lastIndex] = (corrupt.last().toInt() xor 1).toByte()
+                    assertFalse(SharedKeyOps.openOwnerFileKey(master, id, corrupt, registry))
+                    assertTrue(expected.keyId().contentEquals(registry.file(id)!!.keyId()))
+                } finally { registry.clear() }
+            }
+        }
+    }
+
+    @Test
+    fun sharedKeyOpsRoundTrip() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val folder = SharedKeyOps.generateFolderKey(master, "2237c000-0000-4000-8000-000000000001", registry)
+        val opened = SharedKeyOps.openOwnerFolderKey(master, "2237c000-0000-4000-8000-000000000001", folder.second, registry)
+        val rows = SharedKeyOps.wrapChildKeys(master, opened, listOf("2237c000-0000-4000-8000-000000000002"), registry)
+        val loaded = SharedKeyOps.loadFileKeys(opened, rows + SharedKeyEntryNative("bad", byteArrayOf(), 1), registry)
+        assertEquals(listOf("2237c000-0000-4000-8000-000000000002"), loaded.first)
+        assertEquals(listOf("bad"), loaded.second)
+        val encrypted = master.deriveFileKey("2237c000-0000-4000-8000-000000000002".toByteArray()).encryptChunk("round trip".toByteArray())
+        assertTrue(SharedKeyOps.fileKey(master, "2237c000-0000-4000-8000-000000000002", registry).decryptChunk(encrypted.nonce, encrypted.ciphertext).contentEquals("round trip".toByteArray()))
+        val adopted = SharedKeyOps.adoptWrap(master, "2237c000-0000-4000-8000-000000000002", registry)
+        assertTrue(SharedKeyOps.openOwnerFileKey(master, "2237c000-0000-4000-8000-000000000002", adopted, registry))
+    }
+
+    @Test
+    fun mintLinkMatchesTheVector() {
+        val v = vector(loadRoot(), "folder_link_passphrase")
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val folder = SharedKeyOps.generateFolderKey(master, "root", registry)
+        val token = v.getString("token")
+        val passphrase = v.getString("passphrase")
+        val minted = SharedKeyOps.mintLink(master, folder.first, token, passphrase, "share", registry)
+        val kc = java.util.Base64.getUrlDecoder().decode(minted.kc)
+        val link = FileKeyHandle.fromFolderLinkPassphrase(kc, passphrase, token)
+        assertTrue(openWrap(link, minted.wrappedFolderKey).keyId().contentEquals(registry.folder(folder.first)!!.handle.keyId()))
+        assertEquals(minted.kc, SharedKeyOps.recoverKc(master, folder.first, minted.ownerWrappedKey, "share", registry))
+        assertNull(SharedKeyOps.recoverKc(master, folder.first, minted.ownerWrappedKey, "wrong", registry))
+        assertThrows(Exception::class.java) { SharedKeyOps.mintLink(master, folder.first, token, "", "share", registry) }
+    }
+
+    @Test
+    fun recoverKcRefusesTheFolderKeyWrap() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val folder = SharedKeyOps.generateFolderKey(master, "root", registry)
+        val key = registry.folder(folder.first)!!.handle
+        val wrong = SharedKeyOps.wire(master.wrapLinkOwnerKey("share", key))
+        assertNull(SharedKeyOps.recoverKc(master, folder.first, wrong, "share", registry))
+        assertNull(SharedKeyOps.recoverKc(master, folder.first, SharedKeyOps.wire(master.wrapKey(key)), "share", registry))
+    }
+
+    @Test
+    fun decryptNamesPrefersTheTableKey() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val key = FileKeyHandle.generate()
+        val name = key.encryptNameFor("guest.txt", "text/plain", 0u)
+        val items = listOf(uniffi.beebeeb_uniffi.BatchNameItem("2237c000-0000-4000-8000-000000000002", name))
+        assertNotNull(SharedKeyOps.decryptNames(master, items, registry)[0].error)
+        val folder = SharedKeyOps.generateFolderKey(master, "2237c000-0000-4000-8000-000000000001", registry)
+        val wrapped = SharedKeyOps.wire(registry.folder(folder.first)!!.handle.wrapFolderChild("2237c000-0000-4000-8000-000000000001", "2237c000-0000-4000-8000-000000000002", 1u, key))
+        SharedKeyOps.loadFileKeys(folder.first, listOf(SharedKeyEntryNative("2237c000-0000-4000-8000-000000000002", wrapped, 1)), registry)
+        val opened = SharedKeyOps.decryptNames(master, items, registry)
+        assertEquals("guest.txt", opened[0].name)
+        assertEquals("text/plain", opened[0].mimeType)
+        assertNull(opened[0].error)
+        val ownerName = master.encryptName("2237c000-0000-4000-8000-000000000002", "owner", null)
+        assertNotNull(SharedKeyOps.decryptNames(master, listOf(uniffi.beebeeb_uniffi.BatchNameItem("2237c000-0000-4000-8000-000000000002", ownerName)), registry)[0].error)
+    }
+
+    @Test
+    fun childPublicationPreservesLoadedRandomKeysForBothKinds() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val root = "2237c000-0000-4000-8000-000000000001"
+        val folder = SharedKeyOps.generateFolderKey(master, root, registry)
+        for (kind in listOf(1, 2)) {
+            val id = "2237c000-0000-4000-8000-000000000002"
+            val real = FileKeyHandle.generate()
+            registry.storeFile(id, real)
+            val wire = SharedKeyOps.wrapChildKeys(master, folder.first, listOf(id), registry, kind)[0].wrapped
+            val opened = registry.folder(folder.first)!!.handle.unwrapFolderChild(root, id, kind.toUByte(), wire.copyOfRange(0, 12), wire.copyOfRange(12, wire.size))
+            assertTrue(opened.keyId().contentEquals(real.keyId()))
+            assertFalse(opened.keyId().contentEquals(master.deriveFileKey(id.toByteArray()).keyId()))
+            val frame = real.encryptChunk("moved guest".toByteArray())
+            assertTrue(opened.decryptChunk(frame.nonce, frame.ciphertext).contentEquals("moved guest".toByteArray()))
+        }
+    }
+
+    @Test
+    fun registryReleaseReplaceAndClearDestroyNativeHandles() {
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val folder = FileKeyHandle.generate()
+        val folderId = registry.storeFolder(folder, "root")
+        registry.releaseFolder(folderId)
+        assertThrows(IllegalStateException::class.java) { folder.keyId() }
+        val old = FileKeyHandle.generate(); val replacement = FileKeyHandle.generate()
+        registry.storeFile("file", old); registry.storeFile("file", replacement)
+        assertThrows(IllegalStateException::class.java) { old.keyId() }
+        assertEquals(32, replacement.keyId().size)
+        registry.clear()
+        assertThrows(IllegalStateException::class.java) { replacement.keyId() }
+    }
+
+    @Test
+    fun borrowedPreviewKeySurvivesTwoReads() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val key = FileKeyHandle.generate()
+        registry.storeFile("guest", key)
+        val frame = key.encryptChunk("guest frame".toByteArray())
+        repeat(2) {
+            SharedKeyOps.borrowFileKey(master, "guest", registry).use { access ->
+                assertFalse(access.owned)
+                assertSame(key, access.handle)
+                assertTrue(access.handle.decryptChunk(frame.nonce, frame.ciphertext).contentEquals("guest frame".toByteArray()))
+            }
+            assertTrue(registry.file("guest")!!.keyId().contentEquals(key.keyId()))
+        }
+    }
+
+    @Test
+    fun chunkDecryptorUsesTheFileKeyHandle() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val key = FileKeyHandle.generate()
+        registry.storeFile("guest", key)
+        val frame = key.encryptChunk("guest frame".toByteArray())
+        assertTrue(SharedKeyOps.fileKey(master, "guest", registry).decryptChunk(frame.nonce, frame.ciphertext).contentEquals("guest frame".toByteArray()))
+    }
+
+  /** Test-only 60-byte wrap opener (nonce(12) || ciphertext(48)) for link-wrap vectors. Production code
+   *  has no generic opener: every wrap is opened by a purpose-bound core function. */
+  private fun openWrap(wrapper: FileKeyHandle, wrapped: ByteArray): FileKeyHandle {
+    assertEquals(60, wrapped.size)
+    return wrapper.unwrapKey(wrapped.copyOfRange(0, 12), wrapped.copyOfRange(12, wrapped.size))
+  }
 }

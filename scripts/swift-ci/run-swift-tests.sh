@@ -17,8 +17,9 @@ cd "$(dirname "$0")/../.."
 
 # driver basename | space-separated sources under test
 MANIFEST=(
+  "shared-key-registry-test.swift|modules/beebeeb-crypto/ios/SharedKeyRegistry.swift"
   "native-preview-working-storage-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift"
-  "native-video-streamer-harness.swift|scripts/swift-tests/native-video-streamer-stubs.swift modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/NativeVideoStreamer.swift"
+  "native-video-streamer-harness.swift|scripts/swift-tests/native-video-streamer-stubs.swift modules/beebeeb-crypto/ios/SharedKeyRegistry.swift modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/NativeVideoStreamer.swift"
   "preview-chunk-pipeline-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/PreviewChunkPipeline.swift"
   "empty-preview-frame-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/PreviewChunkPipeline.swift"
   "account-refusal-detection-test.swift|modules/beebeeb-crypto/ios/AccountRefusalDetection.swift"
@@ -122,6 +123,20 @@ for entry in "${MANIFEST[@]}"; do
   tmp="$(mktemp -d)"
   cp "$driver" "$tmp/main.swift"
   echo "== $base  (sources: $srcs)"
+  if [ "$base" = "native-video-streamer-harness.swift" ]; then
+    # MOCK: this existing harness uses fake UniFFI handles. Exercise production
+    # registry/pickKey; real SharedKeyOps crypto is covered by platform KATs.
+    cat > "$tmp/SharedKeyOps.swift" <<'SWIFT'
+import Foundation
+enum SharedKeyOps {
+  static let registry = SharedKeyRegistry<FileKeyHandle>()
+  static func fileKey(master: MasterKeyHandle, fileId: String) throws -> FileKeyHandle {
+    try pickKey(table: registry.file(fileId)) { try master.deriveFileKey(fileId: Data(fileId.utf8)) }
+  }
+}
+SWIFT
+    srcs="$srcs $tmp/SharedKeyOps.swift"
+  fi
   flags=(-swift-version 5 -O)
   extra_objs=()
   # shellcheck disable=SC2086

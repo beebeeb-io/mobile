@@ -2,7 +2,7 @@ import XCTest
 import CryptoKit
 
 /// Task 1382 (audit item K2) — mobile half. Drives `beebeeb-core`'s cross-platform known-answer
-/// vectors (`test-vectors/vectors.json`, v4, 12 families) through the SAME production UniFFI Swift
+/// vectors (`test-vectors/vectors.json`, v11, 31 families) through the SAME production UniFFI Swift
 /// bindings the app links (`modules/beebeeb-crypto/ios/beebeeb_uniffi.swift`, compiled directly into
 /// this target's Sources build phase — see the `CoreVectorsKATTests` target in `Beebeeb.xcodeproj`,
 /// mirroring the host-less `ProvenanceHeadersTests` target added in task 1439). No app host, no
@@ -16,13 +16,13 @@ import CryptoKit
 /// minutes reasons, so this suite does NOT run in CI. See `CLAUDE.md` "Tests" section.
 ///
 /// ## Refreshing the vendored vector file
-/// `Vectors/core-vectors.v4.json` is a vendored COPY of `repos/core/test-vectors/vectors.json` — it
+/// `Vectors/core-vectors.v10.json` is a vendored COPY of `repos/core/test-vectors/vectors.json` — it
 /// has to be a copy (not a symlink out of the repo) so this xctest bundle can embed it as a Resource.
 /// To refresh after core bumps the vector file:
-/// 1. `cp ../../core/test-vectors/vectors.json ios/BeebeebNativeTests/Vectors/core-vectors.v4.json`
+/// 1. `cp ../../core/test-vectors/vectors.json ios/BeebeebNativeTests/Vectors/core-vectors.v10.json`
 ///    (run from the mobile repo's `ios/` directory in the standard `<workspace>/repos/{core,mobile}`
 ///    layout — NOT from an isolated `git worktree`, which has no sibling `repos/core` checkout).
-/// 2. `shasum -a 256 ios/BeebeebNativeTests/Vectors/core-vectors.v4.json` and paste the new hex into
+/// 2. `shasum -a 256 ios/BeebeebNativeTests/Vectors/core-vectors.v10.json` and paste the new hex into
 ///    `expectedSha256Hex` below.
 /// 3. If core bumped `version`, update `expectedVersion` and `requiredVectorNames` here to match
 ///    `vector_file_version_check` in `cross_platform_vectors.rs`.
@@ -32,10 +32,11 @@ final class CoreVectorsKATTests: XCTestCase {
 
     // MARK: - Pin
 
-    /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v4, 2026-09-22).
+    /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v11, core c08defc7).
     private static let expectedSha256Hex =
-        "a8f5320a0dbd06fa3a26ede7109f3c24295197061f13f81519c010b30157f6e5"
-    private static let expectedVersion = 4
+        "11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a"
+    // The v10 resource filename is retained; contents track the pinned core version.
+    private static let expectedVersion = 11
     private static let requiredVectorNames = [
         "master_key_from_password",
         "file_key_derivation",
@@ -49,16 +50,35 @@ final class CoreVectorsKATTests: XCTestCase {
         "file_request_seal_open",
         "share_key_wrap",
         "thumbnail_encrypt",
+        "chunk_v2_stream",
+        "chunk_v2_single_frame",
+        "metadata_v2_name",
+        "metadata_v2_name_filekey",
+        "metadata_v1_name_filekey",
+        "folder_key_id",
+        "shared_folder_index_key",
+        "combine_folder_link_key",
+        "key_wrap_v1",
+        "folder_link_passphrase",
+        "folder_link_passphrase_nfd",
+        "folder_custody_v1",
+        "link_owner_key_v1",
+        "link_owner_token_v1",
+        "folder_child_file_v1",
+        "folder_child_folder_v1",
+        "owner_wrapped_file_key",
+        "owner_wrapped_folder_key",
+        "folder_wrapped_file_key",
     ]
 
     // MARK: - Vector loading
 
     private static func bundledVectorsURL() throws -> URL {
         guard let url = Bundle(for: CoreVectorsKATTests.self)
-            .url(forResource: "core-vectors.v4", withExtension: "json") else {
+            .url(forResource: "core-vectors.v10", withExtension: "json") else {
             throw NSError(
                 domain: "CoreVectorsKATTests", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "core-vectors.v4.json missing from test bundle resources"]
+                userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json missing from test bundle resources"]
             )
         }
         return url
@@ -72,7 +92,7 @@ final class CoreVectorsKATTests: XCTestCase {
         let data = try loadVectorsData()
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw NSError(domain: "CoreVectorsKATTests", code: 2,
-                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v4.json did not decode to an object"])
+                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json did not decode to an object"])
         }
         return root
     }
@@ -80,7 +100,7 @@ final class CoreVectorsKATTests: XCTestCase {
     private static func loadVectors() throws -> [[String: Any]] {
         guard let vectors = try loadRoot()["vectors"] as? [[String: Any]] else {
             throw NSError(domain: "CoreVectorsKATTests", code: 3,
-                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v4.json 'vectors' is not an array"])
+                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json 'vectors' is not an array"])
         }
         return vectors
     }
@@ -91,6 +111,13 @@ final class CoreVectorsKATTests: XCTestCase {
                            userInfo: [NSLocalizedDescriptionKey: "vector '\(name)' not found in vectors.json"])
         }
         return v
+    }
+
+    /// Test-only 60-byte wrap opener (nonce(12) || ciphertext(48)) for link-wrap vectors. Production code
+    /// has no generic opener: every wrap is opened by a purpose-bound core function.
+    private static func openWrap(_ wrapper: FileKeyHandle, _ wrapped: Data) throws -> FileKeyHandle {
+        XCTAssertEqual(wrapped.count, 60)
+        return try wrapper.unwrapKey(nonce: Data(wrapped.prefix(12)), ciphertext: Data(wrapped.dropFirst(12)))
     }
 
     private static func str(_ v: [String: Any], _ field: String) throws -> String {
@@ -111,15 +138,17 @@ final class CoreVectorsKATTests: XCTestCase {
 
     /// `<repo>/ios/BeebeebNativeTests/CoreVectorsKATTests.swift` -> two levels up from `ios/` is
     /// `../../core/test-vectors/vectors.json`, matching the standard `<workspace>/repos/{core,mobile}`
-    /// sibling layout (not present in an isolated `git worktree` checkout — that case is skipped,
-    /// not failed, by `testVendoredVectorsMatchSiblingCoreRepoWhenPresent`).
-    private static func siblingCoreVectorsURL() -> URL {
-        URL(fileURLWithPath: #filePath)
+    /// sibling layout. An isolated worktree may have an unrelated `../core` checkout; only the
+    /// documented `repos/` layout participates in this optional comparison. The SHA pin is enforced
+    /// in every layout.
+    private static func siblingCoreVectorsURL() -> URL? {
+        let parent = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // BeebeebNativeTests/
             .deletingLastPathComponent() // ios/
             .deletingLastPathComponent() // repo root
             .deletingLastPathComponent() // parent of repo root (sibling of repos/core)
-            .appendingPathComponent("core/test-vectors/vectors.json")
+        guard parent.lastPathComponent == "repos" else { return nil }
+        return parent.appendingPathComponent("core/test-vectors/vectors.json")
     }
 
     private static func logPass(_ family: String) {
@@ -168,25 +197,25 @@ final class CoreVectorsKATTests: XCTestCase {
         let hex = digest.map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(
             hex, Self.expectedSha256Hex,
-            "vendored Vectors/core-vectors.v4.json drifted from the pinned sha256 — see this file's " +
+            "vendored Vectors/core-vectors.v10.json drifted from the pinned sha256 — see this file's " +
             "header for the refresh procedure before changing expectedSha256Hex"
         )
     }
 
     func testVendoredVectorsMatchSiblingCoreRepoWhenPresent() throws {
-        let siblingURL = Self.siblingCoreVectorsURL()
-        guard FileManager.default.fileExists(atPath: siblingURL.path) else {
+        guard let siblingURL = Self.siblingCoreVectorsURL(),
+              FileManager.default.fileExists(atPath: siblingURL.path) else {
             throw XCTSkip(
                 "no sibling repos/core/test-vectors/vectors.json next to this checkout " +
-                "(\(siblingURL.path)) — expected only in the standard <workspace>/repos/{core,mobile} " +
-                "layout, not in an isolated git worktree; the sha256 pin test above is the enforced guard here"
+                "— expected only in the standard <workspace>/repos/{core,mobile} layout, " +
+                "not in an isolated git worktree; the sha256 pin test above is the enforced guard here"
             )
         }
         let siblingData = try Data(contentsOf: siblingURL)
         let bundledData = try Self.loadVectorsData()
         XCTAssertEqual(
             siblingData, bundledData,
-            "vendored Vectors/core-vectors.v4.json diverged from repos/core/test-vectors/vectors.json " +
+            "vendored Vectors/core-vectors.v10.json diverged from repos/core/test-vectors/vectors.json " +
             "— re-vendor the copy and re-pin the sha256 (see this file's header)"
         )
     }
@@ -516,6 +545,243 @@ final class CoreVectorsKATTests: XCTestCase {
         expectEqual(decrypted, expectedPlaintext, "thumbnail_encrypt roundtrip: encrypt->decrypt must reproduce the original plaintext", allPassed: &allPassed)
         if allPassed { Self.logPass("thumbnail_encrypt (encrypt roundtrip)") }
     }
+    // v10: exercise actual handle ABI, not a reimplementation of the derivation.
+    func testKeyWrapV1() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "key_wrap_v1")
+        let wrapper = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "wrapper_key_hex"))
+        let wire = try Self.hex(v, "wrapped_hex")
+        let opened = try wrapper.unwrapKey(nonce: Data(wire.prefix(12)), ciphertext: Data(wire.dropFirst(12)))
+        let expected = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "inner_key_hex"))
+        XCTAssertEqual(try opened.keyId(), try expected.keyId())
+        print("[CoreVectorsKAT] key_wrap_v1: 1 row")
+    }
+
+    func testFolderLinkPassphrase() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "folder_link_passphrase")
+        let actual = try FileKeyHandle.fromFolderLinkPassphrase(
+            kC: Self.hex(v, "k_c_hex"), passphrase: Self.str(v, "passphrase"), token: Self.str(v, "token"))
+        let expected = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "link_key_hex"))
+        XCTAssertEqual(try actual.keyId(), try expected.keyId())
+        print("[CoreVectorsKAT] folder_link_passphrase: 1 row")
+    }
+
+    func testL6PurposeWrapVectors() throws {
+        for name in ["folder_custody_v1", "link_owner_key_v1", "link_owner_token_v1"] {
+            let v = try Self.vector(Self.loadVectors(), named: name)
+            let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(v, "master_key_hex"))
+            let wire = try Self.hex(v, "wrapped_hex")
+            let id = try Self.str(v, "record_id")
+            let nonce = Data(wire.prefix(12)), ct = Data(wire.dropFirst(12))
+            let plain = try Self.hex(v, "plaintext_hex")
+            if name == "folder_custody_v1" {
+                let opened = try master.unwrapFolderCustody(folderId: id, nonce: nonce, ciphertext: ct)
+                XCTAssertEqual(try opened.keyId(), try FileKeyHandle.fromKeyBytes(key: plain).keyId())
+                XCTAssertThrowsError(try master.unwrapFolderCustody(folderId: id + "wrong", nonce: nonce, ciphertext: ct))
+            } else if name == "link_owner_key_v1" {
+                XCTAssertEqual(try master.unwrapLinkOwnerKey(shareId: id, nonce: nonce, ciphertext: ct), plain)
+                XCTAssertThrowsError(try master.unwrapLinkOwnerToken(shareId: id, nonce: nonce, ciphertext: ct))
+            } else {
+                XCTAssertEqual(try master.unwrapLinkOwnerToken(shareId: id, nonce: nonce, ciphertext: ct), plain)
+            }
+            print("[CoreVectorsKAT] \(name): 1 row")
+        }
+    }
+
+    func testFolderLinkPassphraseNfd() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "folder_link_passphrase_nfd")
+        let actual = try FileKeyHandle.fromFolderLinkPassphrase(
+            kC: Self.hex(v, "k_c_hex"), passphrase: Self.str(v, "passphrase"), token: Self.str(v, "token"))
+        XCTAssertEqual(try actual.keyId(), try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "link_key_hex")).keyId())
+        XCTAssertThrowsError(try FileKeyHandle.fromFolderLinkPassphrase(kC: Self.hex(v, "k_c_hex"), passphrase: "", token: Self.str(v, "token")))
+        print("[CoreVectorsKAT] folder_link_passphrase_nfd: 1 row")
+    }
+
+    func testFolderChildVectorsBindEveryContextField() throws {
+        for name in ["folder_child_file_v1", "folder_child_folder_v1"] {
+            let v = try Self.vector(Self.loadVectors(), named: name)
+            let key = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "folder_key_hex"))
+            let wire = try Self.hex(v, "wrapped_hex"), root = try Self.str(v, "shared_folder_id"), item = try Self.str(v, "item_id")
+            let kind = UInt8(v["kind"] as! Int)
+            let opened = try key.unwrapFolderChild(sharedFolderId: root, itemId: item, kind: kind, nonce: Data(wire.prefix(12)), ciphertext: Data(wire.dropFirst(12)))
+            XCTAssertEqual(try opened.keyId(), try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "child_key_hex")).keyId())
+            for (r, i, k) in [("00000000-0000-4000-8000-000000000099", item, kind), (root, "00000000-0000-4000-8000-000000000099", kind), (root, item, 3-kind)] {
+                XCTAssertThrowsError(try key.unwrapFolderChild(sharedFolderId: r, itemId: i, kind: k, nonce: Data(wire.prefix(12)), ciphertext: Data(wire.dropFirst(12))))
+            }
+            print("[CoreVectorsKAT] \(name): 1 row")
+        }
+    }
+
+    func testOwnerWrapRejectsOwnV1Content() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let id = "11111111-1111-4111-8111-111111111111"
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let derived = try master.deriveFileKey(fileId: Data(id.utf8))
+        let frame = try SharedKeyOps.wire(derived.encryptChunk(plaintext: Data(repeating: 0x55, count: 32)))
+        XCTAssertEqual(frame.count, 60)
+        XCTAssertFalse(SharedKeyOps.openOwnerFileKey(master: master, fileId: id, wrapped: frame, registry: registry))
+        XCTAssertNil(registry.file(id))
+    }
+
+    func testOwnerWrapRejectsLegacyNameEnvelope() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let id = "11111111-1111-4111-8111-111111111111"
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let name = try master.encryptName(fileId: id, filename: "test", mimeType: nil)
+        let blob = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(name.utf8)) as? [String: Any])
+        let nonce = Data(try XCTUnwrap(blob["nonce"] as? [UInt8]))
+        let ciphertext = Data(try XCTUnwrap(blob["ciphertext"] as? [UInt8]))
+        let frame = nonce + ciphertext
+        XCTAssertEqual(frame.count, 60)
+        XCTAssertFalse(SharedKeyOps.openOwnerFileKey(master: master, fileId: id, wrapped: frame, registry: registry))
+        XCTAssertNil(registry.file(id))
+    }
+
+    func testL8OwnerWrapVectorAndAdoption() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "owner_wrapped_file_key")
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(v, "master_key_hex"))
+        let id = try Self.str(v, "file_id")
+        let frame = try Self.hex(v, "expected_frame_hex")
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        XCTAssertTrue(SharedKeyOps.openOwnerFileKey(master: master, fileId: id, wrapped: frame, registry: registry))
+        let expected = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "child_key_hex"))
+        XCTAssertEqual(try XCTUnwrap(registry.file(id)).keyId(), try expected.keyId())
+        let adopted = try SharedKeyOps.adoptWrap(master: master, fileId: id, registry: registry)
+        XCTAssertEqual(adopted.count, 60)
+        registry.clear()
+        XCTAssertTrue(SharedKeyOps.openOwnerFileKey(master: master, fileId: id, wrapped: adopted, registry: registry))
+        XCTAssertEqual(try XCTUnwrap(registry.file(id)).keyId(), try expected.keyId())
+        XCTAssertFalse(SharedKeyOps.openOwnerFileKey(master: master, fileId: "22222222-2222-4222-8222-222222222222", wrapped: adopted, registry: registry))
+        var corrupt = adopted
+        corrupt[corrupt.count - 1] ^= 1
+        XCTAssertFalse(SharedKeyOps.openOwnerFileKey(master: master, fileId: id, wrapped: corrupt, registry: registry))
+        XCTAssertEqual(try XCTUnwrap(registry.file(id)).keyId(), try expected.keyId())
+    }
+
+    func testSharedKeyOpsRoundTrip() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "2237c000-0000-4000-8000-000000000001", registry: registry)
+        let opened = try SharedKeyOps.openOwnerFolderKey(master: master, folderId: "2237c000-0000-4000-8000-000000000001", wrapped: folder.ownerWrapped, registry: registry)
+        let rows = try SharedKeyOps.wrapChildKeys(master: master, folderId: opened, fileIds: ["2237c000-0000-4000-8000-000000000002"], registry: registry)
+        let loaded = try SharedKeyOps.loadFileKeys(folderId: opened,
+            entries: rows + [SharedKeyEntryNative(fileId: "bad", wrapped: Data(), kind: 1)], registry: registry)
+        XCTAssertEqual(loaded.loaded, ["2237c000-0000-4000-8000-000000000002"])
+        XCTAssertEqual(loaded.failed, ["bad"])
+        let derived = try master.deriveFileKey(fileId: Data("2237c000-0000-4000-8000-000000000002".utf8))
+        let encrypted = try derived.encryptChunk(plaintext: Data("round trip".utf8))
+        let key = try SharedKeyOps.fileKey(master: master, fileId: "2237c000-0000-4000-8000-000000000002", registry: registry)
+        XCTAssertEqual(try key.decryptChunk(nonce: encrypted.nonce, ciphertext: encrypted.ciphertext), Data("round trip".utf8))
+        let adopted = try SharedKeyOps.adoptWrap(master: master, fileId: "2237c000-0000-4000-8000-000000000002", registry: registry)
+        XCTAssertTrue(SharedKeyOps.openOwnerFileKey(master: master, fileId: "2237c000-0000-4000-8000-000000000002", wrapped: adopted, registry: registry))
+    }
+
+    func testMintLinkMatchesTheVector() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "folder_link_passphrase")
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "root", registry: registry)
+        let token = try Self.str(v, "token"), passphrase = try Self.str(v, "passphrase")
+        let minted = try SharedKeyOps.mintLink(master: master, folderId: folder.handleId, token: token, passphrase: passphrase, shareId: "share", registry: registry)
+        let kc = Data(base64Encoded: minted.kc.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "=")!
+        let link = try FileKeyHandle.fromFolderLinkPassphrase(kC: kc, passphrase: passphrase, token: token)
+        let opened = try Self.openWrap(link, minted.wrappedFolderKey)
+        XCTAssertEqual(try opened.keyId(), try registry.folder(folder.handleId)!.handle.keyId())
+        XCTAssertEqual(try SharedKeyOps.recoverKc(master: master, folderId: folder.handleId, wrapped: minted.ownerWrappedKey, shareId: "share", registry: registry), minted.kc)
+        XCTAssertNil(try SharedKeyOps.recoverKc(master: master, folderId: folder.handleId, wrapped: minted.ownerWrappedKey, shareId: "wrong", registry: registry))
+        XCTAssertEqual(try master.unwrapLinkOwnerToken(shareId: "share", nonce: Data(minted.ownerWrappedToken.prefix(12)), ciphertext: Data(minted.ownerWrappedToken.dropFirst(12))), Data(token.utf8))
+        XCTAssertThrowsError(try SharedKeyOps.mintLink(master: master, folderId: folder.handleId, token: token, passphrase: "", shareId: "share", registry: registry))
+    }
+
+    func testRecoverKcRefusesTheFolderKeyWrap() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "root", registry: registry)
+        let key = registry.folder(folder.handleId)!.handle
+        let wrong = try SharedKeyOps.wire(master.wrapLinkOwnerKey(shareId: "share", inner: key))
+        XCTAssertNil(try SharedKeyOps.recoverKc(master: master, folderId: folder.handleId, wrapped: wrong, shareId: "share", registry: registry))
+        let legacy = try SharedKeyOps.wire(master.wrapKey(inner: key))
+        XCTAssertNil(try SharedKeyOps.recoverKc(master: master, folderId: folder.handleId, wrapped: legacy, shareId: "share", registry: registry))
+    }
+
+    func testDecryptNamesPrefersTheTableKey() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let key = try FileKeyHandle.generate()
+        let name = try key.encryptNameFor(filename: "guest.txt", mimeType: "text/plain", recordedPin: 0)
+        let items = [BatchNameItem(fileId: "2237c000-0000-4000-8000-000000000002", nameEncrypted: name)]
+        XCTAssertNotNil(try SharedKeyOps.decryptNames(master: master, items: items, registry: registry)[0].error)
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "2237c000-0000-4000-8000-000000000001", registry: registry)
+        let wrapped = try SharedKeyOps.wire(registry.folder(folder.handleId)!.handle.wrapFolderChild(sharedFolderId: "2237c000-0000-4000-8000-000000000001", itemId: "2237c000-0000-4000-8000-000000000002", kind: 1, inner: key))
+        _ = try SharedKeyOps.loadFileKeys(folderId: folder.handleId, entries: [SharedKeyEntryNative(fileId: "2237c000-0000-4000-8000-000000000002", wrapped: wrapped, kind: 1)], registry: registry)
+        let opened = try SharedKeyOps.decryptNames(master: master, items: items, registry: registry)
+        XCTAssertEqual(opened[0].name, "guest.txt")
+        XCTAssertEqual(opened[0].mimeType, "text/plain")
+        XCTAssertNil(opened[0].error)
+        let ownerName = try master.encryptName(fileId: "2237c000-0000-4000-8000-000000000002", filename: "owner", mimeType: nil)
+        let rejected = try SharedKeyOps.decryptNames(master: master,
+            items: [BatchNameItem(fileId: "2237c000-0000-4000-8000-000000000002", nameEncrypted: ownerName)], registry: registry)
+        XCTAssertNotNil(rejected[0].error, "a table decrypt failure must not fall back to the master")
+    }
+
+    func testChildPublicationPreservesLoadedRandomKeysForBothKinds() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let root = "2237c000-0000-4000-8000-000000000001"
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: root, registry: registry)
+        for kind: UInt8 in [1, 2] {
+            let id = "2237c000-0000-4000-8000-000000000002"
+            let real = try FileKeyHandle.generate()
+            registry.storeFile(id, real)
+            let rows = try SharedKeyOps.wrapChildKeys(master: master, folderId: folder.handleId, fileIds: [id], kind: kind, registry: registry)
+            let wire = rows[0].wrapped
+            let opened = try registry.folder(folder.handleId)!.handle.unwrapFolderChild(sharedFolderId: root, itemId: id, kind: kind, nonce: Data(wire.prefix(12)), ciphertext: Data(wire.dropFirst(12)))
+            XCTAssertEqual(try opened.keyId(), try real.keyId())
+            XCTAssertNotEqual(try opened.keyId(), try master.deriveFileKey(fileId: Data(id.utf8)).keyId())
+            let frame = try real.encryptChunk(plaintext: Data("moved guest".utf8))
+            XCTAssertEqual(try opened.decryptChunk(nonce: frame.nonce, ciphertext: frame.ciphertext), Data("moved guest".utf8))
+        }
+    }
+
+    func testPreviewUsesAuthenticatedV2PinForTableAndOwnerKeys() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        for tableHeld in [false, true] {
+            let registry = SharedKeyRegistry<FileKeyHandle>()
+            let id = "2237c000-0000-4000-8000-000000000002"
+            let key = try tableHeld ? FileKeyHandle.generate() : master.deriveFileKey(fileId: Data(id.utf8))
+            if tableHeld { registry.storeFile(id, key) }
+            let name = try key.encryptNameFor(filename: "pinned.txt", mimeType: nil, recordedPin: 2)
+            let pin = try SharedKeyOps.previewChunkFormat(master: master, fileId: id, nameEncrypted: name, registry: registry)
+            XCTAssertEqual(pin, 2)
+            let legacy = try SharedKeyOps.wire(key.encryptChunk(plaintext: Data("replayed v1".utf8)))
+            let decryptor = try SharedKeyOps.chunkDecryptor(master: master, fileId: id, expectedChunkFormat: pin, registry: registry)
+            XCTAssertThrowsError(try decryptor.pushFrame(frame: legacy), "v2 pin must refuse legacy replay")
+            XCTAssertThrowsError(try SharedKeyOps.previewChunkFormat(master: master, fileId: id, nameEncrypted: "plaintext", registry: registry))
+        }
+    }
+
+    func testTruncatedV2PreviewRejectsMissingLastFrame() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "chunk_v2_stream")
+        let key = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
+        let decryptor = try ChunkDecryptorHandle.forPushWithFileKeyHandle(
+            fileKey: key, fileId: try Self.str(v, "file_id"), expectedChunkFormat: 2)
+        let frames = v["frames"] as! [[String: Any]]
+        XCTAssertEqual(frames.count, 3)
+        for frame in frames.prefix(2) {
+            XCTAssertEqual(try decryptor.pushFrame(frame: Self.hex(frame, "frame_hex")).data.count, 32)
+        }
+        XCTAssertThrowsError(try decryptor.finish(), "missing authenticated last frame must reject promotion")
+    }
+
+    func testChunkDecryptorUsesTheFileKeyHandle() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let key = try FileKeyHandle.generate()
+        registry.storeFile("guest", key)
+        let frame = try SharedKeyOps.wire(key.encryptChunk(plaintext: Data("guest frame".utf8)))
+        let decryptor = try SharedKeyOps.chunkDecryptor(master: master, fileId: "guest", expectedChunkFormat: 0, registry: registry)
+        XCTAssertEqual(try decryptor.pushFrame(frame: frame).data, Data("guest frame".utf8))
+    }
+
 }
 
 // MARK: - Hex <-> Data

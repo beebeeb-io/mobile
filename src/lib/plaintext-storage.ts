@@ -90,6 +90,9 @@ export const PROTECTED_LEAF_NAMES = [
 export const REVIEWED_NATIVE_SOURCES = [
   'BeebeebCryptoBridge.swift',
   'BeebeebCryptoModule.swift',
+  // Task 2237c L7d: a one-byte custody marker in Application Support (excluded from backup). Not plaintext,
+  // and deliberately not a registry entry: the sign-out purge must not delete it.
+  'CustodyMarker.swift',
   'NativeBackupEngine.swift',
   'PendingSharesAccess.swift',
   'PhotoKitResolver.swift',

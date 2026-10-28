@@ -1,0 +1,362 @@
+{
+  "generated_by": "beebeeb-core test vector generator",
+  "vectors": [
+    {
+      "expected_master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "master_key_from_password",
+      "password": "correct-horse-battery-staple",
+      "salt_hex": "626565626565622d746573742d73616c742d313662"
+    },
+    {
+      "expected_file_key_hex": "55e11db680c9a4d9c58e8b64de76cdd76566e518f3665360c35fc6a93d1170ae",
+      "file_id_hex": "35353065383430302d653239622d343164342d613731362d343436363535343430303030",
+      "master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "file_key_derivation"
+    },
+    {
+      "ciphertext_hex": "5a3977b2221d3b1bafa68ac900083bbf44510403889ba48637001b071dc00aca67a71338e078caef7627ecbe1eed9c",
+      "file_key_hex": "55e11db680c9a4d9c58e8b64de76cdd76566e518f3665360c35fc6a93d1170ae",
+      "name": "chunk_encrypt_decrypt",
+      "nonce_hex": "7ecb3cbf57d650614110e414",
+      "note": "nonce is random — use this vector for decrypt-only testing. To verify encrypt, check that decrypt(encrypt(plaintext)) == plaintext.",
+      "plaintext_hex": "48656c6c6f2c2042656562656562212054686973206973206120746573742e"
+    },
+    {
+      "expected_x25519_private_hex": "6a4d95cf23171c6c6718be4636804ded891d742ded2b96220d222223d7cd8837",
+      "expected_x25519_public_hex": "75f57a0b7ca0e2427317f800286dd098ce08abd3f29b29240e4f8764beef0f17",
+      "master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "x25519_identity_keypair"
+    },
+    {
+      "alice_master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "alice_x25519_public_hex": "75f57a0b7ca0e2427317f800286dd098ce08abd3f29b29240e4f8764beef0f17",
+      "bob_master_key_hex": "b32818d88c7feec881de1e0d47066dc7da54e574ee28614799c4dbb8257f0e14",
+      "bob_x25519_public_hex": "4a84123436a753a8edb38614e1249e3bb2dffd68b4b5cf5559cc2956f1fa5b33",
+      "expected_share_key_hex": "e6625247cc62262e520c567da87290157300d561ca339997c1b2ff7ea4232266",
+      "expected_shared_secret_hex": "d279e16bad8c2d555d3753c6a9e07ba936a4ae71e0e29507880e7467765a541c",
+      "file_id_hex": "35353065383430302d653239622d343164342d613731362d343436363535343430303030",
+      "name": "x25519_share_key_exchange"
+    },
+    {
+      "expected_recovery_check_hex": "43db9aaae145f38686be16a30e8af87bec6382dd0a9ae1d2498f2d55fdd55e83",
+      "master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "recovery_check"
+    },
+    {
+      "expected_envelope_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c96a4d95cf23171c6c6718be4636804ded891d742ded2b96220d222223d7cd883743db9aaae145f38686be16a30e8af87bec6382dd0a9ae1d2498f2d55fdd55e83",
+      "master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "envelope_serialization",
+      "recovery_check_hex": "43db9aaae145f38686be16a30e8af87bec6382dd0a9ae1d2498f2d55fdd55e83",
+      "x25519_private_hex": "6a4d95cf23171c6c6718be4636804ded891d742ded2b96220d222223d7cd8837"
+    },
+    {
+      "expected_master_key_hex": "ad6a5e4a441039ba0e8749a22b36fb73f9ed046331a83f3ba16cb70f4fcb2bc4",
+      "mnemonic": "hockey shallow swim case minimum artist refuse beauty party twelve swap small",
+      "name": "recovery_phrase_roundtrip",
+      "note": "mnemonic is random — use this to verify recover_from_phrase(phrase) produces the expected key."
+    },
+    {
+      "ciphertext_hex": "8c5a83be50f4a2c01c51264f3719c8a925a6f4a4a5a5aba2a6a6d873c4b6c45eb8172a0b9bac1111416ef44fd56210ff9622bc6504c13be5",
+      "file_key_hex": "55e11db680c9a4d9c58e8b64de76cdd76566e518f3665360c35fc6a93d1170ae",
+      "metadata": "photos/vacation/2025-summer/IMG_0042.jpg",
+      "name": "metadata_encrypt_decrypt",
+      "nonce_hex": "9603467161a492931251275c",
+      "note": "nonce is random — use this vector for decrypt-only testing. To verify encrypt, check that decrypt(encrypt(metadata)) == metadata."
+    },
+    {
+      "content_key_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "e_pub_hex": "7f1b890e41eea731bda362bc968fd48e587f8d81b10547a6a782558d0fd0b820",
+      "expected_wrap_key_hex": "bda0f3ebb8dbed08eeadc839689973a49c9bf0ebb99f7b3c550d6a42c9829caf",
+      "file_id_hex": "66696c652d726571756573742d75706c6f616465642d66696c652d303031",
+      "master_key_hex": "bd03192a42f0f7b3b38514c69cee88336a67993712e7d1a6bc7e630ba87f18c9",
+      "name": "file_request_seal_open",
+      "note": "wrap_key is deterministic. e_pub/wrapped_key (random ephemeral+nonce) verify open_request_upload(r_priv,e_pub,file_id,wrapped_key)==content_key; wrapped_private/wrap_nonce (random nonce) verify unwrap_request_private==r_priv.",
+      "r_priv_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "r_pub_hex": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+      "request_id_hex": "7265712d35353065383430302d653239622d343164342d613731362d343436363535343430303939",
+      "wrap_nonce_hex": "88dd159459300907cd3c5ed4",
+      "wrapped_key_hex": "575e2fde6c5b4f344c5e9fd54d87187794a5ced72f902f1e87498a5c19eda304885a36631ec7fd9d3eaa8bf07030445ef4294f669d8ad6cfcf103c80",
+      "wrapped_private_hex": "2aa57ac9630879381a649e3ed4f779c1302aa43b3f218b03d30381db53e3241ef64c245b379a597cbb39622ffdfe4ed3"
+    },
+    {
+      "ciphertext_hex": "296c608d2b6150057284434cacb9ac684db811891e0e5b4cdb39cdec3ce53f99f1b5611f75edd9b75c2614e32bb5c596",
+      "key_to_wrap_hex": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "name": "share_key_wrap",
+      "nonce_hex": "174e5553a15305c56b28ae60",
+      "note": "K3: pins web's wrapKeyForShare/unwrapKeyFromShare wire format — nonce(12) || AES-256-GCM ciphertext with 16-byte tag = 60 bytes for a 32-byte wrapped key, no AAD. nonce is random — use this vector for decrypt-only testing. To verify encrypt, check that decrypt(encrypt(key_to_wrap)) == key_to_wrap.",
+      "wrap_key_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+    },
+    {
+      "ciphertext_hex": "ed73ba72618da058fbbb948ef9cf749a09b7813bfe2f1f95f72fb54414282ea1cbbb2f0bfb8ed1e183b9514a85a48f56646a99bec4e09a6161e6931fe2cc20aeb3c5598a80c6604271479fb5b6991a2aa0da50eaa363b779797d14059ce402ff07ceae7c72718f4f85cef76fabacb5f95776a178e2f85174fd792104ccaad6bbe8dfb1cae1d35ed7b652e28f40094c7f",
+      "file_key_hex": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+      "name": "thumbnail_encrypt",
+      "nonce_hex": "a38f61c267c45539d71f941d",
+      "note": "K3: pins web's thumbnail.ts encrypt/decrypt wire format — nonce(12) || AES-256-GCM ciphertext, no AAD, over arbitrary-length plaintext. plaintext is a placeholder byte sequence, not a real WebP — the format is codec-agnostic. nonce is random — use this vector for decrypt-only testing. To verify encrypt, check that decrypt(encrypt(plaintext)) == plaintext.",
+      "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f"
+    },
+    {
+      "chunk_count": 3,
+      "chunk_format": 2,
+      "chunk_key_hex": "27e7f86ea3c3a0867c3b8972907ac2f552029d84a3dce77f266169a4e0e69b0e",
+      "chunk_size": 32,
+      "file_id": "1908f00d-0000-4000-8000-000000001943",
+      "file_key_hex": "67c0a33edcb86f5dbf5fed78bb9b1cb7a34bf8f65c5c8ad54ec125455c8f16e7",
+      "frames": [
+        {
+          "aad_hex": "626565626565622f6368756e6b2f76320000002431393038663030642d303030302d343030302d383030302d303030303030303031393433c0c0c0c0c0c0c0c0c0c0c0c00000000000",
+          "frame_hex": "c0c0c0c0c0c0c0c0c0c0c0c0c24f25867c9149a84b4cee41825dee5fb9aa71c324f798bc3fdaeb2c81d423ffd11e2c4e778ea48049ae953b7c920b61",
+          "index": 0,
+          "is_last": false,
+          "nonce_hex": "c0c0c0c0c0c0c0c0c0c0c0c0",
+          "plaintext_hex": "05121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98"
+        },
+        {
+          "aad_hex": "626565626565622f6368756e6b2f76320000002431393038663030642d303030302d343030302d383030302d303030303030303031393433c0c0c0c0c0c0c0c0c0c0c0c00000000100",
+          "frame_hex": "c1c1c1c1c1c1c1c1c1c1c1c1460769659882b0389bc672852e5ce176ffc2d2f35facba31fe175de5acb42079b57a246fe3cef1ce6253d420286ba497",
+          "index": 1,
+          "is_last": false,
+          "nonce_hex": "c1c1c1c1c1c1c1c1c1c1c1c1",
+          "plaintext_hex": "a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b38"
+        },
+        {
+          "aad_hex": "626565626565622f6368756e6b2f76320000002431393038663030642d303030302d343030302d383030302d303030303030303031393433c0c0c0c0c0c0c0c0c0c0c0c00000000201",
+          "frame_hex": "c2c2c2c2c2c2c2c2c2c2c2c2fc35c7732c00e2b993151eb13f8f3fd7d7046c67542fd3",
+          "index": 2,
+          "is_last": true,
+          "nonce_hex": "c2c2c2c2c2c2c2c2c2c2c2c2",
+          "plaintext_hex": "45525f6c798693"
+        }
+      ],
+      "master_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name": "chunk_v2_stream",
+      "note": "Fixed nonces for a known-answer test; a real writer draws a fresh random nonce per frame. Decrypt with the PUBLIC reader under ExpectedChunkFormat::V2 (frames in order, then finish), or per frame with open_chunk(file_key, file_id, version_id, index, is_last, V2, frame).",
+      "plaintext_hex": "05121f2c394653606d7a8794a1aebbc8d5e2effc091623303d4a5764717e8b98a5b2bfccd9e6f3000d1a2734414e5b6875828f9ca9b6c3d0ddeaf704111e2b3845525f6c798693",
+      "version_id_hex": "c0c0c0c0c0c0c0c0c0c0c0c0",
+      "wire_hex": "c0c0c0c0c0c0c0c0c0c0c0c0c24f25867c9149a84b4cee41825dee5fb9aa71c324f798bc3fdaeb2c81d423ffd11e2c4e778ea48049ae953b7c920b61c1c1c1c1c1c1c1c1c1c1c1c1460769659882b0389bc672852e5ce176ffc2d2f35facba31fe175de5acb42079b57a246fe3cef1ce6253d420286ba497c2c2c2c2c2c2c2c2c2c2c2c2fc35c7732c00e2b993151eb13f8f3fd7d7046c67542fd3"
+    },
+    {
+      "chunk_count": 1,
+      "chunk_format": 2,
+      "chunk_key_hex": "27e7f86ea3c3a0867c3b8972907ac2f552029d84a3dce77f266169a4e0e69b0e",
+      "chunk_size": 32,
+      "file_id": "1908f00d-0000-4000-8000-000000001943",
+      "file_key_hex": "67c0a33edcb86f5dbf5fed78bb9b1cb7a34bf8f65c5c8ad54ec125455c8f16e7",
+      "frames": [
+        {
+          "aad_hex": "626565626565622f6368756e6b2f76320000002431393038663030642d303030302d343030302d383030302d303030303030303031393433d0d0d0d0d0d0d0d0d0d0d0d00000000001",
+          "frame_hex": "d0d0d0d0d0d0d0d0d0d0d0d09616e6c4f7842dde28b6818c782b08fde615cbe912ed6bf421787da7a4bb042f2b856b22",
+          "index": 0,
+          "is_last": true,
+          "nonce_hex": "d0d0d0d0d0d0d0d0d0d0d0d0",
+          "plaintext_hex": "05121f2c394653606d7a8794a1aebbc8d5e2effc"
+        }
+      ],
+      "master_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name": "chunk_v2_single_frame",
+      "note": "Fixed nonces for a known-answer test; a real writer draws a fresh random nonce per frame. Decrypt with the PUBLIC reader under ExpectedChunkFormat::V2 (frames in order, then finish), or per frame with open_chunk(file_key, file_id, version_id, index, is_last, V2, frame).",
+      "plaintext_hex": "05121f2c394653606d7a8794a1aebbc8d5e2effc",
+      "version_id_hex": "d0d0d0d0d0d0d0d0d0d0d0d0",
+      "wire_hex": "d0d0d0d0d0d0d0d0d0d0d0d09616e6c4f7842dde28b6818c782b08fde615cbe912ed6bf421787da7a4bb042f2b856b22"
+    },
+    {
+      "expected_chunk_format": 2,
+      "expected_mime_type": "application/pdf",
+      "expected_name": "vector-v2.pdf",
+      "file_id": "1908f00d-0000-4000-8000-000000001943",
+      "file_key_hex": "67c0a33edcb86f5dbf5fed78bb9b1cb7a34bf8f65c5c8ad54ec125455c8f16e7",
+      "master_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name": "metadata_v2_name",
+      "name_encrypted": "{\"cipher_suite\":\"V1Aes256Gcm\",\"nonce\":[90,90,90,90,90,90,90,90,90,90,90,90],\"ciphertext\":[93,205,168,131,111,246,42,144,61,127,212,252,15,50,96,62,141,77,4,69,83,20,192,197,3,12,137,77,176,170,1,215,175,222,82,69,70,9,91,220,233,125,139,111,248,41,204,66,53,198,231,61,213,26,153,162,23,201,7,60,121,30,239,124,161,166,174,173,179,224,138,31,175,25,222,21,49,45,40,171,100,121,158,11,200,17,24]}",
+      "name_key_hex": "f8d36aa66718d168a2095f3850484571c5f93073ac94d96f8c432cb4a8b3a077",
+      "nonce_hex": "5a5a5a5a5a5a5a5a5a5a5a5a",
+      "note": "Fixed nonce for a known-answer test. Read with decrypt_file_metadata(master_key, file_id, name_encrypted): name subkey first; the pin it returns (V2) is what every content reader of the file must use."
+    },
+    {
+      "expected_chunk_format": 2,
+      "expected_mime_type": "application/pdf",
+      "expected_name": "request-upload.pdf",
+      "file_key_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "name": "metadata_v2_name_filekey",
+      "name_encrypted": "{\"cipher_suite\":\"V1Aes256Gcm\",\"nonce\":[91,91,91,91,91,91,91,91,91,91,91,91],\"ciphertext\":[24,177,248,51,73,209,186,96,92,54,131,69,222,152,150,18,159,237,98,112,132,176,228,33,232,215,71,89,203,80,186,73,69,174,11,20,252,117,135,79,236,122,169,163,43,202,16,223,181,53,120,54,218,224,48,215,62,234,180,251,52,147,93,9,133,68,101,117,161,39,126,203,196,115,84,79,239,95,246,177,238,34,243,196,72,188,7,33,153,186,66,52]}",
+      "name_key_hex": "59de2c3db1e77891331d20ccdc81b5b050a21b8d620350abe6843f1c254eca80",
+      "nonce_hex": "5b5b5b5b5b5b5b5b5b5b5b5b",
+      "note": "Fixed nonce for a known-answer test. Written by encrypt_name_for(file_key, name, mime, pin), the name writer for a key that is not derived from the master key (renames, file-request uploads). Read with decrypt_file_metadata_with_key(file_key, name_encrypted): pin 2 opens under the name subkey only; pin 0 opens under the raw file key while METADATA_SEAL_WRITE is Legacy (the read-only phase), and is subkey-sealed after the switch, when this vector is re-published.",
+      "pin": 2
+    },
+    {
+      "expected_chunk_format": 0,
+      "expected_mime_type": "application/pdf",
+      "expected_name": "request-upload.pdf",
+      "file_key_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "name": "metadata_v1_name_filekey",
+      "name_encrypted": "{\"cipher_suite\":\"V1Aes256Gcm\",\"nonce\":[92,92,92,92,92,92,92,92,92,92,92,92],\"ciphertext\":[54,140,155,130,89,193,141,108,77,167,26,224,193,212,96,149,187,163,101,7,123,44,61,177,49,241,44,200,51,100,138,160,215,148,20,97,250,251,184,158,129,34,98,60,237,110,226,66,9,95,132,150,239,121,183,232,17,10,11,18,171,225,228,50,83,31,64,31,108,161,124,166,246,121,69]}",
+      "name_key_hex": "59de2c3db1e77891331d20ccdc81b5b050a21b8d620350abe6843f1c254eca80",
+      "nonce_hex": "5c5c5c5c5c5c5c5c5c5c5c5c",
+      "note": "Fixed nonce for a known-answer test. Written by encrypt_name_for(file_key, name, mime, pin), the name writer for a key that is not derived from the master key (renames, file-request uploads). Read with decrypt_file_metadata_with_key(file_key, name_encrypted): pin 2 opens under the name subkey only; pin 0 opens under the raw file key while METADATA_SEAL_WRITE is Legacy (the read-only phase), and is subkey-sealed after the switch, when this vector is re-published.",
+      "pin": 0
+    },
+    {
+      "expected_key_id_hex": "e07f022dd6a140210b19530af0a6b316ec4f06b3a2b086fdf0c03c761baf3b07",
+      "folder_key_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "info": "beebeeb/folder-key-id/v1",
+      "name": "folder_key_id",
+      "note": "folder_key_id = HKDF-SHA256(ikm = folder key, salt = none, info = \"beebeeb/folder-key-id/v1\"), 32 bytes. A one-way id of a folder key, meant for a server to compare folder keys without learning them. Not secret, and never a key.",
+      "salt": "none"
+    },
+    {
+      "buckets": [
+        {
+          "bucket": 0,
+          "expected_hex": "a4a09ac7b7e2d845a05c1b67930024a043c6bda3ed280f5fcf627ddb15d1208c"
+        },
+        {
+          "bucket": 7,
+          "expected_hex": "d137ca8982ca27f94260e6cf43ef1479b6fe5e658ac65741fcaca848522df0fd"
+        },
+        {
+          "bucket": 63,
+          "expected_hex": "c88fd54b38b22e112085870cf8d1cf7b6ce124ab232b8d817e11c1bec16aa0a2"
+        }
+      ],
+      "folder_key_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "info": "beebeeb-shared-folder-index-v1",
+      "name": "shared_folder_index_key",
+      "note": "shared-folder search index key = HKDF-SHA256(ikm = folder key, salt = none, info = \"beebeeb-shared-folder-index-v1\" || bucket as u32 LE), 32 bytes, one key per bucket.",
+      "salt": "none"
+    },
+    {
+      "expected_with_passphrase_hex": "1b87f03afb4b81c4b17c1a6f74648a4e725d1d5c1e0750b5767df89ee653b13b",
+      "expected_without_passphrase_hex": "5fb510b7068bfa1e9290e8a8ed296da4f610e5451a567699dc48e9bc3bd1badc",
+      "info": "beebeeb-folder-link-key-v1",
+      "k_c_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "name": "combine_folder_link_key",
+      "note": "folder link key = HKDF-SHA256(ikm = K_c [|| 32-byte Argon2id passphrase stretch], salt = none, info = \"beebeeb-folder-link-key-v1\" || presence byte (0x00 without passphrase, 0x01 with)), 32 bytes.",
+      "passphrase_stretch_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "salt": "none"
+    },
+    {
+      "inner_key_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "name": "key_wrap_v1",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "AES-256-GCM, no AAD; fixed nonce for this public test only.",
+      "wrapped_hex": "000102030405060708090a0b5a640e1b13e922c7aa7beaa9d480a2d4f3b55f7a1839db24965992ed3dcc1721c6ae72e8cf00e92571c68887fe3a9258",
+      "wrapper_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+    },
+    {
+      "k_c_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "link_key_hex": "28033d9bbe8781dbbba4508cb6f38972e2fdccb894689c0e41b72d6cad6a4ac4",
+      "name": "folder_link_passphrase",
+      "note": "Argon2id v19, 256 MiB, 4 iterations, 2 lanes, 32 bytes; token-bound SHA-256 salt then folder-link HKDF.",
+      "passphrase": "folder café 2237",
+      "salt_hex": "ca6bed5537508ec3bc602d7ae7034040",
+      "stretch_hex": "1b08b5a91605001c53cacc58aa794aea129e4d450cf8fbdf4e65ae30718037b0",
+      "token": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    },
+    {
+      "k_c_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "link_key_hex": "28033d9bbe8781dbbba4508cb6f38972e2fdccb894689c0e41b72d6cad6a4ac4",
+      "name": "folder_link_passphrase_nfd",
+      "note": "NFC-normalize before Argon2id; this NFD spelling equals folder_link_passphrase.",
+      "passphrase": "folder café 2237",
+      "salt_hex": "ca6bed5537508ec3bc602d7ae7034040",
+      "stretch_hex": "1b08b5a91605001c53cacc58aa794aea129e4d450cf8fbdf4e65ae30718037b0",
+      "token": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    },
+    {
+      "context_hex": "626565626565622d666f6c6465722d637573746f64792d7631666f6c6465722d3232333763",
+      "label": "beebeeb-folder-custody-v1",
+      "master_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name": "folder_custody_v1",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "L6: HKDF info and AES-GCM AAD both equal label || UTF-8 record id; fixed nonce for this public test only.",
+      "plaintext_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "purpose_key_hex": "e44b06a0896100a704139abc3d4813109e7c2a59c2d1bc89f914184fb552d042",
+      "record_id": "folder-2237c",
+      "wrapped_hex": "000102030405060708090a0b6b332c3670289fdd1a88d53994bf5ebf632fe0acf76a0101d375cb52bd51b94174dc06b9d761ac09c84c71e919e25bf1"
+    },
+    {
+      "context_hex": "626565626565622d6c696e6b2d6f776e65722d6b65792d763173686172652d3232333763",
+      "label": "beebeeb-link-owner-key-v1",
+      "master_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name": "link_owner_key_v1",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "L6: HKDF info and AES-GCM AAD both equal label || UTF-8 record id; fixed nonce for this public test only.",
+      "plaintext_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "purpose_key_hex": "a4cead3f84cf1154db3511fdd6d20299ea18b350677bd0cc124edaaa12f5e1bc",
+      "record_id": "share-2237c",
+      "wrapped_hex": "000102030405060708090a0b3cc983a3d6454c8c4b26f5e1ad3d7cbe905edfcec428d33dad3c7bcb79878a286f950d2e52aa5cef937f1642cb3f51a9"
+    },
+    {
+      "context_hex": "626565626565622d6c696e6b2d6f776e65722d746f6b656e2d763173686172652d3232333763",
+      "label": "beebeeb-link-owner-token-v1",
+      "master_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "name": "link_owner_token_v1",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "L6: HKDF info and AES-GCM AAD both equal label || UTF-8 record id; fixed nonce for this public test only.",
+      "plaintext_hex": "41414543417751464267634943516f4c4441304f4478415245684d554652595847426b6147787764486838",
+      "purpose_key_hex": "be6cc60b99233c10d1be795c60423817cf34d59f9033d8b722551897a1aae001",
+      "record_id": "share-2237c",
+      "wrapped_hex": "000102030405060708090a0b4a39cf0507d4433ca2d1765c4778723a6bdd2a1777d26fe7c2c7c53713add9db4e76efd9ba98b94a9c12708afdefe15e504a8819da09f49b8bc7c2"
+    },
+    {
+      "aad_hex": "626565626565622d666f6c6465722d6368696c642d76312237c0000000400080000000000000012237c00000004000800000000000000201",
+      "child_key_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "folder_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "item_id": "2237c000-0000-4000-8000-000000000002",
+      "kind": 1,
+      "name": "folder_child_file_v1",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "L7: root UUID bytes || item UUID bytes || kind, after domain label; fixed nonce for public KAT only.",
+      "shared_folder_id": "2237c000-0000-4000-8000-000000000001",
+      "wrapped_hex": "000102030405060708090a0b5a640e1b13e922c7aa7beaa9d480a2d4f3b55f7a1839db24965992ed3dcc1721e52f2cd738ae65af4f1485a0afa2015a"
+    },
+    {
+      "aad_hex": "626565626565622d666f6c6465722d6368696c642d76312237c0000000400080000000000000012237c00000004000800000000000000202",
+      "child_key_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "folder_key_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "item_id": "2237c000-0000-4000-8000-000000000002",
+      "kind": 2,
+      "name": "folder_child_folder_v1",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "L7: root UUID bytes || item UUID bytes || kind, after domain label; fixed nonce for public KAT only.",
+      "shared_folder_id": "2237c000-0000-4000-8000-000000000001",
+      "wrapped_hex": "000102030405060708090a0b5a640e1b13e922c7aa7beaa9d480a2d4f3b55f7a1839db24965992ed3dcc1721e903a64d04cd0b3cba632963e1389582"
+    },
+    {
+      "child_key_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "expected_frame_hex": "000102030405060708090a0b0754a70235164f22fb168d96ea744b05c0e420f452b7077a77be1f58b3d479b9a7f38a915cbe6e03ff95a9dd22d6b45f",
+      "file_id": "11111111-1111-4111-8111-111111111111",
+      "folder_id": "22222222-2222-4222-8222-222222222222",
+      "folder_key_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "owner_wrapped_file_key",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "L8 owner file key: HKDF-SHA256(master, domain || canonical item ID string), same context as AAD; independent Python cryptography KAT."
+    },
+    {
+      "child_key_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "expected_frame_hex": "000102030405060708090a0be76dd2b5f6581ea20f0e3ef1730df58cb833f1c91ca6fbe931adc3cf50c1117b5e683d28ba2e1e04614014c4fbcd8572",
+      "file_id": "11111111-1111-4111-8111-111111111111",
+      "folder_id": "22222222-2222-4222-8222-222222222222",
+      "folder_key_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "owner_wrapped_folder_key",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "L6 permanent root custody: HKDF-SHA256(master, domain || canonical root ID string), same context as AAD; independent cryptography KAT."
+    },
+    {
+      "child_key_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "expected_frame_hex": "000102030405060708090a0b53e1dd8ab183dc0c6eddf3c784fb530e4436147ac012610979e5790104c1ca8d7fa70b87b7f6eac00ff8b615519b7275",
+      "file_id": "11111111-1111-4111-8111-111111111111",
+      "folder_id": "22222222-2222-4222-8222-222222222222",
+      "folder_key_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "kind": 1,
+      "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "folder_wrapped_file_key",
+      "nonce_hex": "000102030405060708090a0b",
+      "note": "L7 child wrap: AAD domain || root UUID bytes || item UUID bytes || kind; independent cryptography KAT.",
+      "shared_folder_id": "22222222-2222-4222-8222-222222222222"
+    }
+  ],
+  "version": 11
+}

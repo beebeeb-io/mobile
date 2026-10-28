@@ -18,6 +18,8 @@ import uniffi.beebeeb_uniffi.MasterKeyHandle
  */
 class BeebeebCryptoHandleRegistry {
 
+  @Volatile var onCleared: (() -> Unit)? = null
+
   private val nextId = AtomicInteger(1)
   private val handles = HashMap<Int, MasterKeyHandle>()
 
@@ -78,6 +80,7 @@ class BeebeebCryptoHandleRegistry {
   fun release(id: Int) {
     synchronized(handles) {
       handles.remove(id)
+      if (handles.isEmpty()) onCleared?.invoke()
       if (adoptedId == id || handles.isEmpty()) {
         adoptedId = null
         adoptedOwnerId = null
@@ -106,6 +109,7 @@ class BeebeebCryptoHandleRegistry {
   fun clear() {
     synchronized(handles) {
       handles.clear()
+      onCleared?.invoke()
       adoptedId = null
       adoptedOwnerId = null
       // A fresh incomplete latch: the next keychain load (new sign-in) must

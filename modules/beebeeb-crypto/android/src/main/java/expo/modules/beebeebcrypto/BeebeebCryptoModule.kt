@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.beebeeb_uniffi.BatchNameItem
 import uniffi.beebeeb_uniffi.EncryptedData
+import uniffi.beebeeb_uniffi.FileKeyHandle
 import uniffi.beebeeb_uniffi.MasterKeyHandle
 import uniffi.beebeeb_uniffi.computeRecoveryCheck
 import uniffi.beebeeb_uniffi.decryptChunk
@@ -64,7 +65,10 @@ private fun notLinked(): Any? = throw NotLinkedException()
 class BeebeebCryptoModule : Module() {
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-  private val handles = BeebeebCryptoHandleRegistry()
+  private val sharedKeys = SharedKeyOps.registry
+  private val handles = BeebeebCryptoHandleRegistry().apply { onCleared = { sharedKeys.clear() } }
+  private fun sharedMaster(id: Int): MasterKeyHandle = try { handles.get(id) }
+    catch (_: Exception) { throw CodedException("ERR_VAULT_LOCKED", "Vault is locked", null) }
 
   // ── preview download + decrypt state (task 1683b; iOS
   // `previewDownloadCancellations` / `previewProgressSnapshots`,
@@ -539,7 +543,8 @@ class BeebeebCryptoModule : Module() {
       chunksTotal = meta.chunkCount,
     )
 
-    val fileKey = master.deriveFileKey(fileIdBytes(fileId))
+    val keyAccess = SharedKeyOps.borrowFileKey(master, fileId)
+    val fileKey = keyAccess.handle
     try {
       RandomAccessFile(encFile, "r").use { raf ->
         FileOutputStream(tmpFile).use { out ->
@@ -587,7 +592,7 @@ class BeebeebCryptoModule : Module() {
         throw CodedException("ERR_RENAME", "Could not finalize decrypted output", null)
       }
     } finally {
-      fileKey.close()
+      keyAccess.close()
     }
 
     progress.onComplete()
@@ -628,7 +633,7 @@ class BeebeebCryptoModule : Module() {
 
   private fun decryptLocalFileChunks(
     progress: PreviewDownloadProgress,
-    fileKey: ByteArray,
+    fileKey: FileKeyHandle,
     inputPath: String,
     outputFile: File,
     chunkSizeBytes: Long,
@@ -685,7 +690,7 @@ class BeebeebCryptoModule : Module() {
             raf.readFully(window)
             val nonce = window.copyOfRange(0, NONCE_BYTES)
             val ciphertext = window.copyOfRange(NONCE_BYTES, window.size)
-            val plaintext = decryptChunk(fileKey, nonce, ciphertext)
+            val plaintext = fileKey.decryptChunk(nonce, ciphertext)
             out.write(plaintext)
             chunkStart += windowSize
             progress.onChunkDecrypted(index + 1, chunkCount)
@@ -729,6 +734,20 @@ class BeebeebCryptoModule : Module() {
     Name("BeebeebCrypto")
 
     // ─────────────────────────────── misc / pure-Kotlin ──────────────────────
+
+    // L7d (task 2237c): the "a shared-folder custody set was stored on this device" marker. A lost Keystore key
+    // makes SecureStore read null, which must not read as "never seen". noBackupFilesDir is internal storage that
+    // is never backed up, never purged under storage pressure and not touched by "Clear cache" or the sign-out
+    // sweep; one byte, no ids. Only "Clear storage" (which also drops the Keystore key) removes it.
+    AsyncFunction("custodyMarkerExists") { ->
+      java.io.File(reactContext.noBackupFilesDir, "beebeeb-custody-marker").exists()
+    }
+
+    AsyncFunction("writeCustodyMarker") { ->
+      val dir = reactContext.noBackupFilesDir
+      dir.mkdirs()
+      java.io.File(dir, "beebeeb-custody-marker").writeBytes(byteArrayOf(0x31))
+    }
 
     AsyncFunction("generateRandomBytes") { length: Int ->
       if (length <= 0 || length > 4096) {
@@ -861,21 +880,21 @@ class BeebeebCryptoModule : Module() {
     }
 
     AsyncFunction("handleEncryptChunk") { handleId: Int, fileId: String, plaintext: ByteArray ->
-      val fileKey = handles.get(handleId).deriveFileKey(fileIdBytes(fileId))
+      val fileKey = SharedKeyOps.fileKey(handles.get(handleId), fileId)
       encryptDataToMap(fileKey.encryptChunk(plaintext))
     }
 
     AsyncFunction("handleDecryptChunk") { handleId: Int, fileId: String, nonce: ByteArray, ciphertext: ByteArray ->
-      handles.get(handleId).deriveFileKey(fileIdBytes(fileId)).decryptChunk(nonce, ciphertext)
+      SharedKeyOps.fileKey(handles.get(handleId), fileId).decryptChunk(nonce, ciphertext)
     }
 
     AsyncFunction("handleEncryptMetadata") { handleId: Int, fileId: String, metadata: String ->
-      val fileKey = handles.get(handleId).deriveFileKey(fileIdBytes(fileId))
+      val fileKey = SharedKeyOps.fileKey(handles.get(handleId), fileId)
       encryptDataToMap(fileKey.encryptMetadata(metadata))
     }
 
     AsyncFunction("handleDecryptMetadata") { handleId: Int, fileId: String, nonce: ByteArray, ciphertext: ByteArray ->
-      handles.get(handleId).deriveFileKey(fileIdBytes(fileId)).decryptMetadata(nonce, ciphertext)
+      SharedKeyOps.fileKey(handles.get(handleId), fileId).decryptMetadata(nonce, ciphertext)
     }
 
     AsyncFunction("decryptNames") { handleId: Int, items: List<Map<String, Any?>> ->
@@ -885,7 +904,7 @@ class BeebeebCryptoModule : Module() {
           nameEncrypted = item["nameEncrypted"] as? String ?: "",
         )
       }
-      handles.get(handleId).decryptNames(batch).map { result ->
+      SharedKeyOps.decryptNames(handles.get(handleId), batch).map { result ->
         mapOf(
           "name" to result.name,
           "mimeType" to result.mimeType,
@@ -895,13 +914,8 @@ class BeebeebCryptoModule : Module() {
     }
 
     AsyncFunction("wrapForOwnerWithHandle") { handleId: Int, bytes: ByteArray ->
-      val masterKeyBytes = handles.get(handleId).exportForKeychain()
-      try {
-        val result = encryptChunk(masterKeyBytes, bytes)
-        mapOf("wrapped" to result.ciphertext, "nonce" to result.nonce)
-      } finally {
-        masterKeyBytes.fill(0.toByte())
-      }
+      val result = handles.get(handleId).wrapBytes(bytes)
+      mapOf("wrapped" to result.ciphertext, "nonce" to result.nonce)
     }
 
     AsyncFunction("unwrapForOwnerWithHandle") { handleId: Int, wrapped: ByteArray, nonce: ByteArray ->
@@ -912,6 +926,52 @@ class BeebeebCryptoModule : Module() {
         masterKeyBytes.fill(0.toByte())
       }
     }
+
+    // L6 owner wraps require the link's explicit share id.
+    AsyncFunction("sharedFolderOpenOwnerKey") { masterId: Int, folderId: String, wrapped: ByteArray ->
+      SharedKeyOps.openOwnerFolderKey(sharedMaster(masterId), folderId, wrapped)
+    }
+    AsyncFunction("sharedFolderGenerate") { masterId: Int, folderId: String ->
+      val result = SharedKeyOps.generateFolderKey(sharedMaster(masterId), folderId)
+      mapOf("handleId" to result.first, "ownerWrapped" to result.second)
+    }
+    AsyncFunction("sharedFolderRelease") { folderId: Int -> sharedKeys.releaseFolder(folderId) }
+    AsyncFunction("sharedFileKeysLoad") { masterId: Int, folderId: Int, entries: List<Map<String, Any?>> ->
+      sharedMaster(masterId)
+      val rows = entries.map { row ->
+        val bytes = when (val value = row["wrapped"]) {
+          is ByteArray -> value
+          is List<*> -> value.map { (it as? Number)?.toByte() ?: 0 }.toByteArray()
+          else -> byteArrayOf()
+        }
+        SharedKeyEntryNative(row["fileId"] as? String ?: "", bytes, (row["kind"] as? Number)?.toDouble()?.takeIf { it == 1.0 || it == 2.0 }?.toInt() ?: 0)
+      }
+      val result = SharedKeyOps.loadFileKeys(folderId, rows)
+      mapOf("loaded" to result.first, "failed" to result.second)
+    }
+    AsyncFunction("sharedFileKeyOpenOwnerWrap") { masterId: Int, fileId: String, wrapped: ByteArray ->
+      SharedKeyOps.openOwnerFileKey(sharedMaster(masterId), fileId, wrapped)
+    }
+    Function("sharedFileKeyIsLoaded") { fileId: String -> sharedKeys.file(fileId) != null }
+    AsyncFunction("sharedWrapChildKeys") { masterId: Int, folderId: Int, fileIds: List<String>, kind: Int ->
+      SharedKeyOps.wrapChildKeys(sharedMaster(masterId), folderId, fileIds, kind = kind).map { mapOf("fileId" to it.fileId, "wrapped" to it.wrapped, "kind" to it.kind) }
+    }
+    AsyncFunction("sharedAdoptWrap") { masterId: Int, fileId: String -> SharedKeyOps.adoptWrap(sharedMaster(masterId), fileId) }
+    AsyncFunction("sharedFolderEncryptName") { folderId: Int, text: String ->
+      SharedKeyOps.folder(folderId).handle.encryptNameFor(text, null, 0u)
+    }
+    AsyncFunction("sharedFolderDecryptName") { folderId: Int, envelope: String ->
+      SharedKeyOps.folder(folderId).handle.decryptNameMetadata(envelope).name
+    }
+    AsyncFunction("folderLinkMint") { masterId: Int, folderId: Int, token: String, passphrase: String?, shareId: String ->
+      val result = SharedKeyOps.mintLink(sharedMaster(masterId), folderId, token, passphrase, shareId)
+      mapOf("kc" to result.kc, "wrappedFolderKey" to result.wrappedFolderKey,
+        "ownerWrappedKey" to result.ownerWrappedKey, "ownerWrappedToken" to result.ownerWrappedToken)
+    }
+    AsyncFunction("folderLinkRecoverKc") { masterId: Int, folderId: Int, wrapped: ByteArray, shareId: String ->
+      SharedKeyOps.recoverKc(sharedMaster(masterId), folderId, wrapped, shareId)
+    }
+    AsyncFunction("sharedKeysClear") { sharedKeys.clear() }
 
     // ─────────────────────────────── keychain / vault ────────────────────────
 
@@ -1168,8 +1228,13 @@ class BeebeebCryptoModule : Module() {
       scope.launch {
         val requestId = params["requestId"] as? String ?: ""
         try {
-          val fileKey = params["fileKey"] as? ByteArray
-            ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires fileKey", null)
+          val fileId = params["fileId"] as? String ?: ""
+          val fileKey = pickKey(sharedKeys.file(fileId)) {
+            val masterId = (params["masterHandleId"] as? Number ?: params["handleId"] as? Number)?.toInt()
+            if (masterId != null) SharedKeyOps.fileKey(sharedMaster(masterId), fileId)
+            else FileKeyHandle.fromKeyBytes(params["fileKey"] as? ByteArray
+              ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires a key handle or fileKey", null))
+          }
           val inputPath = filePathFromUri(
             params["inputUri"] as? String
               ?: throw CodedException("ERR_PARAMS", "decryptLocalFileNative requires inputUri", null),
@@ -1316,6 +1381,8 @@ class BeebeebCryptoModule : Module() {
           val written = withContext(Dispatchers.IO) {
             uniffi.beebeeb_uniffi.decryptContiguousToFile(
               fileKey = fileKey,
+              fileId = "", // Legacy raw-key bridge has no v2 file-id context.
+              expectedChunkFormat = 0u,
               body = body,
               chunkSize = chunkSize.toLong().toULong(),
               outputPath = resolvedPath,

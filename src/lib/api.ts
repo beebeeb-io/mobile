@@ -759,7 +759,10 @@ async function request<T>(
         err.error === TRIAL_ENDED_ERROR ||
         isTrialRefusalCode(err.error) ||
         isOnboardingErrorCode(err.error) ||
-        err.error === STRICT_REGION_REFUSAL
+        err.error === STRICT_REGION_REFUSAL ||
+        // Task 2237c L10/L11 (contract-2237-format-l7.md): the shared-folder key-write refusals.
+        err.error === 'upgrade_required' ||
+        err.error === 'invalid_format'
         ? err.error
         : undefined,
       res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,

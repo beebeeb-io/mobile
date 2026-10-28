@@ -142,6 +142,7 @@ final class PreviewChunkPipeline {
   private let plan: PreviewChunkPlan
   private let outputURL: URL
   private let tmpURL: URL
+  private let finishDecryption: () throws -> Void
   private let decryptFrame: (Data) throws -> Data
   private let onChunkDecrypted: (Int, Int) -> Void
   private var buffer = Data()
@@ -154,6 +155,7 @@ final class PreviewChunkPipeline {
     plan: PreviewChunkPlan,
     outputURL: URL,
     decryptFrame: @escaping (Data) throws -> Data,
+    finishDecryption: @escaping () throws -> Void = {},
     onChunkDecrypted: @escaping (Int, Int) -> Void
   ) throws {
     self.plan = plan
@@ -161,6 +163,7 @@ final class PreviewChunkPipeline {
     self.tmpURL = outputURL
       .deletingLastPathComponent()
       .appendingPathComponent(".\(outputURL.lastPathComponent).\(UUID().uuidString).tmp")
+    self.finishDecryption = finishDecryption
     self.decryptFrame = decryptFrame
     self.onChunkDecrypted = onChunkDecrypted
 
@@ -227,6 +230,8 @@ final class PreviewChunkPipeline {
           userInfo: [NSLocalizedDescriptionKey: "Plaintext size mismatch"]
         )
       }
+      // Authenticate stream completion before promoting any temporary plaintext.
+      try finishDecryption()
       try handle.close()
       try? FileManager.default.removeItem(at: outputURL)
       try FileManager.default.moveItem(at: tmpURL, to: outputURL)

@@ -692,7 +692,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     }
     state.unlock()
 
-    let derived = try master.deriveFileKey(fileId: Data(fileId.utf8))
+    let derived = try SharedKeyOps.fileKey(master: master, fileId: fileId)
     state.lock()
     if cancelled || progress.isCancelled() || PlaintextStorageProtection.isPurgePending() {
       state.unlock()
