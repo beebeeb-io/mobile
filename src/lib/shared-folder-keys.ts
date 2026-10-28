@@ -70,8 +70,13 @@ export function createSharedKeyResolver(p: SharedKeyPorts): SharedKeyResolver {
   function guard(epoch: AccountEpoch, g: number): void { if (g !== generation || !sameAccountEpoch(epoch, p.epoch())) throw new StaleAccountError('shared keys'); }
   async function folderHandleFor(root: string): Promise<number | null> {
     if (roots.has(root)) return roots.get(root)!;
-    // A cached "no custody" verdict is re-checked against the device memory: it must not hide a folder seen since.
-    if ((negative.get(root) ?? 0) > p.now()) { await settleMissingCustody(p.custody, root); return null; }
+    // A cached "no custody" verdict stands for a folder this device never saw. Once the folder HAS been seen since
+    // (link creation registered its custody, or another path opened it) the verdict is stale: drop it and ask the
+    // server afresh, so a folder's own new custody is not refused for five minutes.
+    if ((negative.get(root) ?? 0) > p.now()) {
+      if (!(await p.custody.hasSeen(root))) return null;
+      negative.delete(root);
+    }
     if (opening.has(root)) return opening.get(root)!;
     const epoch = p.epoch(), g = generation;
     const task = (async () => {
@@ -85,8 +90,8 @@ export function createSharedKeyResolver(p: SharedKeyPorts): SharedKeyResolver {
         negative.set(root,p.now()+300000); return null;
       }
       const wrap = parseOwnerWrap(info.owner_wrapped_folder_key);
-      // Owner-side only: a custody record that is not the owner's (or does not parse) reads as legacy for a folder
-      // never seen, and is refused for one seen before. A member's read of someone else's folder never lands here.
+      // A custody record that is not the owner's (a member record: mobile ignores member custody in phase 1) or does
+      // not parse reads as legacy for a folder never seen, and is refused for one seen before.
       if (info.role !== 'owner' || !wrap) { await settleMissingCustody(p.custody, root); guard(epoch,g); negative.set(root,p.now()+300000); return null; }
       let handle: number;
       try { handle = await p.native.sharedFolderOpenOwnerKey(p.masterHandleId(), root, wrap); }

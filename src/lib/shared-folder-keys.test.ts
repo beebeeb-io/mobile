@@ -157,3 +157,20 @@ test('a_seen_folder_whose_record_stops_opening_is_refused_and_a_never_seen_one_r
  const fresh = setup(); fresh.p.native.sharedFolderOpenOwnerKey = async () => { throw new Error('Decryption failed'); };
  expect((await createSharedKeyResolver(fresh.p).ensureLoaded([F])).get(F)).toBe('key_does_not_open');
 });
+test('a_folders_own_new_custody_is_not_refused_by_the_cached_no_custody_verdict', async () => {
+ // F under B under A. The first read finds no custody (cached for 5 minutes). Link creation then registers
+ // custody for A (markSeen) and the server now has the record: the next read must ask afresh and open it.
+ const s = setup(); s.p.getSharedFolder = async (id: string) => { s.probes.push(id); throw { status: 404 }; };
+ const r = createSharedKeyResolver(s.p);
+ expect((await r.ensureLoaded([F])).get(F)).toBe('no_shared_root'); expect(s.probes).toEqual([B, A]);
+ await s.p.custody.markSeen(A); // what link creation does after its custody PUT
+ s.p.getSharedFolder = async (id: string) => { s.probes.push(id); if (id !== A) throw { status: 404 }; return { folder_id: id, role: 'owner', owner_wrapped_folder_key: b64 }; };
+ const out = await r.ensureLoaded([F]);
+ expect(out.get(F)).toBe('loaded'); expect(s.probes).toEqual([B, A, A]); // B's verdict stands (never seen); A is asked afresh
+ expect(s.pages()).toBe(1);
+});
+test('a_cached_no_custody_verdict_still_stands_for_a_folder_never_seen', async () => {
+ const s = setup(); s.p.getSharedFolder = async (id: string) => { s.probes.push(id); throw { status: 404 }; };
+ const r = createSharedKeyResolver(s.p); await r.ensureLoaded([F]); await r.ensureLoaded([F]);
+ expect(s.probes).toEqual([B, A]); // no second GET inside the 5 minutes
+});

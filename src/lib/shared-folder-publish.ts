@@ -2,6 +2,7 @@ import { accountEpoch, isCurrentAccountEpoch, onAccountEpochAdvance } from './ac
 import { ancestorsOf, isForeignSharedFile, treeNode } from './shared-folder-tree';
 import { getSharedKeyResolver, sharedFileKeyIsLoaded, sharedMasterHandleId } from './shared-folder-keys';
 import { gatedPlaintextWrite } from './plaintext-gate';
+import { custodyMemory, noteUpgradeRequired, type CustodyMemory } from './shared-folder-custody';
 
 const ROOTS_TTL = 5 * 60_000;
 const RETRY_TTL = 7 * 86_400_000;
@@ -14,6 +15,8 @@ export interface PublishPorts {
   enabled(): Promise<boolean>;
   links(): Promise<FolderLink[]>;
   folderHandleFor(root: string): Promise<number | null>;
+  /** L7d/L11: the device-wide custody memory (a 409 upgrade_required is remembered for the folder). */
+  custody: CustodyMemory;
   wrap(folderHandle: number, ids: string[]): Promise<{ fileId: string; wrapped: Uint8Array }[]>;
   publish(root: string, keys: PublishedKey[]): Promise<{ written: number; skipped: number }>;
   ancestors(id: string): string[];
@@ -100,8 +103,15 @@ export function createSharedFolderPublisher(p: PublishPorts) {
           if (!valid(g)) return;
         }
         batch.forEach(row => pending.delete(key(row)));
-      } catch {
-        // L7c: a publish only runs for a folder whose custody this account opened, so a later 404, 405
+      } catch (error) {
+        // L11: a 409 upgrade_required is the owner-must-convert state, not a transient failure: remember the folder
+        // and drop the batch instead of retrying for seven days. (A seen folder is not flagged; the batch still goes.)
+        if (valid(g) && await noteUpgradeRequired(p.custody, root, error)) {
+          batch.forEach(row => pending.delete(key(row)));
+          await save(g);
+          continue;
+        }
+        // L7d: a publish only runs for a folder whose custody this device opened, so a later 404, 405
         // or 501 (or an unavailable custody) is a server claim to distrust, not proof the folder is
         // gone. The wraps stay queued; the seven-day window is what ends them.
         if (!valid(g)) return;
@@ -204,6 +214,7 @@ async function defaultPublisher(): Promise<Publisher | null> {
       },
       links: () => api.listFolderLinks(),
       folderHandleFor: root => getSharedKeyResolver()?.folderHandleFor(root) ?? Promise.resolve(null),
+      custody: custodyMemory,
       wrap: (folder, ids) => native.sharedWrapChildKeys(sharedMasterHandleId(), folder, ids),
       publish: (root, keys) => api.publishSharedFolderKeys(root, keys),
       ancestors: ancestorsOf, eligible: id => isPublishableOwnedFile(id, epoch.accountId),

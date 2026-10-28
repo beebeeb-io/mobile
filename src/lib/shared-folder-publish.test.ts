@@ -3,14 +3,16 @@ import { expect, mock, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { createSharedFolderPublisher, isPublishableOwnedFile, retryPending, clearPendingPublishes } from './shared-folder-publish';
 import { clearTree, ingestTree, ancestorsOf } from './shared-folder-tree';
+import { createCustodyMemory } from './shared-folder-custody';
 const DAY = 86_400_000;
-function setup() {
-  clearTree(); ingestTree([{id:'sub',parent_id:'R'}]);
+function setup(root='R') {
+  clearTree(); ingestTree([{id:'sub',parent_id:root}]);
   let clock=1000, disk=null, status=0, enabled=true, lists=0, wraps=0;
-  const posts=[];
+  const posts=[], store=new Map();
   const p={
     enabled:async()=>enabled,
-    links:async()=>{lists++;return [{folder_id:'R',revoked_at:null,expires_at:null}];},
+    links:async()=>{lists++;return [{folder_id:root,revoked_at:null,expires_at:null}];},
+    custody:createCustodyMemory({get:async k=>store.get(k)??null,set:async(k,v)=>{store.set(k,v);}},{exists:async()=>false,write:async()=>{}}),
     folderHandleFor:async()=>7,
     // Marked C1 mock: returns only ciphertext wraps, never a file key.
     wrap:async(handle,ids)=>{expect(handle).toBe(7);wraps++;return ids.map(fileId=>({fileId,wrapped:new Uint8Array(60).fill(3)}));},
@@ -19,7 +21,7 @@ function setup() {
     read:async()=>disk,write:async value=>{disk=value;},remove:async()=>{disk=null;},
     now:()=>clock,current:()=>true,
   };
-  return {p,posts,disk:()=>disk,lists:()=>lists,wraps:()=>wraps,setStatus:v=>status=v,setEnabled:v=>enabled=v,advance:n=>clock+=n};
+  return {p,posts,store,disk:()=>disk,lists:()=>lists,wraps:()=>wraps,setStatus:v=>status=v,setEnabled:v=>enabled=v,advance:n=>clock+=n};
 }
 test('an_owner_upload_into_a_shared_subtree_publishes_one_wrap',async()=>{
   const s=setup(),a=createSharedFolderPublisher(s.p); a.onOwnerUpload({id:'f',parent_id:'sub'});await a.idle();
@@ -167,4 +169,20 @@ test('an_unavailable_custody_keeps_the_wrap_queued_and_posts_nothing',async()=>{
   s.p.folderHandleFor=async()=>{throw Object.assign(new Error("This folder's keys are unavailable"),{name:'CustodyUnavailableError'});};
   a.onOwnerUpload({id:'f',parent_id:'R'});await a.idle();
   expect(s.posts).toEqual([]);expect(s.wraps()).toBe(0);expect(JSON.parse(s.disk())).toEqual([{fileId:'f',parentId:'R',rootId:'R',createdAt:1000}]);
+});
+
+// L11: a 409 upgrade_required on a publish is the owner-must-convert state, not a transient failure.
+test('a_409_upgrade_required_drops_the_batch_and_remembers_the_folder_instead_of_retrying_for_seven_days',async()=>{
+  const ROOT='eeeeeeee-0000-4000-8000-00000000000e';
+  const s=setup(ROOT),a=createSharedFolderPublisher(s.p);
+  s.p.publish=async()=>{s.posts.push(1);throw Object.assign(Error('refused'),{status:409,code:'upgrade_required'});};
+  a.onOwnerUpload({id:'f',parent_id:'sub'});await a.idle();
+  expect(s.posts).toHaveLength(1);expect(JSON.parse(s.disk())).toEqual([]);
+  expect(await s.p.custody.isUpgradeRequired(ROOT)).toBe(true);
+  s.advance(1000);await a.retryPending();expect(s.posts).toHaveLength(1); // nothing left to retry
+});
+test('other_409s_are_retried_like_any_failure',async()=>{
+  const s=setup(),a=createSharedFolderPublisher(s.p);s.p.publish=async()=>{s.posts.push(1);throw Object.assign(Error('x'),{status:409,code:'something_else'});};
+  a.onOwnerUpload({id:'f',parent_id:'sub'});await a.idle();
+  expect(JSON.parse(s.disk())).toEqual([{fileId:'f',parentId:'sub',rootId:'R',createdAt:1000}]);
 });
