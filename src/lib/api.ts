@@ -762,7 +762,9 @@ async function request<T>(
         err.error === STRICT_REGION_REFUSAL ||
         // Task 2237c L10/L11 (contract-2237-format-l7.md): the shared-folder key-write refusals.
         err.error === 'upgrade_required' ||
-        err.error === 'invalid_format'
+        err.error === 'invalid_format' ||
+        // Task 2237c task 9: link creation branches on these (re-mint, re-register, the 20-links and nested lines).
+        isFolderLinkServerCode(err.error)
         ? err.error
         : undefined,
       res.status === 429 ? retryAfterSecondsFromHeader(res.headers.get('Retry-After')) : undefined,
@@ -4605,4 +4607,29 @@ export async function closeFileRequest(id: string): Promise<{ id: string; closed
     'POST',
     `/api/v1/file-requests/${id}/close`,
   );
+}
+
+// Shared-folder owner surface (2237c). Ciphertexts are opaque to these wrappers.
+export type { FolderLink, FolderMember, SharedFolderInfo, SharedFolderActivityRow } from './folder-link-types';
+import type { CreatedFolderLink, FolderMember, SharedFolderActivityRow, CreateFolderLinkBody, FolderLinkPatch } from './folder-link-types';
+import { isFolderLinkServerCode } from './folder-link-types';
+export function createFolderLink(body: CreateFolderLinkBody): Promise<CreatedFolderLink> {
+  // Contract 2237 §1 lists folder-link create among the key writes that carry format "l7".
+  return request('POST', '/api/v1/shares/folder-links', withL7Format(body));
+}
+export function updateFolderLink(id: string, patch: FolderLinkPatch): Promise<FolderLink> {
+  return request('PATCH', `/api/v1/shares/folder-links/${encodeURIComponent(id)}`, patch);
+}
+export async function revokeFolderLink(id: string): Promise<void> {
+  await request('DELETE', `/api/v1/shares/folder-links/${encodeURIComponent(id)}`);
+}
+export function getFolderMembers(folderId: string): Promise<{ members: FolderMember[]; folder_id: string; owner_id: string }> {
+  return request('GET', `/api/v1/shares/invites/folder-members/${encodeURIComponent(folderId)}`);
+}
+export function registerSharedFolderKey(folderId: string, body: { owner_wrapped_folder_key: string; key_version: number }): Promise<{ created: boolean; key_version: number }> {
+  return request('PUT', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/key`, body);
+}
+export async function getSharedFolderActivity(folderId: string, limit = 50): Promise<SharedFolderActivityRow[]> {
+  const data = await request<{ activity: SharedFolderActivityRow[] }>('GET', `/api/v1/shared-folders/${encodeURIComponent(folderId)}/activity?limit=${limit}`);
+  return data.activity;
 }

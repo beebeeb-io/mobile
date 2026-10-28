@@ -26,6 +26,7 @@ import { getIncomingInvites, getSentInvites, listMyShares, friendlyError } from 
 import type { ShareInvite, MyShareLink } from '../lib/api';
 import { formatBytes } from '../lib/format';
 import FileRequestsScreen from './FileRequestsScreen';
+import { useSharedFoldersFlag } from '../lib/use-shared-folders-flag';
 import type { RootStackParamList } from '../App';
 
 // Public links resolve against the web app origin (cross-client by design).
@@ -293,6 +294,7 @@ export default function SharedScreen() {
   // of reserving its own flow height.
   const tabBarBottomInset = useTabBarBottomInset();
   const navigation = useNavigation<Nav>();
+  const sharedFoldersFlag = useSharedFoldersFlag();
   const { showToast } = useToast();
   // Tier 1: Shares vs File Requests. Tier 2 (under Shares): direction.
   const [topTab, setTopTab] = useState<TopTab>('shares');
@@ -811,6 +813,9 @@ export default function SharedScreen() {
           })}
         </View>
       )}
+      {sharedFoldersFlag.enabled && topTab === 'shares' && <TouchableOpacity testID="shared-folder-activity-entry" accessibilityRole="button" onPress={() => navigation.navigate('SharedFolderActivity')} style={{ paddingHorizontal: spacing.lg, paddingVertical: 12 }}>
+        <Text style={{ color: c.ink, fontSize: 14, fontWeight: '600' }}>Folder activity</Text>
+      </TouchableOpacity>}
       </View>{/* end header area */}
 
       {/* Content */}

@@ -1300,3 +1300,7 @@ Task 2233 item 10: use one installed-binary appVersion() helper for Settings, AP
 Task 2233 item 11: Android BBActionSheet uses live window height minus top safe area, scrollable actions and header-only drag, retaining bottomAnchorInset. iOS retains its existing rows, geometry and whole-sheet pan. Contract/evidence: `docs/runbook/task-2233-r2.md`.
 
 Task 2245 (2026-10-27, Guus report + lead review): the Settings root rows that carry the badge reason are a new surface the design artefact does not draw. Reason text and the "!" marker use `ink2`, not `amberDeep`: `amberDeep` is 3.25:1 on the light grouped cell (#ffffff) and fails WCAG AA 4.5:1; `ink2` is 7.25:1 light / 9.37:1 dark. The warning meaning is carried by the copy ("N items need attention" / "Storage N% full") and the marker, both from existing tokens. No new colour was introduced.
+
+## Task 2237c C3 (2026-10-28)
+
+The reviewed mobile plan adds a folder-link panel where neither `design/hifi/` nor `design/ios26-canvas/` has a folder panel. It uses the existing routed BottomSheet, theme colours and chip patterns, with the contract's owner/member/link copy. The flag-off snapshot bundle block is preserved byte for byte from `10393e3`. Light/dark iOS and Android keyboard screenshots remain open: COMMON.md forbids simulator/device/Maestro execution in this lane; the lead's release rung owns that evidence. C1 native constructors and C2 tree/resolver interfaces are marked mocks in unit tests until merged; no JS cryptography substitutes for them.
