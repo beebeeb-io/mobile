@@ -127,15 +127,17 @@ final class CoreVectorsKATTests: XCTestCase {
 
     /// `<repo>/ios/BeebeebNativeTests/CoreVectorsKATTests.swift` -> two levels up from `ios/` is
     /// `../../core/test-vectors/vectors.json`, matching the standard `<workspace>/repos/{core,mobile}`
-    /// sibling layout (not present in an isolated `git worktree` checkout — that case is skipped,
-    /// not failed, by `testVendoredVectorsMatchSiblingCoreRepoWhenPresent`).
-    private static func siblingCoreVectorsURL() -> URL {
-        URL(fileURLWithPath: #filePath)
+    /// sibling layout. An isolated worktree may have an unrelated `../core` checkout; only the
+    /// documented `repos/` layout participates in this optional comparison. The SHA pin is enforced
+    /// in every layout.
+    private static func siblingCoreVectorsURL() -> URL? {
+        let parent = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // BeebeebNativeTests/
             .deletingLastPathComponent() // ios/
             .deletingLastPathComponent() // repo root
             .deletingLastPathComponent() // parent of repo root (sibling of repos/core)
-            .appendingPathComponent("core/test-vectors/vectors.json")
+        guard parent.lastPathComponent == "repos" else { return nil }
+        return parent.appendingPathComponent("core/test-vectors/vectors.json")
     }
 
     private static func logPass(_ family: String) {
@@ -190,12 +192,12 @@ final class CoreVectorsKATTests: XCTestCase {
     }
 
     func testVendoredVectorsMatchSiblingCoreRepoWhenPresent() throws {
-        let siblingURL = Self.siblingCoreVectorsURL()
-        guard FileManager.default.fileExists(atPath: siblingURL.path) else {
+        guard let siblingURL = Self.siblingCoreVectorsURL(),
+              FileManager.default.fileExists(atPath: siblingURL.path) else {
             throw XCTSkip(
                 "no sibling repos/core/test-vectors/vectors.json next to this checkout " +
-                "(\(siblingURL.path)) — expected only in the standard <workspace>/repos/{core,mobile} " +
-                "layout, not in an isolated git worktree; the sha256 pin test above is the enforced guard here"
+                "— expected only in the standard <workspace>/repos/{core,mobile} layout, " +
+                "not in an isolated git worktree; the sha256 pin test above is the enforced guard here"
             )
         }
         let siblingData = try Data(contentsOf: siblingURL)
