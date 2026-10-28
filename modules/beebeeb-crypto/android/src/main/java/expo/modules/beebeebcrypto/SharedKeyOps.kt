@@ -65,6 +65,12 @@ object SharedKeyOps {
   fun fileKey(master: MasterKeyHandle, fileId: String,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): FileKeyHandle =
     pickKey(registry.file(fileId)) { master.deriveFileKey(fileId.toByteArray(Charsets.UTF_8)) }
+  fun borrowFileKey(master: MasterKeyHandle, fileId: String,
+    registry: SharedKeyRegistry<FileKeyHandle> = this.registry): SharedKeyAccess<FileKeyHandle> {
+    val table = registry.file(fileId)
+    return if (table != null) SharedKeyAccess(table, false) { it.close() }
+      else SharedKeyAccess(master.deriveFileKey(fileId.toByteArray(Charsets.UTF_8)), true) { it.close() }
+  }
   fun mintLink(master: MasterKeyHandle, folderId: Int, token: String, passphrase: String?, shareId: String,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): FolderLinkMintNative {
     val key = folder(folderId, registry).handle

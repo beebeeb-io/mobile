@@ -5,6 +5,17 @@ import org.junit.Test
 import kotlin.concurrent.thread
 
 class SharedKeyRegistryTest {
+  @Test fun borrowed_access_survives_preview_close_and_can_be_read_again() {
+    var closes = 0; val key = Any()
+    SharedKeyAccess(key, false) { closes++ }.use { assertSame(key, it.handle) }
+    SharedKeyAccess(key, false) { closes++ }.use { assertSame(key, it.handle) }
+    assertEquals(0, closes)
+  }
+  @Test fun owned_access_closes_exactly_once() {
+    var closes = 0
+    val access = SharedKeyAccess(Any(), true) { closes++ }
+    access.close(); access.close(); assertEquals(1, closes)
+  }
   @Test fun registry_returns_a_stored_file_handle() {
     val r = SharedKeyRegistry<Any>(); val key = Any()
     assertTrue(r.storeFile("a", key)); assertSame(key, r.file("a"))

@@ -272,6 +272,7 @@ internal class VideoStreamSession(
   /** Open HTTP-serve connections, closed on teardown. */
   val openConnections = ConcurrentHashMap<Socket, Boolean>()
 
+  @Volatile private var keyAccess: SharedKeyAccess<uniffi.beebeeb_uniffi.FileKeyHandle>? = null
   @Volatile private var fileKey: uniffi.beebeeb_uniffi.FileKeyHandle? = null
   @Volatile var lastChunkCountHeader: Int? = null
     private set
@@ -484,7 +485,8 @@ internal class VideoStreamSession(
     try {
       if (stopRequested() || complete.get()) return false
       if (fileKey == null) {
-        fileKey = SharedKeyOps.fileKey(masterKey, fileId)
+        keyAccess = SharedKeyOps.borrowFileKey(masterKey, fileId)
+        fileKey = keyAccess!!.handle
       }
       val windowSize = VideoChunkMath.windowSize(index, count, chunkSize, size)
       val window = ByteArray(windowSize.toInt())
@@ -594,8 +596,9 @@ internal class VideoStreamSession(
     }
     try { fetchExecutor.shutdownNow() } catch (_: Exception) {}
     try { decryptExecutor.shutdownNow() } catch (_: Exception) {}
-    try { fileKey?.close() } catch (_: Exception) {}
+    try { keyAccess?.close() } catch (_: Exception) {}
     fileKey = null
+    keyAccess = null
     try { tempDir.deleteRecursively() } catch (_: Exception) {}
     // A partial (holey) plaintext must never be served later — delete the
     // .tmp; a COMPLETE stream renamed it into place already.

@@ -31,3 +31,14 @@ fun <T> mergeNameResults(count: Int, fromTable: List<Pair<Int, T>>, fromMaster: 
   require(ordered.map { it.first } == (0 until count).toList())
   return ordered.map { it.second }
 }
+
+// Registry keys are borrowed; only locally derived handles belong to the consumer.
+class SharedKeyAccess<H : Any>(val handle: H, val owned: Boolean, private val dispose: (H) -> Unit) : AutoCloseable {
+  private var released = false
+  @Synchronized override fun close() {
+    if (!released) {
+      released = true
+      if (owned) dispose(handle)
+    }
+  }
+}

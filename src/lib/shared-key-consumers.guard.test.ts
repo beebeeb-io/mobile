@@ -57,11 +57,11 @@ for (const path of [swift, kotlin]) test(`${path}:_names_split_table_and_master`
 test('preview_download_uses_a_table_handle_before_the_master_constructor', () => {
   expect(read(swift)).toContain('SharedKeyOps.chunkDecryptor(master: master, fileId: fileId, expectedChunkFormat: expectedChunkFormat)')
   const preview = read(kotlin).split('private fun decryptPreviewChunks')[1]?.split('private fun ')[0] ?? ''
-  expect(preview).toContain('SharedKeyOps.fileKey')
+  expect(preview).toContain('SharedKeyOps.borrowFileKey')
 })
 test('both_video_streamers_use_table_first', () => {
   expect(read('ios/NativeVideoStreamer.swift')).toContain('SharedKeyOps.fileKey')
-  expect(read('android/src/main/java/expo/modules/beebeebcrypto/VideoStreamer.kt')).toContain('SharedKeyOps.fileKey')
+  expect(read('android/src/main/java/expo/modules/beebeebcrypto/VideoStreamer.kt')).toContain('SharedKeyOps.borrowFileKey')
 })
 test('android_offline_decrypt_uses_an_opaque_file_handle', () => {
   expect(block(read(kotlin), 'decryptLocalFileNative')).toContain('pickKey')
@@ -93,4 +93,15 @@ test('preview_forwards_only_the_authenticated_metadata_pin', () => {
   const metadata = ops.split('static func previewChunkFormat')[1]?.split('static func chunkDecryptor')[0] ?? ''
   expect(metadata.includes('decryptFileMetadata')).toBe(true)
   expect(metadata.includes('.chunkFormat')).toBe(true)
+})
+
+// F3: native source contract; borrow/own behavior is also tested by Gradle + real KAT.
+test('android_preview_closes_only_a_locally_owned_key_access', () => {
+  const preview = read(kotlin).split('private fun decryptPreviewChunks')[1].split('private fun decryptLocalFileChunks')[0]
+  expect(/finally\s*\{\s*fileKey.close\(\)/.test(preview)).toBe(false)
+  expect(preview.includes('SharedKeyOps.borrowFileKey(master, fileId)')).toBe(true)
+  expect(preview.includes('keyAccess.close()')).toBe(true)
+  const video = read('android/src/main/java/expo/modules/beebeebcrypto/VideoStreamer.kt')
+  expect(video.includes('fileKey?.close()')).toBe(false)
+  expect(video.includes('keyAccess?.close()')).toBe(true)
 })

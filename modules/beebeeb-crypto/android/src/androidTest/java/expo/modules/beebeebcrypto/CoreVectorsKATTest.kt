@@ -438,6 +438,23 @@ class CoreVectorsKATTest {
     }
 
     @Test
+    fun borrowedPreviewKeySurvivesTwoReads() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val key = FileKeyHandle.generate()
+        registry.storeFile("guest", key)
+        val frame = key.encryptChunk("guest frame".toByteArray())
+        repeat(2) {
+            SharedKeyOps.borrowFileKey(master, "guest", registry).use { access ->
+                assertFalse(access.owned)
+                assertSame(key, access.handle)
+                assertTrue(access.handle.decryptChunk(frame.nonce, frame.ciphertext).contentEquals("guest frame".toByteArray()))
+            }
+            assertTrue(registry.file("guest")!!.keyId().contentEquals(key.keyId()))
+        }
+    }
+
+    @Test
     fun chunkDecryptorUsesTheFileKeyHandle() {
         val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
         val registry = SharedKeyRegistry<FileKeyHandle>()

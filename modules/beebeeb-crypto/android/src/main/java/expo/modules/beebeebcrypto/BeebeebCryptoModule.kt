@@ -543,7 +543,8 @@ class BeebeebCryptoModule : Module() {
       chunksTotal = meta.chunkCount,
     )
 
-    val fileKey = SharedKeyOps.fileKey(master, fileId)
+    val keyAccess = SharedKeyOps.borrowFileKey(master, fileId)
+    val fileKey = keyAccess.handle
     try {
       RandomAccessFile(encFile, "r").use { raf ->
         FileOutputStream(tmpFile).use { out ->
@@ -591,7 +592,7 @@ class BeebeebCryptoModule : Module() {
         throw CodedException("ERR_RENAME", "Could not finalize decrypted output", null)
       }
     } finally {
-      fileKey.close()
+      keyAccess.close()
     }
 
     progress.onComplete()
