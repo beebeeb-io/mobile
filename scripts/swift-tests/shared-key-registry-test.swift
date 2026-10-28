@@ -32,4 +32,4 @@ DispatchQueue.concurrentPerform(iterations: 8) { worker in
 }
 registry.clear()
 check(registry.file("0-0") == nil, "concurrent_store_and_clear_never_crash")
-print("\(assertions) assertions passed")
+print("shared-key-registry: \(assertions) assertions, 0 failed")

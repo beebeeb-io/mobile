@@ -84,4 +84,14 @@ class ModuleSurfaceJvmProbeTest {
       def.asyncFunctions.containsKey("decryptLocalFileNative"),
     )
   }
+  @Test
+  fun exposesSharedKeysSurface() {
+    val def = BeebeebCryptoModule().definition()
+    for (name in listOf("sharedFolderOpenOwnerKey", "sharedFolderGenerate", "sharedFolderRelease",
+      "sharedFileKeysLoad", "sharedFileKeyOpenOwnerWrap", "sharedWrapChildKeys", "sharedAdoptWrap",
+      "sharedFolderEncryptName", "sharedFolderDecryptName", "folderLinkMint", "folderLinkRecoverKc", "sharedKeysClear")) {
+      assertTrue("Shared-key async function $name", def.asyncFunctions.containsKey(name))
+    }
+    assertTrue(def.syncFunctions.containsKey("sharedFileKeyIsLoaded"))
+  }
 }

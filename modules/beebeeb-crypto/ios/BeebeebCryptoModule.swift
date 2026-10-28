@@ -2158,6 +2158,7 @@ public class BeebeebCryptoModule: Module {
   // JS holds only a numeric handle ID. All crypto operations pass the handle
   // to native, which resolves it to the real MasterKeyHandle. Raw key bytes
   // never cross the bridge after initial keychain load.
+  private let sharedKeys = SharedKeyOps.registry
   private var masterKeyHandles: [Int: MasterKeyHandle] = [:]
   private var nextHandleId: Int = 1
   private let previewDownloadLock = NSLock()
@@ -2187,6 +2188,11 @@ public class BeebeebCryptoModule: Module {
       )
     }
     return handle
+  }
+
+  private func sharedMaster(_ id: Int) throws -> MasterKeyHandle {
+    guard let master = masterKeyHandles[id] else { throw SharedKeyError.locked }
+    return master
   }
 
   private func storePreviewDownloadCancellation(
@@ -2345,6 +2351,7 @@ public class BeebeebCryptoModule: Module {
       // is a real, counted purge failure: nothing this purge does from this
       // point on can prove an extension write is refused.
       let pendingNonce = PlaintextStorageProtection.markPurgePending()
+      self.sharedKeys.clear()
       self.cancelAllPreviewStreams()
       if pendingNonce == nil {
         RuntimeTrace.event("storage.purge.failed", ["stage": "pending_marker"])
@@ -2702,13 +2709,7 @@ public class BeebeebCryptoModule: Module {
     //  reach JS. Used for owner_wrapped_key (K_c) and owner_wrapped_token.
     AsyncFunction("wrapForOwnerWithHandle") { [self] (handleId: Int, plaintext: Data) throws -> [String: Any] in
       let master = try self.getHandle(handleId)
-      var masterKeyBytes = try master.exportForKeychain()
-      defer {
-        masterKeyBytes.withUnsafeMutableBytes { ptr in
-          if let base = ptr.baseAddress { memset(base, 0, ptr.count) }
-        }
-      }
-      let result = try BeebeebCryptoBridge.encryptChunk(key: masterKeyBytes, plaintext: plaintext)
+      let result = try master.wrapBytes(bytes: plaintext)
       return [
         "wrapped": result.ciphertext,
         "nonce": result.nonce,
@@ -2725,6 +2726,51 @@ public class BeebeebCryptoModule: Module {
       }
       return try BeebeebCryptoBridge.decryptChunk(key: masterKeyBytes, nonce: nonce, ciphertext: wrapped)
     }
+
+    // Shared folder custody and owner recovery use L6 purpose-bound core APIs.
+    AsyncFunction("sharedFolderOpenOwnerKey") { [self] (masterId: Int, folderId: String, wrapped: Data) throws -> Int in
+      try SharedKeyOps.openOwnerFolderKey(master: self.sharedMaster(masterId), folderId: folderId, wrapped: wrapped)
+    }
+    AsyncFunction("sharedFolderGenerate") { [self] (masterId: Int, folderId: String) throws -> [String: Any] in
+      let result = try SharedKeyOps.generateFolderKey(master: self.sharedMaster(masterId), folderId: folderId)
+      return ["handleId": result.handleId, "ownerWrapped": result.ownerWrapped]
+    }
+    AsyncFunction("sharedFolderRelease") { [self] (folderId: Int) in self.sharedKeys.releaseFolder(folderId) }
+    AsyncFunction("sharedFileKeysLoad") { [self] (masterId: Int, folderId: Int, entries: [[String: Any]]) throws -> [String: Any] in
+      _ = try self.sharedMaster(masterId)
+      let rows = entries.map { row in
+        SharedKeyEntryNative(fileId: row["fileId"] as? String ?? "",
+          wrapped: row["wrapped"] as? Data ?? Data(row["wrapped"] as? [UInt8] ?? []))
+      }
+      let result = try SharedKeyOps.loadFileKeys(folderId: folderId, entries: rows)
+      return ["loaded": result.loaded, "failed": result.failed]
+    }
+    AsyncFunction("sharedFileKeyOpenOwnerWrap") { [self] (masterId: Int, fileId: String, wrapped: Data) throws -> Bool in
+      SharedKeyOps.openOwnerFileKey(master: try self.sharedMaster(masterId), fileId: fileId, wrapped: wrapped)
+    }
+    Function("sharedFileKeyIsLoaded") { [self] (fileId: String) -> Bool in self.sharedKeys.file(fileId) != nil }
+    AsyncFunction("sharedWrapChildKeys") { [self] (masterId: Int, folderId: Int, fileIds: [String]) throws -> [[String: Any]] in
+      try SharedKeyOps.wrapChildKeys(master: self.sharedMaster(masterId), folderId: folderId, fileIds: fileIds)
+        .map { ["fileId": $0.fileId, "wrapped": $0.wrapped] }
+    }
+    AsyncFunction("sharedAdoptWrap") { [self] (masterId: Int, fileId: String) throws -> Data in
+      try SharedKeyOps.adoptWrap(master: self.sharedMaster(masterId), fileId: fileId)
+    }
+    AsyncFunction("sharedFolderEncryptName") { (folderId: Int, text: String) throws -> String in
+      try SharedKeyOps.folder(folderId).handle.encryptNameFor(filename: text, mimeType: nil, recordedPin: 0)
+    }
+    AsyncFunction("sharedFolderDecryptName") { (folderId: Int, envelope: String) throws -> String? in
+      try SharedKeyOps.folder(folderId).handle.decryptNameMetadata(nameEncrypted: envelope).name
+    }
+    AsyncFunction("folderLinkMint") { [self] (masterId: Int, folderId: Int, token: String, passphrase: String?, shareId: String) throws -> [String: Any] in
+      let result = try SharedKeyOps.mintLink(master: self.sharedMaster(masterId), folderId: folderId, token: token, passphrase: passphrase, shareId: shareId)
+      return ["kc": result.kc, "wrappedFolderKey": result.wrappedFolderKey,
+        "ownerWrappedKey": result.ownerWrappedKey, "ownerWrappedToken": result.ownerWrappedToken]
+    }
+    AsyncFunction("folderLinkRecoverKc") { [self] (masterId: Int, folderId: Int, wrapped: Data, shareId: String) throws -> String? in
+      try SharedKeyOps.recoverKc(master: self.sharedMaster(masterId), folderId: folderId, wrapped: wrapped, shareId: shareId)
+    }
+    AsyncFunction("sharedKeysClear") { [self] () in self.sharedKeys.clear() }
 
     AsyncFunction("openRequestUpload") { (rPriv: Data, ePub: Data, wrappedKey: Data) throws -> Data in
       // Recover the content key C for a request-uploaded file (owner decrypt).
@@ -2998,15 +3044,18 @@ public class BeebeebCryptoModule: Module {
       return try master.computeRecoveryCheck()
     }
 
-    AsyncFunction("clearCachedMasterKey") { () in
+    AsyncFunction("clearCachedMasterKey") { [self] () in
+      self.sharedKeys.clear()
       BeebeebCryptoBridge.clearCachedMasterKey()
     }
 
     AsyncFunction("releaseHandle") { [self] (handleId: Int) in
+      self.sharedKeys.clear()
       self.cancelAllPreviewStreams()
       self.masterKeyHandles.removeValue(forKey: handleId)
       if self.masterKeyHandles.isEmpty {
-        BeebeebCryptoBridge.clearCachedMasterKey()
+        self.sharedKeys.clear()
+      BeebeebCryptoBridge.clearCachedMasterKey()
       }
     }
 
@@ -3183,6 +3232,7 @@ public class BeebeebCryptoModule: Module {
       // moment the persisted keychain key is destroyed, means the in-process
       // cache can never outlive the keychain key it was read from, regardless
       // of handle-refcount bookkeeping on the JS side.
+      self.sharedKeys.clear()
       BeebeebCryptoBridge.clearCachedMasterKey()
       // Task 1594 round 4 (F4): `BeebeebCryptoBridge.clearCachedMasterKey()`
       // above does NOT touch `NativeBackupEngine`'s OWN separate copy

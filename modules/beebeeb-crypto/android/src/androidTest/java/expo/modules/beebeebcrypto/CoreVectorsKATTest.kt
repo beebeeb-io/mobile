@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -349,4 +350,48 @@ class CoreVectorsKATTest {
         println("[CoreVectorsKAT] folder_link_passphrase_nfd: 1 row")
     }
 
+
+    @Test
+    fun sharedKeyOpsRoundTrip() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val folder = SharedKeyOps.generateFolderKey(master, "root", registry)
+        val opened = SharedKeyOps.openOwnerFolderKey(master, "root", folder.second, registry)
+        val rows = SharedKeyOps.wrapChildKeys(master, opened, listOf("file"), registry)
+        val loaded = SharedKeyOps.loadFileKeys(opened, rows + SharedKeyEntryNative("bad", byteArrayOf()), registry)
+        assertEquals(listOf("file"), loaded.first)
+        assertEquals(listOf("bad"), loaded.second)
+        val encrypted = master.deriveFileKey("file".toByteArray()).encryptChunk("round trip".toByteArray())
+        assertTrue(SharedKeyOps.fileKey(master, "file", registry).decryptChunk(encrypted.nonce, encrypted.ciphertext).contentEquals("round trip".toByteArray()))
+        val adopted = SharedKeyOps.adoptWrap(master, "file", registry)
+        assertTrue(SharedKeyOps.openOwnerFileKey(master, "file", adopted, registry))
+    }
+
+    @Test
+    fun mintLinkMatchesTheVector() {
+        val v = vector(loadRoot(), "folder_link_passphrase")
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val folder = SharedKeyOps.generateFolderKey(master, "root", registry)
+        val token = v.getString("token")
+        val passphrase = v.getString("passphrase")
+        val minted = SharedKeyOps.mintLink(master, folder.first, token, passphrase, "share", registry)
+        val kc = java.util.Base64.getUrlDecoder().decode(minted.kc)
+        val link = FileKeyHandle.fromFolderLinkPassphrase(kc, passphrase, token)
+        assertTrue(SharedKeyOps.unwrap(link, minted.wrappedFolderKey).keyId().contentEquals(registry.folder(folder.first)!!.handle.keyId()))
+        assertEquals(minted.kc, SharedKeyOps.recoverKc(master, folder.first, minted.ownerWrappedKey, "share", registry))
+        assertNull(SharedKeyOps.recoverKc(master, folder.first, minted.ownerWrappedKey, "wrong", registry))
+        assertThrows(Exception::class.java) { SharedKeyOps.mintLink(master, folder.first, token, "", "share", registry) }
+    }
+
+    @Test
+    fun recoverKcRefusesTheFolderKeyWrap() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val folder = SharedKeyOps.generateFolderKey(master, "root", registry)
+        val key = registry.folder(folder.first)!!.handle
+        val wrong = SharedKeyOps.wire(master.wrapLinkOwnerKey("share", key))
+        assertNull(SharedKeyOps.recoverKc(master, folder.first, wrong, "share", registry))
+        assertNull(SharedKeyOps.recoverKc(master, folder.first, SharedKeyOps.wire(master.wrapKey(key)), "share", registry))
+    }
 }

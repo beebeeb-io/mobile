@@ -17,6 +17,7 @@ cd "$(dirname "$0")/../.."
 
 # driver basename | space-separated sources under test
 MANIFEST=(
+  "shared-key-registry-test.swift|modules/beebeeb-crypto/ios/SharedKeyRegistry.swift"
   "native-preview-working-storage-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift"
   "native-video-streamer-harness.swift|scripts/swift-tests/native-video-streamer-stubs.swift modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/NativeVideoStreamer.swift"
   "preview-chunk-pipeline-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/PreviewChunkPipeline.swift"

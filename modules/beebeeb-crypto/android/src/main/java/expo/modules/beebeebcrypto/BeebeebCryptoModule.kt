@@ -64,7 +64,10 @@ private fun notLinked(): Any? = throw NotLinkedException()
 class BeebeebCryptoModule : Module() {
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-  private val handles = BeebeebCryptoHandleRegistry()
+  private val sharedKeys = SharedKeyOps.registry
+  private val handles = BeebeebCryptoHandleRegistry().apply { onCleared = { sharedKeys.clear() } }
+  private fun sharedMaster(id: Int): MasterKeyHandle = try { handles.get(id) }
+    catch (_: Exception) { throw CodedException("ERR_VAULT_LOCKED", "Vault is locked", null) }
 
   // ── preview download + decrypt state (task 1683b; iOS
   // `previewDownloadCancellations` / `previewProgressSnapshots`,
@@ -895,13 +898,8 @@ class BeebeebCryptoModule : Module() {
     }
 
     AsyncFunction("wrapForOwnerWithHandle") { handleId: Int, bytes: ByteArray ->
-      val masterKeyBytes = handles.get(handleId).exportForKeychain()
-      try {
-        val result = encryptChunk(masterKeyBytes, bytes)
-        mapOf("wrapped" to result.ciphertext, "nonce" to result.nonce)
-      } finally {
-        masterKeyBytes.fill(0.toByte())
-      }
+      val result = handles.get(handleId).wrapBytes(bytes)
+      mapOf("wrapped" to result.ciphertext, "nonce" to result.nonce)
     }
 
     AsyncFunction("unwrapForOwnerWithHandle") { handleId: Int, wrapped: ByteArray, nonce: ByteArray ->
@@ -912,6 +910,52 @@ class BeebeebCryptoModule : Module() {
         masterKeyBytes.fill(0.toByte())
       }
     }
+
+    // L6 owner wraps require the link's explicit share id.
+    AsyncFunction("sharedFolderOpenOwnerKey") { masterId: Int, folderId: String, wrapped: ByteArray ->
+      SharedKeyOps.openOwnerFolderKey(sharedMaster(masterId), folderId, wrapped)
+    }
+    AsyncFunction("sharedFolderGenerate") { masterId: Int, folderId: String ->
+      val result = SharedKeyOps.generateFolderKey(sharedMaster(masterId), folderId)
+      mapOf("handleId" to result.first, "ownerWrapped" to result.second)
+    }
+    AsyncFunction("sharedFolderRelease") { folderId: Int -> sharedKeys.releaseFolder(folderId) }
+    AsyncFunction("sharedFileKeysLoad") { masterId: Int, folderId: Int, entries: List<Map<String, Any?>> ->
+      sharedMaster(masterId)
+      val rows = entries.map { row ->
+        val bytes = when (val value = row["wrapped"]) {
+          is ByteArray -> value
+          is List<*> -> value.map { (it as? Number)?.toByte() ?: 0 }.toByteArray()
+          else -> byteArrayOf()
+        }
+        SharedKeyEntryNative(row["fileId"] as? String ?: "", bytes)
+      }
+      val result = SharedKeyOps.loadFileKeys(folderId, rows)
+      mapOf("loaded" to result.first, "failed" to result.second)
+    }
+    AsyncFunction("sharedFileKeyOpenOwnerWrap") { masterId: Int, fileId: String, wrapped: ByteArray ->
+      SharedKeyOps.openOwnerFileKey(sharedMaster(masterId), fileId, wrapped)
+    }
+    Function("sharedFileKeyIsLoaded") { fileId: String -> sharedKeys.file(fileId) != null }
+    AsyncFunction("sharedWrapChildKeys") { masterId: Int, folderId: Int, fileIds: List<String> ->
+      SharedKeyOps.wrapChildKeys(sharedMaster(masterId), folderId, fileIds).map { mapOf("fileId" to it.fileId, "wrapped" to it.wrapped) }
+    }
+    AsyncFunction("sharedAdoptWrap") { masterId: Int, fileId: String -> SharedKeyOps.adoptWrap(sharedMaster(masterId), fileId) }
+    AsyncFunction("sharedFolderEncryptName") { folderId: Int, text: String ->
+      SharedKeyOps.folder(folderId).handle.encryptNameFor(text, null, 0u)
+    }
+    AsyncFunction("sharedFolderDecryptName") { folderId: Int, envelope: String ->
+      SharedKeyOps.folder(folderId).handle.decryptNameMetadata(envelope).name
+    }
+    AsyncFunction("folderLinkMint") { masterId: Int, folderId: Int, token: String, passphrase: String?, shareId: String ->
+      val result = SharedKeyOps.mintLink(sharedMaster(masterId), folderId, token, passphrase, shareId)
+      mapOf("kc" to result.kc, "wrappedFolderKey" to result.wrappedFolderKey,
+        "ownerWrappedKey" to result.ownerWrappedKey, "ownerWrappedToken" to result.ownerWrappedToken)
+    }
+    AsyncFunction("folderLinkRecoverKc") { masterId: Int, folderId: Int, wrapped: ByteArray, shareId: String ->
+      SharedKeyOps.recoverKc(sharedMaster(masterId), folderId, wrapped, shareId)
+    }
+    AsyncFunction("sharedKeysClear") { sharedKeys.clear() }
 
     // ─────────────────────────────── keychain / vault ────────────────────────
 

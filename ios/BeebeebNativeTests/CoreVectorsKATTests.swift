@@ -581,6 +581,52 @@ final class CoreVectorsKATTests: XCTestCase {
         print("[CoreVectorsKAT] folder_link_passphrase_nfd: 1 row")
     }
 
+    func testSharedKeyOpsRoundTrip() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "root", registry: registry)
+        let opened = try SharedKeyOps.openOwnerFolderKey(master: master, folderId: "root", wrapped: folder.ownerWrapped, registry: registry)
+        let rows = try SharedKeyOps.wrapChildKeys(master: master, folderId: opened, fileIds: ["file"], registry: registry)
+        let loaded = try SharedKeyOps.loadFileKeys(folderId: opened,
+            entries: rows + [SharedKeyEntryNative(fileId: "bad", wrapped: Data())], registry: registry)
+        XCTAssertEqual(loaded.loaded, ["file"])
+        XCTAssertEqual(loaded.failed, ["bad"])
+        let derived = try master.deriveFileKey(fileId: Data("file".utf8))
+        let encrypted = try derived.encryptChunk(plaintext: Data("round trip".utf8))
+        let key = try SharedKeyOps.fileKey(master: master, fileId: "file", registry: registry)
+        XCTAssertEqual(try key.decryptChunk(nonce: encrypted.nonce, ciphertext: encrypted.ciphertext), Data("round trip".utf8))
+        let adopted = try SharedKeyOps.adoptWrap(master: master, fileId: "file", registry: registry)
+        XCTAssertTrue(SharedKeyOps.openOwnerFileKey(master: master, fileId: "file", wrapped: adopted, registry: registry))
+    }
+
+    func testMintLinkMatchesTheVector() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "folder_link_passphrase")
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "root", registry: registry)
+        let token = try Self.str(v, "token"), passphrase = try Self.str(v, "passphrase")
+        let minted = try SharedKeyOps.mintLink(master: master, folderId: folder.handleId, token: token, passphrase: passphrase, shareId: "share", registry: registry)
+        let kc = Data(base64Encoded: minted.kc.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "=")!
+        let link = try FileKeyHandle.fromFolderLinkPassphrase(kC: kc, passphrase: passphrase, token: token)
+        let opened = try SharedKeyOps.unwrap(link, minted.wrappedFolderKey)
+        XCTAssertEqual(try opened.keyId(), try registry.folder(folder.handleId)!.handle.keyId())
+        XCTAssertEqual(try SharedKeyOps.recoverKc(master: master, folderId: folder.handleId, wrapped: minted.ownerWrappedKey, shareId: "share", registry: registry), minted.kc)
+        XCTAssertNil(try SharedKeyOps.recoverKc(master: master, folderId: folder.handleId, wrapped: minted.ownerWrappedKey, shareId: "wrong", registry: registry))
+        XCTAssertEqual(try master.unwrapLinkOwnerToken(shareId: "share", nonce: Data(minted.ownerWrappedToken.prefix(12)), ciphertext: Data(minted.ownerWrappedToken.dropFirst(12))), Data(token.utf8))
+        XCTAssertThrowsError(try SharedKeyOps.mintLink(master: master, folderId: folder.handleId, token: token, passphrase: "", shareId: "share", registry: registry))
+    }
+
+    func testRecoverKcRefusesTheFolderKeyWrap() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: "root", registry: registry)
+        let key = registry.folder(folder.handleId)!.handle
+        let wrong = try SharedKeyOps.wire(master.wrapLinkOwnerKey(shareId: "share", inner: key))
+        XCTAssertNil(try SharedKeyOps.recoverKc(master: master, folderId: folder.handleId, wrapped: wrong, shareId: "share", registry: registry))
+        let legacy = try SharedKeyOps.wire(master.wrapKey(inner: key))
+        XCTAssertNil(try SharedKeyOps.recoverKc(master: master, folderId: folder.handleId, wrapped: legacy, shareId: "share", registry: registry))
+    }
+
 }
 
 // MARK: - Hex <-> Data

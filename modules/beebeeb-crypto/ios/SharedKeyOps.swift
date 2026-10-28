@@ -33,7 +33,8 @@ enum SharedKeyOps {
     static func openOwnerFolderKey(master: MasterKeyHandle, folderId: String, wrapped: Data,
                                    registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> Int {
         let epoch = registry.generation
-        let key = try unwrap(master.deriveFileKey(fileId: Data(folderId.utf8)), wrapped)
+        guard wrapped.count == 60 else { throw SharedKeyError.invalidWrap }
+        let key = try master.unwrapFolderCustody(folderId: folderId, nonce: Data(wrapped.prefix(12)), ciphertext: Data(wrapped.dropFirst(12)))
         guard let id = registry.storeFolderIfCurrent(key, folderId: folderId, generation: epoch) else { throw SharedKeyError.locked }
         return id
     }
@@ -41,7 +42,7 @@ enum SharedKeyOps {
                                   registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> (handleId: Int, ownerWrapped: Data) {
         let epoch = registry.generation
         let key = try FileKeyHandle.generate()
-        let wrapped = try wire(master.deriveFileKey(fileId: Data(folderId.utf8)).wrapKey(inner: key))
+        let wrapped = try wire(master.wrapFolderCustody(folderId: folderId, inner: key))
         guard let id = registry.storeFolderIfCurrent(key, folderId: folderId, generation: epoch) else { throw SharedKeyError.locked }
         return (id, wrapped)
     }
@@ -86,7 +87,7 @@ enum SharedKeyOps {
         }
         return try ChunkDecryptorHandle.forPush(masterKey: master, fileId: fileId, expectedChunkFormat: 0)
     }
-    static func mintLink(master: MasterKeyHandle, folderId: Int, token: String, passphrase: String?,
+    static func mintLink(master: MasterKeyHandle, folderId: Int, token: String, passphrase: String?, shareId: String,
                          registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> FolderLinkMintNative {
         let key = try folder(folderId, registry: registry).handle
         var kc = Data(count: 32)
@@ -96,19 +97,16 @@ enum SharedKeyOps {
         // The throwing branch is deliberate: Argon failure never selects the plain constructor.
         let link = try passphrase.map { try FileKeyHandle.fromFolderLinkPassphrase(kC: kc, passphrase: $0, token: token) }
             ?? FileKeyHandle.fromFolderLink(kC: kc, passphraseStretch: nil)
-        var masterBytes = try master.exportForKeychain()
-        defer { masterBytes.resetBytes(in: 0..<masterBytes.count) }
         return try FolderLinkMintNative(kc: base64url(kc), wrappedFolderKey: wire(link.wrapKey(inner: key)),
-            ownerWrappedKey: wire(encryptChunk(key: masterBytes, plaintext: kc)),
-            ownerWrappedToken: wire(encryptChunk(key: masterBytes, plaintext: Data(token.utf8))))
+            ownerWrappedKey: wire(master.wrapLinkOwnerKey(shareId: shareId, inner: FileKeyHandle.fromKeyBytes(key: kc))),
+            ownerWrappedToken: wire(master.wrapLinkOwnerToken(shareId: shareId, token: Data(token.utf8))))
     }
-    static func recoverKc(master: MasterKeyHandle, folderId: Int, wrapped: Data,
+    static func recoverKc(master: MasterKeyHandle, folderId: Int, wrapped: Data, shareId: String,
                           registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> String? {
         let key = try folder(folderId, registry: registry).handle
         guard wrapped.count == 60 else { throw SharedKeyError.invalidWrap }
-        var masterBytes = try master.exportForKeychain()
-        defer { masterBytes.resetBytes(in: 0..<masterBytes.count) }
-        var candidate = try decryptChunk(key: masterBytes, nonce: Data(wrapped.prefix(12)), ciphertext: Data(wrapped.dropFirst(12)))
+        // Legacy generic wraps are incompatible with L6; never retry under an old key.
+        guard var candidate = try? master.unwrapLinkOwnerKey(shareId: shareId, nonce: Data(wrapped.prefix(12)), ciphertext: Data(wrapped.dropFirst(12))) else { return nil }
         defer { candidate.resetBytes(in: 0..<candidate.count) }
         guard candidate.count == 32 else { throw SharedKeyError.invalidWrap }
         if try FileKeyHandle.fromKeyBytes(key: candidate).keyId() == key.keyId() { return nil }

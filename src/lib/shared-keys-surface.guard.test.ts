@@ -39,3 +39,13 @@ test('android_release_and_clear_are_wired_to_shared_clear', () => {
   expect(s.split('fun clear()')[1]).toContain('onCleared?.invoke()')
   expect(kotlin()).toContain('onCleared = { sharedKeys.clear() }')
 })
+test('owner_wrapping_keeps_master_bytes_inside_Rust', () => {
+  for (const source of [swift(), kotlin()]) {
+    const block = source.split('AsyncFunction("wrapForOwnerWithHandle")')[1]?.split('AsyncFunction("unwrapForOwnerWithHandle")')[0]
+    expect(block).toContain('wrapBytes')
+    expect(block).not.toContain('exportForKeychain')
+  }
+  for (const relative of ['ios/SharedKeyOps.swift', 'android/src/main/java/expo/modules/beebeebcrypto/SharedKeyOps.kt']) {
+    expect(readFileSync(resolve(root, 'modules/beebeeb-crypto', relative), 'utf8')).not.toContain('exportForKeychain')
+  }
+})

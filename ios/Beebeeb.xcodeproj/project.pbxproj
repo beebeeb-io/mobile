@@ -55,6 +55,8 @@
 		EC3B62F526E54811AD145949 /* RuntimeTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 933B199EF3464E86BCBE6052 /* RuntimeTrace.swift */; };
 		F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.swift */; };
 		FBD7ABDD371246952840112B /* libPods-Beebeeb.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 72EE02093869AAC5E338128F /* libPods-Beebeeb.a */; };
+		C12237000000000000000101 /* SharedKeyRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12237000000000000000001 /* SharedKeyRegistry.swift */; };
+		C12237000000000000000102 /* SharedKeyOps.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12237000000000000000002 /* SharedKeyOps.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -150,6 +152,8 @@
 		F11748442D0722820044C1D9 /* Beebeeb-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "Beebeeb-Bridging-Header.h"; path = "Beebeeb/Beebeeb-Bridging-Header.h"; sourceTree = "<group>"; };
 		F3685BC5B0BFCDC966893DB0 /* core-vectors.v10.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; name = "core-vectors.v10.json"; path = "BeebeebNativeTests/Vectors/core-vectors.v10.json"; sourceTree = "<group>"; };
 		FF3B3ED2491E4CA589B68A78 /* SyncEngine.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = SyncEngine.swift; path = "../targets/file-provider/SyncEngine.swift"; sourceTree = "<group>"; };
+		C12237000000000000000001 /* SharedKeyRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SharedKeyRegistry.swift; path = "../modules/beebeeb-crypto/ios/SharedKeyRegistry.swift"; sourceTree = SOURCE_ROOT; };
+		C12237000000000000000002 /* SharedKeyOps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SharedKeyOps.swift; path = "../modules/beebeeb-crypto/ios/SharedKeyOps.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -232,6 +236,8 @@
 			isa = PBXGroup;
 			children = (
 				6250F9F5785E5C80BC090323 /* CoreVectorsKATTests.swift */,
+				C12237000000000000000002 /* SharedKeyOps.swift */,
+				C12237000000000000000001 /* SharedKeyRegistry.swift */,
 				223C54EC98C6A431839B5FCB /* Vectors */,
 			);
 			name = CoreVectorsKATTests;
@@ -825,6 +831,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				6F1D2BFF69C134C5EA03F614 /* CoreVectorsKATTests.swift in Sources */,
+				C12237000000000000000102 /* SharedKeyOps.swift in Sources */,
+				C12237000000000000000101 /* SharedKeyRegistry.swift in Sources */,
 				E4AA133C8F21D8C8D5CA9B0E /* beebeeb_uniffi.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

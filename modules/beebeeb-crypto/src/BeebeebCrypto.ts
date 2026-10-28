@@ -49,6 +49,8 @@ const BeebeebThumbnailsModule = requireOptionalNativeModule<{
   clearQueueOnSignOut(): Promise<void>
 }>('ThumbnailService')
 import type {
+  SharedKeyEntry,
+  FolderLinkMint,
   ConstellationFrame,
   ConstellationSessionInit,
   EncryptedData,
@@ -2279,3 +2281,59 @@ function uploadAbortError(): Error {
   error.name = 'AbortError'
   return error
 }
+
+// Keep this list complete: older native builds must never partially enable sharing.
+const sharedKeyNativeNames = [
+  'sharedFolderOpenOwnerKey', 'sharedFolderGenerate', 'sharedFolderRelease', 'sharedFileKeysLoad',
+  'sharedFileKeyOpenOwnerWrap', 'sharedFileKeyIsLoaded', 'sharedWrapChildKeys', 'sharedAdoptWrap',
+  'sharedFolderEncryptName', 'sharedFolderDecryptName', 'folderLinkMint', 'folderLinkRecoverKc', 'sharedKeysClear',
+] as const
+
+export function isSharedKeysNativeReady(): boolean {
+  return nativeFlag && sharedKeyNativeNames.every(name => typeof BeebeebCryptoModule[name] === 'function')
+}
+export async function sharedFolderOpenOwnerKey(masterHandleId: number, folderId: string, ownerWrapped: Uint8Array): Promise<number> {
+  return BeebeebCryptoModule.sharedFolderOpenOwnerKey(masterHandleId, folderId, ownerWrapped)
+}
+export async function sharedFolderGenerate(masterHandleId: number, folderId: string): Promise<{ handleId: number; ownerWrapped: Uint8Array }> {
+  const result = await BeebeebCryptoModule.sharedFolderGenerate(masterHandleId, folderId)
+  return { handleId: result.handleId, ownerWrapped: coerceBytes(result.ownerWrapped) }
+}
+export async function sharedFolderRelease(folderHandleId: number): Promise<void> {
+  await BeebeebCryptoModule.sharedFolderRelease(folderHandleId)
+}
+export async function sharedFileKeysLoad(masterHandleId: number, folderHandleId: number, entries: SharedKeyEntry[]): Promise<{ loaded: string[]; failed: string[] }> {
+  return BeebeebCryptoModule.sharedFileKeysLoad(masterHandleId, folderHandleId,
+    entries.map(entry => ({ fileId: entry.fileId, wrapped: Array.from(entry.wrapped) })))
+}
+export async function sharedFileKeyOpenOwnerWrap(masterHandleId: number, fileId: string, ownerWrapped: Uint8Array): Promise<boolean> {
+  return BeebeebCryptoModule.sharedFileKeyOpenOwnerWrap(masterHandleId, fileId, ownerWrapped)
+}
+export function sharedFileKeyIsLoaded(fileId: string): boolean {
+  return BeebeebCryptoModule.sharedFileKeyIsLoaded(fileId)
+}
+export async function sharedWrapChildKeys(masterHandleId: number, folderHandleId: number, fileIds: string[]): Promise<SharedKeyEntry[]> {
+  const rows = await BeebeebCryptoModule.sharedWrapChildKeys(masterHandleId, folderHandleId, fileIds)
+  return rows.map((row: { fileId: string; wrapped: Uint8Array | string }) => ({ fileId: row.fileId, wrapped: coerceBytes(row.wrapped) }))
+}
+export async function sharedAdoptWrap(masterHandleId: number, fileId: string): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.sharedAdoptWrap(masterHandleId, fileId))
+}
+export async function sharedFolderEncryptName(folderHandleId: number, text: string): Promise<string> {
+  return BeebeebCryptoModule.sharedFolderEncryptName(folderHandleId, text)
+}
+export async function sharedFolderDecryptName(folderHandleId: number, envelope: string): Promise<string | null> {
+  return BeebeebCryptoModule.sharedFolderDecryptName(folderHandleId, envelope)
+}
+/** L6: callers allocate the canonical share UUID before minting these wraps. */
+export async function folderLinkMint(masterHandleId: number, folderHandleId: number, token: string, passphrase: string | null, shareId: string): Promise<FolderLinkMint> {
+  if (!shareId) throw new Error('A share id is required for owner recovery')
+  const result = await BeebeebCryptoModule.folderLinkMint(masterHandleId, folderHandleId, token, passphrase, shareId)
+  return { kc: result.kc, wrappedFolderKey: coerceBytes(result.wrappedFolderKey),
+    ownerWrappedKey: coerceBytes(result.ownerWrappedKey), ownerWrappedToken: coerceBytes(result.ownerWrappedToken) }
+}
+export async function folderLinkRecoverKc(masterHandleId: number, folderHandleId: number, ownerWrappedKey: Uint8Array, shareId: string): Promise<string | null> {
+  if (!shareId) throw new Error('A share id is required for owner recovery')
+  return BeebeebCryptoModule.folderLinkRecoverKc(masterHandleId, folderHandleId, ownerWrappedKey, shareId)
+}
+export async function sharedKeysClear(): Promise<void> { await BeebeebCryptoModule.sharedKeysClear() }

@@ -20,14 +20,15 @@ object SharedKeyOps {
   fun openOwnerFolderKey(master: MasterKeyHandle, folderId: String, wrapped: ByteArray,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): Int {
     val epoch = registry.generation
-    val key = unwrap(master.deriveFileKey(folderId.toByteArray(Charsets.UTF_8)), wrapped)
+    require(wrapped.size == 60) { "Invalid shared key wrap" }
+    val key = master.unwrapFolderCustody(folderId, wrapped.copyOfRange(0, 12), wrapped.copyOfRange(12, wrapped.size))
     return registry.storeFolderIfCurrent(key, folderId, epoch) ?: error("Vault is locked")
   }
   fun generateFolderKey(master: MasterKeyHandle, folderId: String,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): Pair<Int, ByteArray> {
     val epoch = registry.generation
     val key = FileKeyHandle.generate()
-    val wrapped = wire(master.deriveFileKey(folderId.toByteArray(Charsets.UTF_8)).wrapKey(key))
+    val wrapped = wire(master.wrapFolderCustody(folderId, key))
     return Pair(registry.storeFolderIfCurrent(key, folderId, epoch) ?: error("Vault is locked"), wrapped)
   }
   fun loadFileKeys(folderId: Int, entries: List<SharedKeyEntryNative>,
@@ -62,7 +63,7 @@ object SharedKeyOps {
   fun fileKey(master: MasterKeyHandle, fileId: String,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): FileKeyHandle =
     pickKey(registry.file(fileId)) { master.deriveFileKey(fileId.toByteArray(Charsets.UTF_8)) }
-  fun mintLink(master: MasterKeyHandle, folderId: Int, token: String, passphrase: String?,
+  fun mintLink(master: MasterKeyHandle, folderId: Int, token: String, passphrase: String?, shareId: String,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): FolderLinkMintNative {
     val key = folder(folderId, registry).handle
     val kc = ByteArray(32)
@@ -71,26 +72,22 @@ object SharedKeyOps {
       // No catch/fallback: a failed Argon2id stretch is an error to the caller.
       val link = if (passphrase == null) FileKeyHandle.fromFolderLink(kc, null)
         else FileKeyHandle.fromFolderLinkPassphrase(kc, passphrase, token)
-      val masterBytes = master.exportForKeychain()
-      try {
-        return FolderLinkMintNative(base64url(kc), wire(link.wrapKey(key)),
-          wire(encryptChunk(masterBytes, kc)), wire(encryptChunk(masterBytes, token.toByteArray(Charsets.UTF_8))))
-      } finally { masterBytes.fill(0) }
+      return FolderLinkMintNative(base64url(kc), wire(link.wrapKey(key)),
+        wire(master.wrapLinkOwnerKey(shareId, FileKeyHandle.fromKeyBytes(kc))),
+        wire(master.wrapLinkOwnerToken(shareId, token.toByteArray(Charsets.UTF_8))))
     } finally { kc.fill(0) }
   }
-  fun recoverKc(master: MasterKeyHandle, folderId: Int, wrapped: ByteArray,
+  fun recoverKc(master: MasterKeyHandle, folderId: Int, wrapped: ByteArray, shareId: String,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): String? {
     val key = folder(folderId, registry).handle
     require(wrapped.size == 60) { "Invalid shared key wrap" }
-    val masterBytes = master.exportForKeychain()
+    val candidate = try { master.unwrapLinkOwnerKey(shareId, wrapped.copyOfRange(0, 12), wrapped.copyOfRange(12, wrapped.size)) }
+      catch (_: Exception) { return null } // No legacy retry.
     try {
-      val candidate = decryptChunk(masterBytes, wrapped.copyOfRange(0, 12), wrapped.copyOfRange(12, wrapped.size))
-      try {
         require(candidate.size == 32) { "Invalid shared key wrap" }
         if (FileKeyHandle.fromKeyBytes(candidate).keyId().contentEquals(key.keyId())) return null
         return base64url(candidate)
-      } finally { candidate.fill(0) }
-    } finally { masterBytes.fill(0) }
+    } finally { candidate.fill(0) }
   }
   private fun base64url(bytes: ByteArray): String = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 }
