@@ -1,8 +1,8 @@
 // @ts-nocheck
 import { expect, test } from 'bun:test';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { checkPrebuildBridge } from '../../scripts/check-prebuild-bridge.cjs';
 
 const ROOT = join(import.meta.dir, '../..');
@@ -79,7 +79,8 @@ test('share plugin refuses a missing canonical controller instead of using a fal
 test('pre-commit installation is isolated, idempotent and preserves earlier hooks', async () => {
   const root = mkdtempSync(join(tmpdir(), 'prebuild-hook-test-'));
   try {
-    cpSync(join(ROOT, '.githooks'), join(root, '.githooks'), { recursive: true });
+    mkdirSync(join(root, '.githooks'));
+    cpSync(join(ROOT, '.githooks/pre-commit'), join(root, '.githooks/pre-commit'));
     mkdirSync(join(root, 'scripts'));
     cpSync(join(ROOT, 'scripts/install-prebuild-guard.sh'), join(root, 'scripts/install-prebuild-guard.sh'));
     const run = (args) => {
@@ -89,11 +90,15 @@ test('pre-commit installation is isolated, idempotent and preserves earlier hook
     };
     run(['git', 'init', '-q']);
     writeFileSync(join(root, '.git/hooks/pre-commit'), '#!/bin/sh\nprintf previous >> hook-ran\n', { mode: 0o755 });
+    writeFileSync(join(root, '.git/hooks/pre-push'), '#!/bin/sh\nprintf pushed >> push-hook-ran\n', { mode: 0o755 });
     run(['bash', 'scripts/install-prebuild-guard.sh']);
     const previous = run(['git', 'config', '--get', 'prebuildguard.previousHooksPath']);
     run(['bash', 'scripts/install-prebuild-guard.sh']);
     expect(run(['git', 'config', '--get', 'prebuildguard.previousHooksPath'])).toBe(previous);
-    expect(run(['git', 'config', '--worktree', '--get', 'core.hooksPath'])).toBe('.githooks');
+    const hooks = resolve(root, run(['git', 'config', '--worktree', '--get', 'core.hooksPath']));
+    expect(existsSync(join(hooks, 'pre-push'))).toBe(true);
+    run(['bash', join(hooks, 'pre-push')]);
+    expect(readFileSync(join(root, 'push-hook-ran'), 'utf8')).toBe('pushed');
     // A stand-in only for the final command, so this verifies hook execution/exit propagation.
     writeFileSync(join(root, 'scripts/check-prebuild-bridge.cjs'), 'process.exit(23);\n');
     const hook = Bun.spawnSync(['bash', '.githooks/pre-commit'], { cwd: root });
