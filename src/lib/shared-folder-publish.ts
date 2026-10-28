@@ -46,7 +46,7 @@ export function createSharedFolderPublisher(p: PublishPorts) {
       try {
         if (!valid(g) || !await p.enabled() || !valid(g)) return;
         if (!hydrated) {
-          const raw = await p.read();
+          const raw = await p.read().catch(() => null);
           if (!valid(g)) return;
           try {
             const rows: unknown = JSON.parse(raw ?? '[]');
@@ -69,7 +69,7 @@ export function createSharedFolderPublisher(p: PublishPorts) {
     return work;
   }
   async function save(g: number) {
-    if (valid(g)) await p.write(JSON.stringify([...pending.values()]));
+    if (valid(g)) await p.write(JSON.stringify([...pending.values()])).catch(() => {});
   }
   async function liveRoots(g: number): Promise<Set<string>> {
     if (roots && p.now() - roots.at < ROOTS_TTL) return roots.ids;

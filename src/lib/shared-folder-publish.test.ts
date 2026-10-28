@@ -147,3 +147,9 @@ test('an_upload_finishing_after_account_switch_cannot_publish_under_the_new_acco
   await retryPending(); expect(runtimePosts).toEqual([]);
   await clearPendingPublishes();
 });
+
+test('an_unavailable_retry_cache_does_not_stop_immediate_publishing',async()=>{
+  const s=setup();s.p.read=async()=>{throw Error('cache unreadable');};s.p.write=async()=>{throw Error('cache unwritable');};
+  const a=createSharedFolderPublisher(s.p);a.onOwnerUpload({id:'f',parent_id:'R'});await a.idle();
+  expect(s.posts).toHaveLength(1);
+});
