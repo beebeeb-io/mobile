@@ -31,7 +31,7 @@ import uniffi.beebeeb_uniffi.FileKeyHandle
 /**
  * Android half of the core known-answer-vector gate (task 1683, mirroring the
  * iOS `CoreVectorsKATTests.swift` from task 1382). Drives `beebeeb-core`'s
- * cross-platform vectors (`test-vectors/vectors.json`, v10, 22 families through
+ * cross-platform vectors (`test-vectors/vectors.json`, v11, 31 families through
  * the SAME production UniFFI Kotlin bindings the app links — the generated
  * `uniffi.beebeeb_uniffi` sources and the deployed `libbeebeeb_uniffi.so`).
  *
@@ -61,10 +61,11 @@ import uniffi.beebeeb_uniffi.FileKeyHandle
 class CoreVectorsKATTest {
 
     companion object {
-        /** `sha256sum` of the vendored asset (v10, matching iOS pin 2026-09-22). */
+        /** `sha256sum` of the vendored asset (v11, matching merged core f86f5b63). */
         private const val EXPECTED_SHA256 =
-            "8782d9636391f73c14f941350ab47ac6882f2dc956dcc2d6bdc247a718dcf662"
-        private const val EXPECTED_VERSION = 10
+            "60fbdfdc6090ef9bcff52de6061bdf213a6196d58aaf3062132842b9c20d8fed"
+        // The v10 asset filename is retained; contents track the pinned core version.
+        private const val EXPECTED_VERSION = 11
         private val REQUIRED_VECTOR_NAMES = listOf(
             "master_key_from_password",
             "file_key_derivation",
@@ -92,6 +93,11 @@ class CoreVectorsKATTest {
         "folder_custody_v1",
         "link_owner_key_v1",
         "link_owner_token_v1",
+        "folder_child_file_v1",
+        "folder_child_folder_v1",
+        "owner_wrapped_file_key",
+        "owner_wrapped_folder_key",
+        "folder_wrapped_file_key",
         )
 
         private fun loadRoot(): JSONObject {

@@ -2,7 +2,7 @@ import XCTest
 import CryptoKit
 
 /// Task 1382 (audit item K2) — mobile half. Drives `beebeeb-core`'s cross-platform known-answer
-/// vectors (`test-vectors/vectors.json`, v10, 22 families) through the SAME production UniFFI Swift
+/// vectors (`test-vectors/vectors.json`, v11, 31 families) through the SAME production UniFFI Swift
 /// bindings the app links (`modules/beebeeb-crypto/ios/beebeeb_uniffi.swift`, compiled directly into
 /// this target's Sources build phase — see the `CoreVectorsKATTests` target in `Beebeeb.xcodeproj`,
 /// mirroring the host-less `ProvenanceHeadersTests` target added in task 1439). No app host, no
@@ -32,10 +32,11 @@ final class CoreVectorsKATTests: XCTestCase {
 
     // MARK: - Pin
 
-    /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v10, 2026-09-22).
+    /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v11, core f86f5b63).
     private static let expectedSha256Hex =
-        "8782d9636391f73c14f941350ab47ac6882f2dc956dcc2d6bdc247a718dcf662"
-    private static let expectedVersion = 10
+        "60fbdfdc6090ef9bcff52de6061bdf213a6196d58aaf3062132842b9c20d8fed"
+    // The v10 resource filename is retained; contents track the pinned core version.
+    private static let expectedVersion = 11
     private static let requiredVectorNames = [
         "master_key_from_password",
         "file_key_derivation",
@@ -65,6 +66,9 @@ final class CoreVectorsKATTests: XCTestCase {
         "link_owner_token_v1",
         "folder_child_file_v1",
         "folder_child_folder_v1",
+        "owner_wrapped_file_key",
+        "owner_wrapped_folder_key",
+        "folder_wrapped_file_key",
     ]
 
     // MARK: - Vector loading
