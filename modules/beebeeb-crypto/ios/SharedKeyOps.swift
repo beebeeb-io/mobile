@@ -82,12 +82,20 @@ enum SharedKeyOps {
                         registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> FileKeyHandle {
         try pickKey(table: registry.file(fileId)) { try master.deriveFileKey(fileId: Data(fileId.utf8)) }
     }
-    static func chunkDecryptor(master: MasterKeyHandle, fileId: String,
+    // Read the pin from authenticated file metadata, never HTTP format headers.
+    static func previewChunkFormat(master: MasterKeyHandle, fileId: String, nameEncrypted: String,
+                                   registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> UInt8 {
+        if let key = registry.file(fileId) {
+            return try key.decryptFileMetadata(nameEncrypted: nameEncrypted).chunkFormat
+        }
+        return try master.decryptFileMetadata(fileId: fileId, nameEncrypted: nameEncrypted).chunkFormat
+    }
+    static func chunkDecryptor(master: MasterKeyHandle, fileId: String, expectedChunkFormat: UInt8,
                                registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> ChunkDecryptorHandle {
         if let key = registry.file(fileId) {
-            return try ChunkDecryptorHandle.forPushWithFileKeyHandle(fileKey: key, fileId: fileId, expectedChunkFormat: 0)
+            return try ChunkDecryptorHandle.forPushWithFileKeyHandle(fileKey: key, fileId: fileId, expectedChunkFormat: expectedChunkFormat)
         }
-        return try ChunkDecryptorHandle.forPush(masterKey: master, fileId: fileId, expectedChunkFormat: 0)
+        return try ChunkDecryptorHandle.forPush(masterKey: master, fileId: fileId, expectedChunkFormat: expectedChunkFormat)
     }
     static func mintLink(master: MasterKeyHandle, folderId: Int, token: String, passphrase: String?, shareId: String,
                          registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> FolderLinkMintNative {

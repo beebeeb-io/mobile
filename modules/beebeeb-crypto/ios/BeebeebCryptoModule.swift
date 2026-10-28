@@ -406,12 +406,14 @@ private final class PreviewStreamingDownloadDelegate: NSObject, URLSessionDataDe
   private let fileId: String
   private let outputURL: URL
   private let master: MasterKeyHandle
+  private let expectedChunkFormat: UInt8
 
-  init(progress: PreviewDownloadProgress, fileId: String, outputURL: URL, master: MasterKeyHandle) {
+  init(progress: PreviewDownloadProgress, fileId: String, outputURL: URL, master: MasterKeyHandle, expectedChunkFormat: UInt8) {
     self.progress = progress
     self.fileId = fileId
     self.outputURL = outputURL
     self.master = master
+    self.expectedChunkFormat = expectedChunkFormat
   }
 
   func download(request: URLRequest) async throws -> PreviewChunkPipeline.Result {
@@ -477,7 +479,7 @@ private final class PreviewStreamingDownloadDelegate: NSObject, URLSessionDataDe
           ]
         )
       }
-      let decryptor = try SharedKeyOps.chunkDecryptor(master: master, fileId: fileId)
+      let decryptor = try SharedKeyOps.chunkDecryptor(master: master, fileId: fileId, expectedChunkFormat: expectedChunkFormat)
       pipeline = try PreviewChunkPipeline(
         plan: plan,
         outputURL: outputURL,
@@ -4483,12 +4485,30 @@ public class BeebeebCryptoModule: Module {
       ProvenanceHeaders.apply(to: &request)
       request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
+      // Resolve the recorded pin inside the native API. A missing/invalid metadata
+      // envelope is an error, never permission to use unrecorded detection.
+      struct PreviewFileMetadata: Decodable {
+        let nameEncrypted: String
+        enum CodingKeys: String, CodingKey { case nameEncrypted = "name_encrypted" }
+      }
+      var metadataRequest = URLRequest(url: URL(string: "\(apiUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/api/v1/files/\(fileId)")!)
+      ProvenanceHeaders.apply(to: &metadataRequest)
+      metadataRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      let (metadataData, metadataResponse) = try await URLSession.shared.data(for: metadataRequest)
+      guard let metadataHTTP = metadataResponse as? HTTPURLResponse, metadataHTTP.statusCode == 200 else {
+        throw NSError(domain: "BeebeebPreviewDownload", code: 33,
+                      userInfo: [NSLocalizedDescriptionKey: "Could not load encrypted file metadata"])
+      }
+      let metadata = try JSONDecoder().decode(PreviewFileMetadata.self, from: metadataData)
+      let expectedChunkFormat = try SharedKeyOps.previewChunkFormat(master: master, fileId: fileId, nameEncrypted: metadata.nameEncrypted)
+      guard !progress.isCancelled(), !Task.isCancelled else { throw CancellationError() }
       progress.emitProgress(stage: "downloading", bytesDownloaded: 0, bytesTotal: 0)
       let delegate = PreviewStreamingDownloadDelegate(
         progress: progress,
         fileId: fileId,
         outputURL: outputURL,
-        master: master
+        master: master,
+        expectedChunkFormat: expectedChunkFormat
       )
       let result = try await delegate.download(request: request)
       progress.emitProgress(stage: "complete")

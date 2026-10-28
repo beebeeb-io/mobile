@@ -55,7 +55,7 @@ for (const path of [swift, kotlin]) test(`${path}:_names_split_table_and_master`
   expect(names).toContain('mergeNameResults')
 })
 test('preview_download_uses_a_table_handle_before_the_master_constructor', () => {
-  expect(read(swift)).toContain('SharedKeyOps.chunkDecryptor(master: master, fileId: fileId)')
+  expect(read(swift)).toContain('SharedKeyOps.chunkDecryptor(master: master, fileId: fileId, expectedChunkFormat: expectedChunkFormat)')
   const preview = read(kotlin).split('private fun decryptPreviewChunks')[1]?.split('private fun ')[0] ?? ''
   expect(preview).toContain('SharedKeyOps.fileKey')
 })
@@ -78,4 +78,19 @@ test('preview_core_finish_precedes_plaintext_promotion', () => {
   const pipeline = read('ios/PreviewChunkPipeline.swift').split('func finish() throws -> Result')[1].split('func cleanup()')[0]
   expect(pipeline.indexOf('try finishDecryption()')).toBeGreaterThan(0)
   expect(pipeline.indexOf('try finishDecryption()')).toBeLessThan(pipeline.indexOf('moveItem(at: tmpURL, to: outputURL)'))
+})
+
+// F5: source-contract port of the review probe; strict-v2 behavior runs in XCTest.
+test('preview_forwards_only_the_authenticated_metadata_pin', () => {
+  const ops = read('ios/SharedKeyOps.swift')
+  const factory = ops.split('static func chunkDecryptor')[1].split('static func mintLink')[0]
+  expect(factory.includes('expectedChunkFormat: UInt8')).toBe(true)
+  expect(factory.includes('expectedChunkFormat: 0')).toBe(false)
+  expect(factory.match(/expectedChunkFormat: expectedChunkFormat/g)?.length).toBe(2)
+  const module = read(swift)
+  expect(module.includes('SharedKeyOps.previewChunkFormat(master: master, fileId: fileId, nameEncrypted: metadata.nameEncrypted)')).toBe(true)
+  expect(module.includes('expectedChunkFormat: expectedChunkFormat')).toBe(true)
+  const metadata = ops.split('static func previewChunkFormat')[1]?.split('static func chunkDecryptor')[0] ?? ''
+  expect(metadata.includes('decryptFileMetadata')).toBe(true)
+  expect(metadata.includes('.chunkFormat')).toBe(true)
 })

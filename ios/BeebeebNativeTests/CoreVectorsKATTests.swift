@@ -670,6 +670,23 @@ final class CoreVectorsKATTests: XCTestCase {
         XCTAssertNotNil(rejected[0].error, "a table decrypt failure must not fall back to the master")
     }
 
+    func testPreviewUsesAuthenticatedV2PinForTableAndOwnerKeys() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        for tableHeld in [false, true] {
+            let registry = SharedKeyRegistry<FileKeyHandle>()
+            let id = "2237c000-0000-4000-8000-000000000002"
+            let key = try tableHeld ? FileKeyHandle.generate() : master.deriveFileKey(fileId: Data(id.utf8))
+            if tableHeld { registry.storeFile(id, key) }
+            let name = try key.encryptNameFor(filename: "pinned.txt", mimeType: nil, recordedPin: 2)
+            let pin = try SharedKeyOps.previewChunkFormat(master: master, fileId: id, nameEncrypted: name, registry: registry)
+            XCTAssertEqual(pin, 2)
+            let legacy = try SharedKeyOps.wire(key.encryptChunk(plaintext: Data("replayed v1".utf8)))
+            let decryptor = try SharedKeyOps.chunkDecryptor(master: master, fileId: id, expectedChunkFormat: pin, registry: registry)
+            XCTAssertThrowsError(try decryptor.pushFrame(frame: legacy), "v2 pin must refuse legacy replay")
+            XCTAssertThrowsError(try SharedKeyOps.previewChunkFormat(master: master, fileId: id, nameEncrypted: "plaintext", registry: registry))
+        }
+    }
+
     func testTruncatedV2PreviewRejectsMissingLastFrame() throws {
         let v = try Self.vector(Self.loadVectors(), named: "chunk_v2_stream")
         let key = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
@@ -689,7 +706,7 @@ final class CoreVectorsKATTests: XCTestCase {
         let key = try FileKeyHandle.generate()
         registry.storeFile("guest", key)
         let frame = try SharedKeyOps.wire(key.encryptChunk(plaintext: Data("guest frame".utf8)))
-        let decryptor = try SharedKeyOps.chunkDecryptor(master: master, fileId: "guest", registry: registry)
+        let decryptor = try SharedKeyOps.chunkDecryptor(master: master, fileId: "guest", expectedChunkFormat: 0, registry: registry)
         XCTAssertEqual(try decryptor.pushFrame(frame: frame).data, Data("guest frame".utf8))
     }
 
