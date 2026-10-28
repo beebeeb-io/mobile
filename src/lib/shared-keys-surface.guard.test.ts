@@ -78,3 +78,24 @@ test('L7_bridge_preserves_kind_on_write', async () => {
   expect(args[3]).toBe(2)
   expect(rows[0].kind).toBe(2)
 })
+
+// L8/F2: native-source ports of rv-mobile236's owner-wrap confusion probe.
+// Real content/name rejection and the pinned L8 vector run in platform KATs.
+for (const [path, fn] of [['ios/SharedKeyOps.swift', 'func'], ['android/src/main/java/expo/modules/beebeebcrypto/SharedKeyOps.kt', 'fun']]) {
+  test(`${path}: owner_file_wrap_uses_only_the_L8_handle_API`, () => {
+    const source = readFileSync(resolve(root, 'modules/beebeeb-crypto', path), 'utf8')
+    const open = source.split(`${fn} openOwnerFileKey`)[1].split(`${fn} wrapChildKeys`)[0]
+    const seal = source.split(`${fn} adoptWrap`)[1].split(`${fn} fileKey`)[0]
+    expect(open.includes('unwrapOwnerFileKey')).toBe(true)
+    expect(open.includes('deriveFileKey')).toBe(false)
+    expect(open.includes('unwrapKey(')).toBe(false)
+    expect(seal.includes('wrapOwnerFileKey')).toBe(true)
+    expect(seal.includes('deriveFileKey')).toBe(false)
+  })
+}
+test('core_pin_and_fixtures_are_the_exact_L8_merge', () => {
+  expect(readFileSync(resolve(root, 'modules/beebeeb-crypto/CORE_REV'), 'utf8').trim()).toBe('c08defc70c35428926be6784d18ff091be6d004c')
+  const { createHash } = require('node:crypto')
+  for (const path of ['ios/BeebeebNativeTests/Vectors/core-vectors.v10.json', 'modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v10.json'])
+    expect(createHash('sha256').update(readFileSync(resolve(root,path))).digest('hex')).toBe('11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a')
+})
