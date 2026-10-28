@@ -670,6 +670,25 @@ final class CoreVectorsKATTests: XCTestCase {
         XCTAssertNotNil(rejected[0].error, "a table decrypt failure must not fall back to the master")
     }
 
+    func testChildPublicationPreservesLoadedRandomKeysForBothKinds() throws {
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
+        let registry = SharedKeyRegistry<FileKeyHandle>()
+        let root = "2237c000-0000-4000-8000-000000000001"
+        let folder = try SharedKeyOps.generateFolderKey(master: master, folderId: root, registry: registry)
+        for kind: UInt8 in [1, 2] {
+            let id = "2237c000-0000-4000-8000-000000000002"
+            let real = try FileKeyHandle.generate()
+            registry.storeFile(id, real)
+            let rows = try SharedKeyOps.wrapChildKeys(master: master, folderId: folder.handleId, fileIds: [id], kind: kind, registry: registry)
+            let wire = rows[0].wrapped
+            let opened = try registry.folder(folder.handleId)!.handle.unwrapFolderChild(sharedFolderId: root, itemId: id, kind: kind, nonce: Data(wire.prefix(12)), ciphertext: Data(wire.dropFirst(12)))
+            XCTAssertEqual(try opened.keyId(), real.keyId())
+            XCTAssertNotEqual(try opened.keyId(), master.deriveFileKey(fileId: Data(id.utf8)).keyId())
+            let frame = try real.encryptChunk(plaintext: Data("moved guest".utf8))
+            XCTAssertEqual(try opened.decryptChunk(nonce: frame.nonce, ciphertext: frame.ciphertext), Data("moved guest".utf8))
+        }
+    }
+
     func testPreviewUsesAuthenticatedV2PinForTableAndOwnerKeys() throws {
         let master = try MasterKeyHandle.fromKeychainBytes(bytes: Data(repeating: 0x40, count: 32))
         for tableHeld in [false, true] {

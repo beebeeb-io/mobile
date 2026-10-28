@@ -71,7 +71,7 @@ enum SharedKeyOps {
                               registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> [SharedKeyEntryNative] {
         let folder = try folder(folderId, registry: registry)
         guard kind == 1 || kind == 2 else { throw SharedKeyError.invalidWrap }
-        return try fileIds.map { id in SharedKeyEntryNative(fileId: id, wrapped: try wire(folder.handle.wrapFolderChild(sharedFolderId: folder.folderId, itemId: id, kind: kind, inner: master.deriveFileKey(fileId: Data(id.utf8)))), kind: kind) }
+        return try fileIds.map { id in SharedKeyEntryNative(fileId: id, wrapped: try wire(folder.handle.wrapFolderChild(sharedFolderId: folder.folderId, itemId: id, kind: kind, inner: fileKey(master: master, fileId: id, registry: registry))), kind: kind) }
     }
     static func adoptWrap(master: MasterKeyHandle, fileId: String,
                           registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> Data {

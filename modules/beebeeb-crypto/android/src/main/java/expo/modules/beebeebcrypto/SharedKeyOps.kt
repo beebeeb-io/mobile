@@ -55,7 +55,11 @@ object SharedKeyOps {
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry, kind: Int = 1): List<SharedKeyEntryNative> {
     val folder = folder(folderId, registry)
     require(kind in 1..2) { "Invalid shared key kind" }
-    return fileIds.map { SharedKeyEntryNative(it, wire(folder.handle.wrapFolderChild(folder.folderId, it, kind.toUByte(), master.deriveFileKey(it.toByteArray(Charsets.UTF_8)))), kind) }
+    return fileIds.map { id ->
+      borrowFileKey(master, id, registry).use { access ->
+        SharedKeyEntryNative(id, wire(folder.handle.wrapFolderChild(folder.folderId, id, kind.toUByte(), access.handle)), kind)
+      }
+    }
   }
   fun adoptWrap(master: MasterKeyHandle, fileId: String,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): ByteArray {

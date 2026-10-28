@@ -105,3 +105,13 @@ test('android_preview_closes_only_a_locally_owned_key_access', () => {
   expect(video.includes('fileKey?.close()')).toBe(false)
   expect(video.includes('keyAccess?.close()')).toBe(true)
 })
+
+// F4: ported native publisher probes; real random-key round trips are platform KATs.
+for (const [path, start, end, resolver] of [
+  ['ios/SharedKeyOps.swift', 'static func wrapChildKeys', 'static func adoptWrap', 'fileKey(master: master, fileId: id, registry: registry)'],
+  ['android/src/main/java/expo/modules/beebeebcrypto/SharedKeyOps.kt', 'fun wrapChildKeys', 'fun adoptWrap', 'borrowFileKey(master, id, registry)'],
+]) test(`${path}: child_publication_uses_the_loaded_key`, () => {
+  const publisher = read(path).split(start)[1].split(end)[0]
+  expect(publisher.includes(resolver)).toBe(true)
+  expect(publisher.includes('master.deriveFileKey')).toBe(false)
+})

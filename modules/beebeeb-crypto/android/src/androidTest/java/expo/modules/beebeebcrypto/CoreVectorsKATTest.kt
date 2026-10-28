@@ -438,6 +438,25 @@ class CoreVectorsKATTest {
     }
 
     @Test
+    fun childPublicationPreservesLoadedRandomKeysForBothKinds() {
+        val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val root = "2237c000-0000-4000-8000-000000000001"
+        val folder = SharedKeyOps.generateFolderKey(master, root, registry)
+        for (kind in listOf(1, 2)) {
+            val id = "2237c000-0000-4000-8000-000000000002"
+            val real = FileKeyHandle.generate()
+            registry.storeFile(id, real)
+            val wire = SharedKeyOps.wrapChildKeys(master, folder.first, listOf(id), registry, kind)[0].wrapped
+            val opened = registry.folder(folder.first)!!.handle.unwrapFolderChild(root, id, kind.toUByte(), wire.copyOfRange(0, 12), wire.copyOfRange(12, wire.size))
+            assertTrue(opened.keyId().contentEquals(real.keyId()))
+            assertFalse(opened.keyId().contentEquals(master.deriveFileKey(id.toByteArray()).keyId()))
+            val frame = real.encryptChunk("moved guest".toByteArray())
+            assertTrue(opened.decryptChunk(frame.nonce, frame.ciphertext).contentEquals("moved guest".toByteArray()))
+        }
+    }
+
+    @Test
     fun borrowedPreviewKeySurvivesTwoReads() {
         val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
         val registry = SharedKeyRegistry<FileKeyHandle>()
