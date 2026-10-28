@@ -44,7 +44,10 @@ export interface CreateFolderLinkPorts {
 }
 export type RecoverPorts = Pick<CreateFolderLinkPorts, 'masterHandleId' | 'native' | 'getWebAppUrl'>;
 /** The UI binds the existing CryptoProvider handle; never re-read the Keychain. */
-export function createFolderLinkPorts(masterHandleId: () => number): CreateFolderLinkPorts {
+export function createFolderLinkPorts(masterHandleId: () => number = () => (
+  // C2's current public seam returns the CryptoProvider's existing opaque id.
+  require('./shared-folder-keys') as { sharedMasterHandleId(): number }
+).sharedMasterHandleId()): CreateFolderLinkPorts {
   return {
     masterHandleId, native: folderLinkNative,
     // C2 Task 5 Interfaces, pending merge. No substitute tree or key derivation.
@@ -55,7 +58,6 @@ export function createFolderLinkPorts(masterHandleId: () => number): CreateFolde
     createFolderLink: api.createFolderLink, getWebAppUrl: api.getWebAppUrl,
   };
 }
-const unboundPorts = () => createFolderLinkPorts(() => { throw new Error('Unlock Beebeeb to manage folder links.'); });
 export class FolderKeyUnverifiedError extends Error {
   constructor() { super("Can't check this folder's key. Create this link on the web."); this.name = 'FolderKeyUnverifiedError'; }
 }
@@ -73,7 +75,7 @@ export class FolderLinksUnavailableError extends Error {
 function statusOf(err: unknown): number | undefined { return (err as { status?: number } | null)?.status; }
 function codeOf(err: unknown): string | undefined { return (err as { code?: string } | null)?.code; }
 
-export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, ports: CreateFolderLinkPorts = unboundPorts()): Promise<CreatedLink> {
+export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, ports: CreateFolderLinkPorts = createFolderLinkPorts()): Promise<CreatedLink> {
   const epoch = accountEpoch();
   const assertCurrent = () => {
     if (!isCurrentAccountEpoch(epoch)) throw new StaleAccountError('Folder link');
@@ -182,7 +184,7 @@ export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, por
   }
 }
 
-export async function recoverLinkUrl(link: FolderLink, folderHandleId: number, ports: RecoverPorts = unboundPorts()): Promise<string | null> {
+export async function recoverLinkUrl(link: FolderLink, folderHandleId: number, ports: RecoverPorts = createFolderLinkPorts()): Promise<string | null> {
   if (!link.owner_wrapped_token || !link.owner_wrapped_key) return null;
   const epoch = accountEpoch();
   let clear: Uint8Array | null = null;

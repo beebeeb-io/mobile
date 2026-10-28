@@ -131,3 +131,10 @@ test('account_change_after_custody_prevents_publishing', async () => {
   ports.registerSharedFolderKey = async () => { advanceAccountEpoch(); return { key_version: 1 }; };
   await expect(create(input, ports)).rejects.toHaveProperty('name', 'StaleAccountError'); expect(calls).not.toContain('publish:2');
 });
+
+test('default_ports_bind_the_existing_native_master_handle', async () => {
+  // C2 now exposes the existing CryptoProvider handle without a Keychain read.
+  mock.module('./shared-folder-keys', () => ({ sharedMasterHandleId: () => 7 }));
+  const { createFolderLinkPorts } = await import('./folder-link-create');
+  expect(createFolderLinkPorts().masterHandleId()).toBe(7);
+});
