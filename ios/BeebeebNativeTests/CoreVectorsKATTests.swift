@@ -550,6 +550,37 @@ final class CoreVectorsKATTests: XCTestCase {
         print("[CoreVectorsKAT] folder_link_passphrase: 1 row")
     }
 
+    func testL6PurposeWrapVectors() throws {
+        for name in ["folder_custody_v1", "link_owner_key_v1", "link_owner_token_v1"] {
+            let v = try Self.vector(Self.loadVectors(), named: name)
+            let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(v, "master_key_hex"))
+            let wire = try Self.hex(v, "wrapped_hex")
+            let id = try Self.str(v, "record_id")
+            let nonce = Data(wire.prefix(12)), ct = Data(wire.dropFirst(12))
+            let plain = try Self.hex(v, "plaintext_hex")
+            if name == "folder_custody_v1" {
+                let opened = try master.unwrapFolderCustody(folderId: id, nonce: nonce, ciphertext: ct)
+                XCTAssertEqual(try opened.keyId(), try FileKeyHandle.fromKeyBytes(key: plain).keyId())
+                XCTAssertThrowsError(try master.unwrapFolderCustody(folderId: id + "wrong", nonce: nonce, ciphertext: ct))
+            } else if name == "link_owner_key_v1" {
+                XCTAssertEqual(try master.unwrapLinkOwnerKey(shareId: id, nonce: nonce, ciphertext: ct), plain)
+                XCTAssertThrowsError(try master.unwrapLinkOwnerToken(shareId: id, nonce: nonce, ciphertext: ct))
+            } else {
+                XCTAssertEqual(try master.unwrapLinkOwnerToken(shareId: id, nonce: nonce, ciphertext: ct), plain)
+            }
+            print("[CoreVectorsKAT] \(name): 1 row")
+        }
+    }
+
+    func testFolderLinkPassphraseNfd() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "folder_link_passphrase_nfd")
+        let actual = try FileKeyHandle.fromFolderLinkPassphrase(
+            kC: Self.hex(v, "k_c_hex"), passphrase: Self.str(v, "passphrase"), token: Self.str(v, "token"))
+        XCTAssertEqual(try actual.keyId(), try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "link_key_hex")).keyId())
+        XCTAssertThrowsError(try FileKeyHandle.fromFolderLinkPassphrase(kC: Self.hex(v, "k_c_hex"), passphrase: "", token: Self.str(v, "token")))
+        print("[CoreVectorsKAT] folder_link_passphrase_nfd: 1 row")
+    }
+
 }
 
 // MARK: - Hex <-> Data

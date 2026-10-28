@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -22,6 +23,7 @@ import uniffi.beebeeb_uniffi.openRequestUpload
 import uniffi.beebeeb_uniffi.unwrapRequestPrivate
 import uniffi.beebeeb_uniffi.x25519SharedSecret
 import java.security.MessageDigest
+import uniffi.beebeeb_uniffi.MasterKeyHandle
 import uniffi.beebeeb_uniffi.FileKeyHandle
 
 /**
@@ -309,6 +311,42 @@ class CoreVectorsKATTest {
         val expected = FileKeyHandle.fromKeyBytes(v.getString("link_key_hex").hexToBytes())
         assertTrue(actual.keyId().contentEquals(expected.keyId()))
         println("[CoreVectorsKAT] folder_link_passphrase: 1 row")
+    }
+
+    @Test
+    fun l6PurposeWrapVectors() {
+        for (name in listOf("folder_custody_v1", "link_owner_key_v1", "link_owner_token_v1")) {
+            val v = vector(loadRoot(), name)
+            val master = MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes())
+            val wire = v.getString("wrapped_hex").hexToBytes()
+            val id = v.getString("record_id")
+            val nonce = wire.copyOfRange(0, 12)
+            val ct = wire.copyOfRange(12, wire.size)
+            val plain = v.getString("plaintext_hex").hexToBytes()
+            when (name) {
+                "folder_custody_v1" -> {
+                    val opened = master.unwrapFolderCustody(id, nonce, ct)
+                    assertTrue(opened.keyId().contentEquals(FileKeyHandle.fromKeyBytes(plain).keyId()))
+                    assertThrows(Exception::class.java) { master.unwrapFolderCustody(id + "wrong", nonce, ct) }
+                }
+                "link_owner_key_v1" -> {
+                    assertTrue(master.unwrapLinkOwnerKey(id, nonce, ct).contentEquals(plain))
+                    assertThrows(Exception::class.java) { master.unwrapLinkOwnerToken(id, nonce, ct) }
+                }
+                else -> assertTrue(master.unwrapLinkOwnerToken(id, nonce, ct).contentEquals(plain))
+            }
+            println("[CoreVectorsKAT] $name: 1 row")
+        }
+    }
+
+    @Test
+    fun folderLinkPassphraseNfd() {
+        val v = vector(loadRoot(), "folder_link_passphrase_nfd")
+        val kc = v.getString("k_c_hex").hexToBytes()
+        val actual = FileKeyHandle.fromFolderLinkPassphrase(kc, v.getString("passphrase"), v.getString("token"))
+        assertTrue(actual.keyId().contentEquals(FileKeyHandle.fromKeyBytes(v.getString("link_key_hex").hexToBytes()).keyId()))
+        assertThrows(Exception::class.java) { FileKeyHandle.fromFolderLinkPassphrase(kc, "", v.getString("token")) }
+        println("[CoreVectorsKAT] folder_link_passphrase_nfd: 1 row")
     }
 
 }
