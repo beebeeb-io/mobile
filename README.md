@@ -2,12 +2,12 @@
   <a href="https://beebeeb.io"><img src="https://beebeeb.io/assets/beebeeb-icon.png" alt="beebeeb" width="72" height="72" /></a>
 </p>
 <h1 align="center">beebeeb mobile</h1>
-<p align="center">End-to-end encrypted cloud storage. iOS at launch; Android after launch.</p>
+<p align="center">End-to-end encrypted cloud storage. iOS at launch; Android in testing.</p>
 <p align="center"><strong>We can't recover your data. Not even if we wanted to.</strong> That's the point.</p>
 <p align="center">
   <a href="https://github.com/beebeeb-io/mobile/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/beebeeb-io/mobile/ci.yml?branch=main&label=CI" alt="CI" /></a> &nbsp;
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-555.svg" alt="License: AGPL-3.0" /></a> &nbsp;
-  <img src="https://img.shields.io/badge/platform-iOS%20%C2%B7%20Android%20after%20launch-555.svg" alt="iOS · Android after launch" /> &nbsp;
+  <img src="https://img.shields.io/badge/platform-iOS%20%C2%B7%20Android%20in%20testing-555.svg" alt="iOS · Android in testing" /> &nbsp;
   <a href="SECURITY.md"><img src="https://img.shields.io/badge/security-policy-555.svg" alt="Security policy" /></a>
 </p>
 <p align="center"><a href="https://beebeeb.io">Website</a> &nbsp;·&nbsp; <a href="https://beebeeb.io/security">How it works</a> &nbsp;·&nbsp; <a href="SECURITY.md">Report a vulnerability</a></p>
@@ -19,14 +19,14 @@
   <img src="marketing/01-files-drive.png" alt="beebeeb mobile — encrypted Drive on iOS" width="280" />
 </p>
 
-> **In active development — iOS-first.** Core screens and native encryption (UniFFI bindings to core) are implemented; the iOS app is in TestFlight testing. **iOS ships at launch; Android comes after launch** — the Android crypto module is currently a stub (every native crypto/keychain call throws `NotLinkedException`), so the app is not yet functional on Android.
+> **In active development — iOS-first.** Core screens and native encryption (UniFFI bindings to core) are implemented on iOS and Android; the iOS app is in TestFlight testing. **iOS at launch; Android in testing**: Android is in internal testing on Google Play (no public Play listing yet), and an early milestone APK (`v1.0.0-android-m2`) is on the GitHub releases.
 
-The [beebeeb](https://beebeeb.io) mobile app — browse, preview, back up, and share your encrypted files from your phone. All encryption runs natively via UniFFI bindings to [core](https://github.com/beebeeb-io/core) (Swift on iOS; the Kotlin/Android binding is a post-launch stub), not in JavaScript. The master key never leaves Rust and the keychain; the server only ever sees ciphertext.
+The [beebeeb](https://beebeeb.io) mobile app — browse, preview, back up, and share your encrypted files from your phone. All encryption runs natively via UniFFI bindings to [core](https://github.com/beebeeb-io/core) (Swift on iOS, Kotlin on Android), not in JavaScript. The master key never leaves Rust and the keychain; the server only ever sees ciphertext.
 
 ## Get the app
 
-Not on the App Store yet — the iOS build is currently **TestFlight only**. Android isn't
-functional yet (see the platform table below). [beebeeb.io/download](https://beebeeb.io/download)
+Not on the App Store yet — the iOS build is currently **TestFlight only**. Android is in
+testing (see the platform table below). [beebeeb.io/download](https://beebeeb.io/download)
 is the canonical place to check current availability across every platform; until iOS is
 public there, use [app.beebeeb.io](https://app.beebeeb.io) in your phone's browser (or the
 [CLI](https://github.com/beebeeb-io/cli) on a computer).
@@ -58,7 +58,7 @@ public there, use [app.beebeeb.io](https://app.beebeeb.io) in your phone's brows
 | Platform | Minimum version | Launch status |
 |---|---|---|
 | iOS | 16+ | Ships at launch |
-| Android | 12+ | Post-launch — crypto module is currently a stub |
+| Android | 12+ | In testing (Google Play internal testing); native crypto via UniFFI |
 
 ## Architecture
 
@@ -158,7 +158,7 @@ src/
 | Camera backup | In progress |
 | Share extension | Planned |
 | Offline mode | Planned |
-| Android platform | Post-launch — crypto module is a stub (all native calls throw) |
+| Android platform | In testing, not on the public Play Store yet; the share-extension hand-off (`consumePendingShare`) is iOS-only |
 
 ## Security
 
