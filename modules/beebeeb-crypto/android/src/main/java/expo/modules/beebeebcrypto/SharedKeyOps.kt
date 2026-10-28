@@ -9,7 +9,7 @@ data class FolderLinkMintNative(val kc: String, val wrappedFolderKey: ByteArray,
   val ownerWrappedKey: ByteArray, val ownerWrappedToken: ByteArray)
 
 object SharedKeyOps {
-  val registry = SharedKeyRegistry<FileKeyHandle>()
+  val registry = SharedKeyRegistry<FileKeyHandle> { it.close() }
   fun folder(id: Int, registry: SharedKeyRegistry<FileKeyHandle> = this.registry) =
     registry.folder(id) ?: error("Vault is locked")
   fun wire(encrypted: EncryptedData) = encrypted.nonce + encrypted.ciphertext

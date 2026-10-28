@@ -5,6 +5,35 @@ import org.junit.Test
 import kotlin.concurrent.thread
 
 class SharedKeyRegistryTest {
+  private class FakeKey : AutoCloseable { var closes = 0; override fun close() { closes++ } }
+  @Test fun release_replace_and_clear_close_native_handles() {
+    val r = SharedKeyRegistry<FakeKey>()
+    val folder = FakeKey(); val id = r.storeFolder(folder, "root")
+    r.releaseFolder(id); r.releaseFolder(id); assertEquals(1, folder.closes)
+    val old = FakeKey(); val replacement = FakeKey()
+    r.storeFile("file", old); r.storeFile("file", replacement)
+    assertEquals(1, old.closes); assertEquals(0, replacement.closes)
+    r.clear(); r.clear(); assertEquals(1, replacement.closes)
+  }
+  @Test fun rejected_stale_insert_is_disposed() {
+    val r = SharedKeyRegistry<FakeKey>(); val epoch = r.generation; r.clear()
+    val file = FakeKey(); val folder = FakeKey()
+    assertFalse(r.storeFile("file", file, epoch)); assertEquals(1, file.closes)
+    assertNull(r.storeFolderIfCurrent(folder, "root", epoch)); assertEquals(1, folder.closes)
+  }
+  @Test fun aliases_and_identical_replacements_close_once() {
+    val r = SharedKeyRegistry<FakeKey>(); val key = FakeKey()
+    val id = r.storeFolder(key, "root"); r.storeFile("one", key); r.storeFile("two", key)
+    r.storeFile("one", key); r.releaseFolder(id); assertEquals(0, key.closes)
+    r.clear(); assertEquals(1, key.closes)
+  }
+  @Test fun rejected_capacity_insert_is_disposed() {
+    val r = SharedKeyRegistry<FakeKey>(); val key = FakeKey()
+    repeat(100000) { r.storeFile("$it", key) }
+    val rejected = FakeKey(); assertFalse(r.storeFile("overflow", rejected))
+    assertEquals(1, rejected.closes); r.clear(); assertEquals(1, key.closes)
+  }
+
   @Test fun borrowed_access_survives_preview_close_and_can_be_read_again() {
     var closes = 0; val key = Any()
     SharedKeyAccess(key, false) { closes++ }.use { assertSame(key, it.handle) }

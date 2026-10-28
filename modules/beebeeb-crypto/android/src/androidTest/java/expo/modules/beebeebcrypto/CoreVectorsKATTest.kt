@@ -457,6 +457,21 @@ class CoreVectorsKATTest {
     }
 
     @Test
+    fun registryReleaseReplaceAndClearDestroyNativeHandles() {
+        val registry = SharedKeyRegistry<FileKeyHandle>()
+        val folder = FileKeyHandle.generate()
+        val folderId = registry.storeFolder(folder, "root")
+        registry.releaseFolder(folderId)
+        assertThrows(IllegalStateException::class.java) { folder.keyId() }
+        val old = FileKeyHandle.generate(); val replacement = FileKeyHandle.generate()
+        registry.storeFile("file", old); registry.storeFile("file", replacement)
+        assertThrows(IllegalStateException::class.java) { old.keyId() }
+        assertEquals(16, replacement.keyId().size)
+        registry.clear()
+        assertThrows(IllegalStateException::class.java) { replacement.keyId() }
+    }
+
+    @Test
     fun borrowedPreviewKeySurvivesTwoReads() {
         val master = MasterKeyHandle.fromKeychainBytes(ByteArray(32) { 0x40 })
         val registry = SharedKeyRegistry<FileKeyHandle>()

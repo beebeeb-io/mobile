@@ -1,6 +1,8 @@
 package expo.modules.beebeebcrypto
 
-class SharedKeyRegistry<H : Any> {
+class SharedKeyRegistry<H : Any>(
+  private val dispose: (H) -> Unit = { (it as? AutoCloseable)?.close() }
+) {
   companion object { const val maxFiles = 100_000 }
   data class Folder<H>(val handle: H, val folderId: String)
   private val folders = HashMap<Int, Folder<H>>()
@@ -12,16 +14,40 @@ class SharedKeyRegistry<H : Any> {
     val id = nextId++; folders[id] = Folder(handle, folderId); return id
   }
   @Synchronized fun storeFolderIfCurrent(handle: H, folderId: String, generation: Long): Int? =
-    if (epoch == generation) storeFolder(handle, folderId) else null
+    if (epoch == generation) storeFolder(handle, folderId) else {
+      disposeIfUnreferenced(handle); null
+    }
   @Synchronized fun folder(id: Int): Folder<H>? = folders[id]
-  @Synchronized fun releaseFolder(id: Int) { folders.remove(id) }
+  @Synchronized fun releaseFolder(id: Int) {
+    folders.remove(id)?.let { disposeIfUnreferenced(it.handle) }
+  }
   @Synchronized fun storeFile(fileId: String, handle: H, generation: Long? = null): Boolean {
-    if (generation != null && generation != epoch) return false
-    if (fileId !in files && files.size >= maxFiles) return false
-    files[fileId] = handle; return true
+    if ((generation != null && generation != epoch) || (fileId !in files && files.size >= maxFiles)) {
+      disposeIfUnreferenced(handle)
+      return false
+    }
+    val previous = files.put(fileId, handle)
+    if (previous != null && previous !== handle) disposeIfUnreferenced(previous)
+    return true
   }
   @Synchronized fun file(fileId: String): H? = files[fileId]
-  @Synchronized fun clear() { epoch++; folders.clear(); files.clear() }
+  @Synchronized fun clear() {
+    epoch++
+    val discarded = java.util.IdentityHashMap<H, Boolean>()
+    folders.values.forEach { discarded[it.handle] = true }
+    files.values.forEach { discarded[it] = true }
+    folders.clear(); files.clear()
+    // UniFFI destroy defers Rust Drop until any active native call returns;
+    // subsequent calls through a revoked borrowed reference fail closed.
+    var failure: Throwable? = null
+    discarded.keys.forEach {
+      try { dispose(it) } catch (error: Throwable) { if (failure == null) failure = error }
+    }
+    failure?.let { throw it }
+  }
+  private fun disposeIfUnreferenced(handle: H) {
+    if (files.values.none { it === handle } && folders.values.none { it.handle === handle }) dispose(handle)
+  }
 }
 
 fun <H> pickKey(table: H?, derive: () -> H): H = table ?: derive()

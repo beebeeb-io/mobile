@@ -115,3 +115,14 @@ for (const [path, start, end, resolver] of [
   expect(publisher.includes(resolver)).toBe(true)
   expect(publisher.includes('master.deriveFileKey')).toBe(false)
 })
+
+// F7: ported disposal probe. JVM tests count actual close calls on owned fake handles.
+test('android_registry_explicitly_disposes_released_replaced_and_cleared_handles', () => {
+  const registry = read('android/src/main/java/expo/modules/beebeebcrypto/SharedKeyRegistry.kt')
+  expect(registry.includes('private val dispose: (H) -> Unit')).toBe(true)
+  expect(registry.includes('disposeIfUnreferenced')).toBe(true)
+  expect(registry.includes('discarded.keys.forEach')).toBe(true)
+  expect(registry.includes('try { dispose(it) }')).toBe(true)
+  const ops = read('android/src/main/java/expo/modules/beebeebcrypto/SharedKeyOps.kt')
+  expect(ops.includes('SharedKeyRegistry<FileKeyHandle> { it.close() }')).toBe(true)
+})
