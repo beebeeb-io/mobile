@@ -1,3 +1,4 @@
+import { clearSharedKeys } from './shared-folder-keys';
 /**
  * Purges every on-disk plaintext cache this app writes, for BOTH regular
  * sign-out and account deletion.
@@ -152,6 +153,7 @@ export function resolvePurgeMode(options: PurgeAllOptions = {}): {
  * Never throws.
  */
 async function sweepDecryptedCaches(): Promise<{ removed: string[]; failed: string[] }> {
+  clearSharedKeys();
   await Promise.allSettled([
     clearThumbnailCache(),
     clearNameCache(),

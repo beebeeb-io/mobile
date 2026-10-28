@@ -1,3 +1,4 @@
+import { ingestTree } from './shared-folder-tree';
 /**
  * file-index-loader — the ONLY caller of `getFileIndex()` (GET /files/index).
  *
@@ -406,7 +407,10 @@ onAccountEpochAdvance(() => defaultLoader.reset());
 /** Load the vault index for a screen. See the module comment for the rules.
  *  Rejects with `StaleAccountError` when the account changed while it ran. */
 export function loadFileIndex(options?: FileIndexLoadOptions): Promise<FileIndexLoadResult> {
-  return defaultLoader.load(options);
+  return defaultLoader.load(options).then(result => {
+    if (result.files) ingestTree(result.files);
+    return result;
+  });
 }
 
 /** Test hook: forget the in-memory window and any in-flight request. */

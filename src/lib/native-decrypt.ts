@@ -1,3 +1,4 @@
+import { retrySharedDecrypt } from './shared-folder-keys';
 /**
  * Native decryption wrapper for preview.
  *
@@ -826,14 +827,14 @@ async function decryptToTempFileUnshared(
         }
       }
 
-      const result = await downloadAndDecryptFileNative(
+      const result = await retrySharedDecrypt(fileId, () => downloadAndDecryptFileNative(
         masterKeyHandleId ?? null,
         getApiUrl(),
         token,
         fileId,
         outputPath,
         { onProgress: options.onProgress, signal: options.signal },
-      );
+      ));
       if (options.signal?.aborted) {
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
         recordRuntimeTrace('preview.decrypt.native.aborted_after_result', { fileId });
