@@ -37,7 +37,9 @@ describe('iOS NativeVideoStreamer source contract', () => {
 
   test('uses per-chunk endpoints and existing opaque handle crypto, never a whole-file download', () => {
     expect(STREAMER_SWIFT).toContain('/api/v1/files/\\(fileId)/chunks/\\(index)');
-    expect(STREAMER_SWIFT).toContain('master.deriveFileKey(fileId: Data(fileId.utf8))');
+    // Resolve a native table handle first; owner-key derivation stays inside SharedKeyOps.
+    expect(bracedBody(STREAMER_SWIFT, 'private func fileKeyHandle() throws -> FileKeyHandle {'))
+      .toContain('try SharedKeyOps.fileKey(master: master, fileId: fileId)');
     expect(STREAMER_SWIFT).toContain('key.decryptChunk(nonce: nonce, ciphertext: ciphertext)');
     expect(STREAMER_SWIFT).not.toContain('fileKey!.decryptChunk');
     expect(STREAMER_SWIFT).toContain('URLSession.shared.downloadTask');
