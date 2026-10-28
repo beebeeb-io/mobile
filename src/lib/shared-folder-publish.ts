@@ -100,10 +100,11 @@ export function createSharedFolderPublisher(p: PublishPorts) {
           if (!valid(g)) return;
         }
         batch.forEach(row => pending.delete(key(row)));
-      } catch (error) {
+      } catch {
+        // L7c: a publish only runs for a folder whose custody this account opened, so a later 404, 405
+        // or 501 (or an unavailable custody) is a server claim to distrust, not proof the folder is
+        // gone. The wraps stay queued; the seven-day window is what ends them.
         if (!valid(g)) return;
-        const status = (error as { status?: number })?.status;
-        if (status === 404 || status === 501) batch.forEach(row => pending.delete(key(row)));
       }
       await save(g);
     }

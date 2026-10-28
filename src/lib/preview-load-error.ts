@@ -10,6 +10,8 @@
  * honest about what is going on nor something a person can act on.
  */
 import { ApiError, friendlyError } from './api';
+import { CustodyUnavailableError } from './shared-folder-custody';
+import type { SharedKeyOutcome } from './shared-folder-keys';
 
 export const STILL_UPLOADING_MESSAGE = 'This file is still uploading. Try again in a moment.';
 
@@ -58,7 +60,7 @@ export function stripNativeExceptionNoise(message: string): string {
 
 /** The message the preview shows for a failed load. */
 export function previewLoadErrorMessage(err: unknown): string {
-  if (err instanceof SharedKeyUpdateRequiredError || err instanceof SharedKeyCannotOpenError) return err.message;
+  if (err instanceof SharedKeyUpdateRequiredError || err instanceof SharedKeyCannotOpenError || err instanceof CustodyUnavailableError) return err.message;
   if (isStillUploadingError(err)) return STILL_UPLOADING_MESSAGE;
   // Task 1687d — a plain Error's honest message (e.g. PARTIAL_DECRYPT_
   // MESSAGE, thrown by native-decrypt's size check) passes through
@@ -71,6 +73,13 @@ export function previewLoadErrorMessage(err: unknown): string {
   return stripNativeExceptionNoise(friendly) || 'Something went wrong. Please try again.';
 }
 
+/** The row text for a shared-key outcome, or null when the row opens (or its account moved on). */
+export function sharedOutcomeMessage(outcome: SharedKeyOutcome | undefined, label: string | null): string | null {
+  if (outcome === 'update_required') return UPDATE_BEEBEEB_MESSAGE;
+  if (outcome === 'custody_unavailable') return new CustodyUnavailableError().message;
+  if (outcome && outcome !== 'loaded' && outcome !== 'stale') return cannotOpenMessage(label);
+  return null;
+}
 export const UPDATE_BEEBEEB_MESSAGE = 'Update Beebeeb to open this file';
 export function cannotOpenMessage(label: string | null): string { return `Can't open this file${label ? ` (added via ${label})` : ''}`; }
 export class SharedKeyUpdateRequiredError extends Error { constructor() { super(UPDATE_BEEBEEB_MESSAGE); this.name = 'SharedKeyUpdateRequiredError'; } }

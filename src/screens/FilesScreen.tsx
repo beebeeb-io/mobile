@@ -1,5 +1,5 @@
 import { sharedFileKeyIsLoaded, sharedKeyOutcome, getSharedKeyResolver } from '../lib/shared-folder-keys';
-import { cannotOpenMessage, UPDATE_BEEBEEB_MESSAGE } from '../lib/preview-load-error';
+import { sharedOutcomeMessage } from '../lib/preview-load-error';
 import { loadFileIndex } from '../lib/file-index-loader';
 import { bottomAnchorInset } from '../components/glass/tab-bar-inset';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -840,9 +840,8 @@ const FileRowItem = React.memo(function FileRowItem({
         </View>
         <Text style={[styles.fileMeta, { color: c.ink3 }]}>
           {(() => {
-            const outcome = sharedKeyOutcome(item.id);
-            if (outcome === 'update_required') return UPDATE_BEEBEEB_MESSAGE;
-            if (outcome && outcome !== 'loaded' && outcome !== 'stale') return cannotOpenMessage(sharedLabel);
+            const sharedMessage = sharedOutcomeMessage(sharedKeyOutcome(item.id), sharedLabel);
+            if (sharedMessage) return sharedMessage;
             const loc = storageLocation(item.storage_pool_id);
             const locSuffix = loc.shortCode ? `  ·  ${loc.shortCode}` : '';
             if (item.is_folder) return `${formatDate(item.updated_at)}${locSuffix}`;
@@ -986,15 +985,13 @@ const FileGridItem = React.memo(function FileGridItem({
 
   const loc = storageLocation(item.storage_pool_id);
   const locSuffix = loc.shortCode ? ` · ${loc.shortCode}` : '';
-  const outcome = sharedKeyOutcome(item.id);
-  const metaText = outcome === 'update_required' ? UPDATE_BEEBEEB_MESSAGE
-    : outcome && outcome !== 'loaded' && outcome !== 'stale' ? cannotOpenMessage(sharedLabel) : isFolder
+  const metaText = sharedOutcomeMessage(sharedKeyOutcome(item.id), sharedLabel) ?? (isFolder
     ? `${formatDate(item.updated_at)}${locSuffix}`
     : isPendingUpload
       ? `Upload pending · ${formatSize(item.size_bytes)}${locSuffix}`
     : (sortOrder === 'size-desc' || sortOrder === 'size-asc')
       ? `${formatSize(item.size_bytes)}${locSuffix}`
-      : `${formatSize(item.size_bytes)} · ${formatDate(item.updated_at)}${locSuffix}`;
+      : `${formatSize(item.size_bytes)} · ${formatDate(item.updated_at)}${locSuffix}`);
 
   return (
     <TouchableOpacity
@@ -4244,11 +4241,9 @@ export default function FilesScreen() {
       testID: sheetActionTestId(opt),
       onPress: () => dispatchAction(opt),
     }));
-    const sharedOutcome = sharedKeyOutcome(item.id);
-    const subtitle = sharedOutcome === 'update_required' ? UPDATE_BEEBEEB_MESSAGE
-      : sharedOutcome && sharedOutcome !== 'loaded' && sharedOutcome !== 'stale' ? cannotOpenMessage(null) : item.is_folder
+    const subtitle = sharedOutcomeMessage(sharedKeyOutcome(item.id), null) ?? (item.is_folder
       ? 'Folder'
-      : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`;
+      : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`);
     setRowSheet({
       header: {
         name,

@@ -1,7 +1,8 @@
 import { accountEpoch, onAccountEpochAdvance, sameAccountEpoch, StaleAccountError, type AccountEpoch } from './account-epoch';
 import { ancestorsOf, clearTree, isForeignSharedFile } from './shared-folder-tree';
+import { CustodyUnavailableError, custodyMemory, isCustodyAbsentStatus, settleMissingCustody, type CustodyMemory } from './shared-folder-custody';
 
-export type SharedKeyOutcome = 'loaded' | 'no_shared_root' | 'no_key_row' | 'key_does_not_open' | 'keys_incomplete' | 'update_required' | 'stale';
+export type SharedKeyOutcome = 'loaded' | 'no_shared_root' | 'no_key_row' | 'key_does_not_open' | 'keys_incomplete' | 'update_required' | 'custody_unavailable' | 'stale';
 /** Promised C1/C3 Interfaces. These structural ports can be replaced by their exported types after merge. */
 export interface SharedKeysNative {
   isSharedKeysNativeReady(): boolean;
@@ -19,7 +20,7 @@ export interface SharedKeysApi {
   getFileOwnerWrap(id: string): Promise<{ ownerWrap: Uint8Array | null; actedViaShareId: string | null }>;
   listFolderLinks(id?: string): Promise<{ id: string; folder_id: string; label_encrypted?: string | null; revoked_at?: string | null }[]>;
 }
-export interface SharedKeyPorts extends SharedKeysApi { native: SharedKeysNative; masterHandleId(): number; epoch(): AccountEpoch; now(): number; }
+export interface SharedKeyPorts extends SharedKeysApi { native: SharedKeysNative; custody: CustodyMemory; masterHandleId(): number; epoch(): AccountEpoch; now(): number; }
 export interface SharedKeyResolver {
   ensureLoaded(ids: string[]): Promise<Map<string, SharedKeyOutcome>>;
   folderHandleFor(root: string): Promise<number | null>;
@@ -56,7 +57,7 @@ onAccountEpochAdvance(clearSharedKeys);
 export function configureSharedKeys(native: Partial<SharedKeysNative>, api: SharedKeysApi, masterHandleId: () => number): SharedKeyResolver {
   nativeSurface = native;
   clearSharedKeys();
-  const r = createSharedKeyResolver({ ...api, native: { ...native, isSharedKeysNativeReady: () => native.isSharedKeysNativeReady?.() ?? false } as SharedKeysNative, masterHandleId, epoch: accountEpoch, now: Date.now });
+  const r = createSharedKeyResolver({ ...api, native: { ...native, isSharedKeysNativeReady: () => native.isSharedKeysNativeReady?.() ?? false } as SharedKeysNative, masterHandleId, custody: custodyMemory, epoch: accountEpoch, now: Date.now });
   nativeMaster = masterHandleId; setSharedKeyResolver(r); return r;
 }
 
@@ -69,17 +70,31 @@ export function createSharedKeyResolver(p: SharedKeyPorts): SharedKeyResolver {
   function guard(epoch: AccountEpoch, g: number): void { if (g !== generation || !sameAccountEpoch(epoch, p.epoch())) throw new StaleAccountError('shared keys'); }
   async function folderHandleFor(root: string): Promise<number | null> {
     if (roots.has(root)) return roots.get(root)!;
-    if ((negative.get(root) ?? 0) > p.now()) return null;
+    // A cached "no custody" verdict is re-checked against the device memory: it must not hide a folder seen since.
+    if ((negative.get(root) ?? 0) > p.now()) { await settleMissingCustody(p.custody, root); return null; }
     if (opening.has(root)) return opening.get(root)!;
     const epoch = p.epoch(), g = generation;
     const task = (async () => {
       let info;
       try { info = await p.getSharedFolder(root); guard(epoch, g); }
-      catch (e) { guard(epoch,g); if ((e as {status?:number}).status !== 404) throw e; negative.set(root,p.now()+300000); return null; }
+      catch (e) {
+        guard(epoch,g);
+        if (!isCustodyAbsentStatus((e as {status?:number}).status)) throw e;
+        // L7d: 404/405/501 is "no custody" only for a folder this DEVICE never saw custody for.
+        await settleMissingCustody(p.custody, root); guard(epoch,g);
+        negative.set(root,p.now()+300000); return null;
+      }
       const wrap = parseOwnerWrap(info.owner_wrapped_folder_key);
-      if (info.role !== 'owner' || !wrap) { negative.set(root,p.now()+300000); return null; }
-      const handle = await p.native.sharedFolderOpenOwnerKey(p.masterHandleId(), root, wrap);
-      try { guard(epoch,g); } catch(e) { void p.native.sharedFolderRelease(handle).catch(()=>{}); throw e; }
+      // Owner-side only: a custody record that is not the owner's (or does not parse) reads as legacy for a folder
+      // never seen, and is refused for one seen before. A member's read of someone else's folder never lands here.
+      if (info.role !== 'owner' || !wrap) { await settleMissingCustody(p.custody, root); guard(epoch,g); negative.set(root,p.now()+300000); return null; }
+      let handle: number;
+      try { handle = await p.native.sharedFolderOpenOwnerKey(p.masterHandleId(), root, wrap); }
+      catch (e) { guard(epoch,g); if (await p.custody.hasSeen(root)) throw new CustodyUnavailableError(); throw e; }
+      // Open, then markSeen, then use (sharedFileKeysLoad): durable BEFORE the folder key is used, and a record
+      // that cannot be stored is not used (its handle is released).
+      try { guard(epoch,g); await p.custody.markSeen(root); guard(epoch,g); }
+      catch(e) { void p.native.sharedFolderRelease(handle).catch(()=>{}); throw e; }
       roots.set(root,handle); return handle;
     })();
     opening.set(root,task);
@@ -111,8 +126,10 @@ export function createSharedKeyResolver(p: SharedKeyPorts): SharedKeyResolver {
       if(!p.native.isSharedKeysNativeReady()) { ids.forEach(id=>out.set(id,'update_required')); return out; }
       for(const id of new Set(ids)) {
         if(p.native.sharedFileKeyIsLoaded(id)) { out.set(id,'loaded'); continue; }
-        let root: string | undefined;
-        for(const ancestor of ancestorsOf(id)) { const handle=await folderHandleFor(ancestor); guard(epoch,g); if(handle!==null) { root=ancestor; break; } }
+        let root: string | undefined, refused = false;
+        try { for(const ancestor of ancestorsOf(id)) { const handle=await folderHandleFor(ancestor); guard(epoch,g); if(handle!==null) { root=ancestor; break; } } }
+        catch(e) { if(!(e instanceof CustodyUnavailableError)) throw e; refused = true; }
+        if(refused) { out.set(id,'custody_unavailable'); continue; }
         if(!root) { await ownerFallback(id,'no_shared_root'); continue; }
         rootByFile.set(id,root); const group=groups.get(root)??[]; group.push(id); groups.set(root,group);
       }

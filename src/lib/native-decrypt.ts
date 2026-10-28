@@ -2,6 +2,7 @@ import { retrySharedDecrypt, getSharedKeyResolver, sharedFileKeyIsLoaded } from 
 import { isForeignSharedFile } from './shared-folder-tree';
 import { accountEpoch, StaleAccountError } from './account-epoch';
 import { SharedKeyUpdateRequiredError, SharedKeyCannotOpenError } from './preview-load-error';
+import { CustodyUnavailableError } from './shared-folder-custody';
 export { SharedKeyUpdateRequiredError, SharedKeyCannotOpenError } from './preview-load-error';
 /**
  * Native decryption wrapper for preview.
@@ -689,6 +690,7 @@ async function decryptToTempFileUnshared(
       const outcome = (await shared.ensureLoaded([fileId])).get(fileId);
       if (outcome === 'stale') throw new StaleAccountError('shared preview');
       if (outcome === 'update_required') throw new SharedKeyUpdateRequiredError();
+      if (outcome === 'custody_unavailable') throw new CustodyUnavailableError();
       if (outcome !== 'loaded') throw new SharedKeyCannotOpenError(await shared.originLabel(fileId));
     }
     try {

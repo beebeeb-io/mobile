@@ -31,11 +31,10 @@ test('an_upload_outside_any_shared_root_makes_no_request',async()=>{
   const s=setup(),a=createSharedFolderPublisher(s.p);a.onOwnerUpload({id:'f',parent_id:'private'});await a.idle();
   expect(s.posts).toEqual([]);expect(s.wraps()).toBe(0); // Discovery is allowed; no key-list GET or publish POST.
 });
-test('a_failed_publish_is_retried_and_a_404_is_dropped',async()=>{
+test('a_failed_publish_is_retried_until_the_seven_day_window_ends',async()=>{
   const s=setup(),a=createSharedFolderPublisher(s.p);s.setStatus(500);a.onOwnerUpload({id:'f',parent_id:'R'});await a.idle();
   expect(s.posts).toHaveLength(1);expect(JSON.parse(s.disk())).toEqual([{fileId:'f',parentId:'R',rootId:'R',createdAt:1000}]);
   s.setStatus(0);await a.retryPending();expect(s.posts).toHaveLength(2);expect(JSON.parse(s.disk())).toEqual([]);
-  for(const code of [404,501]){s.setStatus(code);a.onOwnerUpload({id:`f${code}`,parent_id:'R'});await a.idle();expect(JSON.parse(s.disk())).toEqual([]);}
   s.setStatus(500);a.onOwnerUpload({id:'expired',parent_id:'R'});await a.idle();const n=s.posts.length;s.advance(8*DAY);await a.retryPending();expect(s.posts).toHaveLength(n);expect(JSON.parse(s.disk())).toEqual([]);
 });
 test('the_publish_hook_never_throws_into_the_upload',async()=>{
@@ -152,4 +151,20 @@ test('an_unavailable_retry_cache_does_not_stop_immediate_publishing',async()=>{
   const s=setup();s.p.read=async()=>{throw Error('cache unreadable');};s.p.write=async()=>{throw Error('cache unwritable');};
   const a=createSharedFolderPublisher(s.p);a.onOwnerUpload({id:'f',parent_id:'R'});await a.idle();
   expect(s.posts).toHaveLength(1);
+});
+
+// L7c: a publish happens only for a folder whose custody this account opened, so a later 404, 405 or
+// 501 is a server claim to distrust, not proof the folder is gone: the wrap stays queued, never dropped.
+test('a_later_404_405_or_501_never_drops_a_queued_wrap_and_it_publishes_once_the_server_answers',async()=>{
+  const s=setup(),a=createSharedFolderPublisher(s.p);
+  for(const code of [404,405,501]){s.setStatus(code);a.onOwnerUpload({id:`f${code}`,parent_id:'R'});await a.idle();}
+  expect(JSON.parse(s.disk()).map(r=>r.fileId).sort()).toEqual(['f404','f405','f501']);
+  s.setStatus(0);await a.retryPending();expect(JSON.parse(s.disk())).toEqual([]);
+  s.setStatus(404);a.onOwnerUpload({id:'old',parent_id:'R'});await a.idle();s.advance(8*DAY);await a.retryPending();expect(JSON.parse(s.disk())).toEqual([]);
+});
+test('an_unavailable_custody_keeps_the_wrap_queued_and_posts_nothing',async()=>{
+  const s=setup(),a=createSharedFolderPublisher(s.p);
+  s.p.folderHandleFor=async()=>{throw Object.assign(new Error("This folder's keys are unavailable"),{name:'CustodyUnavailableError'});};
+  a.onOwnerUpload({id:'f',parent_id:'R'});await a.idle();
+  expect(s.posts).toEqual([]);expect(s.wraps()).toBe(0);expect(JSON.parse(s.disk())).toEqual([{fileId:'f',parentId:'R',rootId:'R',createdAt:1000}]);
 });
