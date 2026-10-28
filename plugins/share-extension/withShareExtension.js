@@ -100,24 +100,17 @@ function withShareExtension(config) {
     const iosDir = config.modRequest.platformProjectRoot;
     const extDir = path.join(iosDir, targetName);
     // Source files live in targets/share-extension/ (source of truth)
-    // with fallback to plugins/share-extension/ for ShareViewController.swift
     const srcDir = path.resolve(projectRoot, 'targets/share-extension');
-    const pluginSrcDir = path.resolve(projectRoot, 'plugins/share-extension');
 
     if (!fs.existsSync(extDir)) {
       fs.mkdirSync(extDir, { recursive: true });
     }
 
     for (const file of SOURCE_FILES) {
-      // Check targets/share-extension/ first, then plugins/share-extension/
-      let src = path.join(srcDir, file);
-      if (!fs.existsSync(src)) {
-        src = path.join(pluginSrcDir, file);
-      }
+      const src = path.join(srcDir, file);
       const dst = path.join(extDir, file);
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, dst);
-      }
+      // Missing canonical source is an error, never a reason to use old code.
+      fs.copyFileSync(src, dst);
     }
 
     // Activation rule: accept images, movies, file URLs, web URLs, text,

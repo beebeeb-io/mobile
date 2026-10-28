@@ -5,7 +5,6 @@ const fs = require('fs');
 
 const FRAMEWORK_NAME = 'BeebeebCore.xcframework';
 const BINDINGS_NAME = 'beebeeb_uniffi.swift';
-const BRIDGE_NAME = 'BeebeebCryptoBridge.swift';
 const TARGET_NAME = 'Beebeeb';
 const POD_TAG = '@beebeeb-uniffi-bridge';
 
@@ -38,7 +37,6 @@ const withCopyArtifacts = (config) =>
       const coreDir = path.resolve(projectRoot, '../../core');
       const xcframeworkSrc = path.join(coreDir, FRAMEWORK_NAME);
       const bindingsSrc = path.join(coreDir, 'beebeeb-uniffi/bindings', BINDINGS_NAME);
-      const bridgeSrc = path.resolve(projectRoot, 'plugins/uniffi-bridge', BRIDGE_NAME);
 
       const xcframeworkDst = path.join(iosDir, FRAMEWORK_NAME);
       const mainAppSwiftDir = path.join(iosDir, TARGET_NAME);
@@ -68,10 +66,8 @@ const withCopyArtifacts = (config) =>
         console.warn(`[uniffi-bridge] WARNING: ${bindingsSrc} not found`);
       }
 
-      if (fs.existsSync(bridgeSrc) && fs.existsSync(cryptoModuleIosDir)) {
-        copyFileIfChanged(bridgeSrc, path.join(cryptoModuleIosDir, BRIDGE_NAME));
-        console.log(`[uniffi-bridge] Copied ${BRIDGE_NAME} → modules/beebeeb-crypto/ios/`);
-      }
+      // BeebeebCryptoBridge.swift is owned by modules/beebeeb-crypto/ios.
+      // CocoaPods compiles that source directly; prebuild must never replace it.
 
       return config;
     },
