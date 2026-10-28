@@ -682,8 +682,8 @@ final class CoreVectorsKATTests: XCTestCase {
             let rows = try SharedKeyOps.wrapChildKeys(master: master, folderId: folder.handleId, fileIds: [id], kind: kind, registry: registry)
             let wire = rows[0].wrapped
             let opened = try registry.folder(folder.handleId)!.handle.unwrapFolderChild(sharedFolderId: root, itemId: id, kind: kind, nonce: Data(wire.prefix(12)), ciphertext: Data(wire.dropFirst(12)))
-            XCTAssertEqual(try opened.keyId(), real.keyId())
-            XCTAssertNotEqual(try opened.keyId(), master.deriveFileKey(fileId: Data(id.utf8)).keyId())
+            XCTAssertEqual(try opened.keyId(), try real.keyId())
+            XCTAssertNotEqual(try opened.keyId(), try master.deriveFileKey(fileId: Data(id.utf8)).keyId())
             let frame = try real.encryptChunk(plaintext: Data("moved guest".utf8))
             XCTAssertEqual(try opened.decryptChunk(nonce: frame.nonce, ciphertext: frame.ciphertext), Data("moved guest".utf8))
         }
