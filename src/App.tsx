@@ -96,6 +96,7 @@ import { AccountOnboardingOverlay } from './components/onboarding/AccountOverlay
 import TwoFactorChallengeScreen from './screens/TwoFactorChallengeScreen';
 import FilesScreen from './screens/FilesScreen';
 import SharedScreen from './screens/SharedScreen';
+import SharedFolderActivityScreen from './screens/SharedFolderActivityScreen';
 import PhotosScreen from './screens/PhotosScreen';
 import SettingsScreen from './screens/SettingsScreen';
 
@@ -329,6 +330,7 @@ export type RootStackParamList = {
      */
     startInEditMode?: boolean;
   };
+  SharedFolderActivity: { folderId?: string } | undefined;
   ShareSheet: {
     fileId: string;
     fileName: string;
@@ -1727,6 +1729,7 @@ export default function App() {
                     options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                   />
                   <Stack.Screen name="Trash" component={TrashScreen} />
+                  <Stack.Screen name="SharedFolderActivity" component={SharedFolderActivityScreen} options={{ headerShown: true, title: 'Activity' }} />
                   <Stack.Screen name="FileRequests" component={FileRequestsScreen} />
                   <Stack.Screen name="CreateFileRequest" component={CreateFileRequestScreen} />
                   <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />

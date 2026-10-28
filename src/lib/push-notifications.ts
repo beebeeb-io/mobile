@@ -191,6 +191,12 @@ export function handleNotificationTap(
       nav('Tabs', { screen: 'Files' });
       break;
 
+    case 'shared_folder_files_added':
+    case 'shared_folder_items_deleted':
+      // The push contains only the category; the bounded account list finds folders.
+      nav('SharedFolderActivity');
+      break;
+
     case 'share_received':
       nav('Tabs', { screen: 'Shared' });
       break;
