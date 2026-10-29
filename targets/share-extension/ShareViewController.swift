@@ -88,6 +88,15 @@ final class ShareViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // Task 1962 round 4 (Bug 6c) — this extension process has its OWN
+        // `URLCache.shared` and container, which a sign-out in the app cannot
+        // reach. Before the first request: a zero-capacity shared cache rooted
+        // at an explicit extension directory, then an off-main clear of
+        // whatever an older build left in this process's default cache.
+        URLCache.shared = Self.zeroCapacityURLCache()
+        DispatchQueue.global(qos: .utility).async {
+            URLCache(memoryCapacity: 0, diskCapacity: 0, directory: nil).removeAllCachedResponses()
+        }
         view.backgroundColor = UIColor.black.withAlphaComponent(0.5)
         loadSharedConfig()
         setupContainerUI()
@@ -96,6 +105,13 @@ final class ShareViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         performSetup()
+    }
+
+    /// A `URLCache` that stores nothing, in its own directory under `Caches/`.
+    private static func zeroCapacityURLCache() -> URLCache {
+        let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        let directory = cachesDirectory?.appendingPathComponent("bb-no-http-cache-share", isDirectory: true)
+        return URLCache(memoryCapacity: 0, diskCapacity: 0, directory: directory)
     }
 
     // MARK: - Setup

@@ -1888,6 +1888,9 @@ final class NativeBackupEngine: NSObject {
 
   private func setupBackgroundSession() {
     let config = URLSessionConfiguration.background(withIdentifier: Self.bgSessionIdentifier)
+    // Task 1962 round 4 (Bug 6d): the background session keeps no response
+    // cache (default is URLCache.shared, which holds another account's rows).
+    config.urlCache = nil
     config.isDiscretionary = false
     config.sessionSendsLaunchEvents = true
     config.allowsCellularAccess = true // Respect user's wifiOnly setting separately
@@ -1938,6 +1941,8 @@ final class NativeBackupEngine: NSObject {
 
   private func setupMetadataSession() {
     let config = URLSessionConfiguration.default
+    // Task 1962 round 4 (Bug 6d): the metadata session keeps no response cache.
+    config.urlCache = nil
     config.timeoutIntervalForRequest = 30
     config.timeoutIntervalForResource = 60
     metadataSession = URLSession(configuration: config)

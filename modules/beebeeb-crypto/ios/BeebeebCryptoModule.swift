@@ -422,7 +422,11 @@ private final class PreviewStreamingDownloadDelegate: NSObject, URLSessionDataDe
       let queue = OperationQueue()
       queue.maxConcurrentOperationCount = 1
       queue.qualityOfService = .utility
-      let session = URLSession(configuration: .default, delegate: self, delegateQueue: queue)
+      // Task 1962 round 4 (Bug 6d) — preview downloads must not touch the
+      // response cache either: an explicit configuration with `urlCache = nil`.
+      let previewConfiguration = URLSessionConfiguration.default
+      previewConfiguration.urlCache = nil
+      let session = URLSession(configuration: previewConfiguration, delegate: self, delegateQueue: queue)
       self.session = session
       let task = session.dataTask(with: request)
       progress.setTask(task)
@@ -2365,6 +2369,11 @@ public class BeebeebCryptoModule: Module {
       let pendingNonce = PlaintextStorageProtection.markPurgePending()
       self.sharedKeys.clear()
       self.cancelAllPreviewStreams()
+      // Task 1962 round 4 (Bug 6b) — belt. With 6a the shared cache has zero
+      // capacity and stores nothing, so this is a no-op; it stays so that a
+      // build ever shipping without 6a still drops the previous account's
+      // API responses at every sign-out path.
+      URLCache.shared.removeAllCachedResponses()
       if pendingNonce == nil {
         RuntimeTrace.event("storage.purge.failed", ["stage": "pending_marker"])
         failed += 1

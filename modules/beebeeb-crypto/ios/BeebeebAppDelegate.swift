@@ -10,6 +10,22 @@ public class BeebeebAppDelegate: ExpoAppDelegateSubscriber {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    // Task 1962 round 4 (Bug 6a) — RN's networking session is built from
+    // `defaultSessionConfiguration` on the first request and therefore uses
+    // `URLCache.shared`, which by default persists API responses (with the
+    // previous account's ids) in Library/Caches. Give the process a
+    // zero-capacity shared cache backed by an explicit app-specific
+    // directory. Main thread does exactly ONE thing here: the assignment.
+    // Never read the `URLCache.shared` getter first, and do no file I/O.
+    URLCache.shared = Self.zeroCapacityURLCache(directoryName: "bb-no-http-cache")
+    // OFF the main thread (task 1669 launch-watchdog lesson): drop what older
+    // builds stored in the DEFAULT cache directory by opening a separate
+    // instance on it and removing its responses. After the assignment above,
+    // nothing new is ever written there.
+    DispatchQueue.global(qos: .utility).async {
+      URLCache(memoryCapacity: 0, diskCapacity: 0, directory: nil).removeAllCachedResponses()
+    }
+
     // Pre-mortem 12 / task 0300 — exclude every plaintext + metadata path from
     // iCloud and Finder backups before any other subsystem can write to them.
     // Idempotent: repairs existing installs on their first launch of this build.
@@ -30,6 +46,17 @@ public class BeebeebAppDelegate: ExpoAppDelegateSubscriber {
     // reintroduced into this function.
     NativeBackupEngine.registerBackgroundTaskEarly()
     return true
+  }
+
+  /// Task 1962 round 4 (Bug 6a/6c): a `URLCache` that stores nothing in memory
+  /// or on disk, rooted at an explicit per-caller directory under `Caches/`
+  /// (never the shared default directory, and never created on the caller's
+  /// thread: with a zero disk capacity there is nothing to write). Extensions
+  /// call this with their own directory name.
+  static func zeroCapacityURLCache(directoryName: String) -> URLCache {
+    let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+    let directory = cachesDirectory?.appendingPathComponent(directoryName, isDirectory: true)
+    return URLCache(memoryCapacity: 0, diskCapacity: 0, directory: directory)
   }
 
   public func application(

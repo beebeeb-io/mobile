@@ -12,6 +12,8 @@ final class ApiClient {
 
   init(session: URLSession? = nil) {
     let cfg = URLSessionConfiguration.default
+    // Task 1962 round 4 (Bug 6c): extension sessions keep no response cache.
+    cfg.urlCache = nil
     cfg.timeoutIntervalForRequest = 60
     cfg.timeoutIntervalForResource = 600
     cfg.httpMaximumConnectionsPerHost = 4
