@@ -24,10 +24,9 @@ mock.module('./rate-limited-fetch', () => ({ rateLimitedFetch: async () => {} })
 mock.module('./encrypted-download', () => ({ decryptEncryptedBytes: async () => {}, inferChunkCountFromEncryptedSize: () => 1 }));
 mock.module('./local-identifier-map', () => ({ getLocalIdentifier: () => null }));
 mock.module('./thumbnail-cache', () => ({
+  forgetCachedThumbnailName: () => {},
   cacheThumbnail: async (_id, _bytes, variant) => {
     cachedVariants.push(variant); return `file:///cache/${variant}.webp`;
-  }, cacheThumbnailBase64: async () => {
-    throw new Error('cacheThumbnailBase64 is Android-only');
   }, enqueueThumbnailLoad: async () => {}, getCachedThumbnail: async () => null,
 }));
 const { generateAndUploadThumbnail } = await import('./thumbnail');
