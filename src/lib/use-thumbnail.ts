@@ -9,7 +9,11 @@ import { useCrypto } from './crypto-context';
 import { onThumbnailReady } from './thumbnail-events';
 import { getCachedThumbnail, enqueueThumbnailLoad } from './thumbnail-cache';
 import { cacheLocalThumbnail, fetchDecryptedThumbnailUri } from './thumbnail';
-import { isThumbnailLoadCancelled, type ThumbnailLoadResult } from './thumbnail-load-outcome';
+import {
+  isThumbnailLoadCancelled,
+  isThumbnailLoadTransient,
+  type ThumbnailLoadResult,
+} from './thumbnail-load-outcome';
 import { getLocalIdentifier } from './local-identifier-map';
 import { recordRuntimeTrace } from './runtime-trace';
 
@@ -65,7 +69,7 @@ export async function fetchThumbnailUriOnce(
     }
   }
   const result = await fetchDecryptedThumbnailUri(fileId, fileKey, signal);
-  return isThumbnailLoadCancelled(result) ? null : result;
+  return isThumbnailLoadCancelled(result) || isThumbnailLoadTransient(result) ? null : result;
 }
 
 /**
@@ -122,6 +126,9 @@ export function useThumbnail(
     ) => {
       if (cancelled) return;
       if (isThumbnailLoadCancelled(result)) return;
+      // N1 — a transient failure (backoff, 429/5xx, network/disk throw) keeps
+      // the placeholder and is retried on the next mount; never `failed`.
+      if (isThumbnailLoadTransient(result)) return;
       if (result) {
         recordRuntimeTrace(traceSuccess, { fileId });
         setState({ uri: result, source: 'remote', failed: false });

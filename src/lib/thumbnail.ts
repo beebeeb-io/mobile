@@ -44,7 +44,9 @@ import {
 } from './thumbnail-cache';
 import {
   THUMBNAIL_LOAD_CANCELLED,
+  THUMBNAIL_LOAD_TRANSIENT,
   isThumbnailLoadCancelled,
+  isThumbnailLoadTransient,
   type ThumbnailLoadResult,
 } from './thumbnail-load-outcome';
 import { isCurrentAccountEpoch, type AccountEpoch } from './account-epoch';
@@ -725,7 +727,8 @@ export async function fetchDecryptedThumbnailUri(
       warnThumbnailOnce('[thumbnail] remote thumbnail fetch skipped during backoff', {
         backoffRemainingMs: backoffRemaining,
       });
-      return null;
+      // N1 — a pause is transient: keep the placeholder, retry on next mount.
+      return THUMBNAIL_LOAD_TRANSIENT;
     }
 
     const token = await getToken();
@@ -738,7 +741,10 @@ export async function fetchDecryptedThumbnailUri(
     if (!res.ok) {
       if (res.status === 429 || res.status >= 500) {
         applyThumbnailBackoff(res.status, res.headers.get('Retry-After'));
-      } else if (res.status !== 404) {
+        // N1 — 429/5xx is transient, not "no thumbnail".
+        return THUMBNAIL_LOAD_TRANSIENT;
+      }
+      if (res.status !== 404) {
         warnThumbnailOnce('[thumbnail] remote thumbnail fetch failed', {
           status: res.status,
           fileId,
@@ -762,7 +768,18 @@ export async function fetchDecryptedThumbnailUri(
       // A5: views over the same buffer instead of two ~100 KB copies.
       const nonce = encryptedBytes.subarray(0, 12);
       const ciphertext = encryptedBytes.subarray(12);
-      plainBytes = await (typeof fileKey === 'function' ? fileKey(nonce, ciphertext) : decryptChunk(fileKey, nonce, ciphertext));
+      try {
+        plainBytes = await (typeof fileKey === 'function' ? fileKey(nonce, ciphertext) : decryptChunk(fileKey, nonce, ciphertext));
+      } catch (err) {
+        // N1 — a decrypt failure is a real "unavailable" (the bytes are not a
+        // usable thumbnail), not a transient network/disk fault.
+        if (signal?.aborted) return THUMBNAIL_LOAD_CANCELLED;
+        warnThumbnailOnce('[thumbnail] remote thumbnail decrypt failed', {
+          fileId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return null;
+      }
     }
 
     // A2: an aborted (unmounted) cell must not write to disk.
@@ -776,7 +793,17 @@ export async function fetchDecryptedThumbnailUri(
     if (getLocalIdentifier(fileId)) return null;
     // A5: write the bytes. The shared-file decrypt callback and the raw-key
     // path both take the platform-neutral byte writer now (no base64).
-    const persistedPath = await cacheThumbnail(fileId, plainBytes);
+    //
+    // N1 — a refused/failed write is transient (disk full, sign-out lease,
+    // folder race): the tile must not be marked unavailable for the session.
+    let persistedPath: string;
+    try {
+      persistedPath = await cacheThumbnail(fileId, plainBytes);
+    } catch (err) {
+      if (signal?.aborted) return THUMBNAIL_LOAD_CANCELLED;
+      if (expectedEpoch && !isCurrentAccountEpoch(expectedEpoch)) return THUMBNAIL_LOAD_CANCELLED;
+      throw err;
+    }
     thumbCache.set(fileId, persistedPath);
     return persistedPath;
   })();
@@ -791,7 +818,8 @@ export async function fetchDecryptedThumbnailUri(
       fileId,
       error: err instanceof Error ? err.message : String(err),
     });
-    return null;
+    // N1 — a throw here is a network/disk fault, not "no thumbnail".
+    return THUMBNAIL_LOAD_TRANSIENT;
   }
 }
 
@@ -894,6 +922,11 @@ export async function prefetchDecryptedThumbnails(
         return fetchDecryptedThumbnailUri(fId, fileKey, innerSignal, epoch);
       }, signal, { prefetch: true });
       if (isThumbnailLoadCancelled(uri)) {
+        stats.skipped += 1;
+        return;
+      }
+      if (isThumbnailLoadTransient(uri)) {
+        // N1 — retryable; not a thumbnail that is known to be missing.
         stats.skipped += 1;
         return;
       }
