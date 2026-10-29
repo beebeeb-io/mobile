@@ -1,4 +1,5 @@
 import Foundation
+import FileProvider
 
 /// Shared identifiers and paths for the Beebeeb File Provider Extension.
 ///
@@ -17,7 +18,8 @@ enum BeebeebConstants {
   static let keychainService = "io.beebeeb.masterkey"
 
   /// Keychain service for the extension-specific wrapped master key blob.
-  /// Uses a `.devicePasscode` SE key so extensions can decrypt without Face ID.
+  /// Legacy share/backup service. Files uses the dedicated versioned service
+  /// defined by BeebeebKeychainCore.wrappedKeyServiceFiles.
   static let keychainServiceExt = "io.beebeeb.masterkey.ext"
 
   /// Keychain account label for the wrapped master key.
@@ -50,8 +52,23 @@ enum BeebeebConstants {
   /// Same migration story as `userDefaultsApiBaseUrlKey` — see task 0447.
   static let userDefaultsSessionTokenKey = "io.beebeeb.sessionToken"
 
+  // Task 1593 round 8 (R2) — the purge-epoch counter used to live here as
+  // an App Group `UserDefaults` key (`purgeEpochKey`), a separate value
+  // from the cache database with no cross-process synchronisation
+  // guarantee between the two. It now lives IN the cache database itself,
+  // as its `PRAGMA user_version` — see `CacheManager.currentPurgeEpoch()`'s
+  // doc comment for the full rationale. Removed here; nothing else in this
+  // target referenced it.
+
   /// Logical root directory shown in the iOS Files app.
   static let rootContainerIdentifier = "io.beebeeb.root"
+
+  /// File Provider domain registered by the containing app.
+  static let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
+  static let fileProviderDisplayName = "Beebeeb"
+  static var fileProviderDomain: NSFileProviderDomain {
+    NSFileProviderDomain(identifier: fileProviderDomainIdentifier, displayName: fileProviderDisplayName)
+  }
 }
 
 /// URL helpers for the App Group container.
@@ -66,9 +83,28 @@ enum AppGroupContainer {
     return url
   }
 
-  /// Path to the SQLite cache.
+  /// Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoV) — dedicated,
+  /// protected directory for the SQLite cache; see
+  /// `PlaintextStorageProtection.migrateFileProviderCacheDatabaseIfNeeded`'s
+  /// doc comment for why a directory (not just the file) is what actually
+  /// closes the sidecar-protection gap, via inheritance. Same
+  /// create-then-protect shape as `pinnedContentDirectory`/
+  /// `temporaryContentDirectory` above.
+  static var cacheDatabaseDirectory: URL {
+    let dir = url.appendingPathComponent("file-provider-db", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    PlaintextStorageProtection.protect(dir)
+    return dir
+  }
+
+  /// Path to the SQLite cache. Task 1593 round 11 moved this from the App
+  /// Group root into `cacheDatabaseDirectory`; every resolution migrates a
+  /// pre-round-11 install's legacy top-level database the first time either
+  /// process (main app or extension) next resolves this path.
   static var cacheDatabaseUrl: URL {
-    url.appendingPathComponent(BeebeebConstants.cacheDatabaseFilename)
+    let legacy = url.appendingPathComponent(BeebeebConstants.cacheDatabaseFilename)
+    let migrated = cacheDatabaseDirectory.appendingPathComponent(BeebeebConstants.cacheDatabaseFilename)
+    return PlaintextStorageProtection.migrateFileProviderCacheDatabaseIfNeeded(from: legacy, to: migrated)
   }
 
   /// Subdirectory holding decrypted file content kept on disk for pinned items.

@@ -39,7 +39,9 @@ export async function requestDeviceOwnerAuth(
     return {
       ok: false,
       reason: 'unavailable',
-      message: messages.unavailable ?? 'Set up Face ID or a device passcode before permanently deleting files.',
+      message: messages.unavailable ?? (Platform.OS === 'ios'
+        ? 'Set up Face ID or a device passcode before permanently deleting files.'
+        : 'Set up a screen lock or fingerprint before permanently deleting files.'),
     };
   }
 

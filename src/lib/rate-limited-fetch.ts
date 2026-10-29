@@ -1,3 +1,5 @@
+import { SERVER_BUSY_MAX_WAIT_SECONDS, serverBusyWait } from './server-busy-retry';
+
 type FetchInput = RequestInfo | URL;
 type FetchLike = (input: FetchInput, init?: RequestInit) => Promise<Response>;
 type SleepFn = (ms: number) => Promise<void>;
@@ -17,6 +19,34 @@ const DEFAULT_BUCKET_SPACING_MS: Record<RateLimitBucket, number> = {
   general: 140,
   external: 0,
 };
+
+/**
+ * Task 1591 (bug 3) — the longest this client will silently hold a request
+ * back because an earlier response asked it to wait.
+ *
+ * Before 1591 a 429's `Retry-After` paused the WHOLE bucket for however long
+ * the server said. The signup limiter (3/hour per IP, server
+ * `SignupLimiter`) answers with `Retry-After: 3600`, so after one 429 the
+ * next signup attempt — and every other request in that bucket — sat in
+ * `sleep()` for up to an hour before it was even sent: the Create-account
+ * button spun for minutes with no message
+ * (`_qa-evidence/1573/captures/work/ipad-signup-stuck-spinner-after-429.png`).
+ *
+ * A Retry-After up to one minute is throughput pacing (the per-IP / per-user
+ * sliding windows are 60 s) and is honoured in full for the whole bucket. A
+ * longer one is a per-endpoint policy lockout: the bucket is paused for at
+ * most this cap — other requests resume after it, the retried request goes
+ * out, the server answers 429 again at once, and the caller shows the
+ * retry-after to the user (`ApiError.retryAfterSeconds` + `friendlyError`).
+ * So no request is ever held back silently for more than a minute.
+ *
+ * Task 1593 (#141 review P2): 1591 first DROPPED a longer pause entirely,
+ * which left a bucket that had just been told to back off completely
+ * unpaced — a background loop (thumbnail/photo sync in the `files` bucket)
+ * then hammered the server at its normal 120 ms cadence straight into the
+ * lockout. Capping keeps the bucket paced without the hour-long silent wait.
+ */
+export const MAX_PACING_PAUSE_MS = 60_000;
 
 interface RateLimitedFetchOptions {
   fetchImpl?: FetchLike;
@@ -93,14 +123,25 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
 
   function pauseBucket(bucket: RateLimitBucket, pauseMs: number): void {
     if (pauseMs <= 0) return;
+    // A pause longer than the cap is a policy lockout, not pacing — pause the
+    // bucket for the cap only, never silently for the whole lockout (see
+    // MAX_PACING_PAUSE_MS).
+    const cappedMs = Math.min(pauseMs, MAX_PACING_PAUSE_MS);
     const state = stateFor(bucket);
-    state.nextAt = Math.max(state.nextAt, now() + pauseMs);
+    state.nextAt = Math.max(state.nextAt, now() + cappedMs);
   }
 
-  function applyResponsePacing(bucket: RateLimitBucket, response: Response): void {
+  async function applyResponsePacing(bucket: RateLimitBucket, response: Response): Promise<void> {
     const retryAfterMs = parseRetryAfterMs(response.headers.get('Retry-After'), now());
     if (response.status === 429 && retryAfterMs !== null) {
-      pauseBucket(bucket, retryAfterMs);
+      // Task 1870 r2 (Codex P2): a `429 server_busy` is retried by
+      // `withServerBusyRetry` after at most SERVER_BUSY_MAX_WAIT_SECONDS. If
+      // the bucket were paused for the server's full Retry-After (up to 60 s)
+      // the retry would sit in the bucket for the rest of it — a second wait
+      // on top of the first. So pause it for the same capped time. Any other
+      // 429 (upload_rate_limited, the generic limiter) keeps the full pause.
+      const busy = (await serverBusyWait(response)) !== null;
+      pauseBucket(bucket, busy ? Math.min(retryAfterMs, SERVER_BUSY_MAX_WAIT_SECONDS * 1000) : retryAfterMs);
     } else {
       const remaining = Number(response.headers.get('X-RateLimit-Remaining'));
       if (Number.isFinite(remaining) && remaining <= 2) {
@@ -115,7 +156,7 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
     const minSpacing = spacing[bucket] ?? 0;
     if (minSpacing <= 0) {
       const response = await fetchImpl(input, init);
-      applyResponsePacing(bucket, response);
+      await applyResponsePacing(bucket, response);
       return response;
     }
 
@@ -125,7 +166,7 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
       if (waitMs > 0) await sleep(waitMs);
       state.nextAt = Math.max(now(), state.nextAt) + minSpacing;
       const response = await fetchImpl(input, init);
-      applyResponsePacing(bucket, response);
+      await applyResponsePacing(bucket, response);
       return response;
     });
     state.chain = task.then(() => undefined, () => undefined);

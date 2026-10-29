@@ -1,16 +1,72 @@
+import { sharedFileKeyIsLoaded } from './shared-folder-keys';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { FileProviderDomainRegistrationResult } from '../../modules/beebeeb-crypto/src/BeebeebCrypto.types';
-import type { FileProviderCacheEntry } from '../../modules/beebeeb-crypto/src/BeebeebCrypto';
+import type { BatchNameItem, BatchNameResult, FileProviderCacheEntry } from '../../modules/beebeeb-crypto/src/BeebeebCrypto';
 import { getApiUrl, getToken, listAllFiles } from './api';
 import type { FileEntry } from './api';
 import { encryptedMetadataPayloadToBytes } from './encrypted-metadata';
 import { requestDeviceOwnerAuth } from './device-owner-auth';
 import { wasRecentlyUnlocked } from './lock-state';
+import { mapInBatches } from './async-batch';
+import { decryptNamesInBackground } from './background-name-decrypt';
+import { isPlaintextGateClosed, plaintextGate, withPlaintextLease } from './plaintext-gate';
 
 type MountTrustedFileProviderOptions = {
   vaultUnlocked?: boolean;
 };
+
+async function mirrorSessionForFileProvider(): Promise<void> {
+  const token = await getToken();
+  if (!token) {
+    throw new Error('Sign in before mounting Beebeeb in Files.');
+  }
+  let mirrored = false;
+  try {
+    mirrored = await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl());
+  } catch {
+    mirrored = false;
+  }
+  if (!mirrored) {
+    throw new Error('Could not save Beebeeb credentials for Files. Try signing in again, then mount Beebeeb in Files.');
+  }
+}
+
+export async function registerTrustedFileProviderDomain(): Promise<FileProviderDomainRegistrationResult> {
+  if (Platform.OS !== 'ios') {
+    return {
+      supported: false,
+      identifier: 'io.beebeeb.files',
+      displayName: 'Beebeeb',
+      registered: false,
+      added: false,
+      removedBeforeAdd: false,
+      domainCount: 0,
+      rootEnumerationSignaled: false,
+      workingSetEnumerationSignaled: false,
+    };
+  }
+  await mirrorSessionForFileProvider();
+  return BeebeebCrypto.registerFileProviderDomain();
+}
+
+export async function resetTrustedFileProviderDomain(): Promise<FileProviderDomainRegistrationResult> {
+  if (Platform.OS !== 'ios') {
+    return {
+      supported: false,
+      identifier: 'io.beebeeb.files',
+      displayName: 'Beebeeb',
+      registered: false,
+      added: false,
+      removedBeforeAdd: false,
+      domainCount: 0,
+      rootEnumerationSignaled: false,
+      workingSetEnumerationSignaled: false,
+    };
+  }
+  await mirrorSessionForFileProvider();
+  return BeebeebCrypto.resetFileProviderDomain();
+}
 
 export async function mountTrustedFileProvider(
   options: MountTrustedFileProviderOptions = {},
@@ -43,12 +99,7 @@ export async function mountTrustedFileProvider(
     }
   }
 
-  const token = await getToken();
-  if (!token) {
-    throw new Error('Sign in before mounting Beebeeb in Files.');
-  }
-
-  await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl());
+  await mirrorSessionForFileProvider();
   const result = await BeebeebCrypto.mountFileProviderAccess();
   if (result.registered && result.cacheDatabaseReady === false) {
     throw new Error('Beebeeb mounted in iOS, but Files storage is not ready yet. Try again in a moment.');
@@ -66,6 +117,15 @@ export async function removeTrustedFileProvider(): Promise<FileProviderDomainReg
  *
  * Call this after the main app has fetched + decrypted a directory listing.
  * The native side upserts rows and signals the File Provider to re-enumerate.
+ *
+ * Task 1593 round 4 — this is the ONE JS call site of the native write
+ * (`BeebeebCrypto.syncFileProviderCache`, enforced by
+ * `caches-plaintext-registry.test.ts`), so gating it HERE covers every caller
+ * (the BFS walk below, FilesScreen's per-folder push, the sync write-through)
+ * without each one having to remember to. A purge closing the gate mid-call
+ * refuses the write before it reaches native; the resolution is 0 pushed
+ * rather than a rejection, since every caller already treats "nothing to
+ * sync" as a normal, retryable outcome (the next enumeration reconciles).
  */
 export async function syncDecryptedEntriesToFileProvider(
   files: FileEntry[],
@@ -75,7 +135,7 @@ export async function syncDecryptedEntriesToFileProvider(
 ): Promise<number> {
   if (Platform.OS !== 'ios') return 0;
 
-  const entries: FileProviderCacheEntry[] = files.map((f) => ({
+  const entries: FileProviderCacheEntry[] = files.filter(f => !sharedFileKeyIsLoaded(f.id)).map((f) => ({
     id: f.id,
     parent_id: f.parent_id ?? parentId ?? null,
     name_encrypted: f.name_encrypted ?? null,
@@ -101,7 +161,16 @@ export async function syncDecryptedEntriesToFileProvider(
   const pruneParents = prune
     ? options.pruneParents ?? [parentId ?? null]
     : null;
-  return BeebeebCrypto.syncFileProviderCache(entries, prune, pruneParents);
+
+  try {
+    return await withPlaintextLease('file provider cache push', async (lease) => {
+      lease.assertValid();
+      return BeebeebCrypto.syncFileProviderCache(entries, prune, pruneParents);
+    });
+  } catch (err) {
+    if (isPlaintextGateClosed(err)) return 0;
+    throw err;
+  }
 }
 
 /**
@@ -139,11 +208,31 @@ function parseDecryptedName(plaintext: string): string {
 /**
  * Fetch a directory listing, decrypt all names, and push the result into the
  * File Provider cache. Used during mount and as a periodic refresh.
+ *
+ * Task 1593 round 4 — this can be a long BFS across the whole vault, so it
+ * holds ONE lease from the plaintext gate for its entire span (rather than
+ * one per push): a sign-out purge invalidates it immediately and `drain()`
+ * waits (bounded) for the walk to notice, instead of the sweep racing a walk
+ * that keeps recreating rows underneath it. `lease.valid` is checked before
+ * every folder's push to native — and again right after the decrypt span,
+ * which is async — so the walk stops queueing/pushing MORE folders the
+ * moment a purge starts, rather than only refusing the final push.
  */
 export async function populateFileProviderCache(
   decryptMetadata: (fileId: string, nonce: Uint8Array, ct: Uint8Array) => Promise<string>,
+  options: {
+    recursive?: boolean;
+    decryptNames?: (items: BatchNameItem[]) => Promise<BatchNameResult[]>;
+  } = {},
 ): Promise<number> {
   if (Platform.OS !== 'ios') return 0;
+  let lease;
+  try {
+    lease = plaintextGate.acquire('file provider cache walk');
+  } catch {
+    // Gate already closed (signed out) — nothing to populate.
+    return 0;
+  }
   try {
     let totalSynced = 0;
 
@@ -152,6 +241,7 @@ export async function populateFileProviderCache(
     // a full-vault traversal.
     const queue: (string | undefined)[] = [undefined]; // start with root
     while (queue.length > 0) {
+      if (!lease.valid) break;
       const parentId = queue.shift();
       try {
         // Full cursor walk — the Files.app BFS must see EVERY child of each
@@ -159,12 +249,22 @@ export async function populateFileProviderCache(
         const files = await listAllFiles(parentId);
         const names: Record<string, string> = {};
 
-        await Promise.all(files.map(async (file) => {
+        const encrypted = files.filter((file) => (file.name_encrypted ?? '').startsWith('{'));
+        if (options.decryptNames) {
+          await decryptNamesInBackground(
+            encrypted.map((file) => ({ fileId: file.id, nameEncrypted: file.name_encrypted ?? '' })),
+            options.decryptNames,
+            (item, result) => { if (result.name) names[item.fileId] = result.name; },
+            () => !lease.valid,
+          );
+        }
+        await mapInBatches(files, 12, async (file) => {
+          if (!lease.valid) return;
           try {
             const raw = file.name_encrypted ?? '';
             if (!raw.startsWith('{')) {
               if (raw && raw.length < 200) names[file.id] = raw;
-            } else {
+            } else if (!options.decryptNames) {
               const payload = encryptedMetadataPayloadToBytes(raw);
               if (payload) {
                 const plaintext = await decryptMetadata(file.id, payload.nonce, payload.ciphertext);
@@ -175,7 +275,11 @@ export async function populateFileProviderCache(
           } catch {
             // skip individual decrypt failures
           }
-        }));
+        });
+
+        // Re-check: the decrypt span above is async, and a purge may have
+        // closed the gate while it ran.
+        if (!lease.valid) break;
 
         // `listAllFiles` returns the COMPLETE child set for this folder (full
         // cursor walk), so prune is safe here — rows for children that no
@@ -185,7 +289,7 @@ export async function populateFileProviderCache(
         });
 
         for (const file of files) {
-          if (file.is_folder) queue.push(file.id);
+          if (options.recursive !== false && file.is_folder) queue.push(file.id);
         }
       } catch {
         // skip folders that fail to list
@@ -195,5 +299,7 @@ export async function populateFileProviderCache(
     return totalSynced;
   } catch {
     return 0;
+  } finally {
+    lease.release();
   }
 }

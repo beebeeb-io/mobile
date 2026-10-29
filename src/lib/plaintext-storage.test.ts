@@ -111,11 +111,62 @@ describe('plaintext storage registry', () => {
     expect(unreviewed).toEqual([]);
   });
 
+  // Task 1722 review I1 (2026-10-15): a path that comes from a system API is invisible to the
+  // two checks above. Commit 7b57ac7 streamed decrypted Files content into
+  // `NSFileProviderManager.temporaryDirectoryURL()`, which on a simulator resolved to
+  // `<device>/data/tmp`: outside every app container, so not registered, not protected by
+  // `PlaintextStorageProtection`, and out of reach of the sign-out purge. The File Provider
+  // extension writes plaintext only into the registered App Group `temp/` and `pinned/`.
+  test('the File Provider extension never writes into a system temporary directory the purge cannot reach', () => {
+    const SYSTEM_TEMP_RE = /temporaryDirectoryURL|NSTemporaryDirectory\(|FileManager\.default\.temporaryDirectory|\.itemReplacementDirectory/g;
+    const offenders: string[] = [];
+    for (const file of walk(join(REPO_ROOT, 'targets', 'file-provider'), /\.swift$/)) {
+      const text = readFileSync(file, 'utf8');
+      for (const match of text.matchAll(SYSTEM_TEMP_RE)) {
+        offenders.push(`${file.replace(REPO_ROOT + '/', '')}: ${match[0]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   test('the TS mirror matches the Swift registry entry-for-entry', () => {
     const swift = readFileSync(REGISTRY_SWIFT, 'utf8');
     const swiftLeaves = [...swift.matchAll(/appendingPathComponent\("([^"]+)"/g)]
       .map((m) => m[1])
       .filter((leaf) => leaf !== 'beebeeb-plaintext-audit.json');
     expect([...new Set(swiftLeaves)].sort()).toEqual([...PROTECTED_LEAF_NAMES].sort());
+  });
+
+  // ── Android (task 1683d) ──────────────────────────────────────────────────
+  // The Android analogue of the iOS rule is structural, not path-based: Kotlin
+  // writers may only touch (a) `context.filesDir` subdirectories, (b)
+  // `context.cacheDir` subdirectories (evicted + swept by the JS caches
+  // registry), (c) `getSharedPreferences` (MODE_PRIVATE, internal-only), or
+  // (d) an explicit reviewed-registry below. `allowBackup="false"` (manifest)
+  // keeps the filesDir subtree out of device backups, and the sign-out purge
+  // (account-cleanup.ts) sweeps the cache subtree — so any NEW writer that
+  // steps outside those patterns (external storage, world-readable files,
+  // unregistered leaf names in the internal root) must fail this guard.
+
+  test('every Kotlin writer stays inside the reviewed Android storage roots', () => {
+    const KOTLIN_DIR = join(REPO_ROOT, 'modules', 'beebeeb-crypto', 'android', 'src', 'main');
+    // Writers that ESCAPE the reviewed roots (filesDir/cacheDir/shared prefs):
+    // external storage of any form and world-readable file modes. The
+    // reviewed loop builds every path from a rooted base (filesDir/cacheDir/
+    // caller-supplied preview output paths — the same sandbox the JS side
+    // registers), so a bare external path is exactly how an unregistered
+    // plaintext leaf would sneak in.
+    const RE_WRITER_RE =
+      /getExternalFilesDir|getExternalCacheDir|Environment\.getExternal|MODE_WORLD/g;
+    const offenders: string[] = [];
+    for (const file of walk(KOTLIN_DIR, /\.kt$/)) {
+      const text = readFileSync(file, 'utf8');
+      // UniFFI bindings are generated code — reviewed by the Rust side.
+      if (file.endsWith('uniffi.kt')) continue;
+      for (const match of text.matchAll(RE_WRITER_RE)) {
+        offenders.push(`${file.replace(REPO_ROOT + '/', '')}: ${match[0]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

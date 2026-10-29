@@ -1,3 +1,6 @@
+import { sharedFileKeyIsLoaded, sharedMasterHandleId } from '../lib/shared-folder-keys';
+import { handleDecryptChunk } from '../../modules/beebeeb-crypto';
+import { bottomAnchorInset } from '../components/glass/tab-bar-inset';
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AccessibilityInfo,
@@ -16,7 +19,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import type { ImageStyle, StyleProp, ViewStyle } from 'react-native';
+import type { GestureResponderEvent, ImageStyle, StyleProp, ViewStyle } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { RouteProp } from '@react-navigation/native';
@@ -34,12 +37,14 @@ import {
   type PanGestureHandlerStateChangeEvent,
 } from 'react-native-gesture-handler';
 import { WebView } from 'react-native-webview';
+import { isolatePreviewHtml, staticPreviewWebViewProps } from '../lib/preview-html-policy';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import NetInfo from '@react-native-community/netinfo';
 import { Ionicons } from '@expo/vector-icons';
 import type { RootStackParamList } from '../App';
 import { colors, fonts, radii, shadows } from '../theme';
 import type { Colors } from '../theme';
+import { deviceNoun, cameraRollNoun } from '../lib/device-copy';
 import { useTheme } from '../lib/theme-context';
 import { GLASS_CIRCLE_SIZES, GlassCapsule, GlassCircle, PREVIEW_CHROME_MATERIAL, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial } from '../components/glass';
 import { bandColors, type Stop } from '../components/glass/gradient';
@@ -52,11 +57,16 @@ import { collectAllFolders, movePickerFolderFallbackName, type MovePickerFolderN
 import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
 import { evaluateTextEditGate } from '../lib/text-edit-gate';
 import {
+  abandonTextFileUpload,
   buildKeepBothName,
-  isStaleVersionConflict,
+  createSingleFlight,
+  refreshMetaForConflict,
+  runTextSaveConfirmingClear,
+  saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } from '../lib/text-file-save';
-import { decryptToTempFile, invalidatePreviewCache } from '../lib/native-decrypt';
+import { decryptToTempFile, invalidatePreviewCache, materializeVideoPreviewForExport, releasePreviewCopy } from '../lib/native-decrypt';
+import { isLoopbackStreamUri, streamBufferPctFromEvent } from '../lib/video-stream';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
@@ -85,15 +95,47 @@ import {
 import {
   activePhotoPageIndices,
   clampPhotoIndex,
+  PHOTO_PAGE_LOAD_RADIUS,
 } from '../lib/photo-viewer-window';
 import { InfoSheet } from '../components/preview/InfoSheet';
+import { BBActionSheet } from '../components/BBActionSheet';
 import { PreviewBottomBar } from '../components/preview/PreviewBottomBar';
+import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { formatBytes as formatSize } from '../lib/format';
+import { PARTIAL_DECRYPT_MESSAGE, STILL_UPLOADING_MESSAGE, previewLoadErrorMessage } from '../lib/preview-load-error';
+import { displayedSizeBytes, savedFileMetaFrom, type SavedFileMeta } from '../lib/saved-file-meta';
 import { checkLockedFileIds, isPagerPageGated } from '../lib/preview-lock-gate';
 import { computePreviewContentInset } from '../lib/preview-content-inset';
 import { FILES_APP_LOCK_CAVEAT } from '../lib/lock-copy';
-import { formatPdfPageCounter, nextBarsVisible } from '../lib/preview-chrome';
+import { formatPdfPageCounter, nextBarsVisible, pagerTapAction } from '../lib/preview-chrome';
+import { MAX_CENTRAL_DIRECTORY_BYTES, ZipReadError, readZipListing, type ZipListing } from '../lib/zip-reader';
+import { openZipFileSource, type ZipFileSource } from '../lib/zip-file-source';
+import { buildInfoSheetRows, type InfoSheetFocus } from '../lib/preview-info';
+import { extensionForAudio } from '../lib/audio-format';
+import { extensionForRaw, rawFormatLabel } from '../lib/raw-format';
+import type { RawExifInfo } from '../lib/raw-preview';
+import { cleanupTrackedTempFile } from '../lib/preview-temp-file';
+import { isTextPreview } from '../lib/code-text-preview';
+import { fileCategory, type Category } from '../lib/file-category';
+import { extensionForMime, previewCacheName, previewDecryptExtension, previewDisplayName } from '../lib/preview-cache-key';
+// Task 1569 — imported EAGERLY (not React.lazy, unlike every other renderer
+// below), and rendered directly (no Suspense) in the JSX. Found on-device
+// (bb-ios27, Release): `<Suspense><RawRenderer/></Suspense>` inside
+// `mediaStage` rendered NOTHING — no fallback, no content, silently — while
+// a plain hardcoded View in the exact same JSX slot rendered correctly.
+// Every OTHER lazy-loaded renderer below is used from the DOC branch's
+// `previewArea`; isImage/isVideo (the only two pre-existing MEDIA branch
+// categories) never use React.lazy/Suspense at all — RawRenderer would have
+// been the first inside `mediaStage`. Given the isolated proof the plain
+// JSX slot itself works fine, and this task's time budget not allowing
+// root-causing Suspense-in-mediaStage further, the lower-risk fix matching
+// the media branch's own existing precedent (isImage/isVideo: eager import,
+// no lazy) is used instead.
+import { RawRenderer } from '../components/preview/RawRenderer';
+import { ZoomableImage } from '../components/preview/ZoomableImage';
+import { PhotoPageVideo } from '../components/preview/PhotoPageVideo';
+import { previewSurfaceIsDark, statusBarStyleFor } from '../lib/status-bar-style';
 
 // Preview renderers are lazy-loaded so that the libraries each one depends on
 // (jszip, xlsx, mammoth, pako, react-native-pdf, highlight.js) only enter
@@ -127,6 +169,10 @@ const CodeRenderer = React.lazy(async () => {
   const m = await import('../components/preview/CodeRenderer');
   return { default: m.CodeRenderer };
 });
+const AudioRenderer = React.lazy(async () => {
+  const m = await import('../components/preview/AudioRenderer');
+  return { default: m.AudioRenderer };
+});
 const MarkdownRenderer = React.lazy(async () => {
   const m = await import('../components/preview/MarkdownRenderer');
   return { default: m.MarkdownRenderer };
@@ -135,6 +181,12 @@ const TextEditorView = React.lazy(async () => {
   const m = await import('../components/preview/TextEditorView');
   return { default: m.TextEditorView };
 });
+
+// Preview's floating bottom bar sits at `previewBottomInset + 8` and
+// its glass content is roughly 68pt tall. expo-video draws native controls
+// inside the VideoView bounds, so the view itself needs this extra bottom
+// clearance or the playhead lands behind Beebeeb's bottom chrome.
+const PREVIEW_VIDEO_CONTROLS_BOTTOM_CLEARANCE = 84;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -150,6 +202,71 @@ type PreviewOptionAction = {
   run: () => void;
 };
 
+type ExportUriResult = { uri: string; reusedPreview: boolean; release?: () => Promise<void> | void };
+
+type StreamExportMaterializer = (fileId: string, extension: string) => Promise<string>;
+
+export interface PreviewExportUriResolverInput {
+  isImage: boolean;
+  imageUri: string | null;
+  imagePreviewKind: ImagePreviewKind | null;
+  isVideo: boolean;
+  videoUri: string | null;
+  videoFileId: string;
+  videoExtension: string;
+  isPdf: boolean;
+  pdfUri: string | null;
+  fetchAndDecrypt: () => Promise<string>;
+  materializeStreamVideoForExport: StreamExportMaterializer;
+  signal?: AbortSignal;
+}
+
+function throwIfExportAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('Export cancelled.');
+  error.name = 'AbortError';
+  throw error;
+}
+
+export async function resolvePreviewExportUri({
+  isImage,
+  imageUri,
+  imagePreviewKind,
+  isVideo,
+  videoUri,
+  videoFileId,
+  videoExtension,
+  isPdf,
+  pdfUri,
+  fetchAndDecrypt,
+  materializeStreamVideoForExport,
+  signal,
+}: PreviewExportUriResolverInput): Promise<ExportUriResult> {
+  if (isImage && imageUri && imagePreviewKind === 'original') return { uri: imageUri, reusedPreview: true };
+  if (isVideo && videoUri) {
+    if (!isLoopbackStreamUri(videoUri)) return { uri: videoUri, reusedPreview: true };
+    const exportUri = await materializeStreamVideoForExport(videoFileId, videoExtension);
+    let ownsLease = true;
+    const release = async () => {
+      if (!ownsLease) return;
+      ownsLease = false;
+      await releasePreviewCopy(videoFileId, videoExtension);
+    };
+    try {
+      throwIfExportAborted(signal);
+      if (isLoopbackStreamUri(exportUri)) {
+        throw new Error('Cannot export this video yet. Wait until it finishes decrypting on this device.');
+      }
+      return { uri: exportUri, reusedPreview: true, release };
+    } catch (error) {
+      await release().catch(() => {});
+      throw error;
+    }
+  }
+  if (isPdf && pdfUri) return { uri: pdfUri, reusedPreview: true };
+  return { uri: await fetchAndDecrypt(), reusedPreview: false };
+}
+
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
@@ -161,162 +278,14 @@ function formatDate(iso: string): string {
   return `${month} ${day}, ${year} at ${hours}:${mins}`;
 }
 
-function isEncryptedMetadataName(name: string): boolean {
-  return name.trim().startsWith('{');
-}
-
-function extensionForMime(mimeType?: string, category?: Category): string {
-  const mime = (mimeType ?? '').toLowerCase();
-  if (mime === 'image/jpeg') return '.jpg';
-  if (mime === 'image/png') return '.png';
-  if (mime === 'image/webp') return '.webp';
-  if (mime === 'image/gif') return '.gif';
-  if (mime === 'image/heic') return '.heic';
-  if (mime === 'image/heif') return '.heif';
-  if (mime === 'image/svg+xml') return '.svg';
-  if (mime === 'video/mp4') return '.mp4';
-  if (mime === 'video/quicktime') return '.mov';
-  if (mime === 'video/x-m4v') return '.m4v';
-  if (mime === 'video/webm') return '.webm';
-  if (mime === 'application/pdf') return '.pdf';
-  if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return '.docx';
-  if (mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return '.xlsx';
-  if (mime === 'application/vnd.ms-excel') return '.xls';
-  if (mime === 'text/csv') return '.csv';
-  if (mime === 'text/html') return '.html';
-  if (mime === 'text/plain') return '.txt';
-  if (mime === 'application/json') return '.json';
-  if (mime === 'application/xml' || mime === 'text/xml') return '.xml';
-  if (mime === 'application/zip') return '.zip';
-  if (mime.startsWith('audio/')) return '.mp3';
-  if (category === 'image') return '.jpg';
-  if (category === 'video') return '.mp4';
-  if (category === 'pdf') return '.pdf';
-  if (category === 'audio') return '.mp3';
-  if (category === 'docx') return '.docx';
-  if (category === 'spreadsheet') return '.xlsx';
-  if (category === 'html') return '.html';
-  if (category === 'zip') return '.zip';
-  if (category === 'doc') return '.txt';
-  return '';
-}
-
 function mediaCacheExtension(mimeType: string | null | undefined, category: Category): string | null {
   const ext = extensionForMime(mimeType ?? undefined, category).replace(/^\./, '');
   return ext || null;
 }
 
-function previewDisplayName(fileName: string, category: Category): string {
-  if (!isEncryptedMetadataName(fileName)) return fileName;
-  if (category === 'image') return 'Photo';
-  if (category === 'video') return 'Video';
-  return 'Encrypted file';
-}
-
-function previewCacheName(fileName: string, mimeType: string | undefined, category: Category): string {
-  const displayName = previewDisplayName(fileName, category);
-  let safeName = displayName.replace(/[^a-zA-Z0-9._\-]/g, '_');
-  if (!safeName) safeName = category === 'image' ? 'Photo' : 'Preview';
-  if (!/\.[a-zA-Z0-9]{2,5}$/.test(safeName)) {
-    safeName += extensionForMime(mimeType, category);
-  }
-  return safeName;
-}
-
-type Category =
-  | 'image'
-  | 'svg'
-  | 'pdf'
-  | 'audio'
-  | 'video'
-  | 'docx'
-  | 'pptx'
-  | 'spreadsheet'
-  | 'html'
-  | 'zip'
-  | 'archive'
-  | 'doc'
-  | 'file';
-
-function fileCategory(mimeType?: string, fileName?: string): Category {
-  const mime = (mimeType ?? '').toLowerCase();
-  const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
-
-  // SVG before generic image — needs WebView, not <Image>, for proper render
-  if (mime === 'image/svg+xml' || ext === 'svg') return 'svg';
-  if (
-    mime.startsWith('image/') ||
-    ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif'].includes(ext)
-  ) {
-    return 'image';
-  }
-  if (mime === 'application/pdf' || ext === 'pdf') return 'pdf';
-  if (mime.startsWith('audio/') || ['mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg'].includes(ext)) return 'audio';
-  if (mime.startsWith('video/') || ['mp4', 'mov', 'm4v', 'webm'].includes(ext)) return 'video';
-
-  // HTML before generic text — needs WebView (with source-toggle), not the
-  // monospace text viewer.
-  if (mime === 'text/html' || ext === 'html' || ext === 'htm') return 'html';
-
-  // ZIP archives — list contents with JSZip (no extraction yet)
-  if (
-    mime === 'application/zip' ||
-    mime === 'application/x-zip-compressed' ||
-    mime === 'application/x-zip' ||
-    ext === 'zip'
-  ) {
-    return 'zip';
-  }
-
-  // TAR / GZ / TGZ archives — handled by ArchiveRenderer
-  if (
-    mime === 'application/x-tar' ||
-    mime === 'application/gzip' ||
-    mime === 'application/x-gzip' ||
-    ext === 'tar' ||
-    ext === 'gz' ||
-    ext === 'tgz'
-  ) {
-    return 'archive';
-  }
-
-  // PPTX (PowerPoint) — text-only slide viewer
-  if (
-    mime === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
-    ext === 'pptx'
-  ) {
-    return 'pptx';
-  }
-
-  // DOCX (modern Word) — handled by mammoth. Legacy .doc is not supported.
-  if (
-    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-    ext === 'docx'
-  ) {
-    return 'docx';
-  }
-
-  // XLSX / CSV / other SheetJS-readable formats
-  if (
-    mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-    mime === 'application/vnd.ms-excel' ||
-    mime.includes('spreadsheet') ||
-    mime === 'text/csv' ||
-    mime === 'application/csv' ||
-    ext === 'xlsx' ||
-    ext === 'xls' ||
-    ext === 'csv' ||
-    ext === 'tsv'
-  ) {
-    return 'spreadsheet';
-  }
-
-  if (mime.startsWith('text/') || mime.includes('document')) return 'doc';
-  return 'file';
-}
-
 const CATEGORY_LABELS: Record<Category, string> = {
   image: 'Image',
+  raw: 'RAW Image',
   svg: 'SVG Image',
   pdf: 'PDF Document',
   audio: 'Audio',
@@ -333,6 +302,7 @@ const CATEGORY_LABELS: Record<Category, string> = {
 
 const CATEGORY_BADGE: Record<Category, string> = {
   image: 'IMG',
+  raw: 'RAW',
   svg: 'SVG',
   pdf: 'PDF',
   audio: 'AUD',
@@ -430,6 +400,19 @@ const EXT_TO_HLJS: Record<string, string> = {
   yaml: 'yaml', yml: 'yaml',
   sh: 'bash', bash: 'bash', zsh: 'bash',
   sql: 'sql',
+  // Task 1570 — the remaining `code-text-preview.ts` extensions that need a
+  // highlight.js grammar too (added in `CodeRenderer.tsx` alongside these).
+  c: 'c', h: 'c',
+  cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hxx: 'cpp',
+  cs: 'csharp',
+  rb: 'ruby',
+  php: 'php',
+  // hljs's `ini` grammar covers TOML too (it registers `toml` as an alias
+  // of the same grammar) — `languageDisplayLabel` below still shows "TOML"
+  // vs "INI" per the real extension, same pattern as its existing xml/html
+  // override.
+  ini: 'ini', cfg: 'ini', toml: 'ini',
+  dockerfile: 'dockerfile',
 };
 
 const MIME_TO_HLJS: Record<string, string> = {
@@ -476,6 +459,13 @@ const LANGUAGE_LABELS: Record<string, string> = {
   yaml: 'YAML',
   bash: 'Bash',
   sql: 'SQL',
+  c: 'C',
+  cpp: 'C++',
+  csharp: 'C#',
+  ruby: 'Ruby',
+  php: 'PHP',
+  ini: 'INI',
+  dockerfile: 'Dockerfile',
   plaintext: 'Plain text',
 };
 
@@ -493,6 +483,13 @@ function languageDisplayLabel(hljsId: string, fileName?: string): string {
     const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
     if (ext === 'html' || ext === 'htm' || ext === 'xhtml') return 'HTML';
     return 'XML';
+  }
+  // Task 1570 — hljs's `ini` grammar renders TOML too (registered as an
+  // alias), but the two extensions should still show their own real name.
+  if (hljsId === 'ini') {
+    const ext = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
+    if (ext === 'toml') return 'TOML';
+    return 'INI';
   }
   return LANGUAGE_LABELS[hljsId] ?? hljsId.toUpperCase();
 }
@@ -515,6 +512,9 @@ interface PhotoPageEntry {
   storage_pool_id?: string | null;
   thumbnail_uri?: string | null;
   local_asset_id?: string | null;
+  has_thumbnail?: boolean;
+  thumbnail_bytes?: number | null;
+  is_request_upload?: boolean;
 }
 
 type PhotoLoadStage = 'checking' | 'downloading' | 'decrypting' | 'caching';
@@ -549,6 +549,7 @@ interface PreviewProgressState {
   bytesTotal: number;
   chunksCompleted: number;
   chunksTotal: number;
+  streaming: boolean;
 }
 
 function emptyPreviewProgress(stage: PhotoLoadStage | null = null): PreviewProgressState {
@@ -558,6 +559,7 @@ function emptyPreviewProgress(stage: PhotoLoadStage | null = null): PreviewProgr
     bytesTotal: 0,
     chunksCompleted: 0,
     chunksTotal: 0,
+    streaming: false,
   };
 }
 
@@ -648,6 +650,16 @@ function PreviewProgressStatus({
   );
 }
 
+function StreamingBufferBadge({ pct, bottomInset = 24 }: { pct: number; bottomInset?: number }) {
+  return (
+    <View style={[styles.streamBadgeLayer, { bottom: bottomInset }]} pointerEvents="none">
+      <View style={styles.streamBadge}>
+        <Text style={styles.streamBadgeText}>{pct}% buffered</Text>
+      </View>
+    </View>
+  );
+}
+
 function progressStageText(
   progress: PreviewProgressState,
   isUnlocked: boolean,
@@ -657,6 +669,12 @@ function progressStageText(
 ): string {
   if (!isUnlocked) return isVideo ? 'Unlock your vault to play this video.' : 'Unlock your vault to view this file.';
   if (progress.stage === 'checking') return 'Checking local copy...';
+  if (progress.streaming) {
+    const buffered = progress.chunksTotal > 0
+      ? Math.round((progress.chunksCompleted / progress.chunksTotal) * 100)
+      : 0;
+    return `Streaming · ${buffered}% buffered`;
+  }
   if (progress.stage === 'downloading') {
     if (progress.bytesTotal > 0) {
       return `Downloading ${formatSize(progress.bytesDownloaded)} of ${formatSize(progress.bytesTotal)}`;
@@ -668,7 +686,7 @@ function progressStageText(
       ? ` · ${Math.round((progress.chunksCompleted / progress.chunksTotal) * 100)}%`
       : '';
     const eta = formatDuration(estimatedDecryptSeconds(sizeBytes, profile ?? null));
-    return eta ? `Decrypting on iPhone · about ${eta}${progressText}` : `Decrypting on iPhone${progressText}`;
+    return eta ? `Decrypting on ${deviceNoun()} · about ${eta}${progressText}` : `Decrypting on ${deviceNoun()}${progressText}`;
   }
   if (progress.stage === 'caching') return isVideo ? 'Saving for faster playback...' : 'Saving for faster swipes...';
   return isVideo ? 'Preparing video...' : 'Loading preview...';
@@ -694,6 +712,7 @@ function applyNativeProgress(event: PreviewLoadProgressEvent, setProgress: React
     bytesTotal: event.bytesTotal ?? prev.bytesTotal,
     chunksCompleted: event.chunksCompleted ?? prev.chunksCompleted,
     chunksTotal: event.chunksTotal ?? prev.chunksTotal,
+    streaming: event.streaming ?? prev.streaming,
   }));
 }
 
@@ -759,7 +778,9 @@ async function loadNormalPreviewThumbnail(
   if (!allowRemote) return null;
   if (!isUnlocked) return null;
   try {
-    const fileKey = await getFileKeyBytes(entry.id);
+    const fileKey = sharedFileKeyIsLoaded(entry.id)
+      ? (nonce: Uint8Array, ciphertext: Uint8Array) => handleDecryptChunk(sharedMasterHandleId(), entry.id, nonce, ciphertext)
+      : await getFileKeyBytes(entry.id);
     // 1321 — was fetchDecryptedThumbnailUri, which throws unconditionally on
     // iOS since the BeebeebThumbnails migration. The catch below turned that
     // into a silently missing preview thumbnail.
@@ -790,7 +811,9 @@ async function loadLargePreviewThumbnail(
 
   if (!isUnlocked) return null;
   try {
-    const fileKey = await getFileKeyBytes(entry.id);
+    const fileKey = sharedFileKeyIsLoaded(entry.id)
+      ? (nonce: Uint8Array, ciphertext: Uint8Array) => handleDecryptChunk(sharedMasterHandleId(), entry.id, nonce, ciphertext)
+      : await getFileKeyBytes(entry.id);
     const remote = await fetchDecryptedLargeThumbnailUri(entry.id, fileKey, signal);
     throwIfPreviewAborted(signal);
     return remote ? { uri: remote, kind: 'large', source: 'remote' } : null;
@@ -813,6 +836,17 @@ async function loadDecryptedPhotoForViewer(
   const isVideo = !!entry.mime_type?.startsWith('video/');
   const category: Category = isVideo ? 'video' : 'image';
   const cacheExt = mediaCacheExtension(entry.mime_type, category);
+  const repairLocalSource = (uri: string, knownMissing = false) => {
+    maybeSelfRepairThumbnailFromLocalFile({
+      fileId: entry.id,
+      localPlaintextUri: uri,
+      mimeType: entry.mime_type ?? (isVideo ? 'video/mp4' : 'image/jpeg'),
+      hasServerThumbnail: knownMissing ? false : entry.has_thumbnail,
+      serverThumbnailBytes: entry.thumbnail_bytes,
+      isRequestUpload: entry.is_request_upload,
+      getFileKeyBytes,
+    });
+  };
   const startedAt = Date.now();
   recordRuntimeTrace('preview.photo_page.load_start', {
     fileId: entry.id,
@@ -839,6 +873,7 @@ async function loadDecryptedPhotoForViewer(
         cacheExt,
         elapsedMs: Date.now() - startedAt,
       });
+      repairLocalSource(cached);
       return { uri: cached, kind: 'original' };
     }
     recordRuntimeTrace('preview.photo_page.cache_miss', {
@@ -951,12 +986,17 @@ async function loadDecryptedPhotoForViewer(
       entry.size_bytes,
       entry.chunk_count,
       getMasterKeyHandleId(),
-      { onProgress, signal },
+      { onProgress, signal, useProvidedFileKey: entry.is_request_upload === true },
     );
     if (signal?.aborted) {
-      await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+      // Task 1593 round 2 (P2-F) — give the shared preview copy back instead of
+      // deleting it: the full preview or "Prove it" may be using the same file.
+      await releasePreviewCopy(entry.id, ext);
       recordRuntimeTrace('preview.photo_page.original.aborted_after_decrypt', { fileId: entry.id });
       throwIfPreviewAborted(signal);
+    }
+    if (isVideo && isLoopbackStreamUri(decryptedUri)) {
+      return { uri: decryptedUri, kind: 'original' };
     }
 
     onStage?.('caching');
@@ -964,7 +1004,7 @@ async function loadDecryptedPhotoForViewer(
       ? await cachePhotoWithExtension(entry.id, decryptedUri, cacheExt)
       : await cachePhoto(entry.id, decryptedUri);
     if (cachedUri !== decryptedUri) {
-      await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+      await releasePreviewCopy(entry.id, ext); // task 1593 round 2 (P2-F)
     }
     throwIfPreviewAborted(signal);
     recordRuntimeTrace('preview.photo_page.original.success', {
@@ -973,20 +1013,9 @@ async function loadDecryptedPhotoForViewer(
       cacheExt,
       elapsedMs: Date.now() - startedAt,
     });
-    if (autoOriginalFallback) {
-      // 1286 — the plaintext original is now in the preview cache and we have just PROVEN the
-      // server thumbnail is missing (the thumbnail fetch above returned empty — no probing,
-      // honoring 0883's no-storm contract). Generate + upload the thumbnail from these bytes so
-      // the grid stops being blank everywhere. Fire-and-forget; never blocks or throws. Scoped
-      // to the image auto-fallback only — video decrypt-completion regen stays untouched (1203).
-      maybeSelfRepairThumbnailFromLocalFile({
-        fileId: entry.id,
-        localPlaintextUri: cachedUri,
-        mimeType: entry.mime_type ?? 'image/jpeg',
-        hasServerThumbnail: false,
-        getFileKeyBytes,
-      });
-    }
+    // The full source is already local. Upgrade only known degraded/missing
+    // thumbnails; thumbnail-only opens above never fetch an original for repair.
+    repairLocalSource(cachedUri, autoOriginalFallback);
     return { uri: cachedUri, kind: 'original' };
   })();
 
@@ -997,6 +1026,47 @@ async function loadDecryptedPhotoForViewer(
     const current = inFlightPhotoLoads.get(loadKey);
     if (current?.promise === loadPromise) inFlightPhotoLoads.delete(loadKey);
   }
+}
+
+/**
+ * Task 1570 (Codex P2 follow-up, PR #126 review): decrypts a swipe-pager
+ * entry's RAW source file to a per-session temp file, for `PhotoPage` to hand
+ * to `RawRenderer` — the per-entry counterpart to the single-file `isRaw`
+ * effect's `fetchAndDecrypt()` call, which is bound to the CURRENT file only
+ * and can't be reused per swipe-pager entry. Deliberately NOT routed through
+ * `loadDecryptedPhotoForViewer`'s thumbnail-first / persistent-photo-cache
+ * logic above: `<Image>` can't decode camera RAW sensor data at all, so
+ * there is no thumbnail rung to try, and RAW's own preview is extracted by
+ * `RawRenderer`+`raw-extract.ts` from this decrypted SOURCE file, not cached
+ * as a directly-displayable photo — matching the existing single-file `isRaw`
+ * effect's own temp-file (not persistent-cache) pattern exactly, including
+ * its caller-owns-cleanup contract (`PhotoPage`'s own cleanup effect, mirror
+ * of `PreviewScreen`'s `tempRawUriRef`).
+ */
+async function loadDecryptedRawSourceForViewer(
+  entry: PhotoPageEntry,
+  getFileKeyBytes: FileKeyLoader,
+  getMasterKeyHandleId: MasterKeyHandleLoader,
+  onStage?: (stage: PhotoLoadStage) => void,
+  onProgress?: (event: PreviewLoadProgressEvent) => void,
+  signal?: AbortSignal,
+): Promise<{ uri: string; kind: ImagePreviewKind }> {
+  throwIfPreviewAborted(signal);
+  const entryFileName = entry.display_name ?? entry.name_encrypted;
+  const ext = extensionForRaw(entryFileName);
+  onStage?.('downloading');
+  onStage?.('decrypting');
+  const decryptedUri = await decryptToTempFile(
+    entry.id,
+    () => getFileKeyBytes(entry.id),
+    ext,
+    entry.size_bytes,
+    entry.chunk_count,
+    getMasterKeyHandleId(),
+    { onProgress, signal },
+  );
+  throwIfPreviewAborted(signal);
+  return { uri: decryptedUri, kind: 'original' };
 }
 
 // ---------------------------------------------------------------------------
@@ -1210,7 +1280,19 @@ const ProgressiveOriginalImage = React.memo(function ProgressiveOriginalImage({
   );
 });
 
-const PhotoPage = React.memo(function PhotoPage({
+/**
+ * Task 1687a — raw touch handlers for a pager page's locked-state wrapper.
+ * Stopping propagation here (the same pattern ZoomableImage documents and
+ * uses) keeps the pager FlatList's own onTouchStart/onTouchEnd tap detector
+ * from ALSO seeing the tap and calling handleContentTap — two toggles would
+ * cancel out and the tap would read as dead. The descendant Pressable is
+ * unaffected: stopPropagation only ends bubbling ABOVE this wrapper.
+ */
+const stopPageTouchPropagation = (e: GestureResponderEvent) => {
+  e.stopPropagation();
+};
+
+export const PhotoPage = React.memo(function PhotoPage({
   entry,
   shouldLoadFull,
   isCurrent,
@@ -1220,6 +1302,10 @@ const PhotoPage = React.memo(function PhotoPage({
   locked,
   unlocking,
   onRequestUnlock,
+  onExifInfo,
+  onZoomChange,
+  onSingleTap,
+  videoControlsBottomInset,
 }: {
   entry: PhotoPageEntry;
   shouldLoadFull: boolean;
@@ -1238,16 +1324,43 @@ const PhotoPage = React.memo(function PhotoPage({
   /** True while THIS entry's Face ID prompt is in flight (disables its own unlock control only). */
   unlocking: boolean;
   onRequestUnlock: (fileId: string) => void;
+  /**
+   * Task 1570 (Codex P2 follow-up, PR #126 review): bubbles a RAW entry's
+   * parsed EXIF summary up to `PreviewScreen`'s Info sheet, same contract as
+   * `RawRenderer`'s own `onExifInfo` prop, plus this page's file id.
+   * Round 2: up to 3 RAW pages (current +-1) mount a `RawRenderer` at once.
+   * Round 3: the parent stores EXIF KEYED BY FILE ID and the Info sheet reads
+   * the entry for the CURRENT file, so a page simply reports its own EXIF when
+   * it has it — the order in which a swiped-to page, the parent's effects and
+   * the neighbours publish cannot matter (round 2 gated this on `isCurrent`
+   * and re-published on becoming current; the parent's single-file RAW effect
+   * then cleared it later in the same commit and the Info rows came up empty).
+   */
+  onExifInfo?: (fileId: string, info: RawExifInfo | null) => void;
+  /** Task 1579 — the current page's image crossed 1x <-> zoomed (blocks paging). */
+  onZoomChange?: (zoomed: boolean) => void;
+  /** Task 1579 — a single tap on a zoomable page (chrome toggle); see ZoomableImage. */
+  onSingleTap?: () => void;
+  videoControlsBottomInset: number;
 }) {
   const { colors: c } = useTheme();
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
   const isVideoEntry = !!entry.mime_type && entry.mime_type.startsWith('video/');
+  // Task 1570 — RAW (CR2/CR3/ARW/NEF/RAF/DNG) joining the swipe pager (Codex
+  // P2 follow-up, PR #126 review: `showPager` used to be `isImage || isVideo`
+  // only, so opening a RAW file from a multi-item Photos `photoList` dropped
+  // out of the pager into the single-file RAW branch, losing the ability to
+  // swipe to adjacent photos). `entry.display_name` is already the decrypted
+  // name (same fallback `currentFileName` uses below for the CURRENT entry).
+  const entryFileName = entry.display_name ?? entry.name_encrypted;
+  const isRawEntry = fileCategory(entry.mime_type ?? undefined, entryFileName) === 'raw';
   const [uri, setUri] = useState<string | null>(null);
   const [uriKind, setUriKind] = useState<ImagePreviewKind | null>(null);
   const [thumbnailUri, setThumbnailUri] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState<PhotoLoadStage | null>(null);
   const [progress, setProgress] = useState<PreviewProgressState>(() => emptyPreviewProgress('checking'));
+  const [streamBufferPct, setStreamBufferPct] = useState<number | null>(null);
   const [performanceProfile, setPerformanceProfile] = useState<DevicePerformanceProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fullImageOpacity = useRef(new Animated.Value(0)).current;
@@ -1261,9 +1374,50 @@ const PhotoPage = React.memo(function PhotoPage({
   // so the failsafe watchdog can tell "rendered" from "spinning forever".
   const [imageLoaded, setImageLoaded] = useState(false);
   const sawOriginalProgressRef = useRef(false);
-  const player = useVideoPlayer(isVideoEntry && uri ? uri : null, (p) => {
-    p.loop = false;
-  });
+  // Task 1570 — this page's own decrypted RAW SOURCE temp file (distinct from
+  // `RawRenderer`'s own extracted-preview temp file, which it cleans up
+  // itself). Per-session temp file, not the persistent photo cache (see
+  // `loadDecryptedRawSourceForViewer`'s doc comment) — cleaned up on unmount
+  // below, mirroring `PreviewScreen`'s own `tempRawUriRef` for the single-file
+  // case.
+  const tempRawSourceUriRef = useRef<string | null>(null);
+  const previewCopyLeaseRef = useRef<{ fileId: string; extension: string } | null>(null);
+  const releasePreviewCopyLease = useCallback(() => {
+    const lease = previewCopyLeaseRef.current;
+    previewCopyLeaseRef.current = null;
+    if (!lease) return;
+    void releasePreviewCopy(lease.fileId, lease.extension).catch(() => {});
+  }, []);
+  // Task 1669 round 2 (ruling 3): true while this page's video is in Picture in Picture (set by
+  // expo-video's VideoView `onPictureInPictureStart` / `Stop` via `PhotoPageVideo`). A player in
+  // PiP must not be released just because its page stopped being current.
+  const [pipActive, setPipActive] = useState(false);
+  // Task 1669 round 3: up to 3 RAW pages (current +-1) run a `RawRenderer` at once. Each reports
+  // its EXIF to the parent KEYED BY ITS OWN FILE ID (the Info sheet looks up the current file), so
+  // there is no "who is current right now" gate and no re-publish effect to order against the
+  // parent's. `RawRenderer`'s extraction effect captures its `onExifInfo` once (deps
+  // [uri, cacheKey]), hence refs rather than closed-over props.
+  const onExifInfoRef = useRef(onExifInfo);
+  onExifInfoRef.current = onExifInfo;
+  const entryIdRef = useRef(entry.id);
+  entryIdRef.current = entry.id;
+  const handleRawExif = useCallback((info: RawExifInfo | null) => {
+    onExifInfoRef.current?.(entryIdRef.current, info);
+  }, []);
+  // Task 1669 round 2 (rulings 2 + 3): which resources this page wants loaded right now.
+  //   - IMAGE / RAW: the full-resolution resource stays loaded for the current page +-1
+  //     (`shouldLoadFull`, radius PHOTO_PAGE_LOAD_RADIUS = 1, at most 3 pages; matches the pager's
+  //     windowSize=3) so a swipe back to a neighbour does not re-download/re-decrypt.
+  //   - VIDEO: an AVPlayer (and the decrypted video file behind it) is bounded to the CURRENT page
+  //     only (at most 1 live player).
+  // `keepFull` additionally holds a video that is in Picture in Picture after its page stopped
+  // being current; it is released when PiP ends.
+  const loadFull = isVideoEntry ? shouldLoadFull && isCurrent : shouldLoadFull;
+  const keepFull = loadFull || (isVideoEntry && pipActive);
+  // Task 1669 Issue 1: NO `useVideoPlayer` here. expo-video builds a native
+  // AVPlayer even for a null source, so calling it on every mounted page (image
+  // pages included) held 10+ idle players. `PhotoPageVideo` owns the player and
+  // is mounted only while a video page has a loaded `uri`.
 
   useEffect(() => {
     let mounted = true;
@@ -1290,19 +1444,23 @@ const PhotoPage = React.memo(function PhotoPage({
   }, [originalUri]);
 
   useEffect(() => {
+    releasePreviewCopyLease();
+    tempRawSourceUriRef.current = null;
     setUri(null);
     setUriKind(null);
     setError(null);
     setLoading(false);
     setStage(null);
     setProgress(emptyPreviewProgress(null));
+    setStreamBufferPct(null);
     largePreviewAttemptRef.current = null;
+    setPipActive(false);
     setOriginalUri(null);
     setOriginalActive(false);
     setOriginalCacheHit(false);
     setImageLoaded(false);
     sawOriginalProgressRef.current = false;
-  }, [entry.id]);
+  }, [entry.id, releasePreviewCopyLease]);
 
   useEffect(() => {
     // Task 1539 (finding 1, P0): this effect used to run unconditionally for
@@ -1332,7 +1490,7 @@ const PhotoPage = React.memo(function PhotoPage({
   }, [entry.id, locked]);
 
   useEffect(() => {
-    if (!shouldLoadFull) return;
+    if (!loadFull) return;
     // Task 1539 (finding 1, P0): the full-resolution/original decrypt path —
     // gates `loadDecryptedPhotoForViewer`, the same function the single-file
     // (non-swipe) effects above call directly.
@@ -1350,34 +1508,73 @@ const PhotoPage = React.memo(function PhotoPage({
       if (!cancelled) setPerformanceProfile(profile);
     });
 
-    loadDecryptedPhotoForViewer(
-      entry,
-      isUnlocked,
-      getFileKeyBytes,
-      getMasterKeyHandleId,
-      {
-        profile: previewProfile,
-        allowOriginal: isVideoEntry,
-        forceOriginal: false,
-      },
-      (nextStage) => {
-        if (!cancelled) {
-          setStage(nextStage);
-          setProgress((prev) => ({ ...prev, stage: nextStage }));
-        }
-      },
-      (event) => {
-        if (!cancelled) applyNativeProgress(event, setProgress);
-      },
-      controller.signal,
-    )
+    // Task 1570 — RAW joining the pager: a RAW entry skips the thumbnail-
+    // first/persistent-cache logic `loadDecryptedPhotoForViewer` uses for
+    // images/video entirely (there is no thumbnail rung for `<Image>` to try
+    // — it can't decode RAW sensor data) and goes straight to
+    // `loadDecryptedRawSourceForViewer`'s plain decrypt-to-temp-file, same
+    // shape (`{ uri, kind }`) so every `.then`/`.catch`/`.finally` handler
+    // below stays shared between both branches.
+    const loadPromise = isRawEntry
+      ? loadDecryptedRawSourceForViewer(
+          entry,
+          getFileKeyBytes,
+          getMasterKeyHandleId,
+          (nextStage) => {
+            if (!cancelled) {
+              setStage(nextStage);
+              setProgress((prev) => ({ ...prev, stage: nextStage }));
+            }
+          },
+          (event) => {
+            if (!cancelled) applyNativeProgress(event, setProgress);
+          },
+          controller.signal,
+        )
+      : loadDecryptedPhotoForViewer(
+          entry,
+          isUnlocked,
+          getFileKeyBytes,
+          getMasterKeyHandleId,
+          {
+            profile: previewProfile,
+            allowOriginal: isVideoEntry,
+            forceOriginal: false,
+          },
+          (nextStage) => {
+            if (!cancelled) {
+              setStage(nextStage);
+              setProgress((prev) => ({ ...prev, stage: nextStage }));
+            }
+          },
+          (event) => {
+            if (!cancelled) {
+              applyNativeProgress(event, setProgress);
+              const pct = streamBufferPctFromEvent(event);
+              if (pct !== undefined) setStreamBufferPct(pct);
+            }
+          },
+          controller.signal,
+        );
+
+    loadPromise
       .then((loaded) => {
         if (!cancelled) {
           recordRuntimeTrace('preview.photo_page.render_ready', {
             fileId: entry.id,
             isVideo: isVideoEntry,
+            isRaw: isRawEntry,
             kind: loaded.kind,
           });
+          if (isRawEntry) {
+            tempRawSourceUriRef.current = loaded.uri;
+            previewCopyLeaseRef.current = { fileId: entry.id, extension: extensionForRaw(entryFileName) };
+          } else if (isVideoEntry && isLoopbackStreamUri(loaded.uri)) {
+            previewCopyLeaseRef.current = {
+              fileId: entry.id,
+              extension: extensionForMime(entry.mime_type ?? undefined, 'video'),
+            };
+          }
           setUri(loaded.uri);
           setUriKind(loaded.kind);
         }
@@ -1387,6 +1584,7 @@ const PhotoPage = React.memo(function PhotoPage({
           recordRuntimeTrace('preview.photo_page.load_failed', {
             fileId: entry.id,
             isVideo: isVideoEntry,
+            isRaw: isRawEntry,
             ...previewErrorTraceFields(err),
           });
           setError(friendlyError(err));
@@ -1404,7 +1602,63 @@ const PhotoPage = React.memo(function PhotoPage({
       cancelled = true;
       controller.abort();
     };
-  }, [shouldLoadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, previewProfile, locked]);
+  }, [loadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, isRawEntry, previewProfile, locked]);
+
+  // Task 1669 Issue 1 — release this page's fully-loaded resource (the
+  // decrypted `uri`: a full-resolution decoded <Image>, a mounted
+  // `PhotoPageVideo` and therefore its AVPlayer, or a RAW renderer) once the
+  // page no longer wants it.
+  //
+  // Before this, `uri` was set once by the load effect above and NEVER
+  // cleared when the page stopped being loaded. The page stays mounted
+  // well past that point (the pager's `windowSize={3}`), so every page the
+  // user had ever scrolled past kept its decoded image / live player: no
+  // bound at all. Now (round 2 rulings): an image / RAW page holds its
+  // resource while it is within current +-1 (at most 3 pages); a video page
+  // holds its player only while it is the CURRENT page, or while that player
+  // is in Picture in Picture (`keepFull`). In-flight loads need no handling
+  // here: the load effect's cleanup aborts and `cancelled`-guards them when
+  // `loadFull` flips.
+  useEffect(() => {
+    if (keepFull || uri === null) return;
+    setUri(null);
+    setUriKind(null);
+    setOriginalUri(null);
+    setOriginalActive(false);
+    setOriginalCacheHit(false);
+    setImageLoaded(false);
+    sawOriginalProgressRef.current = false;
+    releasePreviewCopyLease();
+    // Per-load refs: a released page that is visited again must behave like a
+    // fresh one. `largePreviewAttemptRef` records `${entry.id}:${uri}` of the
+    // last large-preview upgrade attempt; left set, a revisit that reloads the
+    // SAME thumbnail uri would be treated as "already attempted" and never
+    // upgrade to the 'large' preview again.
+    largePreviewAttemptRef.current = null;
+    // A RAW page's decrypted SOURCE temp file is otherwise deleted only on
+    // unmount; now that a page can reload after release, delete it here too or
+    // each return to the page would orphan the previous one on disk.
+    if (!isRawEntry) {
+      void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
+    } else {
+      tempRawSourceUriRef.current = null;
+    }
+  }, [keepFull, uri, isRawEntry, releasePreviewCopyLease]);
+
+  // Delete this page's own decrypted RAW SOURCE temp file on unmount — same
+  // pattern as `PreviewScreen`'s own `tempRawUriRef` cleanup for the
+  // single-file case (`RawRenderer` owns cleaning up its OWN separate
+  // extracted-preview temp file, not this one).
+  useEffect(() => {
+    return () => {
+      releasePreviewCopyLease();
+      if (!isRawEntry) {
+        void cleanupTrackedTempFile(tempRawSourceUriRef, FileSystem.deleteAsync);
+      } else {
+        tempRawSourceUriRef.current = null;
+      }
+    };
+  }, [isRawEntry, releasePreviewCopyLease]);
 
   useEffect(() => {
     if (!shouldLoadFull || !isCurrent) return;
@@ -1571,96 +1825,189 @@ const PhotoPage = React.memo(function PhotoPage({
   // window something is wrong (undecodable bytes, oversized texture). Surface an
   // error instead of an endless spinner. Skips video (its own player) and waits
   // for the load/error callbacks that clear or trip it.
+  // Task 1570 — also skips RAW: `RawRenderer` manages its own internal
+  // loading/ready/failed state (extraction, then its OWN `<Image>` load) and
+  // never sets THIS component's `imageLoaded`, so without this exclusion the
+  // watchdog would always fire for a RAW page and show "This image couldn't
+  // be displayed" over a RawRenderer that is actually working fine.
   useEffect(() => {
-    if (!uri || isVideoEntry || imageLoaded || error) return;
+    if (!uri || isVideoEntry || isRawEntry || imageLoaded || error) return;
     const t = setTimeout(() => {
       setError((prev) => prev ?? "This image couldn't be displayed.");
     }, IMAGE_RENDER_WATCHDOG_MS);
     return () => clearTimeout(t);
-  }, [uri, isVideoEntry, imageLoaded, error]);
+  }, [uri, isVideoEntry, isRawEntry, imageLoaded, error]);
 
   return (
     <View style={[styles.photoPage, { width }]}>
-      {locked ? (
-        // Task 1539 (finding 1, P0): what a swipe onto a locked neighbor
-        // shows now, instead of silently decrypting and displaying it. Every
-        // effect that could populate `thumbnailUri`/`uri` is gated above,
-        // so this is not just a visual cover-up over content that already
-        // loaded — and (Codex P1 follow-up, PR #109 review) the render
-        // branch below that WOULD show `uri`/`thumbnailUri`/`error` is now
-        // also gated on `!locked`, so a value set by an in-flight load that
-        // was already running before `locked` flipped true (e.g. the
-        // startup window before `lockCheckReady`) can never surface
-        // alongside or underneath this prompt either.
-        <Pressable
-          style={styles.photoPageStatus}
-          onPress={() => onRequestUnlock(entry.id)}
-          disabled={unlocking}
-          accessibilityRole="button"
-          accessibilityLabel="Locked file — tap to authenticate"
-          testID="preview-locked-page"
-        >
-          <Ionicons name="lock-closed" size={32} color={colors.amber} />
-          <Text style={styles.photoPageStatusTitle}>Locked</Text>
-          <Text style={styles.photoPageStatusSub}>
-            {unlocking ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
-          </Text>
-          {/* Task 1539 (finding 5, lead decision — PR #109 review): the lock
-              has no keychainAccessGroup, so it is not visible to the File
-              Provider extension — say so wherever there is room next to the
-              explainer, rather than let "Locked" imply full coverage. */}
-          <Text style={styles.photoPageStatusSub}>{FILES_APP_LOCK_CAVEAT}</Text>
-        </Pressable>
-      ) : (
-        <>
-          {thumbnailUri && !uri && !error ? (
-            <Image
-              source={{ uri: thumbnailUri }}
-              style={styles.photoPageThumbnail}
-              resizeMode="contain"
+      {(() => {
+        // Task 1687a — the page's tap decision per lock state (unit-tested
+        // in preview-chrome.test.ts). Both locked branches wrap their
+        // Pressable in a View that stops raw touch propagation, exactly the
+        // pattern ZoomableImage uses: the pager FlatList's own
+        // onTouchStart/onTouchEnd tap detector would otherwise ALSO see the
+        // tap and call handleContentTap, toggling the chrome twice (net
+        // no-op — the tap would read as dead again).
+        const action = pagerTapAction({ fileLocked: locked, vaultLocked: !isUnlocked, contentOwned: false });
+        if (action === 'unlock-file') {
+          return (
+            <View
+              onTouchStart={stopPageTouchPropagation}
+              onTouchEnd={stopPageTouchPropagation}
+              onTouchCancel={stopPageTouchPropagation}
+            >
+              {/* Task 1539 (finding 1, P0): what a swipe onto a locked neighbor
+                  shows now, instead of silently decrypting and displaying it. Every
+                  effect that could populate `thumbnailUri`/`uri` is gated above,
+                  so this is not just a visual cover-up over content that already
+                  loaded — and (Codex P1 follow-up, PR #109 review) the render
+                  branch below that WOULD show `uri`/`thumbnailUri`/`error` is now
+                  also gated on `!locked`, so a value set by an in-flight load that
+                  was already running before `locked` flipped true (e.g. the
+                  startup window before `lockCheckReady`) can never surface
+                  alongside or underneath this prompt either. */}
+              <Pressable
+                style={styles.photoPageStatus}
+                onPress={() => onRequestUnlock(entry.id)}
+                disabled={unlocking}
+                accessibilityRole="button"
+                accessibilityLabel="Locked file — tap to authenticate"
+                testID="preview-locked-page"
+              >
+                <Ionicons name="lock-closed" size={32} color={colors.amber} />
+                <Text style={styles.photoPageStatusTitle}>Locked</Text>
+                <Text style={styles.photoPageStatusSub}>
+                  {unlocking ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
+                </Text>
+                {/* Task 1539 (finding 5, lead decision — PR #109 review): the lock
+                    has no keychainAccessGroup, so it is not visible to the File
+                    Provider extension — say so wherever there is room next to the
+                    explainer, rather than let "Locked" imply full coverage. */}
+                <Text style={styles.photoPageStatusSub}>{FILES_APP_LOCK_CAVEAT}</Text>
+              </Pressable>
+            </View>
+          );
+        }
+        if (action === 'toggle-chrome' && !isUnlocked) {
+          // Task 1687a — the VAULT-locked page (a different lock from the
+          // per-file gate above; keep the two apart). This state previously
+          // had NO dedicated render branch: the page fell through to the
+          // content branch's plain status View, whose only tap path was the
+          // pager's raw 10 pt / 500 ms detector — an imprecise or slow tap
+          // landed nowhere, which is exactly the "sometimes doesn't respond
+          // to touch, no menu top or bottom" report. A full-page Pressable
+          // makes every tap register (chrome toggle via onSingleTap). The
+          // card is informational only — NO auth step here; the vault
+          // unlock flow is task 1684's, this lane is hit-testing only.
+          return (
+            <View
+              onTouchStart={stopPageTouchPropagation}
+              onTouchEnd={stopPageTouchPropagation}
+              onTouchCancel={stopPageTouchPropagation}
+            >
+              <Pressable
+                style={styles.photoPageStatus}
+                onPress={onSingleTap}
+                accessibilityRole="button"
+                accessibilityLabel="Vault locked — tap to show or hide the menus"
+                testID="preview-vault-locked-page"
+              >
+                <Ionicons name="lock-closed" size={32} color={colors.amber} />
+                {/* 1346 — forced-dark text: every pager page sits on
+                    mediaRoot's fixed near-black ground (see the mediaMaterial
+                    comment in the main component), regardless of app scheme. */}
+                <Text style={styles.photoPageStatusTitle}>Vault locked</Text>
+                <Text style={styles.photoPageStatusSub}>
+                  Unlock your vault to view this file.
+                </Text>
+                <Text style={styles.photoPageStatusSub}>Tap anywhere to show or hide the menus.</Text>
+              </Pressable>
+            </View>
+          );
+        }
+        return (
+          <>
+            {thumbnailUri && !uri && !error ? (
+              <Image
+                source={{ uri: thumbnailUri }}
+                style={styles.photoPageThumbnail}
+                resizeMode="contain"
             />
           ) : null}
           {error ? (
             <View style={styles.photoPageStatus}>
               <Text style={styles.photoPageStatusTitle}>
-                {isVideoEntry ? "Couldn't load video" : "Couldn't load image"}
+                {isVideoEntry ? "Couldn't load video" : isRawEntry ? "Couldn't load RAW file" : "Couldn't load image"}
               </Text>
               <Text style={styles.photoPageStatusSub}>
                 {error}
               </Text>
             </View>
           ) : uri && isVideoEntry ? (
-            <VideoView
-              player={player}
-              style={styles.photoPageImage}
-              contentFit="contain"
-              nativeControls
-              fullscreenOptions={{ enable: true }}
-              allowsPictureInPicture
-            />
+            <View style={styles.mediaVideoStageWrap}>
+              <PhotoPageVideo
+                uri={uri}
+                style={[styles.videoControlsSurface, { bottom: videoControlsBottomInset }]}
+                onPictureInPictureStart={() => setPipActive(true)}
+                onPictureInPictureStop={() => setPipActive(false)}
+              />
+              {isLoopbackStreamUri(uri) && streamBufferPct != null && streamBufferPct < 100 ? (
+                <StreamingBufferBadge pct={streamBufferPct} />
+              ) : null}
+            </View>
+          ) : uri && isRawEntry ? (
+            // Task 1570 — RAW joining the pager. `RawRenderer` owns its own
+            // loading/extraction/fallback states once handed this decrypted
+            // SOURCE uri (mirrors the single-file `isRaw` branch exactly);
+            // `error` above only ever covers the DECRYPT step failing.
+            // Task 1579 — pinch/double-tap zoom; resets when paging away.
+            <ZoomableImage
+              style={StyleSheet.absoluteFill}
+              resetSignal={isCurrent}
+              onZoomChange={isCurrent ? onZoomChange : undefined}
+              onSingleTap={onSingleTap}
+              testID="preview-zoomable"
+            >
+              <RawRenderer
+                uri={uri}
+                fileName={entryFileName}
+                formatLabel={rawFormatLabel(entryFileName, entry.mime_type)}
+                cacheKey={entry.id}
+                onExifInfo={handleRawExif}
+              />
+            </ZoomableImage>
           ) : uri ? (
-            <ProgressiveOriginalImage
-              baseUri={uri}
-              originalUri={originalUri}
-              progress={progress}
-              active={originalActive}
-              cacheHit={originalCacheHit}
-              reduceMotion={reduceMotion}
-              amber={c.amber}
-              containerStyle={StyleSheet.absoluteFill}
-              imageStyle={styles.photoPageImage}
-              baseOpacity={fullImageOpacity}
-              onPromote={promoteOriginal}
-              onImageLoad={() => setImageLoaded(true)}
-              onImageError={() => setError((prev) => prev ?? "This image couldn't be displayed.")}
-            />
+            // Task 1579 — pinch/double-tap zoom; resets when paging away.
+            <ZoomableImage
+              style={StyleSheet.absoluteFill}
+              resetSignal={isCurrent}
+              onZoomChange={isCurrent ? onZoomChange : undefined}
+              onSingleTap={onSingleTap}
+              testID="preview-zoomable"
+            >
+              <ProgressiveOriginalImage
+                baseUri={uri}
+                originalUri={originalUri}
+                progress={progress}
+                active={originalActive}
+                cacheHit={originalCacheHit}
+                reduceMotion={reduceMotion}
+                amber={c.amber}
+                containerStyle={StyleSheet.absoluteFill}
+                imageStyle={styles.photoPageImage}
+                baseOpacity={fullImageOpacity}
+                onPromote={promoteOriginal}
+                onImageLoad={() => setImageLoaded(true)}
+                onImageError={() => setError((prev) => prev ?? "This image couldn't be displayed.")}
+              />
+            </ZoomableImage>
           ) : (
             <View style={styles.photoPageStatus}>
               {/* 1346 — textColor/trackColor forced dark: this pager page is
                   always inside mediaRoot's forced-dark ground (only reachable
                   from isMediaPreview), same argument as the mediaMaterial
                   comment above `if (isMediaPreview)` in the main component. */}
-              {loading || shouldLoadFull ? (
+              {loading || loadFull ? (
                 <PreviewProgressStatus
                   color={c.amber}
                   textColor={glassMaterial('dark').labelMuted}
@@ -1674,8 +2021,9 @@ const PhotoPage = React.memo(function PhotoPage({
               ) : null}
             </View>
           )}
-        </>
-      )}
+          </>
+        );
+      })()}
     </View>
   );
 });
@@ -1685,7 +2033,25 @@ const PhotoPage = React.memo(function PhotoPage({
 // beneath")
 // ---------------------------------------------------------------------------
 
-const PREVIEW_TOP_SCRIM_BANDS = 12;
+// TestFlight build 217 (iPhone, iOS 27): "the gradient at the top ... is not
+// nice at all, it's blocky" — visible stepped grey bands behind the status
+// bar over bright content (a white PDF/SVG page makes each band's edge a
+// hard-contrast line). Root cause: 12 bands spread over up to 0.50 alpha is
+// a ~0.05 jump per band in the steepest (0 → 0.55) segment — more than 6×
+// `GlassSurface` Sheen's per-band delta (20 bands over ≤0.10 alpha, ~0.005)
+// and over 2× `ScrollEdgeBlur`'s tint (14 bands over 0.30 alpha, ~0.021),
+// both of which ship with no reported banding. 64 bands brings this scrim's
+// worst-case per-band delta to ~0.012 — finer than `ScrollEdgeBlur`'s
+// precedent and in the same imperceptible range as the Sheen. Plain `View`
+// bands (no blur) is not a shortcut: the ground-truth canvas's `.topfade`
+// (`design/preview-redesign-ios.html`) is itself a flat CSS
+// `linear-gradient`, no `backdrop-filter` — the header's own glass pills
+// (`GlassCapsule`/title pill), painted ON TOP of this scrim in the same
+// wrapper, are what supplies the frosted-material texture; adding blur HERE
+// would double it up and deviate from the canvas. So: same technique
+// (`bandColors`, no new dependency, no dev-client rebuild), just enough
+// resolution that the steps fall below the eye's threshold.
+const PREVIEW_TOP_SCRIM_BANDS = 64;
 // Dark/light scrim tracks the APP's resolved scheme, not the underlying
 // document's colours — same reasoning `PREVIEW_CHROME_MATERIAL` already
 // documents for the bars themselves: this backs the OS status bar (clock/
@@ -1708,6 +2074,10 @@ const PREVIEW_TOP_SCRIM_STOPS_LIGHT: Stop[] = [
  * aspect ratio) — this is a vertical stack of `bandColors` bands, same
  * technique (no `expo-linear-gradient` — see `gradient.ts`'s own doc
  * comment), simpler case: no rotation, no measured width, just height.
+ *
+ * No `BlurView` either — see `PREVIEW_TOP_SCRIM_BANDS`'s doc comment: the
+ * canvas's `.topfade` this backs is itself unblurred, and the header content
+ * painted on top of this component already carries its own glass.
  */
 function PreviewTopScrim({ height, dark }: { height: number; dark: boolean }) {
   const bands = useMemo(
@@ -1736,8 +2106,17 @@ export default function PreviewScreen() {
   const navigation = useNavigation<Nav>();
   const route = useRoute<PreviewRoute>();
   const insets = useSafeAreaInsets();
+  const previewBottomInset = bottomAnchorInset(insets.bottom, Math.max(insets.bottom, 16));
   const { colors: c, resolved } = useTheme();
   const { showToast } = useToast();
+  const previewVideoControlsBottomInset = useMemo(
+    () => previewBottomInset + PREVIEW_VIDEO_CONTROLS_BOTTOM_CLEARANCE,
+    [previewBottomInset],
+  );
+  const videoControlsBottomStyle = useMemo(
+    () => ({ bottom: previewVideoControlsBottomInset }),
+    [previewVideoControlsBottomInset],
+  );
   const {
     fileId,
     fileName,
@@ -1751,9 +2130,11 @@ export default function PreviewScreen() {
     initialPhotoIndex,
     performanceStorageProfile: routePerformanceStorageProfile,
     hasThumbnail,
+    thumbnailBytes,
     fileRequestId,
     senderEphemeralPubkey,
     wrappedContentKey,
+    startInEditMode,
   } = route.params;
 
   // File-request uploads (0643): when all three sealed-key fields are present
@@ -1799,7 +2180,7 @@ export default function PreviewScreen() {
   // second responder to race the FlatList's own.
   const pagerTouchStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
   const activePhotoPageIndexes = useMemo(
-    () => activePhotoPageIndices(currentPhotoIndex, photoList.length, 0),
+    () => activePhotoPageIndices(currentPhotoIndex, photoList.length, PHOTO_PAGE_LOAD_RADIUS),
     [currentPhotoIndex, photoList.length],
   );
 
@@ -1809,6 +2190,11 @@ export default function PreviewScreen() {
   const currentFileName = currentEntry?.display_name ?? currentEntry?.name_encrypted ?? fileName;
   const currentMimeType = currentEntry?.mime_type ?? mimeType;
   const currentSizeBytes = currentEntry?.size_bytes ?? sizeBytes;
+  // Task 1592 item 5 — the size SHOWN (header pill, Info sheet, detail rows,
+  // share sheet) follows an in-app save; `currentSizeBytes` (the decrypt
+  // input) is left alone so a save never re-triggers the loaders.
+  const [savedMeta, setSavedMeta] = useState<SavedFileMeta | null>(null);
+  const shownSizeBytes = displayedSizeBytes(currentFileId, currentSizeBytes, savedMeta);
   const currentCreatedAt = currentEntry?.created_at ?? createdAt;
   const currentChunkCount = currentEntry?.chunk_count ?? chunkCount;
   const currentVersionNumber = currentEntry?.version_number ?? versionNumber;
@@ -1903,7 +2289,8 @@ export default function PreviewScreen() {
   const [performanceStorageProfile, setPerformanceStorageProfile] = useState<PerformanceStorageProfile>(() => (
     normalizePerformanceStorageProfile(routePerformanceStorageProfile)
   ));
-  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [preparingExport, setPreparingExport] = useState(false);
+  const exportProgressRef = useRef<ExportProgressBannerHandle>(null);
   const [optionsVisible, setOptionsVisible] = useState(false);
   const [originalPhotoRequest, setOriginalPhotoRequest] = useState<{ fileId: string; nonce: number } | null>(null);
 
@@ -1958,6 +2345,10 @@ export default function PreviewScreen() {
   const [textContent, setTextContent] = useState<string | null>(null);
   const [textLoading, setTextLoading] = useState(false);
   const [textError, setTextError] = useState<string | null>(null);
+  // Task 1592 item 3 — "Try again" on a failed load bumps this; it is a
+  // dependency of `fetchAndDecrypt` (so every loader effect built on it
+  // re-runs) and of the image / PDF loaders, which do not use it.
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   // Task 1563 — text/markdown/code EDIT mode state. `savedVersionNumber`/
   // `savedAt` override the route-provided version once a save succeeds (this
@@ -1981,7 +2372,38 @@ export default function PreviewScreen() {
   const [videoUri, setVideoUri] = useState<string | null>(null);
   const [videoLoading, setVideoLoading] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
+  const [streamBufferPct, setStreamBufferPct] = useState<number | null>(null);
   const tempVideoUriRef = useRef<string | null>(null);
+
+  // Task 1568 — audio inline preview state, same shape as video's above:
+  // `audioUri` is the on-disk decrypted file AudioRenderer plays from,
+  // tracked in a ref so the unmount cleanup effect (below) always sees the
+  // latest value without re-subscribing, and deleted on unmount / when the
+  // previewed file changes.
+  const [audioUri, setAudioUri] = useState<string | null>(null);
+  const [audioLoading, setAudioLoading] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const tempAudioUriRef = useRef<string | null>(null);
+
+  // Task 1569 — RAW inline preview state, same shape as video/audio's
+  // above: `rawUri` is the on-disk DECRYPTED SOURCE raw file (RawRenderer
+  // reads it and writes its OWN separate extracted-preview temp file,
+  // which it cleans up itself — see RawRenderer.tsx). `rawExifInfo` is
+  // bubbled up from RawRenderer's extraction for the Info sheet's extra
+  // rows (Camera/Lens/ISO/Shutter/Aperture/Focal length).
+  const [rawUri, setRawUri] = useState<string | null>(null);
+  const [rawLoading, setRawLoading] = useState(false);
+  const [rawError, setRawError] = useState<string | null>(null);
+  // Task 1669 round 3: EXIF is stored KEYED BY FILE ID and the Info sheet reads the entry for the
+  // CURRENT file. The round-2 single `rawExifInfo` slot was cleared by the single-file RAW effect
+  // below in the same commit in which a preloaded neighbour re-published it, so the order of two
+  // effects decided whether the Info sheet had any EXIF rows.
+  const [rawExifById, setRawExifById] = useState<Record<string, RawExifInfo | null>>({});
+  const publishRawExif = useCallback((forFileId: string, info: RawExifInfo | null) => {
+    setRawExifById((prev) => (prev[forFileId] === info ? prev : { ...prev, [forFileId]: info }));
+  }, []);
+  const rawExifInfo = rawExifById[currentFileId] ?? null;
+  const tempRawUriRef = useRef<string | null>(null);
 
   // DOCX inline preview state — `docxData` holds the raw arrayBuffer; the
   // mammoth conversion runs inside the lazy DocxRenderer so the lib is not
@@ -2007,11 +2429,14 @@ export default function PreviewScreen() {
   const [htmlError, setHtmlError] = useState<string | null>(null);
   const [htmlShowSource, setHtmlShowSource] = useState(false);
 
-  // ZIP archive listing state — raw arrayBuffer; JSZip parsing inside the
-  // lazy ZipRenderer.
-  const [zipData, setZipData] = useState<ArrayBuffer | null>(null);
+  // ZIP archive listing state (task 2233 item 6) — the archive is read through
+  // a ranged source: the central directory for the listing, one entry on tap.
+  // No copy of the archive is ever held in JS memory.
+  const [zipListing, setZipListing] = useState<ZipListing | null>(null);
   const [zipLoading, setZipLoading] = useState(false);
   const [zipError, setZipError] = useState<string | null>(null);
+  const [zipTooLarge, setZipTooLarge] = useState(false);
+  const zipSourceRef = useRef<ZipFileSource | null>(null);
 
   // Archive (TAR/GZ/TGZ) state — uses ArchiveRenderer component
   const [archiveData, setArchiveData] = useState<ArrayBuffer | null>(null);
@@ -2034,8 +2459,8 @@ export default function PreviewScreen() {
 
   // Resolve the key provider + master-key handle for decryptToTempFile. For a
   // file-request upload (0643) we hand it the request content key C and a null
-  // handle, which forces the explicit-key decrypt path (decryptChunksToFile)
-  // instead of the native master-key derivation that would produce the wrong
+  // handle and explicitly select the supplied-key decrypt path rather than
+  // the native master-key derivation that would produce the wrong
   // key. Only the single previewed file can be a request upload — swiped photos
   // always take the normal path.
   const resolveDecryptKey = useCallback(
@@ -2048,15 +2473,39 @@ export default function PreviewScreen() {
     [requestFileFields, fileId, getRequestContentKey, getFileKeyBytes, getMasterKeyHandleId],
   );
 
+  const getPreviewFileKeyBytes = useCallback(
+    (id: string) => resolveDecryptKey(id).keyProvider(),
+    [resolveDecryptKey],
+  );
+
   // Use current* values so derived state updates when swiping between photos
   const category = fileCategory(currentMimeType, currentFileName);
   const isImage = category === 'image';
+  // Task 1569 — RAW (CR2/CR3/ARW/NEF/RAF/DNG) joins the MEDIA branch, same
+  // full-bleed black stage as photos ("images/RAW on black" — see the
+  // isImage render branch's own comment, which already anticipated this).
+  // Unlike audio, a RAW file's content IS a photo once extracted, so it
+  // belongs on the same visual frame as isImage, not the doc branch's
+  // themed card.
+  const isRaw = category === 'raw';
   const isSvg = category === 'svg';
   const isPdf = category === 'pdf';
   const isVideo = !!currentMimeType && currentMimeType.startsWith('video/');
   const isArchive = category === 'archive';
   const isPptx = category === 'pptx';
-  const isMediaPreview = isImage || isVideo;
+  // Task 1568 — audio gets its own doc-branch render (native player), not
+  // the media (isImage||isVideo) branch: it has no visual frame of its own
+  // to bleed edge-to-edge, so it belongs with the doc-root's themed
+  // header/background, same class of decision as PDF/DOCX/etc.
+  const isAudio = category === 'audio';
+  const isMediaPreview = isImage || isVideo || isRaw;
+  // "Canon RAW" / "Sony RAW" / … — the manufacturer-specific override for
+  // CATEGORY_LABELS['raw'] wherever the title pill / Info sheet shows the
+  // file's kind, same override pattern as isText's codeLanguageLabel.
+  const rawFormatLabelValue = useMemo(
+    () => rawFormatLabel(currentFileName, currentMimeType),
+    [currentFileName, currentMimeType],
+  );
 
   // Task 0885 (FIX #3): reset the decode flag whenever the displayed image uri
   // changes so the watchdog re-arms for the new source.
@@ -2091,6 +2540,15 @@ export default function PreviewScreen() {
   const isSpreadsheet = category === 'spreadsheet';
   const isHtml = category === 'html';
   const isZip = category === 'zip';
+  // Task 1570 — `isTextPreview` also accepts any mime_type that isn't
+  // CONFIDENTLY something else (image/video/audio/pdf/zip/archive/office)
+  // on a known text/code extension (py/go/rs/ts/tsx/js/jsx/java/kt/swift/c/
+  // cpp/h/cs/rb/php/sh/sql/css/toml/ini/Dockerfile/…), not just a confident
+  // text/json/xml mime_type — see that module's doc comment for why the
+  // fallback lives here (preview time, not only the upload path) and for
+  // the real `sample.sql` bug a narrower "only when mime is generic" gate
+  // missed (a non-generic-but-still-not-text guess this app's own upstream
+  // mime lookup can produce).
   const isText =
     !isDocx &&
     !isSpreadsheet &&
@@ -2099,10 +2557,7 @@ export default function PreviewScreen() {
     !isZip &&
     !isArchive &&
     !isPptx &&
-    !!currentMimeType &&
-    (currentMimeType.startsWith('text/') ||
-      currentMimeType === 'application/json' ||
-      currentMimeType === 'application/xml');
+    isTextPreview(currentMimeType, currentFileName);
   const previewFileName = useMemo(
     () => previewDisplayName(currentFileName, category),
     [category, currentFileName],
@@ -2115,6 +2570,19 @@ export default function PreviewScreen() {
     const ext = previewFileName.includes('.') ? previewFileName.split('.').pop() : null;
     return ext ? `.${ext.toUpperCase()}` : null;
   }, [previewFileName]);
+
+  // Task 1568 — the format chip AudioRenderer shows must match the REAL
+  // extension the decrypted temp file was written with (`extensionForAudio`,
+  // same function `fetchAndDecrypt` uses for the `ext` it hands
+  // `decryptToTempFile` — see that call site), not just whatever extension
+  // happens to be on the ORIGINAL filename (`fileFormat` above) — the two
+  // only diverge in the rare case where the OS-reported mime disagrees with
+  // the filename, but when they do, this is the one that's actually true of
+  // the bytes being played.
+  const audioFormatLabel = useMemo(
+    () => extensionForAudio(currentMimeType, currentFileName).replace(/^\./, '').toUpperCase(),
+    [currentMimeType, currentFileName],
+  );
 
   // Code highlighting — language id + display label come from the filename
   // and mime; the highlighted HTML is rebuilt only when the loaded text changes.
@@ -2138,11 +2606,40 @@ export default function PreviewScreen() {
   // pure logic these read.
   // ---------------------------------------------------------------------
   const [barsVisible, setBarsVisible] = useState(true);
+  // Task 1579 — true while the current image is pinch/double-tap zoomed:
+  // the pager stops paging and the header's swipe-down-to-close is off, so
+  // a drag pans the zoomed image instead. Reset on every page change.
+  const [mediaZoomed, setMediaZoomed] = useState(false);
+  useEffect(() => {
+    setMediaZoomed(false);
+  }, [currentPhotoIndex, currentFileId]);
   const [infoVisible, setInfoVisible] = useState(false);
+  // Task 1583 — the bottom bar's "Versions" opens the sheet AT the Versions
+  // section, "Info" at the top: one home for versions (the sheet's own
+  // section), two doors into it.
+  const [infoFocus, setInfoFocus] = useState<InfoSheetFocus>('info');
+  const openInfo = useCallback((focus: InfoSheetFocus) => {
+    setInfoFocus(focus);
+    setInfoVisible(true);
+  }, []);
   // A .md file's ⋯ menu can show the RAW source without entering Edit
   // (design section 02, "Show source" — Guus's 18:50 ruling put Edit in
   // this same menu; this is the sibling read-only view it also asked for).
   const [showSource, setShowSource] = useState(false);
+  // Task 1591 bug 1 — the status bar's content style follows the surface it
+  // sits on (media stage / code + editor surfaces are dark in BOTH themes),
+  // not only the app theme the root <StatusBar> in App.tsx uses. See
+  // src/lib/status-bar-style.ts.
+  const surfaceIsDark = previewSurfaceIsDark({
+    isMediaPreview,
+    isText,
+    editMode,
+    textLoaded: textContent != null,
+    isMarkdown,
+    showSource,
+    appScheme: resolved === 'dark' ? 'dark' : 'light',
+  });
+  const statusBarStyle = statusBarStyleFor(surfaceIsDark);
   const [pdfPageInfo, setPdfPageInfo] = useState<{ current: number; total: number } | null>(null);
   const barsOpacity = useRef(new Animated.Value(1)).current;
 
@@ -2200,7 +2697,10 @@ export default function PreviewScreen() {
   // photo swipe-pager's position — see `formatPdfPageCounter`'s doc comment.
   const pageCounterLabel = isPdf
     ? (pdfPageInfo ? formatPdfPageCounter(pdfPageInfo.current, pdfPageInfo.total) : null)
-    : (hasSwipe && (isImage || isVideo) ? formatPdfPageCounter(currentPhotoIndex + 1, photoList.length) : null);
+    // Task 1570 — isRaw added: RAW now joins the swipe pager (see
+    // `showPager` below), so the "N / total" pill must show for a RAW page
+    // too, not just vanish for the one category that just gained paging.
+    : (hasSwipe && (isImage || isVideo || isRaw) ? formatPdfPageCounter(currentPhotoIndex + 1, photoList.length) : null);
 
   // ---------------------------------------------------------------------
   // Task 1563 — markdown preview + native text/code editor.
@@ -2271,6 +2771,17 @@ export default function PreviewScreen() {
     if (!fileMeta) void loadFileMeta();
   }, [canEditText, textContent, fileMeta, loadFileMeta]);
 
+  // Task 1587 — a file just created from the Files "+" menu opens straight in
+  // the editor. Fires once, after the (empty) text has loaded and the normal
+  // edit gate agrees; never re-enters after the user leaves edit mode.
+  const autoEditConsumedRef = useRef(false);
+  useEffect(() => {
+    if (!startInEditMode || autoEditConsumedRef.current) return;
+    if (!canEditText || textContent == null) return;
+    autoEditConsumedRef.current = true;
+    handleEnterEditMode();
+  }, [startInEditMode, canEditText, textContent, handleEnterEditMode]);
+
   const handleExitEditMode = useCallback(() => {
     if (isDirty) {
       Alert.alert(
@@ -2295,134 +2806,202 @@ export default function PreviewScreen() {
     setOptionsVisible(false);
   }, [isDirty]);
 
-  const attemptSave = useCallback(async (opts: {
+  // Task 1563 — the post-success state update shared by every save path.
+  const applySavedVersion = useCallback(async (opts: {
     text: string;
     targetFileId: string;
     nameEncrypted: string;
     parentId: string | null;
-    versionReplace: { baseVersionNumber: number } | null;
-  }): Promise<{ ok: true } | { ok: false; conflict: boolean }> => {
-    try {
-      const updated = await saveTextFileVersion({
-        fileId: opts.targetFileId,
-        nameEncrypted: opts.nameEncrypted,
-        parentId: opts.parentId ?? undefined,
-        text: opts.text,
-        encryptChunkFn: encryptChunk,
-        versionReplace: opts.versionReplace ?? undefined,
-      });
-      const newVersion = updated.version_number ?? (opts.versionReplace ? opts.versionReplace.baseVersionNumber + 1 : 1);
-      // Task 1563 — `decryptToTempFile`'s preview cache is keyed by fileId +
-      // extension only, with no version awareness (every caller before this
-      // one only ever produced a NEW plaintext for a fileId the cache had
-      // never seen). A version-replace writes NEW bytes behind an
-      // ALREADY-cached fileId, so without this, reopening the file in the
-      // same session served the stale pre-edit content — confirmed
-      // on-device (bb-ios27): server size_bytes updated, cached preview
-      // did not. `extensionForMime(..., 'doc')` matches exactly what the
-      // isText read-view's own `fetchAndDecrypt` call caches under.
-      await invalidatePreviewCache(opts.targetFileId, extensionForMime(currentMimeType, category).replace(/^\./, ''));
-      setSavedVersionNumber(newVersion);
-      setSavedAt(new Date());
-      setTextContent(opts.text);
-      setEditText(opts.text);
-      setFileMeta({ nameEncrypted: opts.nameEncrypted, parentId: opts.parentId, versionNumber: newVersion });
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      return { ok: true };
-    } catch (err) {
-      if (isStaleVersionConflict(err)) {
-        return { ok: false, conflict: true };
-      }
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Save failed', friendlyError(err));
-      return { ok: false, conflict: false };
+    versionNumber: number;
+  }) => {
+    // Task 1563 — `decryptToTempFile`'s preview cache is keyed by fileId +
+    // extension only, with no version awareness (every caller before this
+    // one only ever produced a NEW plaintext for a fileId the cache had
+    // never seen). A version-replace writes NEW bytes behind an
+    // ALREADY-cached fileId, so without this, reopening the file in the
+    // same session served the stale pre-edit content — confirmed
+    // on-device (bb-ios27): server size_bytes updated, cached preview
+    // did not. `extensionForMime(..., 'doc')` matches exactly what the
+    // isText read-view's own `fetchAndDecrypt` call caches under.
+    await invalidatePreviewCache(opts.targetFileId, extensionForMime(currentMimeType, category).replace(/^\./, ''));
+    setSavedVersionNumber(opts.versionNumber);
+    setSavedAt(new Date());
+    setTextContent(opts.text);
+    setEditText(opts.text);
+    setFileMeta({ nameEncrypted: opts.nameEncrypted, parentId: opts.parentId, versionNumber: opts.versionNumber });
+    // Task 1592 item 5 — refresh the saved file's size (best effort; the
+    // saved text's byte length when the read fails).
+    const fresh = await getFile(opts.targetFileId).catch(() => null);
+    setSavedMeta(savedFileMetaFrom(opts.targetFileId, opts.text, fresh));
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+  }, [currentMimeType, category]);
+
+  const showSaveFailed = useCallback((message: string) => {
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+    Alert.alert('Save failed', message);
+  }, []);
+
+  // Task 1578 — one synchronous gate for every save path. React's `saving`
+  // is read from a render closure, so two taps before the re-render both
+  // passed the old `if (saving) return` guard and raced two uploads of the
+  // same file; the loser got "upload already in progress" (a 409), which
+  // was shown as "a newer version was saved on another device".
+  const saveGateRef = useRef(createSingleFlight());
+
+  /**
+   * Task 1578 — the file is marked as uploading ("upload is already in
+   * progress"). The server cannot say whose upload that is — an orphan from
+   * an interrupted save looks exactly like another device's live save — so
+   * it is never cleared silently: only the user knows whether they are
+   * saving it somewhere else. Resolves false on Cancel or when the alert is dismissed.
+   */
+  const confirmClearInFlightUpload = useCallback(
+    () =>
+      new Promise<boolean>((resolve) => {
+        Alert.alert(
+          'This file is still marked as uploading',
+          'An earlier save did not finish, or another device is saving this file right now. If you are not saving it somewhere else, you can clear it and save.',
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Clear and save', style: 'destructive', onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        );
+      }),
+    [],
+  );
+
+  /**
+   * Task 1578 — save `text` as a new version of THIS file via `runTextSave`
+   * (see `text-save-flow.ts`): a file still marked as uploading asks the user
+   * before clearing it (never reported as another device's change); a REAL stale-version conflict opens the
+   * conflict dialog, as before.
+   */
+  const saveAsNewVersion = useCallback(async (opts: {
+    text: string;
+    meta: { nameEncrypted: string; parentId: string | null; versionNumber: number };
+  }): Promise<void> => {
+    const { text, meta } = opts;
+    const result = await runTextSaveConfirmingClear(
+      {
+        save: async (baseVersionNumber) => {
+          const updated = await saveTextFileVersion({
+            fileId: currentFileId,
+            nameEncrypted: meta.nameEncrypted,
+            parentId: meta.parentId ?? undefined,
+            text,
+            encryptChunkFn: encryptChunk,
+            versionReplace: { baseVersionNumber },
+          });
+          return updated.version_number ?? baseVersionNumber + 1;
+        },
+        uploadStarted: saveFailedAfterUploadStarted,
+        abandon: () => abandonTextFileUpload(currentFileId),
+        // Codex P2 (PR #134): after a real conflict, refresh name + parent +
+        // version (loadFileMeta sets fileMeta), so a later Save cannot revert
+        // a rename or move made by the conflicting save.
+        readCurrentVersion: () => refreshMetaForConflict(loadFileMeta),
+      },
+      { baseVersionNumber: meta.versionNumber },
+      confirmClearInFlightUpload,
+    );
+    switch (result.kind) {
+      case 'saved':
+        await applySavedVersion({
+          text,
+          targetFileId: currentFileId,
+          nameEncrypted: meta.nameEncrypted,
+          parentId: meta.parentId,
+          versionNumber: result.versionNumber,
+        });
+        return;
+      case 'conflict':
+        // fileMeta was already replaced by the fresh copy in readCurrentVersion.
+        setConflict({ freshVersionNumber: result.freshVersionNumber });
+        return;
+      case 'cancelled':
+      case 'needs-confirmation':
+        // The user chose not to clear the in-flight upload. Their edit stays
+        // in the editor; nothing was abandoned.
+        return;
+      case 'busy':
+        showSaveFailed('An earlier save of this file is still finishing. Try again in a moment.');
+        return;
+      case 'error':
+        showSaveFailed(friendlyError(result.error));
+        return;
     }
-  }, [encryptChunk, currentMimeType, category]);
+  }, [currentFileId, encryptChunk, applySavedVersion, showSaveFailed, confirmClearInFlightUpload, loadFileMeta]);
 
   const handleSaveEdit = useCallback(async () => {
-    if (editText == null || saving) return;
-    setSaving(true);
-    try {
-      let meta = fileMeta;
-      if (!meta) meta = await loadFileMeta();
-      if (!meta) {
-        Alert.alert('Save failed', fileMetaError ?? 'Could not read the file before saving.');
-        return;
-      }
-      const result = await attemptSave({
-        text: editText,
-        targetFileId: currentFileId,
-        nameEncrypted: meta.nameEncrypted,
-        parentId: meta.parentId,
-        versionReplace: { baseVersionNumber: meta.versionNumber },
-      });
-      if (!result.ok && result.conflict) {
-        // Learn the real current version so "Save as new version" retries
-        // against the right base instead of guessing +1.
-        const refreshed = await loadFileMeta();
-        setConflict({ freshVersionNumber: refreshed?.versionNumber ?? meta.versionNumber + 1 });
-      }
-    } finally {
-      setSaving(false);
-    }
-  }, [editText, saving, fileMeta, loadFileMeta, fileMetaError, attemptSave, currentFileId]);
-
-  const handleConflictChoice = useCallback(async (choice: 'keep-both' | 'new-version' | 'discard') => {
     if (editText == null) return;
+    const text = editText;
+    await saveGateRef.current.run(async () => {
+      setSaving(true);
+      try {
+        let meta = fileMeta;
+        if (!meta) meta = await loadFileMeta();
+        if (!meta) {
+          showSaveFailed(fileMetaError ?? 'Could not read the file before saving.');
+          return;
+        }
+        await saveAsNewVersion({ text, meta });
+      } finally {
+        setSaving(false);
+      }
+    });
+  }, [editText, fileMeta, loadFileMeta, fileMetaError, saveAsNewVersion, showSaveFailed]);
+
+  const handleConflictChoice = useCallback(async (choice: 'keep-both' | 'new-version' | 'discard' | 'cancel') => {
     setConflict(null);
+    if (choice === 'cancel' || editText == null) return;
     if (choice === 'discard') {
       setEditMode(false);
       setEditText(null);
       return;
     }
-    setSaving(true);
-    try {
-      const refreshed = await loadFileMeta();
-      if (!refreshed) {
-        Alert.alert('Save failed', fileMetaError ?? 'Could not read the file before saving.');
-        return;
-      }
-      if (choice === 'new-version') {
-        const result = await attemptSave({
-          text: editText,
-          targetFileId: currentFileId,
-          nameEncrypted: refreshed.nameEncrypted,
-          parentId: refreshed.parentId,
-          versionReplace: { baseVersionNumber: refreshed.versionNumber },
-        });
-        if (!result.ok && result.conflict) {
-          // Someone saved again in the tiny window between the refetch and
-          // this retry — surface the dialog again rather than looping.
-          const again = await loadFileMeta();
-          setConflict({ freshVersionNumber: (again?.versionNumber ?? refreshed.versionNumber) + 1 });
+    const text = editText;
+    await saveGateRef.current.run(async () => {
+      setSaving(true);
+      try {
+        const refreshed = await loadFileMeta();
+        if (!refreshed) {
+          showSaveFailed(fileMetaError ?? 'Could not read the file before saving.');
+          return;
         }
-      } else {
+        if (choice === 'new-version') {
+          await saveAsNewVersion({ text, meta: refreshed });
+          return;
+        }
         // Keep both — a brand-new file, same folder, suffixed name. Never
         // touches the OTHER device's version at all.
         const newFileId = await generateFileId();
-        const keptName = buildKeepBothName(previewFileName, 'iPhone');
+        const keptName = buildKeepBothName(previewFileName, deviceNoun());
         const metadataPlain = fileMetadataPlaintext(keptName, currentMimeType ?? null, null);
         const encName = await encryptMetadata(newFileId, metadataPlain);
         const nameEncrypted = encryptedMetadataToJson(encName);
-        // Codex review (PR #123, P2): `attemptSave`'s result was being
-        // discarded here — on a failed upload it already shows its own
-        // "Save failed" alert (see that function), but this toast fired
-        // regardless, telling the user a copy was saved when none exists.
-        const result = await attemptSave({
-          text: editText,
-          targetFileId: newFileId,
-          nameEncrypted,
-          parentId: refreshed.parentId,
-          versionReplace: null,
-        });
-        if (result.ok) {
+        try {
+          await saveTextFileVersion({
+            fileId: newFileId,
+            nameEncrypted,
+            parentId: refreshed.parentId ?? undefined,
+            text,
+            encryptChunkFn: encryptChunk,
+          });
+          // The edited text now lives in the NEW file and THIS file is
+          // unchanged, so leave the editor showing this file as it is.
+          setEditMode(false);
+          setEditText(null);
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
           showToast({ type: 'success', message: `Saved as "${keptName}"` });
+        } catch (err) {
+          showSaveFailed(friendlyError(err));
         }
+      } finally {
+        setSaving(false);
       }
-    } finally {
-      setSaving(false);
-    }
-  }, [editText, loadFileMeta, fileMetaError, attemptSave, currentFileId, previewFileName, currentMimeType, encryptMetadata, showToast]);
+    });
+  }, [editText, loadFileMeta, fileMetaError, saveAsNewVersion, previewFileName, currentMimeType, encryptMetadata, encryptChunk, showToast, showSaveFailed]);
 
   const showConflictDialog = useCallback(() => {
     if (!conflict) return;
@@ -2430,7 +3009,7 @@ export default function PreviewScreen() {
       'A newer version was saved on another device',
       `Version ${conflict.freshVersionNumber} exists on the server. Your changes are still here — choose what happens next.`,
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel', onPress: () => { void handleConflictChoice('cancel'); } },
         { text: 'Discard my changes', style: 'destructive', onPress: () => { void handleConflictChoice('discard'); } },
         { text: 'Keep both', onPress: () => { void handleConflictChoice('keep-both'); } },
         { text: 'Save as new version', onPress: () => { void handleConflictChoice('new-version'); } },
@@ -2466,19 +3045,34 @@ export default function PreviewScreen() {
     const storage = trustLocation(currentStoragePoolId);
     const rows: Array<{ label: string; value: string }> = [
       { label: 'Name', value: previewFileName },
-      { label: 'Kind', value: CATEGORY_LABELS[category] ?? 'File' },
+      { label: 'Kind', value: category === 'raw' ? rawFormatLabelValue : (CATEGORY_LABELS[category] ?? 'File') },
     ];
     if (fileFormat) rows.push({ label: 'Format', value: fileFormat });
     if (currentMimeType) rows.push({ label: 'Type', value: currentMimeType });
-    if (currentSizeBytes != null) rows.push({ label: 'Size', value: formatSize(currentSizeBytes) });
+    if (shownSizeBytes != null) rows.push({ label: 'Size', value: formatSize(shownSizeBytes) });
     if (currentCreatedAt) rows.push({ label: 'Created', value: formatDate(currentCreatedAt) });
     if (currentVersionNumber != null) rows.push({ label: 'Version', value: `v${currentVersionNumber}` });
     if (currentChunkCount != null) rows.push({ label: 'Chunks', value: String(currentChunkCount) });
+    // Task 1569 — EXIF summary, only when RawRenderer's extraction actually
+    // found something ("where the EXIF has them" — the task's own phrasing;
+    // CR3 in particular has no path to real EXIF here, see raw-preview.ts's
+    // doc comment, so this section is simply omitted for it rather than
+    // showing six blank rows).
+    if (category === 'raw' && rawExifInfo) {
+      if (rawExifInfo.cameraModel) rows.push({ label: 'Camera', value: rawExifInfo.cameraModel });
+      if (rawExifInfo.lensModel) rows.push({ label: 'Lens', value: rawExifInfo.lensModel });
+      if (rawExifInfo.iso) rows.push({ label: 'ISO', value: rawExifInfo.iso });
+      if (rawExifInfo.shutterSpeed) rows.push({ label: 'Shutter', value: rawExifInfo.shutterSpeed });
+      if (rawExifInfo.aperture) rows.push({ label: 'Aperture', value: rawExifInfo.aperture });
+      if (rawExifInfo.focalLength) rows.push({ label: 'Focal length', value: rawExifInfo.focalLength });
+    }
     rows.push({
       label: 'Encryption',
       value: isUnlocked ? 'Decrypted on this device' : 'Client-side encrypted',
     });
-    rows.push({ label: 'Storage', value: `${storage.region} · ${storage.city}` });
+    // Task 2050: a region or a country, never a city. This pager entry carries no
+    // per-file country, so it says "Europe"; the Info sheet's "Stored in" row names the country.
+    rows.push({ label: 'Storage', value: storage.place });
     return rows;
   }, [
     category,
@@ -2488,9 +3082,11 @@ export default function PreviewScreen() {
     isUnlocked,
     currentMimeType,
     previewFileName,
-    currentSizeBytes,
+    shownSizeBytes,
     currentStoragePoolId,
     currentVersionNumber,
+    rawExifInfo,
+    rawFormatLabelValue,
   ]);
 
   // Task 1360 — `goBack()` is NOT idempotent: the modal's dismiss transition
@@ -2595,7 +3191,11 @@ export default function PreviewScreen() {
    * unlocked). Returns a local URI suitable for an <Image> source or sharing.
    * Falls back to the encrypted URI if crypto is unavailable.
    */
-  const fetchAndDecrypt = useCallback(async (options: { signal?: AbortSignal } = {}): Promise<string> => {
+  const fetchAndDecrypt = useCallback(async (options: {
+    signal?: AbortSignal;
+    onStreamProgress?: (pct: number) => void;
+    onExportProgress?: (event: PreviewLoadProgressEvent) => void;
+  } = {}): Promise<string> => {
     throwIfPreviewAborted(options.signal);
     // Task 1539 (finding 1, P0): every single-file decrypt path funnels
     // through this function — see PreviewLockedError's doc comment. Checked
@@ -2614,6 +3214,7 @@ export default function PreviewScreen() {
       chunkCount: currentChunkCount ?? null,
       isUnlocked,
       hasMasterKeyHandle: getMasterKeyHandleId() != null,
+      attempt: reloadNonce,
     });
     setLoadProgress(emptyPreviewProgress('downloading'));
     // 0803 — offline-open is handled centrally inside decryptToTempFile: it
@@ -2629,6 +3230,7 @@ export default function PreviewScreen() {
 
     // Keep the original extension on the cache filename — RN's <Image>,
     // expo-video, and the WebView pick the decoder from the URI suffix.
+    // caches-registry: example=00000000-0000-0000-0000-000000000000_x.jpg (legacy <fileId>_<name>)
     const cacheUri = `${FileSystem.cacheDirectory}${currentFileId}_${cacheFileName}`;
 
     // Remove any stale copy so a previous failed download (e.g. a JSON error
@@ -2648,25 +3250,35 @@ export default function PreviewScreen() {
     }
 
     if (isUnlocked) {
-      const ext = extensionForMime(currentMimeType, category);
+      // Task 1593 — the shared preview cache key ("Prove it" uses the same).
+      const decryptExt = previewDecryptExtension(currentMimeType, currentFileName);
       let decryptedUri: string;
       try {
         recordRuntimeTrace('preview.original.decrypt_request', {
           fileId: currentFileId,
           category,
-          extension: ext || cacheFileName,
+          extension: decryptExt,
         });
         {
           const { keyProvider, handleId } = resolveDecryptKey(currentFileId);
           decryptedUri = await decryptToTempFile(
             currentFileId,
             keyProvider,
-            ext || cacheFileName,
+            decryptExt,
             currentSizeBytes,
             currentChunkCount,
             handleId,
             {
-              onProgress: (event) => applyNativeProgress(event, setLoadProgress),
+              useProvidedFileKey: !!requestFileFields && currentFileId === fileId,
+              onProgress: (event) => {
+                if (options.onExportProgress) options.onExportProgress(event);
+                else applyNativeProgress(event, setLoadProgress);
+                const pct = streamBufferPctFromEvent(event);
+                if (pct !== undefined) {
+                  setStreamBufferPct(pct);
+                  if (pct !== null) options.onStreamProgress?.(pct);
+                }
+              },
               onOfflineFallback: () => {
                 showToast({ type: 'info', message: 'Offline copy unreadable. Re-downloading...' });
               },
@@ -2692,7 +3304,7 @@ export default function PreviewScreen() {
         elapsedMs: Date.now() - startedAt,
       });
       // 0883 — auto self-repair: the full plaintext is now on disk. If this is
-      // an OWNER media file the server has no thumbnail for, generate + upload
+      // an OWNER media file has a missing or degraded thumbnail, generate + upload
       // one from the bytes we just decrypted (fire-and-forget, never blocks the
       // open). Gated entirely inside the helper; we only feed it owner context.
       // hasThumbnail describes the *opened* file only — for swiped photos
@@ -2704,6 +3316,7 @@ export default function PreviewScreen() {
           currentMimeType ??
           (category === 'image' ? 'image/jpeg' : category === 'video' ? 'video/mp4' : null),
         hasServerThumbnail: currentFileId === fileId ? hasThumbnail : undefined,
+        serverThumbnailBytes: currentFileId === fileId ? thumbnailBytes : undefined,
         isRequestUpload: !!requestFileFields && currentFileId === fileId,
         getFileKeyBytes,
       });
@@ -2718,27 +3331,53 @@ export default function PreviewScreen() {
     contentLocked,
     currentChunkCount,
     currentFileId,
+    currentFileName,
     currentMimeType,
     currentSizeBytes,
     fileId,
     hasThumbnail,
+    thumbnailBytes,
     showToast,
     requestFileFields,
     getFileKeyBytes,
     getMasterKeyHandleId,
     resolveDecryptKey,
     isUnlocked,
+    reloadNonce,
   ]);
 
-  const getExportUri = useCallback(async (): Promise<{ uri: string; reusedPreview: boolean }> => {
-    if (isImage && imageUri && imagePreviewKind === 'original') return { uri: imageUri, reusedPreview: true };
-    if (isVideo && videoUri) return { uri: videoUri, reusedPreview: true };
-    if (isPdf && pdfUri) return { uri: pdfUri, reusedPreview: true };
-    return { uri: await fetchAndDecrypt(), reusedPreview: false };
-  }, [fetchAndDecrypt, imagePreviewKind, imageUri, isImage, isPdf, isVideo, pdfUri, videoUri]);
+  const getExportUri = useCallback(async (signal?: AbortSignal, onExportProgress?: (event: PreviewLoadProgressEvent) => void): Promise<ExportUriResult> => {
+    return resolvePreviewExportUri({
+      isImage,
+      imageUri,
+      imagePreviewKind,
+      isVideo,
+      videoUri,
+      videoFileId: currentFileId,
+      videoExtension: previewDecryptExtension(currentMimeType, currentFileName),
+      isPdf,
+      pdfUri,
+      fetchAndDecrypt: () => fetchAndDecrypt({ signal, onExportProgress }),
+      materializeStreamVideoForExport: materializeVideoPreviewForExport,
+      signal,
+    });
+  }, [
+    currentFileId,
+    currentFileName,
+    currentMimeType,
+    fetchAndDecrypt,
+    imagePreviewKind,
+    imageUri,
+    isImage,
+    isPdf,
+    isVideo,
+    pdfUri,
+    videoUri,
+  ]);
 
   const currentPhotoPageEntry = useMemo<PhotoPageEntry>(() => ({
     id: currentFileId,
+    is_request_upload: !!requestFileFields && currentFileId === fileId,
     name_encrypted: currentFileName,
     display_name: currentFileName,
     mime_type: currentMimeType ?? null,
@@ -2750,6 +3389,8 @@ export default function PreviewScreen() {
     thumbnail_uri: currentEntry?.thumbnail_uri ?? null,
     local_asset_id: currentEntry?.local_asset_id ?? null,
   }), [
+    requestFileFields,
+    fileId,
     currentChunkCount,
     currentCreatedAt,
     currentEntry?.local_asset_id,
@@ -2788,7 +3429,7 @@ export default function PreviewScreen() {
       const preview = await loadDecryptedPhotoForViewer(
         currentPhotoPageEntry,
         isUnlocked,
-        getFileKeyBytes,
+        getPreviewFileKeyBytes,
         getMasterKeyHandleId,
         {
           profile: performanceStorageProfile,
@@ -2819,7 +3460,7 @@ export default function PreviewScreen() {
             fileId: currentFileId,
             ...previewErrorTraceFields(err),
           });
-          setImageError(friendlyError(err));
+          setImageError(previewLoadErrorMessage(err));
         }
       })
       .finally(() => {
@@ -2836,12 +3477,13 @@ export default function PreviewScreen() {
     contentLocked,
     currentFileId,
     currentPhotoPageEntry,
-    getFileKeyBytes,
+    getPreviewFileKeyBytes,
     getMasterKeyHandleId,
     hasSwipe,
     isImage,
     isUnlocked,
     performanceStorageProfile,
+    reloadNonce,
   ]);
 
   useEffect(() => {
@@ -2861,7 +3503,7 @@ export default function PreviewScreen() {
     const startedAt = Date.now();
     recordRuntimeTrace('preview.image.large_thumbnail.upgrade_request', { fileId: currentFileId });
 
-    loadLargePreviewThumbnail(currentPhotoPageEntry, isUnlocked, getFileKeyBytes, controller.signal)
+    loadLargePreviewThumbnail(currentPhotoPageEntry, isUnlocked, getPreviewFileKeyBytes, controller.signal)
       .then((large) => {
         if (cancelled || !large) {
           if (!cancelled) recordRuntimeTrace('preview.image.large_thumbnail.empty', { fileId: currentFileId });
@@ -2892,7 +3534,7 @@ export default function PreviewScreen() {
     contentLocked,
     currentFileId,
     currentPhotoPageEntry,
-    getFileKeyBytes,
+    getPreviewFileKeyBytes,
     hasSwipe,
     imagePreviewKind,
     imageUri,
@@ -2929,6 +3571,7 @@ export default function PreviewScreen() {
           currentChunkCount,
           pdfHandleId,
           {
+            useProvidedFileKey: !!requestFileFields && currentFileId === fileId,
             onProgress: (event) => applyNativeProgress(event, setLoadProgress),
             signal: controller.signal,
           },
@@ -2938,7 +3581,7 @@ export default function PreviewScreen() {
           setPdfUri(tempPath);
         }
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setPdfError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setPdfError(previewLoadErrorMessage(err));
       } finally {
         if (!cancelled) {
           setPdfLoading(false);
@@ -2951,7 +3594,7 @@ export default function PreviewScreen() {
       cancelled = true;
       controller.abort();
     };
-  }, [contentLocked, isPdf, isUnlocked, currentFileId, getFileKeyBytes, getMasterKeyHandleId, resolveDecryptKey, currentSizeBytes, currentChunkCount]);
+  }, [contentLocked, isPdf, isUnlocked, currentFileId, getFileKeyBytes, getMasterKeyHandleId, resolveDecryptKey, currentSizeBytes, currentChunkCount, reloadNonce]);
 
   // Auto-load text/code/JSON inline on mount — read decrypted file as UTF-8.
   //
@@ -2998,7 +3641,7 @@ export default function PreviewScreen() {
         // as a text-pane error too would just be a second, redundant UI for
         // the same fact.
         if (!cancelled && !isAbortError(err) && !isPreviewLockedError(err)) {
-          setTextError(friendlyError(err));
+          setTextError(previewLoadErrorMessage(err));
         }
       })
       .finally(() => {
@@ -3022,19 +3665,23 @@ export default function PreviewScreen() {
     let cancelled = false;
     setVideoLoading(true);
     setVideoError(null);
-    fetchAndDecrypt({ signal: controller.signal })
+    setStreamBufferPct(null);
+    fetchAndDecrypt({ signal: controller.signal, onStreamProgress: setStreamBufferPct })
       .then((uri) => {
         if (cancelled || controller.signal.aborted) {
           // Screen already unmounted by the time the download completed —
           // delete the file directly since the cleanup branch never sees it.
-          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          if (!isLoopbackStreamUri(uri)) {
+            FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          }
+          void releasePreviewCopy(fileId, previewDecryptExtension(mimeType, fileName)).catch(() => {});
           return;
         }
         tempVideoUriRef.current = uri;
         setVideoUri(uri);
       })
       .catch((err) => {
-        if (!cancelled && !isAbortError(err)) setVideoError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setVideoError(previewLoadErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -3046,16 +3693,19 @@ export default function PreviewScreen() {
       cancelled = true;
       controller.abort();
     };
-  }, [hasSwipe, isVideo, fetchAndDecrypt]);
+  }, [hasSwipe, isVideo, fetchAndDecrypt, fileId, mimeType, fileName]);
 
   // Delete the temp video file when the screen unmounts.
   useEffect(() => {
     return () => {
       const uri = tempVideoUriRef.current;
-      if (uri) {
-        FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
-        tempVideoUriRef.current = null;
+      if (!uri) return;
+      tempVideoUriRef.current = null;
+      if (isLoopbackStreamUri(uri)) {
+        void releasePreviewCopy(fileId, previewDecryptExtension(mimeType, fileName)).catch(() => {});
+        return;
       }
+      FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
     };
   }, []);
 
@@ -3064,6 +3714,105 @@ export default function PreviewScreen() {
   const player = useVideoPlayer(videoUri, (p) => {
     p.loop = false;
   });
+
+  // Task 1568 — auto-load audio on mount; same shape as video's loader
+  // above (fetchAndDecrypt → track the on-disk temp URI → delete it once the
+  // screen unmounts or the load is aborted before it lands).
+  useEffect(() => {
+    if (!isAudio) return;
+    if (Platform.OS === 'web') return;
+    const controller = new AbortController();
+    let cancelled = false;
+    setAudioLoading(true);
+    setAudioError(null);
+    fetchAndDecrypt({ signal: controller.signal })
+      .then((uri) => {
+        if (cancelled || controller.signal.aborted) {
+          // Screen already unmounted by the time the decrypt completed —
+          // delete the file directly since the cleanup effect below never
+          // sees a uri it was never handed.
+          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          return;
+        }
+        tempAudioUriRef.current = uri;
+        setAudioUri(uri);
+      })
+      .catch((err) => {
+        if (!cancelled && !isAbortError(err)) setAudioError(previewLoadErrorMessage(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAudioLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [isAudio, fetchAndDecrypt]);
+
+  // Delete the temp audio file when the screen unmounts (i.e. on close —
+  // `handleClose` calls `navigation.goBack()`, which unmounts this screen;
+  // see that function's own comment). Routed through the extracted
+  // `cleanupTrackedTempFile` helper (`lib/preview-temp-file.ts`) rather than
+  // inlined like video's equivalent effect above, specifically so this
+  // exact "temp file is deleted" behaviour has a real, mutation-proven unit
+  // test — PreviewScreen.tsx itself cannot be unit-tested (no React
+  // reconciler in this project's test runner; see
+  // PreviewScreen.webview-parent.test.ts's doc comment).
+  useEffect(() => {
+    return () => {
+      void cleanupTrackedTempFile(tempAudioUriRef, FileSystem.deleteAsync);
+    };
+  }, []);
+
+  // Task 1569 — auto-load the RAW source file on mount; same shape as
+  // audio's loader above. RawRenderer reads this decrypted SOURCE file and
+  // writes its OWN separate extracted-preview temp file (cleaned up by
+  // RawRenderer itself, not here — see that component's doc comment).
+  useEffect(() => {
+    if (!isRaw) return;
+    // In pager mode each `PhotoPage` decrypts and renders its own RAW source; this single-file
+    // loader would decrypt the current file a second time into a temp file nothing shows (image and
+    // video already skip it the same way).
+    if (hasSwipe) return;
+    if (Platform.OS === 'web') return;
+    const controller = new AbortController();
+    let cancelled = false;
+    setRawLoading(true);
+    setRawError(null);
+    fetchAndDecrypt({ signal: controller.signal })
+      .then((uri) => {
+        if (cancelled || controller.signal.aborted) {
+          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+          return;
+        }
+        tempRawUriRef.current = uri;
+        setRawUri(uri);
+      })
+      .catch((err) => {
+        if (!cancelled && !isAbortError(err)) setRawError(previewLoadErrorMessage(err));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setRawLoading(false);
+          setDownloadProgress(0);
+        }
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [hasSwipe, isRaw, fetchAndDecrypt]);
+
+  // Delete the temp SOURCE raw file when the screen unmounts — same
+  // extracted-helper pattern as audio's equivalent effect above.
+  useEffect(() => {
+    return () => {
+      void cleanupTrackedTempFile(tempRawUriRef, FileSystem.deleteAsync);
+    };
+  }, []);
 
   // Auto-load DOCX inline — fetch the decrypted bytes and hand them to the
   // lazy DocxRenderer, which owns the mammoth import.
@@ -3085,7 +3834,7 @@ export default function PreviewScreen() {
         if (cancelled) return;
         setDocxData(arrayBuffer);
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setDocxError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setDocxError(previewLoadErrorMessage(err));
       } finally {
         if (!cancelled) {
           setDocxLoading(false);
@@ -3119,7 +3868,7 @@ export default function PreviewScreen() {
         const arrayBuffer = await readFileAsArrayBuffer(uri);
         if (!cancelled) setSheetData(arrayBuffer);
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setSheetError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setSheetError(previewLoadErrorMessage(err));
       } finally {
         if (!cancelled) {
           setSheetLoading(false);
@@ -3154,7 +3903,7 @@ export default function PreviewScreen() {
         if (!cancelled) setSvgContent(content);
       })
       .catch((err) => {
-        if (!cancelled && !isAbortError(err)) setSvgError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setSvgError(previewLoadErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -3191,7 +3940,7 @@ export default function PreviewScreen() {
         if (!cancelled) setHtmlContent(content);
       })
       .catch((err) => {
-        if (!cancelled && !isAbortError(err)) setHtmlError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setHtmlError(previewLoadErrorMessage(err));
       })
       .finally(() => {
         if (!cancelled) {
@@ -3212,7 +3961,10 @@ export default function PreviewScreen() {
     return buildSvgHtml(svgContent);
   }, [svgContent]);
 
-  // Auto-load ZIP archives — bytes go to the lazy ZipRenderer (owns JSZip).
+  // Auto-load ZIP archives (task 2233 item 6) — the decrypted file stays on
+  // disk and is read through a ranged source. Listing reads only the EOCD tail
+  // plus the central directory, so archive size stops mattering; entries are
+  // read one at a time when tapped.
   useEffect(() => {
     if (!isZip) return;
     if (Platform.OS === 'web') return;
@@ -3220,17 +3972,37 @@ export default function PreviewScreen() {
     let cancelled = false;
     setZipLoading(true);
     setZipError(null);
-    setZipData(null);
+    setZipTooLarge(false);
+    setZipListing(null);
+    zipSourceRef.current?.close();
+    zipSourceRef.current = null;
 
     (async () => {
       try {
         const uri = await fetchAndDecrypt({ signal: controller.signal });
         if (cancelled) return;
         throwIfPreviewAborted(controller.signal);
-        const arrayBuffer = await readFileAsArrayBuffer(uri);
-        if (!cancelled) setZipData(arrayBuffer);
+        const source = openZipFileSource(uri);
+        // Own the handle before awaiting: if the listing rejects (directory
+        // cap, corrupt archive) the catch below must still close it.
+        zipSourceRef.current = source;
+        const listing = await readZipListing(source, {
+          // 16 MB of central directory is far beyond any navigable archive.
+          maxCentralDirectoryBytes: MAX_CENTRAL_DIRECTORY_BYTES,
+        });
+        if (cancelled) return;
+        setZipListing(listing);
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setZipError(friendlyError(err));
+        zipSourceRef.current?.close();
+        zipSourceRef.current = null;
+        if (!cancelled && !isAbortError(err)) {
+          if (err instanceof ZipReadError && err.code === 'too-large') {
+            // Not an error: an honest state with its own copy and a way back.
+            setZipTooLarge(true);
+          } else {
+            setZipError(previewLoadErrorMessage(err));
+          }
+        }
       } finally {
         if (!cancelled) {
           setZipLoading(false);
@@ -3242,6 +4014,8 @@ export default function PreviewScreen() {
     return () => {
       cancelled = true;
       controller.abort();
+      zipSourceRef.current?.close();
+      zipSourceRef.current = null;
     };
   }, [isZip, fetchAndDecrypt]);
 
@@ -3264,7 +4038,7 @@ export default function PreviewScreen() {
         throwIfPreviewAborted(controller.signal);
         if (!cancelled) setArchiveData(arrayBuffer);
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setArchiveError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setArchiveError(previewLoadErrorMessage(err));
       } finally {
         if (!cancelled) {
           setArchiveLoading(false);
@@ -3298,7 +4072,7 @@ export default function PreviewScreen() {
         throwIfPreviewAborted(controller.signal);
         if (!cancelled) setPptxData(arrayBuffer);
       } catch (err) {
-        if (!cancelled && !isAbortError(err)) setPptxError(friendlyError(err));
+        if (!cancelled && !isAbortError(err)) setPptxError(previewLoadErrorMessage(err));
       } finally {
         if (!cancelled) {
           setPptxLoading(false);
@@ -3320,9 +4094,12 @@ export default function PreviewScreen() {
     }
     recordRuntimeTrace('preview.download_original.press', { fileId: currentFileId, category });
 
+    const exportController = new AbortController();
+    let releaseExportCopy: ExportUriResult['release'] | null = null;
+
     setDownloading(true);
     setDownloadProgress(0);
-    setExportStatus('Preparing export options...');
+    setPreparingExport(true);
 
     try {
       const token = await getToken();
@@ -3331,18 +4108,16 @@ export default function PreviewScreen() {
         return;
       }
 
-      setExportStatus('Preparing a decrypted copy on this device...');
-      const { uri: shareUri, reusedPreview } = await getExportUri();
-      setExportStatus(
-        reusedPreview
-          ? 'Using the decrypted preview already on this device...'
-          : 'Decrypting locally before export...',
-      );
+      const { uri: shareUri, release } = await getExportUri(exportController.signal, (event) => {
+        exportProgressRef.current?.setProgress(event);
+      });
+      releaseExportCopy = release ?? null;
+
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
-        setExportStatus('Opening iOS export options...');
+        setPreparingExport(false);
         await Sharing.shareAsync(shareUri, {
           mimeType: currentMimeType ?? 'application/octet-stream',
           dialogTitle: previewFileName,
@@ -3354,9 +4129,14 @@ export default function PreviewScreen() {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Download failed', friendlyError(err));
     } finally {
+      exportController.abort();
+      if (releaseExportCopy) {
+        await Promise.resolve(releaseExportCopy()).catch(() => {});
+        releaseExportCopy = null;
+      }
       setDownloading(false);
       setDownloadProgress(0);
-      setExportStatus(null);
+      setPreparingExport(false);
     }
   }, [category, currentFileId, currentMimeType, getExportUri, previewFileName]);
 
@@ -3412,7 +4192,8 @@ export default function PreviewScreen() {
       try {
         const cachedUri = await cachePhoto(currentFileId, decryptedUri);
         if (cachedUri !== decryptedUri) {
-          await FileSystem.deleteAsync(decryptedUri, { idempotent: true }).catch(() => {});
+          // Task 1593 round 2 (P2-F) — release, never delete, the shared preview copy.
+          await releasePreviewCopy(currentFileId, previewDecryptExtension(currentMimeType, currentFileName));
         }
         resolvedUri = cachedUri;
       } catch {
@@ -3433,7 +4214,7 @@ export default function PreviewScreen() {
       recordRuntimeTrace('preview.image.view_original.success', { fileId: currentFileId });
     } catch (err) {
       if (!isAbortError(err)) {
-        setImageError(friendlyError(err));
+        setImageError(previewLoadErrorMessage(err));
         setOriginalImageActive(false);
         setOriginalImageBase(null);
         recordRuntimeTrace('preview.image.view_original.failed', {
@@ -3453,8 +4234,8 @@ export default function PreviewScreen() {
 
   const handleShare = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    navigation.navigate('ShareSheet', { fileId: currentFileId, fileName: previewFileName, mimeType: currentMimeType, sizeBytes: currentSizeBytes });
-  }, [navigation, currentFileId, previewFileName, currentMimeType, currentSizeBytes]);
+    navigation.navigate('ShareSheet', { fileId: currentFileId, fileName: previewFileName, mimeType: currentMimeType, sizeBytes: shownSizeBytes ?? undefined });
+  }, [navigation, currentFileId, previewFileName, currentMimeType, shownSizeBytes]);
 
   const handleCopyName = useCallback(async () => {
     await Clipboard.setStringAsync(previewFileName);
@@ -3543,7 +4324,7 @@ export default function PreviewScreen() {
 
     Alert.alert(
       'Move to Trash?',
-      `${previewFileName} will be removed from Beebeeb.${isImage || isVideo ? ' It will not be deleted from your iPhone camera roll.' : ''}`,
+      `${previewFileName} will be removed from Beebeeb.${isImage || isVideo ? ` It will not be deleted from ${cameraRollNoun()}.` : ''}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -3615,7 +4396,10 @@ export default function PreviewScreen() {
   ], [handleCopyName, handleDownload, handleDuplicate, handleMoveToTrash, handleOpenMovePicker, handleShare, handleViewOriginal, isImage, editMenuAction, isMarkdown, editMode, textContent, showSource]);
 
   const handlePreviewOptions = useCallback(() => {
-    if (Platform.OS === 'ios') {
+    // Task 1583 — ⋯ while the Info sheet is open swaps the sheet for the
+    // menu instead of stacking the menu on the sheet.
+    setInfoVisible(false);
+    if (Platform.OS === 'ios' || Platform.OS === 'android') {
       setOptionsVisible(true);
       return;
     }
@@ -3672,17 +4456,27 @@ export default function PreviewScreen() {
         locked={isPagerPageGated(item.id, lockedFileIds, authenticatedFileIds, lockCheckReady)}
         unlocking={unlockingFileId === item.id}
         onRequestUnlock={handleUnlockCurrent}
+        // Task 1570 — RAW joining the pager: every page reports its own EXIF,
+        // keyed by file id (round 3) — see `PhotoPage`'s own `onExifInfo` prop
+        // doc comment.
+        onExifInfo={publishRawExif}
+        onZoomChange={setMediaZoomed}
+        onSingleTap={handleContentTap}
+        videoControlsBottomInset={previewVideoControlsBottomInset}
       />
     ),
     [
       activePhotoPageIndexes,
       authenticatedFileIds,
       currentPhotoIndex,
+      handleContentTap,
       handleUnlockCurrent,
       lockCheckReady,
       lockedFileIds,
       originalPhotoRequest,
       performanceStorageProfile,
+      previewVideoControlsBottomInset,
+      publishRawExif,
       unlockingFileId,
     ],
   );
@@ -3698,6 +4492,59 @@ export default function PreviewScreen() {
   // instead of the "failed to load" text. Leaving this un-themed would have
   // shipped exactly the dark-on-light regression 1344 warned about: the doc
   // root now follows scheme, so its "still loading" text has to as well.
+  // Task 1592 item 3 — one failed-load view for every renderer: an honest
+  // message (previewLoadErrorMessage — never a raw native exception) and a
+  // way to try again (a file still uploading finishes in a moment).
+  // `tone: 'media'` keeps the forced-white text of the always-dark media
+  // stage (see the 1346 notes at those call sites).
+  const retryLoad = () => {
+    setImageError(null);
+    setPdfError(null);
+    setTextError(null);
+    setVideoError(null);
+    setAudioError(null);
+    setRawError(null);
+    setDocxError(null);
+    setSheetError(null);
+    setSvgError(null);
+    setHtmlError(null);
+    setZipError(null);
+    setArchiveError(null);
+    setPptxError(null);
+    setReloadNonce((n) => n + 1);
+  };
+  const renderLoadError = (title: string, message: string, tone: 'doc' | 'media' = 'doc') => {
+    const stillUploading = message === STILL_UPLOADING_MESSAGE;
+    // Task 1687d — an honest card for the partial-file case ("halve file"):
+    // the message names what happened ("This file didn't fully decrypt."),
+    // the title names what the user is looking at, and Try again fetches a
+    // fresh copy (the truncated cache entry was already scrubbed at
+    // reject time). Never a promise that the retry "should work".
+    const partial = message === PARTIAL_DECRYPT_MESSAGE;
+    const resolvedTitle = partial ? 'Incomplete file' : stillUploading ? 'Still uploading' : title;
+    const ink = tone === 'media' ? colors.white : c.ink;
+    return (
+      <View style={styles.imageStatus} testID="preview-load-error">
+        <Text style={[styles.imageStatusTitle, { color: ink }]}>
+          {resolvedTitle}
+        </Text>
+        <Text style={[styles.imageStatusSub, tone === 'doc' && { color: c.ink3 }]}>{message}</Text>
+        <TouchableOpacity
+          onPress={retryLoad}
+          style={[
+            styles.loadRetryButton,
+            { borderColor: tone === 'media' ? 'rgba(255,255,255,0.35)' : c.line },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Try again"
+          testID="preview-load-retry"
+        >
+          <Text style={[styles.loadRetryText, { color: ink }]}>Try again</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
   const renderSharedProgress = (isVideoProgress = false) => (
     <PreviewProgressStatus
       color={c.amber}
@@ -3711,9 +4558,25 @@ export default function PreviewScreen() {
     />
   );
 
+  const exportProgressOverlay = preparingExport ? (
+    <View style={[styles.exportProgressOverlay, { bottom: previewBottomInset + 76 }]} pointerEvents="none" testID="preview-export-progress">
+      <ExportProgressBanner ref={exportProgressRef} name={previewFileName} />
+    </View>
+  ) : null;
+
   if (isMediaPreview) {
     // When a photo list is provided, show a horizontal swipeable pager
-    const showPager = hasSwipe && (isImage || isVideo);
+    // Task 1570 (Codex P2 follow-up, PR #126 review): isRaw added. This was
+    // `isImage || isVideo` only, so opening a RAW file from a multi-item
+    // Photos `photoList` (DNG shows up in Photos as `image/x-adobe-dng`, and
+    // other RAW extensions are media candidates too) fell out of the pager
+    // into the single-file RAW branch below (`isRaw` render branch further
+    // down, ~line 4390) instead — swiping to adjacent photos was lost
+    // entirely. `PhotoPage` now handles a RAW entry itself (its own
+    // `isRawEntry` branch: decrypt the source file, hand it to
+    // `RawRenderer`), so RAW can safely join the pager the same way
+    // image/video already do.
+    const showPager = hasSwipe && (isImage || isVideo || isRaw);
     // 1346 — every scheme="dark" below (ScrollEdgeBlur, both GlassCircles,
     // the title/subtitle GlassCapsule, the e2e badge GlassCapsule) and every
     // colors.white/rgba(255,255,255,…) literal in this media branch is
@@ -3745,9 +4608,274 @@ export default function PreviewScreen() {
             become glass circles.
             1346 — scheme="dark" forced: mediaMaterial comment above (media
             ground is always near-black, not a light/dark toggle). */}
-        <StatusBar hidden={!chromeVisible} animated />
+        <StatusBar style={statusBarStyle} hidden={!chromeVisible} animated />
+
+        {/* Preview redesign item 3 — the "e2e" pill (design's "00 TODAY"
+            complaint: "it covers the content, and 'e2e' is jargon") is
+            retired. The encryption state now lives in the header subtitle
+            ("Encrypted · Type · size", item 2) instead of a second floating
+            badge; see DEVIATIONS.md for the removal note. */}
+
+        {/* Task 1687b — swipe-down on preview CONTENT closes the preview,
+            same gesture + thresholds as the header rows (closeTranslateY
+            comment above): the pan wraps ALL media content branches (pager,
+            locked single-file stage, normal stage). Configuration copied
+            from the header's own PanGestureHandler: activeOffsetY
+            [-1000, 8] activates on a ≥8 pt downward move, failOffsetX ±20
+            hands horizontal moves to the pager's FlatList so page swipes
+            are untouched. This is an RNGH NATIVE pan, not a JS responder —
+            the bisected trap the pager comment below documents (a Pressable
+            ancestor ate every swipe) does not apply. `enabled={!mediaZoomed}`
+            matches the pager's own scrollEnabled gate (1579): while a
+            ZoomableImage is zoomed its ScrollView owns the vertical pan, so
+            the dismiss gesture stands down. The doc branch is deliberately
+            NOT wrapped: its content (PDF/WebView/text) scrolls vertically —
+            a content pan there would fight scrolling; the doc header
+            already carries the same swipe (see its PanGestureHandler).
+            Taps still reach the content: the header proves the tap/pan
+            coexistence (its TouchableOpacities work inside the same pan). */}
+        <PanGestureHandler
+          onGestureEvent={onCloseGestureEvent}
+          onHandlerStateChange={onCloseHandlerStateChange}
+          activeOffsetY={[-1000, 8]}
+          failOffsetX={[-20, 20]}
+          enabled={!mediaZoomed}
+        >
+        {showPager ? (
+          // Preview redesign item 3 — tap-to-hide on the swipe pager too.
+          // See the `pagerTouchStartRef` comment above (by `pagerRef`) for
+          // why this is raw `onTouchStart`/`onTouchEnd` on the FlatList
+          // itself, not a wrapping `Pressable` — bisected on-device: a
+          // `Pressable` ancestor reliably ate every swipe (screenshot proof:
+          // the page counter stayed "1 / 13" after a real swipe gesture,
+          // both with Maestro's coordinate-swipe and its direction-swipe);
+          // removing it and using the plain `View` below restored paging
+          // immediately (counter advanced to "2 / 13" on the same gesture).
+          <View
+            style={[
+              styles.mediaStage,
+              {
+                paddingTop: insets.top + 64,
+                paddingBottom: 24 + previewBottomInset,
+              },
+            ]}
+          >
+            <FlatList
+              ref={pagerRef}
+              data={photoList}
+              horizontal
+              pagingEnabled
+              initialScrollIndex={clampPhotoIndex(initialPhotoIndex ?? 0, photoList.length)}
+              getItemLayout={pagerGetItemLayout}
+              keyExtractor={(item) => item.id}
+              renderItem={renderPhotoPage}
+              showsHorizontalScrollIndicator={false}
+              onMomentumScrollEnd={handlePagerScroll}
+              // Task 1579 — no paging while the current image is zoomed.
+              scrollEnabled={!mediaZoomed}
+              onTouchStart={(e) => {
+                const { pageX, pageY } = e.nativeEvent;
+                pagerTouchStartRef.current = { x: pageX, y: pageY, t: Date.now() };
+              }}
+              onTouchEnd={(e) => {
+                const start = pagerTouchStartRef.current;
+                pagerTouchStartRef.current = null;
+                if (!start) return;
+                const { pageX, pageY } = e.nativeEvent;
+                const dx = Math.abs(pageX - start.x);
+                const dy = Math.abs(pageY - start.y);
+                const dt = Date.now() - start.t;
+                // A real swipe (paging) travels most of the screen width in
+                // this same gesture; a tap moves only a few points. 500ms
+                // covers a normal tap without also matching a slow drag.
+                if (dx < 10 && dy < 10 && dt < 500) {
+                  handleContentTap();
+                }
+              }}
+              testID="preview-content-tap"
+              windowSize={3}
+              maxToRenderPerBatch={3}
+              removeClippedSubviews
+              style={{ flex: 1 }}
+            />
+          </View>
+        ) : contentLocked ? (
+          // Task 1539 (finding 1, P0): the single-file (non-swipe) content
+          // area, gated the same way as every pager page. Every effect that
+          // could populate imageUri/videoUri for THIS file is gated above
+          // (`contentLocked` in their dependency arrays), so this replaces
+          // what would otherwise be an indefinite loading spinner — not an
+          // overlay hiding content that already started loading underneath.
+          <Pressable
+            style={[
+              styles.mediaStage,
+              {
+                paddingTop: insets.top + 64,
+                paddingBottom: 24 + previewBottomInset,
+                alignItems: 'center',
+                justifyContent: 'center',
+              },
+            ]}
+            onPress={() => { void handleUnlockCurrent(currentFileId); }}
+            disabled={unlockingFileId === currentFileId}
+            accessibilityRole="button"
+            accessibilityLabel="Locked file — tap to authenticate"
+            testID="preview-locked-single"
+          >
+            <View style={styles.imageStatus}>
+              <Ionicons name="lock-closed" size={40} color={colors.amber} />
+              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Locked</Text>
+              <Text style={styles.imageStatusSub}>
+                {unlockingFileId === currentFileId ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
+              </Text>
+              {/* Task 1539 (finding 5, lead decision — PR #109 review): see
+                  lock-copy.ts — the lock is not visible to the File
+                  Provider extension, so say so wherever there is room. */}
+              <Text style={styles.imageStatusSub}>{FILES_APP_LOCK_CAVEAT}</Text>
+            </View>
+          </Pressable>
+        ) : (
+          <Pressable
+            style={[
+              styles.mediaStage,
+              {
+                paddingTop: insets.top + 64,
+                paddingBottom: 24 + previewBottomInset,
+              },
+            ]}
+            onPress={handleContentTap}
+            // Task 1579 — a mounted ZoomableImage owns taps (single tap →
+            // handleContentTap, double-tap → zoom); a live Pressable
+            // responder here would also block its native pinch.
+            disabled={(isImage && !!imageUri && !imageError) || (isRaw && !!rawUri && !rawError)}
+            testID="preview-content-tap"
+          >
+            {isImage ? (
+              imageError ? (
+                // 1346 — colors.white forced: this status sits on mediaStage,
+                // itself painted over mediaRoot's forced-dark ground (see
+                // mediaMaterial comment above `if (isMediaPreview)`). Left as
+                // the plain literal rather than switched to
+                // mediaMaterial.label — it's status content, not chrome, but
+                // the same forced-ground argument applies unchanged.
+                renderLoadError("Couldn't load image", imageError, 'media')
+              ) : imageUri ? (
+                // Task 1579 — pinch/double-tap zoom (single-file image).
+                <ZoomableImage
+                  resetSignal={currentFileId}
+                  onZoomChange={setMediaZoomed}
+                  onSingleTap={handleContentTap}
+                  testID="preview-zoomable"
+                >
+                  {originalImageActive ? (
+                    <ProgressiveOriginalImage
+                      baseUri={originalImageBase ?? imageUri}
+                      originalUri={originalImagePending}
+                      progress={loadProgress}
+                      active={originalImageActive}
+                      cacheHit={originalImageCacheHit}
+                      reduceMotion={reduceMotion}
+                      amber={c.amber}
+                      containerStyle={styles.mediaImage}
+                      imageStyle={styles.mediaImage}
+                      accessibilityLabel={previewFileName}
+                      onPromote={promoteOriginalImage}
+                      onImageLoad={() => setImageLoaded(true)}
+                      onImageError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
+                    />
+                  ) : (
+                    <Image
+                      source={{ uri: imageUri }}
+                      style={styles.mediaImage}
+                      resizeMode="contain"
+                      accessibilityLabel={previewFileName}
+                      onLoad={() => setImageLoaded(true)}
+                      onError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
+                    />
+                  )}
+                </ZoomableImage>
+              ) : (
+                <View style={styles.imageStatus}>
+                  {renderSharedProgress(false)}
+                </View>
+              )
+            ) : isRaw ? (
+              // Task 1569 — RAW (CR2/CR3/ARW/NEF/RAF/DNG). RawRenderer owns
+              // its own loading/fallback states internally once handed a
+              // decrypted source uri; rawError only covers the DECRYPT step
+              // failing outright (mirrors audio/video's own error branch).
+              rawError ? (
+                renderLoadError("Couldn't load RAW file", rawError, 'media')
+              ) : rawUri ? (
+                // Task 1579 — pinch/double-tap zoom (single-file RAW preview).
+                <ZoomableImage
+                  resetSignal={currentFileId}
+                  onZoomChange={setMediaZoomed}
+                  onSingleTap={handleContentTap}
+                  testID="preview-zoomable"
+                >
+                  <RawRenderer
+                    uri={rawUri}
+                    fileName={previewFileName}
+                    formatLabel={rawFormatLabelValue}
+                    cacheKey={currentFileId}
+                    onExifInfo={(info) => publishRawExif(currentFileId, info)}
+                  />
+                </ZoomableImage>
+              ) : (
+                <View style={styles.imageStatus}>
+                  {renderSharedProgress(false)}
+                </View>
+              )
+            ) : videoUri ? (
+              <View style={styles.mediaVideoStageWrap}>
+                <VideoView
+                  player={player}
+                  style={[styles.videoControlsSurface, videoControlsBottomStyle]}
+                  contentFit="contain"
+                  nativeControls
+                  fullscreenOptions={{ enable: true }}
+                  allowsPictureInPicture
+                />
+                {isLoopbackStreamUri(videoUri) && streamBufferPct != null && streamBufferPct < 100 ? (
+                  <StreamingBufferBadge pct={streamBufferPct} />
+                ) : null}
+              </View>
+            ) : videoError ? (
+              // 1346 — colors.white forced: same mediaStage/mediaRoot ground
+              // argument as the image error above.
+              renderLoadError("Couldn't load video", videoError, 'media')
+            ) : (
+              <View style={styles.imageStatus}>
+                {renderSharedProgress(true)}
+              </View>
+            )}
+          </Pressable>
+        )}
+        </PanGestureHandler>
+
+        {/* Task 1583 — the chrome layer is rendered AFTER the content stage,
+            not before it. zIndex (chromeLayer: 20) already puts it on top,
+            but a later sibling also wins paint and hit-test order with no
+            zIndex at all, so the header can never again end up under the
+            stage the way #123 left it (builds 216–218: the stage Pressable
+            took the close/⋯ taps and only toggled the chrome). Guarded by
+            PreviewScreen.chrome-layer.test.ts. */}
+        {/* Fix: dead close/⋯ in the single-file media preview. Since #123
+            (1563) wrapped the header in this opacity fade, the floating
+            positioning + zIndex sat on `mediaHeader` INSIDE the wrapper, and
+            this wrapper was a zero-height, un-z-indexed normal-flow sibling
+            that comes BEFORE the content stage. zIndex only orders siblings,
+            so the single-file stage (a `Pressable` — never flattened away by
+            Fabric, unlike the pager's plain layout `View`) sat on top of the
+            header and took every tap, and the zero-frame chain dropped the
+            controls from the accessibility tree. Same two bugs, same fix, as
+            the doc branch's header (see `header`'s style comment):
+            `chromeLayer` (absolute + zIndex) on the wrapper, `mediaHeader`
+            a plain in-flow row. Guarded by
+            PreviewScreen.chrome-layer.test.ts. */}
         <Animated.View
-          style={{ opacity: barsOpacity }}
+          style={[styles.chromeLayer, { opacity: barsOpacity }]}
           pointerEvents={chromeVisible ? 'auto' : 'none'}
         >
         <ScrollEdgeBlur scheme="dark" height={SCROLL_EDGE.chromeFallback} />
@@ -3759,6 +4887,8 @@ export default function PreviewScreen() {
           onHandlerStateChange={onCloseHandlerStateChange}
           activeOffsetY={[-1000, 8]}
           failOffsetX={[-20, 20]}
+          // Task 1579 — swipe-down-to-close only at 1x.
+          enabled={!mediaZoomed}
         >
         <View style={[styles.mediaHeader, { paddingTop: insets.top + 8 }]}>
           {/* 1343 — outer TouchableOpacity wraps the fixed-size GlassCircle so
@@ -3809,7 +4939,7 @@ export default function PreviewScreen() {
               <View style={styles.encSubRow}>
                 <Ionicons name="lock-closed" size={10} color={colors.amber} />
                 <Text style={[styles.mediaHeaderSubtitle, styles.mono, { color: mediaMaterial.labelMuted }]} numberOfLines={1}>
-                  {`Encrypted · ${CATEGORY_LABELS[category]}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
+                  {`Encrypted · ${category === 'raw' ? rawFormatLabelValue : CATEGORY_LABELS[category]}${shownSizeBytes != null ? ` · ${formatSize(shownSizeBytes)}` : ''}`}
                 </Text>
               </View>
             </GlassCapsule>
@@ -3858,183 +4988,6 @@ export default function PreviewScreen() {
         )}
         </Animated.View>
 
-        {/* Preview redesign item 3 — the "e2e" pill (design's "00 TODAY"
-            complaint: "it covers the content, and 'e2e' is jargon") is
-            retired. The encryption state now lives in the header subtitle
-            ("Encrypted · Type · size", item 2) instead of a second floating
-            badge; see DEVIATIONS.md for the removal note. */}
-
-        {showPager ? (
-          // Preview redesign item 3 — tap-to-hide on the swipe pager too.
-          // See the `pagerTouchStartRef` comment above (by `pagerRef`) for
-          // why this is raw `onTouchStart`/`onTouchEnd` on the FlatList
-          // itself, not a wrapping `Pressable` — bisected on-device: a
-          // `Pressable` ancestor reliably ate every swipe (screenshot proof:
-          // the page counter stayed "1 / 13" after a real swipe gesture,
-          // both with Maestro's coordinate-swipe and its direction-swipe);
-          // removing it and using the plain `View` below restored paging
-          // immediately (counter advanced to "2 / 13" on the same gesture).
-          <View
-            style={[
-              styles.mediaStage,
-              {
-                paddingTop: insets.top + 64,
-                paddingBottom: 24 + Math.max(insets.bottom, 16),
-              },
-            ]}
-          >
-            <FlatList
-              ref={pagerRef}
-              data={photoList}
-              horizontal
-              pagingEnabled
-              initialScrollIndex={clampPhotoIndex(initialPhotoIndex ?? 0, photoList.length)}
-              getItemLayout={pagerGetItemLayout}
-              keyExtractor={(item) => item.id}
-              renderItem={renderPhotoPage}
-              showsHorizontalScrollIndicator={false}
-              onMomentumScrollEnd={handlePagerScroll}
-              onTouchStart={(e) => {
-                const { pageX, pageY } = e.nativeEvent;
-                pagerTouchStartRef.current = { x: pageX, y: pageY, t: Date.now() };
-              }}
-              onTouchEnd={(e) => {
-                const start = pagerTouchStartRef.current;
-                pagerTouchStartRef.current = null;
-                if (!start) return;
-                const { pageX, pageY } = e.nativeEvent;
-                const dx = Math.abs(pageX - start.x);
-                const dy = Math.abs(pageY - start.y);
-                const dt = Date.now() - start.t;
-                // A real swipe (paging) travels most of the screen width in
-                // this same gesture; a tap moves only a few points. 500ms
-                // covers a normal tap without also matching a slow drag.
-                if (dx < 10 && dy < 10 && dt < 500) {
-                  handleContentTap();
-                }
-              }}
-              testID="preview-content-tap"
-              windowSize={3}
-              maxToRenderPerBatch={3}
-              removeClippedSubviews
-              style={{ flex: 1 }}
-            />
-          </View>
-        ) : contentLocked ? (
-          // Task 1539 (finding 1, P0): the single-file (non-swipe) content
-          // area, gated the same way as every pager page. Every effect that
-          // could populate imageUri/videoUri for THIS file is gated above
-          // (`contentLocked` in their dependency arrays), so this replaces
-          // what would otherwise be an indefinite loading spinner — not an
-          // overlay hiding content that already started loading underneath.
-          <Pressable
-            style={[
-              styles.mediaStage,
-              {
-                paddingTop: insets.top + 64,
-                paddingBottom: 24 + Math.max(insets.bottom, 16),
-                alignItems: 'center',
-                justifyContent: 'center',
-              },
-            ]}
-            onPress={() => { void handleUnlockCurrent(currentFileId); }}
-            disabled={unlockingFileId === currentFileId}
-            accessibilityRole="button"
-            accessibilityLabel="Locked file — tap to authenticate"
-            testID="preview-locked-single"
-          >
-            <View style={styles.imageStatus}>
-              <Ionicons name="lock-closed" size={40} color={colors.amber} />
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Locked</Text>
-              <Text style={styles.imageStatusSub}>
-                {unlockingFileId === currentFileId ? 'Authenticating...' : 'Tap to authenticate and view this file.'}
-              </Text>
-              {/* Task 1539 (finding 5, lead decision — PR #109 review): see
-                  lock-copy.ts — the lock is not visible to the File
-                  Provider extension, so say so wherever there is room. */}
-              <Text style={styles.imageStatusSub}>{FILES_APP_LOCK_CAVEAT}</Text>
-            </View>
-          </Pressable>
-        ) : (
-          <Pressable
-            style={[
-              styles.mediaStage,
-              {
-                paddingTop: insets.top + 64,
-                paddingBottom: 24 + Math.max(insets.bottom, 16),
-              },
-            ]}
-            onPress={handleContentTap}
-            testID="preview-content-tap"
-          >
-            {isImage ? (
-              imageError ? (
-                // 1346 — colors.white forced: this status sits on mediaStage,
-                // itself painted over mediaRoot's forced-dark ground (see
-                // mediaMaterial comment above `if (isMediaPreview)`). Left as
-                // the plain literal rather than switched to
-                // mediaMaterial.label — it's status content, not chrome, but
-                // the same forced-ground argument applies unchanged.
-                <View style={styles.imageStatus}>
-                  <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load image</Text>
-                  <Text style={styles.imageStatusSub}>{imageError}</Text>
-                </View>
-              ) : imageUri ? (
-                originalImageActive ? (
-                  <ProgressiveOriginalImage
-                    baseUri={originalImageBase ?? imageUri}
-                    originalUri={originalImagePending}
-                    progress={loadProgress}
-                    active={originalImageActive}
-                    cacheHit={originalImageCacheHit}
-                    reduceMotion={reduceMotion}
-                    amber={c.amber}
-                    containerStyle={styles.mediaImage}
-                    imageStyle={styles.mediaImage}
-                    accessibilityLabel={previewFileName}
-                    onPromote={promoteOriginalImage}
-                    onImageLoad={() => setImageLoaded(true)}
-                    onImageError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
-                  />
-                ) : (
-                  <Image
-                    source={{ uri: imageUri }}
-                    style={styles.mediaImage}
-                    resizeMode="contain"
-                    accessibilityLabel={previewFileName}
-                    onLoad={() => setImageLoaded(true)}
-                    onError={() => setImageError((prev) => prev ?? "This image couldn't be displayed.")}
-                  />
-                )
-              ) : (
-                <View style={styles.imageStatus}>
-                  {renderSharedProgress(false)}
-                </View>
-              )
-            ) : videoUri ? (
-              <VideoView
-                player={player}
-                style={styles.mediaVideo}
-                contentFit="contain"
-                nativeControls
-                fullscreenOptions={{ enable: true }}
-                allowsPictureInPicture
-              />
-            ) : videoError ? (
-              // 1346 — colors.white forced: same mediaStage/mediaRoot ground
-              // argument as the image error above.
-              <View style={styles.imageStatus}>
-                <Text style={[styles.imageStatusTitle, { color: colors.white }]}>Couldn't load video</Text>
-                <Text style={styles.imageStatusSub}>{videoError}</Text>
-              </View>
-            ) : (
-              <View style={styles.imageStatus}>
-                {renderSharedProgress(true)}
-              </View>
-            )}
-          </Pressable>
-        )}
-
         {/* Preview redesign item 3/5 — DetailsSheet's permanent collapsed
             peek is retired; Info is now on-demand (bottom bar "Info", or a
             swipe up on the content — item 4). Same fields it showed today,
@@ -4043,7 +4996,7 @@ export default function PreviewScreen() {
             second glass sheet. */}
         {!editMode && (
           <Animated.View
-            style={[styles.bottomBarWrap, { opacity: barsOpacity, bottom: Math.max(insets.bottom, 16) + 8 }]}
+            style={[styles.bottomBarWrap, { opacity: barsOpacity, bottom: previewBottomInset + 8 }]}
             pointerEvents={chromeVisible ? 'auto' : 'none'}
           >
             <PreviewBottomBar
@@ -4051,8 +5004,8 @@ export default function PreviewScreen() {
               actions={[
                 { key: 'share', label: 'Share', icon: 'share-outline', onPress: handleShare, testID: 'preview-bar-share' },
                 { key: 'save', label: 'Save', icon: 'download-outline', disabled: downloading, onPress: handleDownload, testID: 'preview-bar-save' },
-                { key: 'versions', label: 'Versions', icon: 'time-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-versions' },
-                { key: 'info', label: 'Info', icon: 'information-circle-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-info' },
+                { key: 'versions', label: 'Versions', icon: 'time-outline', onPress: () => openInfo('versions'), testID: 'preview-bar-versions' },
+                { key: 'info', label: 'Info', icon: 'information-circle-outline', onPress: () => openInfo('info'), testID: 'preview-bar-info' },
               ]}
             />
           </Animated.View>
@@ -4062,19 +5015,12 @@ export default function PreviewScreen() {
           onClose={() => setInfoVisible(false)}
           fileId={currentFileId}
           filename={previewFileName}
-          kindLabel={CATEGORY_LABELS[category] ?? 'File'}
-          sizeBytes={currentSizeBytes ?? null}
-          storageLocation={(() => {
-            const storage = trustLocation(currentStoragePoolId);
-            return `${storage.region} · ${storage.city}`;
-          })()}
-          extraRows={[
-            ...(currentCreatedAt ? [{ label: 'Created', value: formatDate(currentCreatedAt) }] : []),
-            ...mediaDetailsRows
-              .filter((r) => !['Name', 'Kind', 'Size', 'Created', 'Storage'].includes(r.label))
-              .map((r) => ({ label: r.label, value: r.value })),
-          ]}
+          kindLabel={category === 'raw' ? rawFormatLabelValue : (CATEGORY_LABELS[category] ?? 'File')}
+          sizeBytes={shownSizeBytes ?? null}
+          extraRows={buildInfoSheetRows(mediaDetailsRows)}
+          focus={infoFocus}
         />
+        {exportProgressOverlay}
         <PreviewOptionsPopover
           visible={optionsVisible}
           filename={previewFileName}
@@ -4143,14 +5089,14 @@ export default function PreviewScreen() {
 
   return (
     <Animated.View style={[styles.root, { backgroundColor: c.paper }, { transform: [{ translateY: closeTranslateYClamped }] }]}>
-      <StatusBar hidden={!chromeVisible} animated />
+      <StatusBar style={statusBarStyle} hidden={!chromeVisible} animated />
       {/* Round 4 fix — see `header`'s own style comment for the two bugs
           this exact shape fixes (a stacking bug, then an accessibility-tree
           bug from the first attempt at fixing it). This wrapper floats over
           `previewArea` (now full-bleed); `header` inside it stays a plain,
           normally-sized row. */}
       <Animated.View
-        style={{ opacity: barsOpacity, position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }}
+        style={[styles.chromeLayer, { opacity: barsOpacity }]}
         pointerEvents={chromeVisible ? 'auto' : 'none'}
         onLayout={(e) => {
           // Round 5 — the REAL rendered height of this wrapper (from y=0,
@@ -4178,7 +5124,7 @@ export default function PreviewScreen() {
           `PREVIEW_CHROME_MATERIAL` already applies to the bars themselves).
           Sized to the header's own measured height so it fades out exactly
           where the header's content ends, not into the page below it. */}
-      <PreviewTopScrim height={docHeaderHeight ?? insets.top + 58} dark={resolved === 'dark'} />
+      <PreviewTopScrim height={docHeaderHeight ?? insets.top + 58} dark={surfaceIsDark} />
       {/* ---- Header ----
           Preview redesign item 7 — while editing a text file, this row
           becomes Done (left, the SAME dirty-guard exit as the ⋯ menu's
@@ -4307,7 +5253,7 @@ export default function PreviewScreen() {
                       ("Document") it fell into before — one accurate word in
                       the subline, matching design section 02's "Encrypted ·
                       Markdown · 184 B", rather than a second chip. */}
-                  {`Encrypted · ${isText ? codeLanguageLabel : (CATEGORY_LABELS[category] ?? 'File')}${currentSizeBytes != null ? ` · ${formatSize(currentSizeBytes)}` : ''}`}
+                  {`Encrypted · ${isText ? codeLanguageLabel : (CATEGORY_LABELS[category] ?? 'File')}${shownSizeBytes != null ? ` · ${formatSize(shownSizeBytes)}` : ''}`}
                 </Text>
               </View>
             </GlassCapsule>
@@ -4344,6 +5290,7 @@ export default function PreviewScreen() {
           branch's matching removal note); the lock now lives in the header
           subtitle above. */}
 
+      {exportProgressOverlay}
       <PreviewOptionsPopover
         visible={optionsVisible}
         filename={previewFileName}
@@ -4477,8 +5424,8 @@ export default function PreviewScreen() {
             <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
               <View style={styles.svgWebViewWrap}>
                 <WebView
-                  originWhitelist={['*']}
-                  source={{ html: wrappedSvgHtml }}
+                  {...staticPreviewWebViewProps}
+                  source={{ html: isolatePreviewHtml(wrappedSvgHtml) }}
                   style={styles.svgWebView}
                   scalesPageToFit
                   showsHorizontalScrollIndicator={false}
@@ -4487,12 +5434,7 @@ export default function PreviewScreen() {
               </View>
             </Pressable>
           ) : svgError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't load SVG
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{svgError}</Text>
-            </View>
+            renderLoadError("Couldn't load SVG", svgError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -4520,12 +5462,7 @@ export default function PreviewScreen() {
               </Suspense>
             </Pressable>
           ) : pdfError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't load PDF
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{pdfError}</Text>
-            </View>
+            renderLoadError("Couldn't load PDF", pdfError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -4541,7 +5478,7 @@ export default function PreviewScreen() {
             <View style={[styles.fullBleedFill, styles.imageBleedBg]}>
               <VideoView
                 player={player}
-                style={styles.video}
+                style={[styles.videoControlsSurface, videoControlsBottomStyle]}
                 contentFit="contain"
                 nativeControls
                 fullscreenOptions={{ enable: true }}
@@ -4549,15 +5486,37 @@ export default function PreviewScreen() {
               />
             </View>
           ) : videoError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: colors.white }]}>
-                Couldn't load video
-              </Text>
-              <Text style={styles.imageStatusSub}>{videoError}</Text>
-            </View>
+            renderLoadError("Couldn't load video", videoError, 'media')
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(true)}
+            </View>
+          )
+        ) : isAudio ? (
+          // Task 1568 — native audio player. `Pressable` gives the same
+          // tap-to-hide-chrome gesture every other doc-branch renderer has;
+          // AudioRenderer itself has no WebView (task 1564's centered-parent
+          // trap doesn't apply here) and honours `docContentInset` as
+          // container padding, same convention as every other renderer's
+          // topInset/bottomInset props.
+          audioUri ? (
+            <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
+              <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
+                <AudioRenderer
+                  uri={audioUri}
+                  fileName={previewFileName}
+                  formatLabel={audioFormatLabel}
+                  colors={c}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
+              </Suspense>
+            </Pressable>
+          ) : audioError ? (
+            renderLoadError("Couldn't load audio", audioError)
+          ) : (
+            <View style={styles.imageStatus}>
+              {renderSharedProgress(false)}
             </View>
           )
         ) : isText ? (
@@ -4575,7 +5534,16 @@ export default function PreviewScreen() {
                   initialText={editText ?? textContent ?? ''}
                   language={codeLanguage}
                   onChangeText={setEditText}
-                  bottomInset={Math.max(insets.bottom, 16)}
+                  bottomInset={previewBottomInset}
+                  // Build 217 bug fix — reuses the SAME measured header
+                  // height CodeRenderer's read-only sibling already gets via
+                  // its own `topInset` prop a few branches up (`docHeaderHeight`
+                  // is measured off the SAME wrapper for both the normal and
+                  // edit-mode header — see that `onLayout`'s own comment).
+                  // Edit mode's header row is a plain (non-scrolling) header
+                  // like the normal one, just with different content, so the
+                  // exact same inset applies.
+                  topInset={docContentInset.top}
                 />
               </Suspense>
             </View>
@@ -4640,12 +5608,7 @@ export default function PreviewScreen() {
               )}
             </Pressable>
           ) : textError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't load file
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{textError}</Text>
-            </View>
+            renderLoadError("Couldn't load file", textError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -4670,12 +5633,7 @@ export default function PreviewScreen() {
               </Suspense>
             </Pressable>
           ) : docxError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't open document
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{docxError}</Text>
-            </View>
+            renderLoadError("Couldn't open document", docxError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -4696,12 +5654,7 @@ export default function PreviewScreen() {
               </Suspense>
             </Pressable>
           ) : sheetError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't open spreadsheet
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{sheetError}</Text>
-            </View>
+            renderLoadError("Couldn't open spreadsheet", sheetError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -4791,46 +5744,58 @@ export default function PreviewScreen() {
                 </ScrollView>
               ) : (
                 <WebView
-                  originWhitelist={['*']}
-                  source={{ html: htmlContent }}
+                  {...staticPreviewWebViewProps}
+                  source={{ html: isolatePreviewHtml(htmlContent) }}
                   style={[styles.htmlWebView, { backgroundColor: c.paper }]}
-                  // Sandbox: keep external network requests off so encrypted
-                  // assets can't accidentally leak through embedded URLs.
-                  // (HTML may include <img src="https://..."> tags.)
-                  javaScriptEnabled={false}
-                  domStorageEnabled={false}
                 />
               )}
             </View>
             </Pressable>
           ) : htmlError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't load page
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{htmlError}</Text>
-            </View>
+            renderLoadError("Couldn't load page", htmlError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
             </View>
           )
         ) : isZip ? (
-          zipData ? (
+          zipListing && zipSourceRef.current ? (
             // Preview redesign item 3 — full-bleed + tap-to-hide (no WebView
             // in this renderer).
             <Pressable style={styles.fullBleedFill} onPress={handleContentTap} testID="preview-content-tap">
               <Suspense fallback={<View style={styles.imageStatus}>{renderSharedProgress(false)}</View>}>
-                <ZipRenderer data={zipData} colors={c} />
+                <ZipRenderer
+                  source={zipSourceRef.current}
+                  listing={zipListing}
+                  onShareArchive={() => void handleDownload()}
+                  colors={c}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
+                />
               </Suspense>
             </Pressable>
-          ) : zipError ? (
-            <View style={styles.imageStatus}>
+          ) : zipTooLarge ? (
+            // Task 2233 item 6 — an honest state, not an error: the archive is
+            // valid, it is simply beyond what the in-app listing supports.
+            <View style={[styles.imageStatus, { paddingTop: docContentInset.top + 24 }]}>
+              <Ionicons name="archive-outline" size={40} color={c.ink3} />
               <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't open archive
+                Too large to preview
               </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{zipError}</Text>
+              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>
+                This archive is too large to preview here. Save it to open it in another app.
+              </Text>
+              <TouchableOpacity
+                onPress={() => void handleDownload()}
+                testID="zip-too-large-save"
+                accessibilityRole="button"
+                style={[styles.imageStatusAction, { borderColor: c.line }]}
+              >
+                <Text style={[styles.imageStatusActionText, { color: c.amberDeep }]}>Save archive</Text>
+              </TouchableOpacity>
             </View>
+          ) : zipError ? (
+            renderLoadError("Couldn't open archive", zipError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -4846,16 +5811,13 @@ export default function PreviewScreen() {
                   data={archiveData}
                   extension={(currentFileName ?? '').toLowerCase().split('.').pop() ?? 'tar'}
                   colors={c}
+                  topInset={docContentInset.top}
+                  bottomInset={docContentInset.bottom}
                 />
               </Suspense>
             </Pressable>
           ) : archiveError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't open archive
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{archiveError}</Text>
-            </View>
+            renderLoadError("Couldn't open archive", archiveError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -4876,12 +5838,7 @@ export default function PreviewScreen() {
               </Suspense>
             </Pressable>
           ) : pptxError ? (
-            <View style={styles.imageStatus}>
-              <Text style={[styles.imageStatusTitle, { color: c.ink }]}>
-                Couldn't open presentation
-              </Text>
-              <Text style={[styles.imageStatusSub, { color: c.ink3 }]}>{pptxError}</Text>
-            </View>
+            renderLoadError("Couldn't open presentation", pptxError)
           ) : (
             <View style={styles.imageStatus}>
               {renderSharedProgress(false)}
@@ -4958,7 +5915,7 @@ export default function PreviewScreen() {
           bar while editing (item 7). */}
       {!editMode && (
         <Animated.View
-          style={[styles.bottomBarWrap, { opacity: barsOpacity, bottom: Math.max(insets.bottom, 16) + 8 }]}
+          style={[styles.bottomBarWrap, { opacity: barsOpacity, bottom: previewBottomInset + 8 }]}
           pointerEvents={chromeVisible ? 'auto' : 'none'}
           onLayout={(e) => {
             // Round 5 — the bar's OWN height (not its offset from the safe
@@ -4972,8 +5929,8 @@ export default function PreviewScreen() {
             actions={[
               { key: 'share', label: 'Share', icon: 'share-outline', onPress: handleShare, testID: 'preview-bar-share' },
               { key: 'save', label: 'Save', icon: 'download-outline', disabled: downloading, onPress: handleDownload, testID: 'preview-bar-save' },
-              { key: 'versions', label: 'Versions', icon: 'time-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-versions' },
-              { key: 'info', label: 'Info', icon: 'information-circle-outline', onPress: () => setInfoVisible(true), testID: 'preview-bar-info' },
+              { key: 'versions', label: 'Versions', icon: 'time-outline', onPress: () => openInfo('versions'), testID: 'preview-bar-versions' },
+              { key: 'info', label: 'Info', icon: 'information-circle-outline', onPress: () => openInfo('info'), testID: 'preview-bar-info' },
             ]}
           />
         </Animated.View>
@@ -4984,17 +5941,14 @@ export default function PreviewScreen() {
         fileId={currentFileId}
         filename={previewFileName}
         kindLabel={CATEGORY_LABELS[category] ?? 'File'}
-        sizeBytes={currentSizeBytes ?? null}
+        sizeBytes={shownSizeBytes ?? null}
         pageCount={pdfPageInfo?.total ?? null}
-        storageLocation={(() => {
-          const storage = trustLocation(currentStoragePoolId);
-          return `${storage.region} · ${storage.city}`;
-        })()}
-        extraRows={[
+        extraRows={buildInfoSheetRows([
           ...(currentCreatedAt ? [{ label: 'Created', value: formatDate(currentCreatedAt) }] : []),
           ...(fileFormat ? [{ label: 'Format', value: fileFormat }] : []),
           ...(currentMimeType ? [{ label: 'Type', value: currentMimeType }] : []),
-        ]}
+        ])}
+        focus={infoFocus}
       />
     </Animated.View>
   );
@@ -5029,6 +5983,23 @@ function PreviewOptionsPopover({
   onClose,
   top,
 }: PreviewOptionsPopoverProps) {
+  if (Platform.OS === 'android') {
+    return (
+      <BBActionSheet
+        visible={visible}
+        onClose={onClose}
+        header={{ name: filename }}
+        rows={actions.map((action) => ({
+          key: action.label,
+          label: action.label,
+          icon: action.icon,
+          destructive: action.destructive,
+          onPress: action.run,
+        }))}
+      />
+    );
+  }
+
   if (!visible) return null;
 
   const runAction = (action: PreviewOptionAction) => {
@@ -5154,11 +6125,25 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     lineHeight: 17,
   },
-  mediaHeader: {
+  // The floating top-chrome layer, shared by the media and doc branches:
+  // it must be the view carrying position + zIndex, because it is the one
+  // that is a SIBLING of the full-screen content (zIndex only orders
+  // siblings). See the comment at the media branch's wrapper and `header`'s
+  // style comment for the on-device bugs this shape fixes.
+  chromeLayer: {
     position: 'absolute',
+    top: 0,
     left: 0,
     right: 0,
-    top: 0,
+    zIndex: 20,
+  },
+  // A plain in-flow row inside `chromeLayer` — NOT absolute: an absolute row
+  // here collapses its ancestors to a zero frame, which hides the close/⋯
+  // controls from the accessibility tree (and, pre-fix, from touches).
+  // It still needs its OWN zIndex: its sibling `ScrollEdgeBlur` is absolute
+  // with zIndex 5, and without this the blur paints over the glass controls
+  // (seen on bb-qa-2 while verifying this fix: a frosted, unreadable header).
+  mediaHeader: {
     zIndex: 20,
     flexDirection: 'row',
     alignItems: 'center',
@@ -5296,6 +6281,37 @@ const styles = StyleSheet.create({
   mediaVideo: {
     width: '100%',
     height: '100%',
+  },
+  videoControlsSurface: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  mediaVideoStageWrap: {
+    position: 'relative',
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000000',
+  },
+  streamBadgeLayer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+  },
+  streamBadge: {
+    backgroundColor: 'rgba(0,0,0,0.62)',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  streamBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
   },
   optionsLayer: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
@@ -5622,6 +6638,16 @@ const styles = StyleSheet.create({
   },
 
   imageStatus: { alignItems: 'center', gap: 12 },
+  // Task 1592 — secondary action (brand rule: amber is for primary actions
+  // and encryption state only), so an outline, not a filled amber button.
+  loadRetryButton: {
+    marginTop: 4,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  loadRetryText: { fontSize: 14, fontWeight: '600' },
   // 1346 — neither imageStatusTitle nor this base imageStatusSub bakes a
   // scheme-aware colour: this pair is shared verbatim by the always-dark
   // media branch (mediaStage error text) AND the doc branch (renderer error
@@ -5637,6 +6663,18 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.6)',
     textAlign: 'center',
     lineHeight: 20,
+  },
+  // Task 2233 item 6 — the too-large archive state's own action.
+  imageStatusAction: {
+    marginTop: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  imageStatusActionText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   previewProgressWrap: {
     width: Math.min(SCREEN_WIDTH - 72, 360),
@@ -5734,6 +6772,12 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     maxWidth: '60%',
     textAlign: 'right',
+  },
+  exportProgressOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    zIndex: 30,
   },
   // ---- Download bar ----
   downloadBar: {

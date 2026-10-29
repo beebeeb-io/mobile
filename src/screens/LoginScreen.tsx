@@ -4,6 +4,7 @@ import { GlassCapsule } from '../components/glass';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,7 +21,11 @@ import {
   friendlyError,
   formatAccountDeletedMessage,
   TwoFactorRequiredError,
+  getWebAppUrl,
 } from '../lib/api';
+import { SIGNUP_PATH, WEB_ACCOUNT_LINKS_ENABLED, createAccountCopy, webAppLink } from '../lib/web-links';
+import { canSignUpNatively } from '../lib/onboarding/pre-account';
+import { usePreAccountDocument } from '../lib/onboarding/use-pre-account';
 import { consumeAccountDeletedNotice } from '../lib/account-deleted-notice';
 import { useAuth } from '../lib/auth';
 import { useTheme } from '../lib/theme-context';
@@ -41,6 +46,11 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const createAccount = createAccountCopy(WEB_ACCOUNT_LINKS_ENABLED);
+  // Task 1746: the server decides whether this build may sign up natively. Any failure
+  // to ask (old server, offline, unknown schema) keeps the text-only line below.
+  const { state: preAccount } = usePreAccountDocument();
+  const nativeSignup = canSignUpNatively(preAccount);
 
   // Task 1405 — real path: a live session's account got deleted elsewhere.
   // App.tsx's account-deleted handler stashed the notice right before
@@ -94,6 +104,7 @@ export default function LoginScreen() {
     buttonText: { color: c.paper, fontSize: 14, fontWeight: '600' },
     footerRow: { flexDirection: 'row', justifyContent: 'center', marginTop: spacing.lg },
     footerText: { fontSize: 13, color: c.ink3 },
+    footerNote: { flex: 1, textAlign: 'center', lineHeight: 18 },
     footerLink: { fontSize: 13, color: c.amberDeep, fontWeight: '600' },
     regionRow: { alignItems: 'center', marginTop: spacing['2xl'] },
     regionText: { fontSize: 11, color: c.ink4 },
@@ -126,6 +137,19 @@ export default function LoginScreen() {
         // refreshAuth is deferred until after completeTwoFactor succeeds.
         setLoading(false);
         navigation.navigate('TwoFactorChallenge', { partialToken: err.partialToken });
+        return;
+      }
+      // Task 1683i sweep — a wrong password fails INSIDE the native OPAQUE
+      // finish (the client verifies the server MAC with the password-derived
+      // key), and the raw Expo rejection ("Call to function
+      // 'BeebeebCrypto.opaqueLoginFinish' has been rejected..") is not
+      // user-facing wording. On this screen a finish rejection is the
+      // credential-mismatch case: network failures fail earlier, at
+      // loginStart, with their own message.
+      const raw = err instanceof Error ? err.message : String(err);
+      if (raw.includes('opaqueLoginFinish')) {
+        setError('Incorrect password. Try again.');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         return;
       }
       setError(friendlyError(err));
@@ -226,18 +250,43 @@ export default function LoginScreen() {
           )}
         </TouchableOpacity>
 
-        {/* Signup link */}
-        <View style={styles.footerRow}>
-          <Text style={styles.footerText}>No account yet? </Text>
+        {/* Task 1037: accounts are created on the web, not in the app. With
+            WEB_ACCOUNT_LINKS_ENABLED off (task 1400, App Review 3.1.1(a):
+            web sign-up shows trial prices), this is one line of plain text. */}
+        {nativeSignup ? (
           <TouchableOpacity
+            style={[styles.button, { backgroundColor: c.paper, borderWidth: 1, borderColor: c.line, marginTop: spacing.md }]}
             onPress={() => navigation.navigate('Signup')}
             disabled={loading}
-            accessibilityLabel="Open create account"
-            testID="create-account-link"
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Create account"
+            testID="create-account-button"
           >
-            <Text style={styles.footerLink}>Create account</Text>
+            <Text style={[styles.buttonText, { color: c.ink }]}>Create account</Text>
           </TouchableOpacity>
+        ) : (
+        <View style={styles.footerRow} testID="create-account-note">
+          {createAccount.linkLabel ? (
+            <>
+              <Text style={styles.footerText}>{createAccount.text} </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  Linking.openURL(webAppLink(getWebAppUrl(), SIGNUP_PATH)).catch(() => {});
+                }}
+                disabled={loading}
+                accessibilityRole="link"
+                accessibilityLabel="Create account on beebeeb.io"
+                testID="create-account-link"
+              >
+                <Text style={styles.footerLink}>{createAccount.linkLabel}</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <Text style={[styles.footerText, styles.footerNote]}>{createAccount.text}</Text>
+          )}
         </View>
+        )}
 
         {/* Region */}
         <View style={styles.regionRow}>

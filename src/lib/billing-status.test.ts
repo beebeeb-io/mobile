@@ -23,7 +23,10 @@
  * "Tests": isolated per-file, but only modules actually touched need mocking).
  */
 import { describe, expect, test } from 'bun:test';
-import { billingStatusView, formatBillingDate } from './billing-status';
+import { billingBadgeLabel, billingStatusView, formatBillingDate } from './billing-status';
+
+// Fixed injected clock: trial fixtures are "in the future" relative to this, forever.
+const NOW = new Date('2026-10-01T00:00:00Z');
 
 describe('formatBillingDate', () => {
   test('formats an ISO date as "Mon D, YYYY" (matches the pre-existing inline format)', () => {
@@ -85,7 +88,7 @@ describe('billingStatusView — findings 2, 4, 6: trialing subscription must be 
       // trial.rs sets current_period_end === trial_ends_at for a trialing row.
       current_period_end: '2026-10-20T00:00:00Z',
       trial_ends_at: '2026-10-20T00:00:00Z',
-    });
+    }, NOW);
     expect(view.badgeKind).toBe('trial');
     expect(view.statusLine).toBe('Trial ends Oct 20, 2026');
     expect(view.statusLine).not.toContain('Renews');
@@ -96,7 +99,7 @@ describe('billingStatusView — findings 2, 4, 6: trialing subscription must be 
       plan: 'pro',
       status: 'trialing',
       current_period_end: '2026-10-20T00:00:00Z',
-    });
+    }, NOW);
     expect(view.badgeKind).toBe('trial');
     expect(view.statusLine).toBe('Trial ends Oct 20, 2026');
   });
@@ -112,5 +115,104 @@ describe('billingStatusView — status is case-insensitive (server casing is not
   test('status="Cancelling" (capitalized) still matches', () => {
     const view = billingStatusView({ plan: 'pro', status: 'Cancelling', current_period_end: '2026-11-01T00:00:00Z' });
     expect(view.badgeKind).toBe('cancelling');
+  });
+});
+
+describe('billingStatusView — task 1601: cancelled subscription must never render as the paid plan', () => {
+  test("status='cancelled' with plan='pro': free, no badge, no status line — never 'Renews'", () => {
+    // Prod bug: row 43cc7529… had plan='pro', status='cancelled',
+    // current_period_end in the future — this must not render "Renews" or
+    // any paid badge regardless of what `plan` the caller passed in.
+    const view = billingStatusView({
+      plan: 'pro',
+      status: 'cancelled',
+      current_period_end: '2026-10-09T00:00:00Z',
+    });
+    expect(view).toEqual({ isFree: true, badgeKind: null, statusLine: null });
+  });
+
+  test("status='canceled' (US spelling) is handled the same as 'cancelled'", () => {
+    const view = billingStatusView({
+      plan: 'business',
+      status: 'canceled',
+      current_period_end: '2026-10-09T00:00:00Z',
+    });
+    expect(view).toEqual({ isFree: true, badgeKind: null, statusLine: null });
+  });
+
+  test("status='Cancelled' (capitalized) still matches", () => {
+    const view = billingStatusView({ plan: 'pro', status: 'Cancelled', current_period_end: null });
+    expect(view.isFree).toBe(true);
+    expect(view.badgeKind).toBeNull();
+  });
+
+  test('a caller that (by mistake) still passes the raw plan through: the cancelled branch wins anyway', () => {
+    // Defense in depth: even if a caller regresses to `subscription.plan`
+    // instead of `effectivePlan(subscription)`, this module refuses to show
+    // the paid plan for an ended subscription.
+    const view = billingStatusView({ plan: 'business', status: 'cancelled', current_period_end: null });
+    expect(view.isFree).toBe(true);
+    expect(view.statusLine).toBeNull();
+  });
+});
+
+describe('billingStatusView — task 1037: trial with a payment mandate, lapsed, needs_plan', () => {
+  test('trialing + trial_auto_converts: says the plan continues automatically after the trial', () => {
+    const view = billingStatusView({
+      plan: 'pro',
+      status: 'trialing',
+      trial_ends_at: '2026-10-20T12:00:00Z',
+      current_period_end: '2026-10-20T12:00:00Z',
+      trial_auto_converts: true,
+    }, NOW);
+    expect(view.badgeKind).toBe('trial');
+    expect(view.statusLine).toBe('Trial ends Oct 20, 2026 · continues automatically');
+  });
+
+  test('legacy no-card trial (trial_auto_converts false or missing) keeps the plain "Trial ends" line', () => {
+    for (const trial_auto_converts of [false, undefined, null]) {
+      const view = billingStatusView({
+        plan: 'pro',
+        status: 'trialing',
+        trial_ends_at: '2026-10-20T12:00:00Z',
+        trial_auto_converts,
+      }, NOW);
+      expect(view.statusLine).toBe('Trial ends Oct 20, 2026');
+    }
+  });
+
+  test('lapsed: read-only badge and the deletion date, even when the row status is cancelled', () => {
+    const view = billingStatusView({
+      plan: 'none',
+      status: 'cancelled',
+      current_period_end: '2026-10-01T12:00:00Z',
+      account_state: 'lapsed',
+      data_deletion_at: '2026-12-01T12:00:00Z',
+    });
+    expect(view).toEqual({ isFree: false, badgeKind: 'read_only', statusLine: 'Read-only · deleted on Dec 1, 2026' });
+  });
+
+  test('lapsed without a deletion date: badge, plain "Read-only" line', () => {
+    const view = billingStatusView({ plan: 'none', status: 'cancelled', account_state: 'lapsed' });
+    expect(view).toEqual({ isFree: false, badgeKind: 'read_only', statusLine: 'Read-only' });
+  });
+
+  test('needs_plan: no badge, "Uploads are off"', () => {
+    const view = billingStatusView({ plan: 'none', status: null, account_state: 'needs_plan' });
+    expect(view).toEqual({ isFree: false, badgeKind: null, statusLine: 'Uploads are off' });
+  });
+
+  test("account_state 'ok' changes nothing (grandfathered Free stays Free)", () => {
+    expect(billingStatusView({ plan: 'free', status: 'active', account_state: 'ok' }))
+      .toEqual({ isFree: true, badgeKind: null, statusLine: null });
+  });
+});
+
+describe('billingBadgeLabel', () => {
+  test('one label per badge kind', () => {
+    expect(billingBadgeLabel('trial')).toBe('TRIAL');
+    expect(billingBadgeLabel('cancelling')).toBe('CANCELLING');
+    expect(billingBadgeLabel('read_only')).toBe('READ-ONLY');
+    expect(billingBadgeLabel(null)).toBeNull();
   });
 });

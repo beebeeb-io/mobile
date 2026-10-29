@@ -1,12 +1,9 @@
-Welcome to Beebeeb.
+Beebeeb 1.0.1
 
-This is our first public release.
-
-— End-to-end encrypted file storage
-— Automatic photo, contact, and calendar backup
-— Encrypted sharing with expiry, passphrase, and open limits
-— Face ID lock with configurable timer
-— Europe-first storage with region preferences
-— Dark mode, VoiceOver, 3D Touch quick actions
-
-We built this because we wanted it to exist. Thank you for trying it.
+• Fixes a startup crash in recent builds and prevents duplicate photo backups.
+• Shows storage locations by country, including the selected location during uploads.
+• Catches up with file changes after reconnecting and retries busy uploads after the server's requested delay.
+• Keeps new uploads visible and video controls accessible. Closing a video preview cancels its background work.
+• Pauses background sync and backup checks while the app is locked or in the background.
+• Shares use one complete encrypted link.
+• Clearer sign-in errors and guidance for unlocking your vault after a password reset.

@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { AppState, Platform } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
@@ -20,12 +20,24 @@ import {
   setPhotoBackupIncludeVideos,
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
+import { startAccountRefusalPoll } from './account-refusal-poll';
+import { syncBackupDeviceIdToNative } from './backup-device-id-handoff';
 import { ensureBackupFolders, reconcileDerivedStateAgainstServer, type BackupCategory } from '../services/BackupService';
+import { isVaultKeyMismatchError } from '../services/vault-key-mismatch';
 import { useCrypto } from './crypto-context';
 import { useAuth } from './auth';
+import { useAccountState } from './account-state-context';
+import { readOnlyUploadMessage, accountGateFor, uploadsBlocked, setCurrentAccountGate, type AccountGate } from './account-state';
 import { recordRuntimeTrace } from './runtime-trace';
 import { registerDevice } from './device-registration';
-import { clearMobileIosBackupClientSession, ensureMobileIosBackupClientSession } from './api';
+import {
+  clearMobileIosBackupClientSession,
+  ensureMobileIosBackupClientSession,
+  captureRequestAuthSnapshot,
+  endSessionForAccountMismatch,
+  getSubscription,
+  type Subscription,
+} from './api';
 
 const BACKUP_PHOTO_KEY = 'beebeeb_camera_backup';
 const BACKUP_CONTACTS_KEY = 'beebeeb_contacts_backup';
@@ -228,6 +240,65 @@ export interface BackupContextValue {
   backupProgress: BackupProgress;
   lastBackupAt: string | null;
   triggerBackupNow: () => Promise<void>;
+  /**
+   * Task 1594: set when the backup refused to run because this device's vault
+   * key cannot read the account's folder names (a wrong key — never build a
+   * new tree then). The honest message to show; null when not blocked.
+   */
+  backupBlockedReason: string | null;
+  /**
+   * Task 1599 followup 2: set when the NATIVE engine stopped itself because
+   * the server confirmed a 409 `account_mismatch` on an authenticated upload
+   * mutation (this device's session no longer matches the account the
+   * loaded master key is bound to). Sourced from native's poll
+   * (`accountMismatchReason` on `NativeBackupProgress`), so — unlike
+   * `backupBlockedReason` above, which JS sets synchronously from its own
+   * `enableNativeBackup` flow — this can appear between polls, any time the
+   * engine is running. The honest message to show; null when not blocked.
+   */
+  accountMismatchReason: string | null;
+  /**
+   * Task 1599 followups round 3 (P2): set when the native engine's OWN local
+   * ownership check refused to even attempt starting backup (a cached
+   * master-key handle with no confirmed/matching owner, or a keychain-
+   * sourced handle the shared "proven vault key owner" mirror doesn't
+   * confirm) — distinct from `accountMismatchReason` above, which requires a
+   * server-confirmed 409. The honest message to show; null when nothing is
+   * refusing to start for this reason.
+   */
+  ownerUnconfirmedReason: string | null;
+  /**
+   * Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): set when the
+   * NATIVE engine paused itself because the server confirmed (on a request
+   * it sent while this app may have been backgrounded) that this account
+   * cannot store data right now for a billing reason — a never-paid
+   * mandated trial cancelled before its first charge, a lapsed trial/plan,
+   * no plan at all, or the 25 GB trial cap. Distinct from
+   * `accountMismatchReason` above (which requires the SESSION to no longer
+   * match the account, and ends it) — this is the right account, just
+   * billing-blocked, same as `ownerUnconfirmedReason`'s "never ends the
+   * session" shape. Sourced from native's poll (`accountRefusalReason` on
+   * `NativeBackupProgress`) — see that field's doc comment for the resume
+   * path. The honest message to show; null when nothing is refusing to
+   * upload for this reason.
+   */
+  accountRefusalReason: string | null;
+  /**
+   * Task 1667 round 6: set when the NATIVE engine refused to start because it
+   * could not open (or empty) the camera-roll backup manifest. Native retries
+   * on its own and clears it on the first open that works. Sourced from
+   * native's poll (`manifestUnavailableReason` on `NativeBackupProgress`);
+   * null otherwise.
+   */
+  manifestUnavailableReason: string | null;
+  /**
+   * Task 1667 round 12: set while the NATIVE engine holds camera-roll uploads
+   * because the server check cannot answer (a server without `backed_up`, a
+   * failed check, no device id yet). Native retries on its own. Sourced from
+   * native's poll (`serverCheckPausedReason` on `NativeBackupProgress`); null
+   * otherwise.
+   */
+  serverCheckPausedReason: string | null;
   // Legacy alias for components that used the old API
   isBackupEnabled: boolean;
   toggleBackup: () => Promise<void>;
@@ -259,6 +330,12 @@ export const BackupContext = createContext<BackupContextValue>({
   backupProgress: EMPTY_PROGRESS,
   lastBackupAt: null,
   triggerBackupNow: async () => {},
+  backupBlockedReason: null,
+  accountMismatchReason: null,
+  ownerUnconfirmedReason: null,
+  accountRefusalReason: null,
+  manifestUnavailableReason: null,
+  serverCheckPausedReason: null,
   isBackupEnabled: false,
   toggleBackup: async () => {},
 });
@@ -274,8 +351,25 @@ async function getStoredToken(): Promise<string | null> {
   }
 }
 
+// Task 1667 round 13 (review item 1): the handoff lives in its own module and
+// sends only a durable id (read, or minted and persisted).
+export { syncBackupDeviceIdToNative };
+
+/**
+ * Task 1667 round 12 (review item 6): the reason native gives while it holds
+ * camera-roll uploads on the server check, as Settings shows it. Pure and
+ * exported so the poll's mapping is unit-testable.
+ */
+export function nativeServerCheckPausedReason(p: NativeBackupProgress): string | null {
+  const reason = p.serverCheckPausedReason;
+  return typeof reason === 'string' && reason.length > 0 ? reason : null;
+}
+
 async function mirrorBackupSessionForNative(): Promise<void> {
   if (Platform.OS !== 'ios') return;
+  // Task 1667: before enablePhotoBackup / triggerImmediateBackup (both call
+  // this first), so the engine's first batch can rebuild from the server map.
+  await syncBackupDeviceIdToNative();
   try {
     const deviceId = await registerDevice();
     if (!deviceId) return;
@@ -289,6 +383,289 @@ async function mirrorBackupSessionForNative(): Promise<void> {
   }
 }
 
+/**
+ * Task 1599 followups (round 2, item 4): whether a newly-observed native
+ * `accountMismatchReason` should end the current JS session, the same way
+ * `request()`'s own 409 `account_mismatch` branch does (`api.ts`). Pure and
+ * exported standalone so it is unit-testable without a React render harness
+ * (this codebase has none for `BackupProvider` — see `backup-context.test.ts`'s
+ * own header note) — mirrors the `CachedKeyOwnership.mayAdopt` /
+ * `AccountMismatchDetection` precedent of pulling a decision out as a plain
+ * function.
+ *
+ * Edge-triggered: true only on a transition INTO a reason (null → set, or
+ * one reason string → a different one) — never on every repeated poll of
+ * the SAME still-set reason. Without this, `applyNativeProgress` (which runs
+ * on every poll tick while native reports a non-null reason) would call
+ * `endSessionForAccountMismatch` — and therefore `onSessionExpired?.()` —
+ * once per poll, not once per actual mismatch event.
+ */
+export function shouldEndSessionForNativeAccountMismatch(
+  previousReason: string | null,
+  nextReason: string | null,
+): boolean {
+  return nextReason !== null && nextReason !== previousReason;
+}
+
+/**
+ * Task 1599 followups round 3 (P1 — sign-in lockout loop): whether a
+ * native-reported `accountMismatchGeneration` was raised AFTER this
+ * `BackupProvider` mount established its baseline — i.e. DURING the current
+ * session — as opposed to a reason left over from a PRIOR session that
+ * native had not yet had a chance to clear.
+ *
+ * The bug this guards: a confirmed 409 sets native's sticky reason, JS ends
+ * that session (`shouldEndSessionForNativeAccountMismatch` above fires).
+ * The NEXT sign-in mounts a brand-new `BackupProvider`, whose progress poll
+ * can fire before `confirmMasterKeyHandle` (the unlock choke point that
+ * clears the reason) completes — reading the STALE reason as if it were
+ * fresh and ending the brand-new session before the user finishes signing
+ * in, forever. (`mirrorSessionToAppGroup`, BeebeebCryptoModule.swift, now
+ * also clears the reason itself on a token change and on sign-out, closing
+ * the common case; this generation check is the JS-side backstop for
+ * whatever race remains — e.g. an app relaunch with the SAME still-valid
+ * token, where no token-changed clear ever fires.)
+ *
+ * `baselineGeneration === null` means no baseline has been established yet
+ * for this mount (the very first poll) — that poll's generation becomes the
+ * baseline and is never itself "current".
+ */
+export function isAccountMismatchGenerationCurrent(
+  baselineGeneration: number | null,
+  nextGeneration: number,
+): boolean {
+  return baselineGeneration !== null && nextGeneration > baselineGeneration;
+}
+
+/** Per-mount running state `reduceAccountMismatchPoll` folds over. */
+export interface AccountMismatchPollState {
+  reason: string | null;
+  generationBaseline: number | null;
+}
+
+export const INITIAL_ACCOUNT_MISMATCH_POLL_STATE: AccountMismatchPollState = {
+  reason: null,
+  generationBaseline: null,
+};
+
+/**
+ * Task 1599 followups round 3 (P1): the single decision `applyNativeProgress`
+ * makes on every poll tick, extracted as a pure reducer so it is unit-
+ * testable as a SEQUENCE of ticks without a React render harness (this
+ * codebase has none for `BackupProvider` — see this file's own header
+ * note). Composes the two pure checks above: only a reason that is BOTH a
+ * fresh edge (`shouldEndSessionForNativeAccountMismatch`) AND raised at a
+ * generation newer than this mount's baseline
+ * (`isAccountMismatchGenerationCurrent`) ends the session.
+ */
+export function reduceAccountMismatchPoll(
+  state: AccountMismatchPollState,
+  next: { reason: string | null; generation: number },
+): { state: AccountMismatchPollState; shouldEndSession: boolean } {
+  const shouldEndSession =
+    isAccountMismatchGenerationCurrent(state.generationBaseline, next.generation) &&
+    shouldEndSessionForNativeAccountMismatch(state.reason, next.reason);
+  const generationBaseline = state.generationBaseline === null ? next.generation : state.generationBaseline;
+  return {
+    state: { reason: next.reason, generationBaseline },
+    shouldEndSession,
+  };
+}
+
+/**
+ * Task 1605 review round 3 (P1): the trial-cap-pause-never-resumes bug.
+ *
+ * `NativeBackupEngine.pause()` (via `handleConfirmedAccountRefusal` /
+ * `handleConfirmedTrialCapExceeded`) fires on FOUR server refusals. Three of
+ * them (`trial_cancelled_read_only`, `account_lapsed`, `plan_required`) move
+ * `accountGate.kind` off `'ok'`, so `accountBlockedMessage` below changes and
+ * the mount/warm-up effect (keyed on it) already re-fires `enableNativeBackup`
+ * once the gate returns to `'ok'` — that reaches native `start()`, which is
+ * the ONLY place that clears `accountRefusalStopReason` (its own doc comment
+ * in NativeBackupEngine.swift explains why: `resume()` skips that clear when
+ * `isRunning` was already true, which it always is here — `pause()` never
+ * flips `isRunning`).
+ *
+ * The FOURTH — the 25 GB trial cap (413 `quota_exceeded` + `is_trial_cap`) —
+ * never moves `accountGate.kind`: `account_state` stays `'ok'` for a merely-
+ * capped (not cancelled) trial, and `gateForRefusalCode('quota_exceeded',
+ * current)` in account-state.ts returns null for an otherwise-ok account by
+ * design (see that function's doc comment — "for an `ok` account it really
+ * is storage full", which used to be true before this task's 25 GB trial cap
+ * existed). So `accountBlockedMessage` never changes for this case, the
+ * mount effect never re-fires, and the app was stuck paused until a manual
+ * toggle or relaunch even after the user paid via the web.
+ *
+ * This function is the resume decision for BOTH: it always re-derives the
+ * gate from a freshly-fetched subscription (covers the three gate-based
+ * refusals too, without waiting on the separate mount-effect's own
+ * re-render), and separately checks the trial-cap headroom directly from
+ * the same payload (covers the fourth). Pure and exported for the same
+ * reason `reduceAccountMismatchPoll` above is — no React render harness in
+ * this codebase for `BackupProvider` (see this file's header note).
+ */
+export interface AccountRefusalResumeDecision {
+  /** True once the account itself allows uploads again (both conditions below). */
+  unblocked: boolean;
+  /** True when `unblocked` and camera-roll backup is the enabled category — the caller should call `enableNativeBackup('camera_roll', ...)`. */
+  shouldResumeCameraBackup: boolean;
+}
+
+export function decideAccountRefusalResume(
+  sub: Pick<Subscription, 'account_state' | 'uploads_blocked_at' | 'access_until' | 'data_deletion_at' | 'trial_storage_cap_bytes' | 'used_bytes'> | null,
+  isPhotoBackupEnabled: boolean,
+): AccountRefusalResumeDecision {
+  if (!sub) return { unblocked: false, shouldResumeCameraBackup: false };
+  const gate = accountGateFor(sub);
+  const stillTrialCapped =
+    sub.trial_storage_cap_bytes != null && (sub.used_bytes ?? 0) >= sub.trial_storage_cap_bytes;
+  const unblocked = !uploadsBlocked(gate) && !stillTrialCapped;
+  return { unblocked, shouldResumeCameraBackup: unblocked && isPhotoBackupEnabled };
+}
+
+/** What `decideAccountRefusalResume` needs computed alongside its verdict — the resolved gate, so the caller can mirror it without a second fetch. */
+export function accountRefusalResumeGate(sub: Parameters<typeof decideAccountRefusalResume>[0]): AccountGate {
+  return sub ? accountGateFor(sub) : { kind: 'ok' };
+}
+
+export interface AccountRefusalPollTickDeps {
+  fetchSubscription: () => Promise<Subscription | null>;
+  isCurrent?: () => boolean;
+  getIsPhotoBackupEnabled: () => boolean;
+  /** Mirror the freshly-resolved gate into the shared state (module-level copy + the canonical provider) — fired once, only on the tick that finds the account unblocked. */
+  onUnblocked: (gate: AccountGate) => void;
+  /** Call the native resume/start path. Only invoked when `shouldResumeCameraBackup` is true. */
+  resumeCameraBackup: () => Promise<void>;
+  resumeOtherBackups?: () => Promise<void>;
+}
+
+export interface AccountRefusalPollTickResult {
+  /** True once this tick found uploads allowed again. */
+  resumed: boolean;
+  /** True once the caller should stop scheduling further ticks for this refusal episode — set together with `resumed`; a transient fetch failure or a still-blocked account does NOT stop polling (next tick retries). */
+  shouldStopPolling: boolean;
+}
+
+/**
+ * One tick of the bounded poll: fetch, decide, and (if unblocked) act.
+ * Extracted as a pure async function — same rationale as
+ * `decideAccountRefusalResume` above — so "resume called exactly once" and
+ * "polling stops once cleared" are testable as a plain sequence of calls,
+ * independently of the scheduler. The component supplies a lifetime/visibility
+ * check so a stale subscription response cannot resume a stopped effect.
+ */
+export async function runAccountRefusalPollTick(
+  deps: AccountRefusalPollTickDeps,
+): Promise<AccountRefusalPollTickResult> {
+  let sub: Subscription | null;
+  try {
+    sub = await deps.fetchSubscription();
+  } catch {
+    return { resumed: false, shouldStopPolling: false }; // best-effort — next tick retries
+  }
+  if (deps.isCurrent && !deps.isCurrent()) return { resumed: false, shouldStopPolling: false };
+  const decision = decideAccountRefusalResume(sub, deps.getIsPhotoBackupEnabled());
+  if (!decision.unblocked) return { resumed: false, shouldStopPolling: false };
+  deps.onUnblocked(accountRefusalResumeGate(sub));
+  if (decision.shouldResumeCameraBackup) {
+    await deps.resumeCameraBackup();
+  }
+  await deps.resumeOtherBackups?.();
+  return { resumed: true, shouldStopPolling: true };
+}
+
+/**
+ * Task 1686 (iOS idle heat) — field-by-field equality over the projected
+ * BackupProgress shape `applyNativeProgress` mirrors into state. The 5 s
+ * native poll previously called setState unconditionally, so an IDLE app
+ * re-rendered the tree ~12×/minute forever; with this guard a tick that
+ * read the same progress as the previous one becomes a no-op. Every
+ * mirrored field participates. `undefined` vs `null` vs a concrete value
+ * are pairwise distinct (`??` cannot express that — use explicit
+ * has/value checks): an old native build omitting a field, an explicitly
+ * cleared reason, and a set reason are three different mirror states, and
+ * collapsing any two of them would swallow a real transition.
+ */
+export function nativeProgressEquals(a: NativeBackupProgress, b: NativeBackupProgress): boolean {
+  // Preserve the undefined/null distinction: `undefined` (field absent —
+  // old native build) vs `null` (explicitly cleared) are different mirror
+  // states, so map undefined to a sentinel instead of null.
+  const MISSING = Symbol('missing');
+  const opt = <T,>(v: T | undefined): T | null | symbol => (v === undefined ? MISSING : v);
+  return (
+    a.total === b.total &&
+    a.completed === b.completed &&
+    a.inProgress === b.inProgress &&
+    opt(a.pending) === opt(b.pending) &&
+    opt(a.waitingToEncrypt) === opt(b.waitingToEncrypt) &&
+    opt(a.encryptedPendingUpload) === opt(b.encryptedPendingUpload) &&
+    opt(a.uploading) === opt(b.uploading) &&
+    opt(a.failed) === opt(b.failed) &&
+    opt(a.state) === opt(b.state) &&
+    opt(a.reason) === opt(b.reason) &&
+    opt(a.lastBackupAt) === opt(b.lastBackupAt) &&
+    opt(a.accountMismatchReason) === opt(b.accountMismatchReason) &&
+    opt(a.accountMismatchGeneration) === opt(b.accountMismatchGeneration) &&
+    opt(a.ownerUnconfirmedReason) === opt(b.ownerUnconfirmedReason) &&
+    opt(a.accountRefusalReason) === opt(b.accountRefusalReason) &&
+    opt(a.manifestUnavailableReason) === opt(b.manifestUnavailableReason) &&
+    opt(a.serverCheckPausedReason) === opt(b.serverCheckPausedReason)
+  );
+}
+
+/** The BackupProgress the screens read for one native payload. */
+export function projectNativeProgress(p: NativeBackupProgress): BackupProgress {
+  const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
+  const nativeState = p.state ?? (p.inProgress > 0 ? 'uploading' : pending > 0 ? 'idle' : 'complete');
+  return {
+    total: p.total,
+    completed: p.completed,
+    inProgress: p.inProgress,
+    pending,
+    waitingToEncrypt: p.waitingToEncrypt,
+    encryptedPendingUpload: p.encryptedPendingUpload,
+    uploading: p.uploading,
+    failed: p.failed ?? 0,
+    state: nativeState,
+    reason: p.reason ?? '',
+  };
+}
+
+/**
+ * Task 1667 (sim rung 5b) + task 1686 (idle heat): the state update for one
+ * native read. The provider keeps only the native payload it shows (null =
+ * nothing shown) and projects it for the screens, so the "same as last time"
+ * check always compares against what is shown. Returns `prev` itself for an
+ * equal payload, so React bails out and an idle 5 s tick re-renders nothing
+ * (task 1686). From null any payload is shown.
+ *
+ * On main 9f997265 the payload lived in a separate ref while the disable
+ * path wrote EMPTY_PROGRESS into the shown state: after re-enable native
+ * reported the identical 25/25, the check matched the stale ref, and Photos
+ * read "0 backed up" (Settings "25 of 0 items") until a cold relaunch.
+ */
+export function nextShownNativeProgress(
+  prev: NativeBackupProgress | null,
+  p: NativeBackupProgress,
+): NativeBackupProgress | null {
+  return prev && nativeProgressEquals(prev, p) ? prev : p;
+}
+
+/**
+ * Task 1686 (iOS idle heat) — whether the backup-progress poll (5 s) and the
+ * account-refusal poll (15 s) should pause for this AppState. 'inactive'
+ * (iOS app switcher / lock screen / call banner) counts as backgrounded:
+ * the screen is not usable, so neither live progress nor timely refusals
+ * matter until foreground. RN's other states ('extension', legacy 'unknown')
+ * pause too — anything that is not 'active'. An unrecognized/missing value
+ * fails OPEN (never pauses) — a missed 'active' event must never leave live
+ * progress frozen. The account-refusal poll's 15 s FOREGROUND semantics are
+ * unchanged — this only adds the background pause.
+ */
+export function shouldPauseBackupPolls(state: string | undefined | null): boolean {
+  return typeof state === 'string' && state !== 'active';
+}
+
 export function BackupProvider({ children }: { children: React.ReactNode }) {
   const { isUnlocked } = useCrypto();
   const { user } = useAuth();
@@ -299,27 +676,99 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   const [includeVideos, setIncludeVideosState] = useState(true);
   const [wifiOnly, setWifiOnlyState] = useState(false);
   const [backgroundUpload, setBackgroundUploadState] = useState(true);
-  const [backupProgress, setBackupProgress] = useState<BackupProgress>(EMPTY_PROGRESS);
+  // Task 1667 (sim rung 5b): the native payload on screen; null = nothing
+  // shown. Written only by native reads (`applyNativeProgress`) and cleared
+  // when camera backup is turned on (`togglePhotoBackup`).
+  const [shownNativeProgress, setShownNativeProgress] = useState<NativeBackupProgress | null>(null);
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
+  const [backupBlockedReason, setBackupBlockedReason] = useState<string | null>(null);
+  // Task 1599 followup 2: mirrors native's `accountMismatchReason` every
+  // poll — a single producer (the native poll itself), so unlike
+  // `backupBlockedReason` above there is no risk of two writers racing each
+  // other; native already clears it on the same sign-in that would supersede
+  // this state, so mirroring it verbatim (including back to null) is correct.
+  const [accountMismatchReason, setAccountMismatchReason] = useState<string | null>(null);
+  // Task 1599 followups round 3 (P2): a LOCAL-only refusal reason (no
+  // server round-trip involved — see `ownerUnconfirmedReason`'s doc comment
+  // on `NativeBackupProgress`). Mirrored the same way `accountMismatchReason`
+  // is: a single producer (the native poll), so no writer race.
+  const [ownerUnconfirmedReason, setOwnerUnconfirmedReason] = useState<string | null>(null);
+  // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): a server-
+  // confirmed but non-session-ending refusal — same single-producer
+  // mirroring as the two above (the native poll is the only writer).
+  const [accountRefusalReason, setAccountRefusalReason] = useState<string | null>(null);
+  // Task 1667 round 6: native could not open its manifest and is retrying;
+  // same single-producer mirroring as the reasons above.
+  const [manifestUnavailableReason, setManifestUnavailableReason] = useState<string | null>(null);
+  const [serverCheckPausedReason, setServerCheckPausedReason] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Task 1686 (iOS idle heat) — the current RN AppState as a plain ref, read
+  // by both polls at tick time (shouldPauseBackupPolls) and written by the
+  // listener effect below. Defaults 'active': fail open until the first
+  // event says otherwise.
+  const appStateRef = useRef<string>('active');
   const includeVideosRef = useRef(true);
+  // Task 1599 followups round 3 (P1): the running fold `reduceAccountMismatchPoll`
+  // carries across poll ticks for THIS mount — reset to
+  // `INITIAL_ACCOUNT_MISMATCH_POLL_STATE` (no baseline established yet) on
+  // every fresh `BackupProvider` instance, which is exactly the per-mount
+  // scoping the sign-in lockout fix needs (see that function's doc comment).
+  const accountMismatchPollStateRef = useRef<AccountMismatchPollState>(INITIAL_ACCOUNT_MISMATCH_POLL_STATE);
+  // Task 1037: a needs_plan / lapsed account is refused every upload (409
+  // plan_required / account_lapsed). Keep the native engines OFF while that
+  // holds: they run on their own (including BGTask runs), and would otherwise
+  // retry each asset against the server until it is dead-lettered. The user's
+  // backup choices stay saved, and the engines start again once the account
+  // can take uploads. Nothing starts before the first account read settles.
+  const { ready: accountReady, gate: accountGate, refresh: refreshAccountState } = useAccountState();
+  const accountBlockedMessage = readOnlyUploadMessage(accountGate);
+  const accountReadyRef = useRef(accountReady);
+  const accountBlockedRef = useRef<string | null>(accountBlockedMessage);
+  accountReadyRef.current = accountReady;
+  accountBlockedRef.current = accountBlockedMessage;
 
   const applyNativeProgress = useCallback((p: NativeBackupProgress) => {
-    const pending = p.pending ?? Math.max(0, p.total - p.completed - p.inProgress);
-    const nativeState = p.state ?? (p.inProgress > 0 ? 'uploading' : pending > 0 ? 'idle' : 'complete');
-    setBackupProgress({
-      total: p.total,
-      completed: p.completed,
-      inProgress: p.inProgress,
-      pending,
-      waitingToEncrypt: p.waitingToEncrypt,
-      encryptedPendingUpload: p.encryptedPendingUpload,
-      uploading: p.uploading,
-      failed: p.failed ?? 0,
-      state: nativeState,
-      reason: p.reason ?? '',
-    });
+    // Task 1686 (iOS idle heat): an unchanged tick must not re-render the
+    // tree. `nextShownNativeProgress` returns the previous payload for an
+    // equal payload (React bails out), and every setter below receives an
+    // unchanged primitive (bails out too). Task 1667 (sim rung 5b): the
+    // comparison is against what is SHOWN, never a separate cache.
+    setShownNativeProgress((prev) => nextShownNativeProgress(prev, p));
     if (p.lastBackupAt) setLastBackupAt(p.lastBackupAt);
+    const nextAccountMismatchReason = p.accountMismatchReason ?? null;
+    const nextAccountMismatchGeneration = p.accountMismatchGeneration ?? 0;
+    // Task 1599 followups (round 2, item 4) / round 3 (P1): the native
+    // engine already confirmed a 409 `account_mismatch` and stopped itself
+    // (`handleConfirmedAccountMismatch` in NativeBackupEngine.swift) — end
+    // the JS session the SAME way `request()`'s own 409 branch does
+    // (`api.ts`), so a user who just toggles backup back on
+    // (`enablePhotoBackup` rebinds `currentAccountId` immediately, with the
+    // SAME stale token) doesn't send it straight back into another 409.
+    // Guarded by the current-session snapshot
+    // (`captureRequestAuthSnapshot`/`endSessionForAccountMismatch`) so a
+    // session that has ALREADY moved on since native set this reason (e.g.
+    // the user signed in again in the meantime) is not torn down out from
+    // under them. `reduceAccountMismatchPoll` additionally gates on the
+    // reason having been raised at a generation newer than THIS mount's
+    // baseline — see that function's doc comment for the sign-in lockout
+    // loop this closes (a stale reason from a session that already ended
+    // must never end the NEXT one before the user finishes signing in).
+    const { state: nextPollState, shouldEndSession } = reduceAccountMismatchPoll(
+      accountMismatchPollStateRef.current,
+      { reason: nextAccountMismatchReason, generation: nextAccountMismatchGeneration },
+    );
+    accountMismatchPollStateRef.current = nextPollState;
+    if (shouldEndSession) {
+      void (async () => {
+        const snapshot = await captureRequestAuthSnapshot();
+        await endSessionForAccountMismatch(snapshot);
+      })();
+    }
+    setAccountMismatchReason(nextAccountMismatchReason);
+    setOwnerUnconfirmedReason(p.ownerUnconfirmedReason ?? null);
+    setAccountRefusalReason(p.accountRefusalReason ?? null);
+    setManifestUnavailableReason(p.manifestUnavailableReason ?? null);
+    setServerCheckPausedReason(nativeServerCheckPausedReason(p));
   }, []);
 
   const refreshNativeProgress = useCallback(async () => {
@@ -330,6 +779,11 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
   const enableNativeBackup = useCallback(async (category: BackupCategory, options: { runNow?: boolean } = {}) => {
     if (Platform.OS === 'web') return;
+    if (accountBlockedRef.current) {
+      setBackupBlockedReason(accountBlockedRef.current);
+      recordRuntimeTrace('backup.native.enable.blocked', { category, reason: 'account_read_only' });
+      return;
+    }
     const token = await getStoredToken();
     if (!token) return;
     if (!isUnlocked) {
@@ -341,7 +795,20 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const { categoryFolderId } = await ensureBackupFolders(category);
+    let categoryFolderId: string;
+    try {
+      ({ categoryFolderId } = await ensureBackupFolders(category));
+    } catch (err) {
+      // Task 1594: a vault key that cannot read the folder names must stop the
+      // backup — surface why instead of the silent catch the callers have.
+      if (isVaultKeyMismatchError(err)) {
+        setBackupBlockedReason(err.message);
+        recordRuntimeTrace('backup.native.enable.blocked', { category, reason: 'vault_key_mismatch' });
+        return;
+      }
+      throw err;
+    }
+    setBackupBlockedReason(null);
     await configureBackupFolder(category, categoryFolderId);
     recordRuntimeTrace('backup.native.folder_configured', {
       category,
@@ -404,6 +871,13 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     }
   }, [isUnlocked, userId]);
 
+  // Task 1667 round 12 (review item 7): hand the canonical device id to
+  // native at every launch, not only at enable, so a background task never
+  // runs without it (signed in or not: the id belongs to the device).
+  useEffect(() => {
+    void syncBackupDeviceIdToNative();
+  }, []);
+
   // Load persisted preferences on mount — scoped to the signed-in user
   // (task 1443). No userId means this instance is the signed-out slot
   // (CryptoProvider key='signed-out'): there is nothing to load and nothing
@@ -450,6 +924,9 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         // background task firing alongside this). Wrapped so the mount effect
         // isn't blocked.
         void (async () => {
+          // Task 1037: wait for the account read, and never start the
+          // engines for a read-only account (see accountBlockedRef above).
+          if (!accountReadyRef.current || accountBlockedRef.current) return;
           try {
             if (photo === 'true') await enableNativeBackup('camera_roll', { runNow: false });
             if (contacts === 'true') await enableNativeBackup('contacts', { runNow: false });
@@ -462,7 +939,87 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         // SecureStore unavailable (web / unit tests)
       }
     })();
-  }, [enableNativeBackup, userId]);
+    // accountReady / accountBlockedMessage: re-run the warm-up once the first
+    // account read lands, and again when a read-only account can upload again.
+  }, [enableNativeBackup, userId, accountReady, accountBlockedMessage]);
+
+  // Task 1037: stop the engines when the account becomes read-only, and show
+  // why in place of a progress line (Settings reads backupBlockedReason).
+  const accountReasonShownRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!userId) return;
+    if (accountBlockedMessage) {
+      accountReasonShownRef.current = accountBlockedMessage;
+      setBackupBlockedReason(accountBlockedMessage);
+      recordRuntimeTrace('backup.native.stopped', { reason: 'account_read_only', state: accountGate.kind });
+      void stopBackupEngines();
+      return;
+    }
+    const shown = accountReasonShownRef.current;
+    if (shown) {
+      accountReasonShownRef.current = null;
+      setBackupBlockedReason((prev) => (prev === shown ? null : prev));
+    }
+  }, [userId, accountBlockedMessage, accountGate.kind]);
+
+  // Task 1605 review round 3 (P1): resume once native's accountRefusalReason
+  // clears — see `runAccountRefusalPollTick`'s doc comment above for why
+  // this is needed at all (the trial-cap refusal never moves
+  // `accountGate.kind`, so the mount/warm-up effect above has nothing to
+  // react to for it). Task 1661: retry at 15/30/60 seconds while foregrounded,
+  // stop at the first unblocked tick, and recheck immediately on foreground.
+  useEffect(() => {
+    if (!userId || Platform.OS === 'web') return;
+    if (!(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) || !accountRefusalReason) return;
+
+    let stopped = false;
+    const poll = startAccountRefusalPoll(async () => {
+      const result = await runAccountRefusalPollTick({
+        fetchSubscription: getSubscription,
+        isCurrent: () => !stopped && !shouldPauseBackupPolls(appStateRef.current),
+        getIsPhotoBackupEnabled: () => isPhotoBackupEnabled,
+        onUnblocked: (gate) => {
+          setCurrentAccountGate(gate);
+          void refreshAccountState().catch(() => {});
+        },
+        resumeCameraBackup: async () => {
+          // Bypass enableNativeBackup's own accountBlockedRef check: that
+          // ref mirrors the LAST render of the (separate)
+          // AccountStateProvider context, which the refreshAccountState()
+          // call above hasn't necessarily updated yet — but THIS tick's
+          // own fetch, just above, already proved the account unblocked,
+          // more freshly. Without this, a same-tick resume could bail out
+          // on a stale ref and only actually resume on the NEXT poll tick.
+          accountBlockedRef.current = null;
+          try {
+            await enableNativeBackup('camera_roll', { runNow: false });
+          } catch {
+            // best-effort — the next progress poll re-reads native state
+          }
+          await refreshNativeProgress().catch(() => {});
+        },
+        resumeOtherBackups: async () => {
+          // This tick confirmed uploads are allowed; the provider refresh
+          // may still leave the last render's read-only gate in this ref.
+          // Match resumeCameraBackup for contacts/calendar-only recovery.
+          accountBlockedRef.current = null;
+          if (!stopped && isContactsBackupEnabled) await enableNativeBackup('contacts');
+          if (!stopped && isCalendarBackupEnabled) await enableNativeBackup('calendar');
+          await refreshNativeProgress().catch(() => {});
+        },
+      });
+      return result;
+    }, !shouldPauseBackupPolls(appStateRef.current));
+    const refusalSub = AppState.addEventListener('change', next => {
+      appStateRef.current = next;
+      poll.setActive(!shouldPauseBackupPolls(next));
+    });
+    return () => {
+      stopped = true;
+      poll.stop();
+      refusalSub.remove();
+    };
+  }, [userId, isPhotoBackupEnabled, isContactsBackupEnabled, isCalendarBackupEnabled, accountRefusalReason, refreshAccountState, enableNativeBackup, refreshNativeProgress]);
 
   // Stop the native backup engines when this instance unmounts. CryptoProvider
   // is keyed by user id (`user?.user_id ?? 'signed-out'` in App.tsx), so BOTH
@@ -480,11 +1037,21 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Poll native backup progress every 5 s when photo backup is enabled
+  // Poll native refusal/progress state for every enabled backup category.
+  // Task 1686 (iOS idle heat): the poll no longer does work (or setState)
+  // while the app is backgrounded/locked — RN timers keep (intermittently)
+  // firing in the background, so without the gate the poll read native
+  // progress all night. The interval keeps running; only the per-tick work
+  // is visibility-gated, and the existing foreground listener below already
+  // refreshes immediately on 'active', so live progress for an active user
+  // is unchanged.
   useEffect(() => {
-    if (!isPhotoBackupEnabled || Platform.OS === 'web') return;
+    if (!(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) || Platform.OS === 'web') return;
 
     const poll = async () => {
+      // Task 1686 — visibility gate. 'inactive' (app switcher / lock screen)
+      // counts as backgrounded. Fail open on anything unrecognized.
+      if (shouldPauseBackupPolls(appStateRef.current)) return;
       try {
         await refreshNativeProgress();
       } catch {
@@ -497,13 +1064,26 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [isPhotoBackupEnabled, refreshNativeProgress]);
+  }, [isPhotoBackupEnabled, isContactsBackupEnabled, isCalendarBackupEnabled, refreshNativeProgress]);
+
+  // Task 1686 — track AppState for both polls. A ref (not state): polls read
+  // it at tick time without re-mounting the effects, and the listeners above
+  // also write it on 'change'. Synced from AppState.currentState at mount so
+  // a provider mounted while already backgrounded starts paused.
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    appStateRef.current = AppState.currentState;
+    const sub = AppState.addEventListener('change', (next) => {
+      appStateRef.current = next;
+    });
+    return () => sub.remove();
+  }, []);
 
   // Native state can legitimately say "open Beebeeb" after a background handoff.
   // If the user has already foregrounded the app, refresh immediately so Settings
   // reflects the live worker state instead of a stale background state.
   useEffect(() => {
-    if (!isPhotoBackupEnabled || Platform.OS === 'web') return;
+    if (!(isPhotoBackupEnabled || isContactsBackupEnabled || isCalendarBackupEnabled) || Platform.OS === 'web') return;
     const sub = AppState.addEventListener('change', (next) => {
       if (next !== 'active') return;
       // 0817 — on foreground, reconcile derived state vs server truth FIRST
@@ -519,12 +1099,17 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       })();
     });
     return () => sub.remove();
-  }, [isPhotoBackupEnabled, refreshNativeProgress]);
+  }, [isPhotoBackupEnabled, isContactsBackupEnabled, isCalendarBackupEnabled, refreshNativeProgress]);
 
   const togglePhotoBackup = useCallback(async () => {
     if (!userId) return; // signed-out instance — nothing to persist against
     const next = !isPhotoBackupEnabled;
     setIsPhotoBackupEnabled(next);
+    // Task 1667 (sim rung 5b): turning backup on shows nothing until native
+    // answers (the poll reads at once), never the progress kept from before
+    // it was turned off, and the empty state lets that answer through even
+    // when it is identical.
+    if (next) setShownNativeProgress(null);
     try {
       await setScopedBackupPref(BACKUP_PHOTO_KEY, userId, next ? 'true' : 'false');
       if (Platform.OS !== 'web') {
@@ -535,7 +1120,6 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
           await disablePhotoBackup();
           await clearMobileIosBackupClientSession().catch(() => {});
           await configureBackupFolder('camera_roll', null);
-          setBackupProgress(EMPTY_PROGRESS);
         }
       }
     } catch {
@@ -552,6 +1136,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       if (Platform.OS !== 'web') {
         if (next) {
           await enableNativeBackup('contacts');
+          await refreshNativeProgress().catch(() => {});
         } else {
           await disableContactsBackup();
           await configureBackupFolder('contacts', null);
@@ -560,7 +1145,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Native module not linked yet
     }
-  }, [enableNativeBackup, isContactsBackupEnabled, userId]);
+  }, [enableNativeBackup, isContactsBackupEnabled, refreshNativeProgress, userId]);
 
   const toggleCalendarBackup = useCallback(async () => {
     if (!userId) return;
@@ -571,6 +1156,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       if (Platform.OS !== 'web') {
         if (next) {
           await enableNativeBackup('calendar');
+          await refreshNativeProgress().catch(() => {});
         } else {
           await disableCalendarBackup();
           await configureBackupFolder('calendar', null);
@@ -579,7 +1165,7 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Native module not linked yet
     }
-  }, [enableNativeBackup, isCalendarBackupEnabled, userId]);
+  }, [enableNativeBackup, isCalendarBackupEnabled, refreshNativeProgress, userId]);
 
   const setIncludeVideos = useCallback(async (value: boolean) => {
     includeVideosRef.current = value;
@@ -613,6 +1199,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   }, [userId]);
 
   const triggerBackupNow = useCallback(async () => {
+    if (accountBlockedRef.current) {
+      setBackupBlockedReason(accountBlockedRef.current);
+      return;
+    }
     try {
       // wifiOnly opt-in: refuse to start a manual backup over cellular or
       // when offline.
@@ -645,6 +1235,13 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
         const progress = await triggerImmediateBackup(token, userId);
         applyNativeProgress(progress);
       } catch (err) {
+        if (isVaultKeyMismatchError(err)) {
+          // Task 1594: never fall back to starting the engine over a tree this
+          // key cannot read.
+          setBackupBlockedReason(err.message);
+          recordRuntimeTrace('backup.native.trigger.blocked', { reason: 'vault_key_mismatch' });
+          return;
+        }
         console.warn('[backup] native photo backup warm-up failed:', err);
         if (canEnableNativeCameraBackup(userId)) {
           await enablePhotoBackup(token, userId);
@@ -655,6 +1252,21 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
       console.warn('[backup] triggerBackupNow failed:', err);
     }
   }, [applyNativeProgress, refreshNativeProgress, wifiOnly, userId]);
+
+  // Task 1667 (sim rung 5b): camera backup off shows the empty state, derived
+  // here instead of written into the shown state (writing EMPTY_PROGRESS
+  // there is what desynced the task-1686 dedupe on main 9f997265). This also
+  // covers native reads that land while backup is off ("Back up now", a
+  // foreground refresh or a refusal-poll resume already in flight): they
+  // still run the account-mismatch / reason mirroring, but nothing is shown,
+  // and turning backup on clears them. Account changes and sign-out need
+  // nothing here: App.tsx remounts this provider per account (the
+  // user-keyed CryptoProvider), so a new account starts with nothing shown.
+  const projectedProgress = useMemo(
+    () => (shownNativeProgress ? projectNativeProgress(shownNativeProgress) : EMPTY_PROGRESS),
+    [shownNativeProgress],
+  );
+  const backupProgress = isPhotoBackupEnabled ? projectedProgress : EMPTY_PROGRESS;
 
   const value: BackupContextValue = {
     isPhotoBackupEnabled,
@@ -672,6 +1284,12 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
     backupProgress,
     lastBackupAt,
     triggerBackupNow,
+    backupBlockedReason,
+    accountMismatchReason,
+    ownerUnconfirmedReason,
+    accountRefusalReason,
+    manifestUnavailableReason,
+    serverCheckPausedReason,
     // Legacy alias
     isBackupEnabled: isPhotoBackupEnabled,
     toggleBackup: togglePhotoBackup,

@@ -28,6 +28,7 @@ import {
   friendlyError,
 } from '../lib/api';
 import type { FileEntry } from '../lib/api';
+import { deleteTrashItems, trashDeleteError, trashDeletionMessage } from '../lib/trash-delete';
 import { requestDeviceOwnerAuth } from '../lib/device-owner-auth';
 import { removeFromFileProviderCache } from '../lib/file-provider-mount';
 import { useCrypto } from '../lib/crypto-context';
@@ -298,7 +299,7 @@ export default function TrashScreen() {
               void onFilesDeleted([item.id]);
               showToast({ type: 'info', message: `"${name}" permanently deleted` });
             } catch (err) {
-              Alert.alert('Error', friendlyError(err));
+              Alert.alert('Error', trashDeleteError(err));
             }
           },
         },
@@ -326,26 +327,24 @@ export default function TrashScreen() {
             }
             try {
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-              const deletedIds: string[] = [];
-              for (const file of items) {
+              const result = await deleteTrashItems(items.map(file => file.id), async id => {
                 const { confirmation_token } = await confirmDeviceOwnerAction({
                   platform: auth.platform,
                   method: auth.method,
                 });
-                await permanentDeleteFile(file.id, confirmation_token);
-                deletedIds.push(file.id);
-              }
-              const deleted = new Set(deletedIds);
-              setFiles((prev) => prev.filter((file) => !deleted.has(file.id)));
-              void removeFromFileProviderCache(deletedIds);
-              // 0818 — cascade across derived stores (idempotent).
-              void onFilesDeleted(deletedIds);
-              showToast({
-                type: 'success',
-                message: deletedIds.length === items.length
-                  ? 'Trash emptied'
-                  : `${deletedIds.length} item${deletedIds.length === 1 ? '' : 's'} permanently deleted`,
+                await permanentDeleteFile(id, confirmation_token);
               });
+              const deleted = new Set(result.deletedIds);
+              setFiles(prev => prev.filter(file => !deleted.has(file.id)));
+              if (result.deletedIds.length > 0) {
+                void removeFromFileProviderCache(result.deletedIds);
+                void onFilesDeleted(result.deletedIds);
+              }
+              showToast({
+                type: result.error ? 'error' : result.liveFolders || result.noLongerTrashed ? 'info' : 'success',
+                message: trashDeletionMessage(result),
+              });
+              if (result.error || result.liveFolders || result.noLongerTrashed) void fetchTrash(true);
             } catch (err) {
               Alert.alert('Error', friendlyError(err));
               // Mid-loop failure: some rows are already server-deleted but the
@@ -431,15 +430,6 @@ export default function TrashScreen() {
         )}
       </View>
 
-      {/* Swipe hint — shown until first swipe */}
-      {files.length > 0 && !loading && (
-        <View style={[styles.hintBanner, { backgroundColor: c.paper2, borderBottomColor: c.line }]}>
-          <Text style={[styles.hintText, { color: c.ink3 }]}>
-            Swipe left to restore or permanently delete
-          </Text>
-        </View>
-      )}
-
       {/* Content */}
       {error ? (
         <View style={styles.errorContainer}>
@@ -461,6 +451,21 @@ export default function TrashScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           ListEmptyComponent={renderEmpty}
+          // Swipe hint — the list's own header, so it sits BELOW the floating
+          // chrome (the contentContainer's paddingTop: headerHeight). Task 1588:
+          // it used to be a normal-flow sibling of the absolutely positioned
+          // header, which put it at y=0 — under the status bar on an iPhone and
+          // above the header, under the window controls, on an iPad (compat
+          // mode, iPadOS 27).
+          ListHeaderComponent={
+            files.length > 0 ? (
+              <View style={[styles.hintBanner, { backgroundColor: c.paper2, borderBottomColor: c.line }]}>
+                <Text style={[styles.hintText, { color: c.ink3 }]}>
+                  Swipe left to restore or permanently delete
+                </Text>
+              </View>
+            ) : null
+          }
           refreshControl={
             <RefreshControl
               refreshing={refreshing}

@@ -42,10 +42,17 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     if let raw = cached.nameEncrypted, !raw.isEmpty, !raw.hasPrefix("{") {
       return raw
     }
-    // While we wait for the main app to populate name_decrypted via
-    // syncFileProviderCache, show a stable placeholder. The system will
-    // refetch the item once we signal a working set update.
-    return cached.isFolder ? "Folder" : "Open Beebeeb to decrypt"
+    // Task 1722 (d): a name this row cannot show. The listing refuses to
+    // vend rows like this while the vault key is unavailable (SyncEngine), so
+    // this is a single undecryptable name. The label is unique per item: the
+    // old constant "Folder" / "Open Beebeeb to decrypt" collided between
+    // siblings and fileproviderd bounced them to "Folder 2", "Folder 3".
+    return Self.unresolvedNameLabel(id: cached.id)
+  }
+
+  /// "Encrypted item · 1a2b3c4d": the first 8 characters of the server id.
+  static func unresolvedNameLabel(id: String) -> String {
+    "Encrypted item \u{00B7} \(id.prefix(8))"
   }
 
   var contentType: UTType {
@@ -71,10 +78,15 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
   // MARK: - Capabilities
 
   var capabilities: NSFileProviderItemCapabilities {
-    if cached.isFolder {
-      return [.allowsContentEnumerating, .allowsAddingSubItems, .allowsRenaming, .allowsDeleting, .allowsReparenting]
+    var capabilities: NSFileProviderItemCapabilities = cached.isFolder
+      ? [.allowsContentEnumerating, .allowsAddingSubItems, .allowsRenaming, .allowsDeleting, .allowsReparenting]
+      : [.allowsReading, .allowsWriting, .allowsRenaming, .allowsDeleting, .allowsReparenting]
+    // Task 1722 (d): renaming an item whose real name we cannot read would
+    // overwrite that name on the server. `modifyItem` refuses it as well.
+    if cached.hasUnresolvedName {
+      capabilities.remove(.allowsRenaming)
     }
-    return [.allowsReading, .allowsWriting, .allowsRenaming, .allowsDeleting, .allowsReparenting]
+    return capabilities
   }
 
   // Note: NSFileProviderContentPolicy (downloadEagerlyAndKeepDownloaded / downloadLazily)
@@ -105,6 +117,16 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
 }
 
 extension CachedItem {
+  /// Task 1722 (d): true when no readable name is known for this row: no
+  /// decrypted name, and the server name is an encrypted envelope (or
+  /// missing). Such a row shows `FileProviderItem.unresolvedNameLabel`, and
+  /// nothing derived from that label may be written back to the server.
+  var hasUnresolvedName: Bool {
+    if let decrypted = nameDecrypted, !decrypted.isEmpty { return false }
+    if let raw = nameEncrypted, !raw.isEmpty, !raw.hasPrefix("{") { return false }
+    return true
+  }
+
   /// Synthesize a cache row representing the logical root container so the
   /// enumerator and item lookup can both flow through the same code paths.
   static func rootContainer() -> CachedItem {

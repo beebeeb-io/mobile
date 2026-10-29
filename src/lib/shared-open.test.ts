@@ -1,0 +1,26 @@
+// @ts-nocheck -- isolated native bridge model (C1 Interfaces).
+import { beforeEach, expect, mock, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+let nativeCalls=0, keyCalls=0, failure=null, table=true;
+const removed:string[]=[], traces:string[]=[];
+mock.module('expo-file-system/legacy',()=>({cacheDirectory:'file:///cache/',EncodingType:{Base64:'base64'},getInfoAsync:async()=>({exists:false}),makeDirectoryAsync:async()=>{},readDirectoryAsync:async()=>[],deleteAsync:async uri=>{removed.push(uri);}}));
+mock.module('../../modules/beebeeb-crypto',()=>({isNativeAvailable:true,downloadAndDecryptFileNative:async(handle,_url,_token,id)=>{nativeCalls++;expect(handle).toBe(7);if(failure)throw new Error(failure);return {outputUri:'file:///cache/preview/'+id+'.pdf',plaintextSize:10};},streamVideoNative:async()=>{},decryptLocalFileNative:undefined,decryptChunk:async()=>{throw Error('no JS key');}}));
+mock.module('./decrypt-to-file',()=>({isDecryptToFileReady:()=>false,DecryptToFileUnavailableError:class extends Error{},decryptChunksToFile:async()=>{}}));
+mock.module('./api',()=>({ApiError:class extends Error{},getApiUrl:()=>'',getDownloadUrl:()=>'',getToken:async()=>'test',friendlyError:e=>e.message}));
+mock.module('./rate-limited-fetch',()=>({rateLimitedFetch:async()=>{throw Error('no JS download');}}));
+mock.module('./runtime-trace',()=>({recordRuntimeTrace:name=>traces.push(name)}));
+mock.module('@react-native-community/netinfo',()=>({default:{fetch:async()=>({isConnected:true})}}));
+mock.module('./offline-manager',()=>({offlineManager:{init:async()=>{},isAvailable:()=>false,getStatus:()=>null,getMeta:()=>null},offlineFilePath:()=>''}));
+const {decryptToTempFile,SharedKeyCannotOpenError,SharedKeyUpdateRequiredError}=await import('./native-decrypt');
+const {previewLoadErrorMessage}=await import('./preview-load-error');
+const {setSharedKeyResolver,configureSharedKeys}=await import('./shared-folder-keys');
+const {plaintextGate}=await import('./plaintext-gate');
+beforeEach(()=>{nativeCalls=0;keyCalls=0;failure=null;removed.length=0;traces.length=0;plaintextGate.open(); configureSharedKeys({sharedFileKeyIsLoaded:()=>table},{} as any,()=>7);setSharedKeyResolver({ensureLoaded:async()=>new Map([['f','loaded']]),originLabel:async()=>'Family WhatsApp',clear(){}} as any);});
+test('preview_of_a_table_held_file_calls_native_with_the_master_handle_and_no_js_key',async()=>{await decryptToTempFile('f',async()=>{keyCalls++;throw Error('no export');},'pdf',10,1,7);expect(nativeCalls).toBe(1);expect(keyCalls).toBe(0);});
+test('a_header_chunk_size_that_contradicts_the_plan_is_a_clean_failure',async()=>{failure='Chunk metadata exceeds original size';await expect(decryptToTempFile('f',null,'pdf',10,1,7)).rejects.toBeInstanceOf(SharedKeyCannotOpenError);expect(nativeCalls).toBe(1);expect(removed).toContain('file:///cache/preview/f.pdf');expect(traces.filter(t=>t==='preview.decrypt.native.failed')).toHaveLength(1);});
+test('cannot_open_names_the_link_when_known',()=>{expect(previewLoadErrorMessage(new SharedKeyCannotOpenError('Family WhatsApp'))).toBe("Can't open this file (added via Family WhatsApp)");expect(previewLoadErrorMessage(new SharedKeyCannotOpenError(null))).toBe("Can't open this file");});
+test('update_required_when_the_native_surface_is_missing',()=>{expect(previewLoadErrorMessage(new SharedKeyUpdateRequiredError())).toBe('Update Beebeeb to open this file');});
+test('a_bad_wrap_row_offers_delete_and_is_never_adopted',()=>{const src=readFileSync(new URL('../screens/FilesScreen.tsx',import.meta.url),'utf8');expect(src.includes('sharedOutcomeMessage(')).toBe(true);expect(readFileSync(new URL('./preview-load-error.ts',import.meta.url),'utf8')).toContain('return cannotOpenMessage(label)');expect(src).toContain('onDelete={');expect(src).toContain('Move to Trash');});
+test('search_reconcile_indexes_a_guest_file_after_its_key_loads',()=>{const src=readFileSync(new URL('../screens/FilesScreen.tsx',import.meta.url),'utf8');expect(src).toContain('decryptNamesInBackground(');expect(src).toContain('indexFile(node.id');const seam=readFileSync(new URL('./crypto-context.tsx',import.meta.url),'utf8');expect(seam).toContain('resolveSharedNames(items');});
+test('encryption_proof_and_self_repair_skip_table_held_files',()=>{for(const file of ['../components/EncryptionProof.tsx','./thumbnail-self-repair.ts'])expect(readFileSync(new URL(file,import.meta.url),'utf8').includes('sharedFileKeyIsLoaded(file')).toBe(true);});
+test('photos_and_trash_names_resolve_through_decryptMetadata_seam',()=>{const src=readFileSync(new URL('./crypto-context.tsx',import.meta.url),'utf8');expect(src).toContain('retrySharedDecrypt(fileId, () => handleDecryptMetadata');});

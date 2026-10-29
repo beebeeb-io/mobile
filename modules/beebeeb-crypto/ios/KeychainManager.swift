@@ -104,12 +104,235 @@ final class KeychainManager {
 
     // --- Extension SE key (.devicePasscode always — no biometric prompt from extensions) ---
     try storeExtensionWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
+    // Task 1722 (G6/G7): the Files key follows the Files mount, and never
+    // fails this store — the vault key above is already written.
+    syncFileProviderWrappedKey(masterKeyBytes: masterKeyBytes, label: label, allowed: fileProviderKeyAllowed)
     #endif
   }
 
+  // MARK: - Files key lifecycle (task 1722 G1/G6/G7, review round 3)
+
+  /// What `syncFileProviderWrappedKey` did.
+  enum FileProviderKeyOutcome: Equatable {
+    /// Exactly one Files key exists and its blob unwraps to the vault key
+    /// (checked, or written and checked).
+    case ready
+    /// `allowed` said no before anything was written: there is no Files key.
+    case notAllowed
+    /// `allowed` said yes before the write and no after it: the write was undone.
+    case revoked
+    /// The key could not be written, or the keychain could not answer (device
+    /// locked). Nothing half written is left; an existing key is left alone
+    /// when the device is locked.
+    case failed
+  }
+
+  /// What the extension's own lookup would find for a given vault key.
+  enum FileProviderKeyCheck: Equatable {
+    case matches
+    case mismatch
+    /// The keychain cannot answer now (errSecInteractionNotAllowed: locked).
+    case unavailable
+  }
+
+  /// Task 1722 review round 3 (item 5): every Files key write and delete runs
+  /// under this one lock. The writers run on Expo's serial queue (`store`,
+  /// `load`, `setAccessControl`), on Swift Tasks (the foreground resume, a
+  /// Settings toggle-off) and on background threads (a backup's `load`).
+  /// Without it two writers could both miss the key and each generate one, and
+  /// the blob ended up wrapped by a key the extension's lookup does not return:
+  /// a permanent -1000. Held only around synchronous keychain calls, never
+  /// across an `await`.
+  private static let fileProviderKeyLock = NSLock()
+
+  /// The File Provider's own wrapping key + blob (`storeFileProviderWrappedKey`)
+  /// unwraps the vault key on an unlocked, passcode-protected device without
+  /// Face ID or a passcode prompt, because Files has no authentication UI. It
+  /// therefore exists only while the user has Beebeeb mounted in Files (the
+  /// Settings copy: "Anyone who can unlock this iPhone can access the mounted
+  /// Files location") and no sign-out purge is running: the rule `store`,
+  /// `load` and `setAccessControl` pass in. They run on the module queue, as
+  /// the purge does, so the purge generation the foreground resume also checks
+  /// (`resumeFileProviderAuthenticationIfReady`) cannot move during them; a
+  /// backup's `load` off that queue still sees the purge's marker.
+  static func fileProviderKeyAllowed() -> Bool {
+    BeebeebKeychainCore.fileProviderMountConsented() && !PlaintextStorageProtection.isPurgePending()
+  }
+
+  /// Makes the Files key follow `allowed`: no Files key when it says no;
+  /// otherwise exactly one Files key whose blob unwraps to `masterKeyBytes`,
+  /// written only when that is not already so.
+  ///
+  /// Best effort and never throws: a Files key that cannot be created must
+  /// not fail a vault store or unlock (before task 1722 it did, which broke
+  /// unlock or pushed `store` onto the weaker software-key fallback). Files
+  /// then reports "Authentication Required" until a later provisioning works.
+  ///
+  /// Review round 3 (item 4): `allowed` is read under the lock before the
+  /// write and again after it. A Settings toggle-off and a sign-out purge
+  /// turn the consent off first and then delete the key through this lock,
+  /// so each lands before the first read (nothing is written), between the
+  /// reads (the write is undone here) or after this returns (its delete
+  /// removes the key). The callers used to read the consent once, before a
+  /// write that could land after the toggle-off's delete.
+  ///
+  /// Task 1722 round 4 (Q3, own keychain group): the first thing every call
+  /// does, whatever `allowed` says, is delete the round-3 v1 Files key and
+  /// blob from the shared group (`deleteLegacyFileProviderKeyLocked`). So the
+  /// first unlock, store or foreground resume after the upgrade migrates: the
+  /// old key is gone, and a new one is written into `filesAccessGroup` when
+  /// Files is on. No key bytes move between groups; the new key is generated
+  /// in the Files group and wraps the vault key afresh.
+  @discardableResult
+  static func syncFileProviderWrappedKey(
+    masterKeyBytes: Data,
+    label: String,
+    allowed: () -> Bool
+  ) -> FileProviderKeyOutcome {
+    fileProviderKeyLock.lock()
+    defer { fileProviderKeyLock.unlock() }
+    deleteLegacyFileProviderKeyLocked()
+    guard allowed() else {
+      deleteFileProviderKeyLocked()
+      return .notAllowed
+    }
+    let provisioned = provisionFileProviderKeyLocked(masterKeyBytes: masterKeyBytes, label: label)
+    guard allowed() else {
+      deleteFileProviderKeyLocked()
+      RuntimeTrace.event("keychain.manager.files_key.provision_undone")
+      return .revoked
+    }
+    return provisioned ? .ready : .failed
+  }
+
+  /// Under `fileProviderKeyLock`. Leaves exactly one Files key whose blob
+  /// unwraps to `masterKeyBytes`, and writes only when that is not already so.
+  /// Anything else (no key, no blob, a blob for another vault key, a blob
+  /// wrapped by a key the lookup does not return, two keys under the Files
+  /// tag) is replaced from nothing, so the new blob is wrapped by the only key
+  /// the extension's lookup can return. A keychain that cannot answer now
+  /// (locked) is left as it is: a lookup that fails there must not lead to a
+  /// second key.
+  private static func provisionFileProviderKeyLocked(masterKeyBytes: Data, label: String) -> Bool {
+    switch checkFileProviderKey(masterKeyBytes: masterKeyBytes, label: label) {
+    case .matches:
+      return true
+    case .unavailable:
+      RuntimeTrace.event("keychain.manager.files_key.unverifiable")
+      return false
+    case .mismatch:
+      break
+    }
+    deleteFileProviderKeyLocked()
+    do {
+      try storeFileProviderWrappedKey(masterKeyBytes: masterKeyBytes, label: label)
+    } catch {
+      RuntimeTrace.event("keychain.manager.files_key.provision_failed", ["error": String(describing: error)])
+      deleteFileProviderKeyLocked()
+      return false
+    }
+    if checkFileProviderKey(masterKeyBytes: masterKeyBytes, label: label) == .mismatch {
+      RuntimeTrace.event("keychain.manager.files_key.provision_failed", ["error": "written key does not unwrap"])
+      deleteFileProviderKeyLocked()
+      return false
+    }
+    RuntimeTrace.event("keychain.manager.files_key.provisioned")
+    return true
+  }
+
+  /// Review round 3 (item 5): "provisioned" is what the extension will find,
+  /// not whether both keychain items exist. `.matches` only for exactly one
+  /// key under the Files tag whose blob unwraps (the extension's own
+  /// `loadFileProviderMasterKey`) to `masterKeyBytes`. The unwrapped copy is
+  /// compared in constant time and zeroed.
+  private static func checkFileProviderKey(masterKeyBytes: Data, label: String) -> FileProviderKeyCheck {
+    guard let keys = fileProviderKeyCount() else { return .unavailable }
+    guard keys == 1 else { return .mismatch }
+    do {
+      var unwrapped = try BeebeebKeychainCore.loadFileProviderMasterKey(label: label)
+      defer { unwrapped.resetBytes(in: unwrapped.startIndex..<unwrapped.endIndex) }
+      return constantTimeEqual(unwrapped, masterKeyBytes) ? .matches : .mismatch
+    } catch BeebeebKeychainCore.LoadError.fileProviderKeyUnavailable(_, _, let code)
+      where code == Int(errSecInteractionNotAllowed) {
+      return .unavailable
+    } catch {
+      return .mismatch
+    }
+  }
+
+  /// Keys under the Files tag in any of this app's access groups (no group in
+  /// the query: the Files group, the shared group and a legacy group-less key
+  /// all count); nil when the keychain cannot say now (locked). A key in the
+  /// wrong group therefore makes the count wrong or the extension's lookup
+  /// (Files group only) fail, and either way the writer starts again.
+  private static func fileProviderKeyCount() -> Int? {
+    let query: [CFString: Any] = [
+      kSecClass: kSecClassKey,
+      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+      kSecAttrApplicationTag: BeebeebKeychainCore.seKeyTagFiles,
+      kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
+      kSecReturnAttributes: true,
+      kSecMatchLimit: kSecMatchLimitAll,
+    ]
+    var result: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound { return 0 }
+    guard status == errSecSuccess else { return nil }
+    return (result as? [Any])?.count ?? 0
+  }
+
+  private static func constantTimeEqual(_ lhs: Data, _ rhs: Data) -> Bool {
+    guard lhs.count == rhs.count else { return false }
+    var difference: UInt8 = 0
+    for (left, right) in zip(lhs, rhs) { difference |= left ^ right }
+    return difference == 0
+  }
+
+  /// Removes every Files wrapping key (all of them, if a race before round 3
+  /// left two) and its wrapped blob; the vault and share/backup keys are
+  /// untouched. Takes the Files key lock, so it waits for a write in progress
+  /// and removes what that write left.
+  static func deleteFileProviderKey() {
+    fileProviderKeyLock.lock()
+    defer { fileProviderKeyLock.unlock() }
+    deleteFileProviderKeyLocked()
+  }
+
+  /// Under `fileProviderKeyLock`. `SecItemDelete` removes every match.
+  ///
+  /// Task 1722 round 4 (Q3): the Files key and blob are deleted from the
+  /// Files group, from the shared group and then without a group (every group
+  /// this app has), so a copy in the wrong group cannot outlive a toggle-off
+  /// or a sign-out either; the round-3 v1 items go too.
+  private static func deleteFileProviderKeyLocked() {
+    for group in [BeebeebKeychainCore.filesAccessGroup, BeebeebKeychainCore.accessGroup, nil] {
+      deleteSEKey(tag: BeebeebKeychainCore.seKeyTagFiles, accessGroup: group)
+      deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceFiles, accessGroup: group)
+    }
+    deleteLegacyFileProviderKeyLocked()
+  }
+
+  /// Task 1722 round 4 (Q3, migration). Round-3 builds wrote the Files key
+  /// (`legacySeKeyTagFilesV1`) and its blob into the shared group, which the
+  /// Share extension is also entitled to. Deleted from the shared group and
+  /// then without a group (every group this app has). Under
+  /// `fileProviderKeyLock`. Returns whether anything was there.
+  @discardableResult
+  private static func deleteLegacyFileProviderKeyLocked() -> Bool {
+    var removed = false
+    for group in [BeebeebKeychainCore.accessGroup, nil] {
+      if deleteSEKey(tag: BeebeebKeychainCore.legacySeKeyTagFilesV1, accessGroup: group) { removed = true }
+      if deleteWrappedItems(service: BeebeebKeychainCore.legacyWrappedKeyServiceFilesV1, accessGroup: group) { removed = true }
+    }
+    if removed {
+      RuntimeTrace.event("keychain.manager.files_key.legacy_removed")
+    }
+    return removed
+  }
+
   /// Encrypt the master key under the extension SE key and persist alongside
-  /// the primary blob. This is required: the File Provider intentionally never
-  /// falls back to the primary key because it may require Face ID from Files.app.
+  /// the primary blob for existing share/backup consumers. Files uses a
+  /// separate wrapped blob and never falls back to this key or the primary.
   private static func storeExtensionWrappedKey(masterKeyBytes: Data, label: String) throws {
     let extSEKey = try getOrCreateExtensionSEKey()
     guard let extPublicKey = SecKeyCopyPublicKey(extSEKey) else {
@@ -138,6 +361,39 @@ final class KeychainManager {
   }
 
   // MARK: - Load
+
+  /// Files has no authentication UI. Use a dedicated hardware wrapping key
+  /// available only on this unlocked, passcode-equipped device. The shared
+  /// backup/share wrapping key keeps its existing authentication policy.
+  /// Task 1722 round 4 (Q3): the key and the blob go into
+  /// `filesAccessGroup`, which the Share extension does not have.
+  private static func storeFileProviderWrappedKey(masterKeyBytes: Data, label: String) throws {
+    let key = try getOrCreateFileProviderSEKey()
+    guard let publicKey = SecKeyCopyPublicKey(key) else {
+      throw KeychainError.seKeyNotFound
+    }
+    var error: Unmanaged<CFError>?
+    guard let wrapped = SecKeyCreateEncryptedData(publicKey, BeebeebKeychainCore.eciesAlgorithm, masterKeyBytes as CFData, &error) else {
+      _ = error?.takeRetainedValue()
+      throw KeychainError.encryptionFailed
+    }
+    var attributes: [CFString: Any] = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: BeebeebKeychainCore.wrappedKeyServiceFiles,
+      kSecAttrAccount: label,
+      kSecAttrAccessGroup: BeebeebKeychainCore.filesAccessGroup,
+    ]
+    let values: [CFString: Any] = [
+      kSecAttrAccessible: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
+      kSecValueData: wrapped as Data,
+    ]
+    var status = SecItemUpdate(attributes as CFDictionary, values as CFDictionary)
+    if status == errSecItemNotFound {
+      attributes.merge(values) { _, new in new }
+      status = SecItemAdd(attributes as CFDictionary, nil)
+    }
+    guard status == errSecSuccess else { throw KeychainError.writeError(status) }
+  }
 
   /// Decrypt and return the master key. Returns nil if no key is stored.
   /// Triggers biometric/passcode prompt if the SE access control requires it.
@@ -180,7 +436,7 @@ final class KeychainManager {
     let authContext = try authenticateForPrimaryLoad(label: label)
 
     // Main app uses .primaryOnly — biometric/passcode prompt is acceptable
-    // here. Extensions use .extensionOnly / .extensionThenPrimary.
+    // here. Files uses .fileProviderOnly; Share uses .extensionThenPrimary.
     var decryptError: Unmanaged<CFError>?
     guard let plaintextData = BeebeebKeychainCore.loadMasterKey(
       label: label,
@@ -203,6 +459,9 @@ final class KeychainManager {
 
     // Keep the extension-wrapped blob in sync so backup extensions can read.
     try storeExtensionWrappedKey(masterKeyBytes: plaintextData, label: label)
+    // Task 1722 (G1/G6/G7): make the Files key unwrap to this vault key while
+    // Files is mounted, remove it otherwise; never fail the unlock over it.
+    syncFileProviderWrappedKey(masterKeyBytes: plaintextData, label: label, allowed: fileProviderKeyAllowed)
 
     // Idempotent re-store under the access group. If the read came from
     // legacy no-access-group storage, this migrates it forward; if it
@@ -422,6 +681,9 @@ final class KeychainManager {
     // an extension process and can cause repeated system prompts in Files.app.
     for item in plaintexts {
       try storeExtensionWrappedKey(masterKeyBytes: item.data, label: item.account)
+      // Task 1722 (G6/G7): mounted-only and best effort, as in `store`/`load`;
+      // the rule is read under the Files key lock, before and after the write.
+      syncFileProviderWrappedKey(masterKeyBytes: item.data, label: item.account, allowed: fileProviderKeyAllowed)
     }
     RuntimeTrace.event("keychain.manager.set_access_control.success", [
       "requireBiometric": requireBiometric,
@@ -580,11 +842,34 @@ final class KeychainManager {
     return try generateSEKey(tag: BeebeebKeychainCore.seKeyTagExt, flags: [.privateKeyUsage, .devicePasscode])
   }
 
-  /// Generate a Secure Enclave P-256 key with the given tag and access control flags.
-  private static func generateSEKey(tag: Data, flags: SecAccessControlCreateFlags) throws -> SecKey {
+  /// Task 1722 round 4 (Q3): looked up and generated in `filesAccessGroup`
+  /// only. The writer deletes before it stores, so this normally generates.
+  private static func getOrCreateFileProviderSEKey() throws -> SecKey {
+    if let key = BeebeebKeychainCore.findSEKeyReportingStatus(
+      tag: BeebeebKeychainCore.seKeyTagFiles,
+      inAccessGroup: BeebeebKeychainCore.filesAccessGroup
+    ).key {
+      return key
+    }
+    return try generateSEKey(
+      tag: BeebeebKeychainCore.seKeyTagFiles,
+      flags: [.privateKeyUsage],
+      protection: kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
+      accessGroup: BeebeebKeychainCore.filesAccessGroup
+    )
+  }
+
+  /// Generate a Secure Enclave P-256 key with the given tag and access control flags,
+  /// in `accessGroup` (the shared group unless a caller names another one).
+  private static func generateSEKey(
+    tag: Data,
+    flags: SecAccessControlCreateFlags,
+    protection: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+    accessGroup: String? = BeebeebKeychainCore.accessGroup
+  ) throws -> SecKey {
     guard let access = SecAccessControlCreateWithFlags(
       kCFAllocatorDefault,
-      kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+      protection,
       flags,
       nil
     ) else {
@@ -601,7 +886,7 @@ final class KeychainManager {
         kSecAttrAccessControl: access,
       ] as [CFString: Any],
     ]
-    if let group = BeebeebKeychainCore.accessGroup { attributes[kSecAttrAccessGroup] = group }
+    if let group = accessGroup { attributes[kSecAttrAccessGroup] = group }
 
     var cfErr: Unmanaged<CFError>?
     guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &cfErr) else {
@@ -623,6 +908,8 @@ final class KeychainManager {
   private static func deleteSEKey() {
     deleteSEKey(tag: BeebeebKeychainCore.seKeyTag)
     deleteSEKey(tag: BeebeebKeychainCore.seKeyTagExt)
+    // Task 1722 review round 3: through the Files key lock, like every Files key write.
+    deleteFileProviderKey()
   }
 
   private static func deleteSEKey(tag: Data) {
@@ -642,9 +929,26 @@ final class KeychainManager {
     }
   }
 
+  /// Task 1722 round 4 (Q3): deletes every SE key under `tag` in
+  /// `accessGroup`, or, with nil, in every access group this app has.
+  /// Returns whether anything was deleted.
+  @discardableResult
+  private static func deleteSEKey(tag: Data, accessGroup: String?) -> Bool {
+    var query: [CFString: Any] = [
+      kSecClass: kSecClassKey,
+      kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+      kSecAttrApplicationTag: tag,
+      kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
+    ]
+    if let accessGroup { query[kSecAttrAccessGroup] = accessGroup }
+    return SecItemDelete(query as CFDictionary) == errSecSuccess
+  }
+
   private static func deleteWrappedItems() {
     deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyService)
     deleteWrappedItems(service: BeebeebKeychainCore.wrappedKeyServiceExt)
+    // Task 1722 review round 3: the Files key and its blob, through the Files key lock.
+    deleteFileProviderKey()
   }
 
   private static func deleteWrappedItems(service: String) {
@@ -659,6 +963,19 @@ final class KeychainManager {
       query.removeValue(forKey: kSecAttrAccessGroup)
       SecItemDelete(query as CFDictionary)
     }
+  }
+
+  /// Task 1722 round 4 (Q3): deletes every wrapped blob under `service` in
+  /// `accessGroup`, or, with nil, in every access group this app has.
+  /// Returns whether anything was deleted.
+  @discardableResult
+  private static func deleteWrappedItems(service: String, accessGroup: String?) -> Bool {
+    var query: [CFString: Any] = [
+      kSecClass: kSecClassGenericPassword,
+      kSecAttrService: service,
+    ]
+    if let accessGroup { query[kSecAttrAccessGroup] = accessGroup }
+    return SecItemDelete(query as CFDictionary) == errSecSuccess
   }
 
   #if DEBUG && targetEnvironment(simulator)

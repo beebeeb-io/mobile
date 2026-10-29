@@ -584,7 +584,7 @@ function TestScope({ c }: { c: C }) {
     {
       icon: 'shield-checkmark-outline' as const,
       title: 'Local crypto',
-      detail: 'Encrypt and decrypt on this iPhone',
+      detail: 'Encrypt and decrypt on this device',
     },
   ];
 

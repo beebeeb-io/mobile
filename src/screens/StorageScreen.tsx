@@ -1,12 +1,10 @@
 /**
- * Storage & Plan screen — usage breakdown + read-only plan facts.
+ * Storage screen — usage breakdown + the account's state.
  *
- * No purchase or subscription-management call to action lives on this screen
- * (task 1400, App Review 3.1.1(a)): the app has no In-App Purchase product
- * configured, and a button/link to an external purchasing mechanism is not
- * allowed on most storefronts. Plan/price/storage facts are shown as
- * information only, with one line of non-tappable copy telling the user
- * plans are managed from their account on the web — no URL is rendered.
+ * No purchase or subscription-management call to action lives on this screen, and
+ * no hint at one (tasks 1400 and 1821, App Store 3.1.1 / 3.1.3): no price list, no
+ * plan to buy, no "manage it on the web". The account card reads the server's
+ * onboarding document (allowance / trialing / trial_ended / lapsed / active).
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -28,68 +26,46 @@ import { spacing, type Colors } from '../theme';
 import { formatBytes } from '../lib/format';
 import {
   getSubscription,
-  getPlans,
   type StorageUsage,
   type Subscription,
-  type Plan,
 } from '../lib/api';
 import { loadCachedBilling, saveCachedBilling } from '../lib/billing-cache';
-import { billingStatusView } from '../lib/billing-status';
-import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
+import { trialCapNote } from '../lib/billing-status';
+import { effectivePlan, planDisplayName } from '../lib/effective-plan';
+import { accountChip } from '../lib/plan-chip';
+import type { PlanCardView } from '../lib/onboarding/plan-card';
+import { accountGateFor, uploadsBlocked } from '../lib/account-state';
+import { useAccountState } from '../lib/account-state-context';
+import { AccountStatusCard } from '../components/onboarding/AccountStatusCard';
+import { useAuth } from '../lib/auth';
 
 type C = Colors;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-function planLabel(slug: string): string {
-  // Server is migrating personal -> basic and data_hoarder -> business; the
-  // legacy keys map to the new labels so a live response carrying an old slug
-  // still renders correctly.
-  const map: Record<string, string> = {
-    free: 'Free',
-    basic: 'Basic', personal: 'Basic',
-    pro: 'Pro',
-    business: 'Business', data_hoarder: 'Business',
-    team: 'Team',
-  };
-  return map[slug.toLowerCase()] ?? slug;
-}
 
 /**
  * Derive the storage-usage view-model from the subscription payload. The
  * `/billing/subscription` response already embeds `used_bytes` + `quota_bytes`
  * (server `billing.rs` sources both from the same `get_user_quota` that backs
  * `/files/usage`), so this screen no longer needs the separate
- * `getStorageUsage()` round-trip. `plan_name` maps to `subscription.plan` (both
- * are the plan slug). `quota_bytes <= 0` is the unlimited sentinel — preserved
- * here so `StorageUsageCard` renders "no fixed cap" exactly as before.
+ * `getStorageUsage()` round-trip. `plan_name` maps to `effectivePlan(sub)`
+ * (task 1601 — NOT the raw `subscription.plan`: a cancelled paid row still
+ * carries its old `plan` slug with no entitlement behind it, and this label
+ * sits directly next to the quota bar the server already computes from the
+ * entitled plan, so the two must never disagree). `quota_bytes <= 0` is the
+ * unlimited sentinel — preserved here so `StorageUsageCard` renders "no
+ * fixed cap" exactly as before.
  */
 function usageFromSubscription(sub: Subscription | null): StorageUsage | null {
   if (!sub || sub.used_bytes == null || sub.quota_bytes == null) return null;
   return {
     used_bytes: sub.used_bytes,
     plan_limit_bytes: sub.quota_bytes,
-    plan_name: sub.plan,
+    plan_name: effectivePlan(sub),
   };
 }
-
-/** Plans shown as upgrade options — active, excluding free (matches prior filter). */
-function visiblePlans(all: Plan[]): Plan[] {
-  return all.filter((pl) => pl.is_active !== false && pl.id !== 'free');
-}
-
-/**
- * Task 1400 follow-up (lead review on PR #80): a full price list sitting
- * directly under PLAN_MANAGEMENT_NOTE still reads as a call to action to buy
- * elsewhere, even with no button attached — a reviewer can read "here are the
- * prices" + "managed on the web" as directions to a purchase mechanism
- * (3.1.1(a)). For the first submission, hide the plan catalog entirely and
- * show only Storage usage + Current plan + the one sentence. Flip this back
- * to `true` in one place once the EU External Purchase Link entitlement (or
- * real IAP) makes showing prices safe again — no other code changes needed.
- */
-const SHOW_PLAN_CATALOG = false;
 
 // ── Layout ────────────────────────────────────────────────────────────────────
 
@@ -122,11 +98,13 @@ function Divider({ c }: { c: C }) {
 // ── Storage bar ───────────────────────────────────────────────────────────────
 
 function StorageUsageCard({
-  usage, c,
-}: { usage: StorageUsage; c: C }) {
+  usage, readOnly, chip, c,
+}: { usage: StorageUsage; readOnly: boolean; chip: PlanCardView | null; c: C }) {
   // plan_limit_bytes <= 0 is the "no fixed cap" sentinel (e.g. enterprise);
   // never render it as a byte value ("-1 B") and don't show a denominator/%.
-  const hasCap = usage.plan_limit_bytes > 0;
+  // Task 1037: a needs_plan / lapsed account also reports quota 0, but that
+  // means "no uploads", not "no cap". It gets the read-only line instead.
+  const hasCap = !readOnly && usage.plan_limit_bytes > 0;
   const pct = hasCap
     ? Math.min(1, usage.used_bytes / usage.plan_limit_bytes)
     : 0;
@@ -173,125 +151,51 @@ function StorageUsageCard({
           <Text style={{ fontSize: 12, color: isFull ? c.red : c.amberDeep }}>
             {isFull
               ? 'Storage full — uploads are paused'
-              : `${Math.round(pct * 100)}% used — consider upgrading`}
+              : `${Math.round(pct * 100)}% used`}
           </Text>
         </View>
       )}
 
-      {/* Plan label */}
-      <Text style={{ fontSize: 11, color: c.ink3 }}>
-        {planLabel(usage.plan_name)} plan{hasCap ? ` · ${formatBytes(usage.plan_limit_bytes)} total` : ''}
+      {readOnly && (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }} testID="storage-read-only-note">
+          <Ionicons name="lock-closed-outline" size={13} color={c.amberDeep} />
+          <Text style={{ fontSize: 12, color: c.amberDeep }}>Read-only · uploads are off</Text>
+        </View>
+      )}
+
+      {/* Account label: what the account is, never "<x> plan" (task 1821). */}
+      <Text style={{ fontSize: 11, color: c.ink3 }} testID="storage-account-label">
+        {`${chip?.label ?? planDisplayName(usage.plan_name)}${hasCap ? ` · ${formatBytes(usage.plan_limit_bytes)} total` : ''}`}
       </Text>
     </View>
   );
 }
 
-// ── Current plan card ─────────────────────────────────────────────────────────
+// ── Account card ──────────────────────────────────────────────────────────────
 
-function CurrentPlanCard({
-  subscription, usage, c,
-}: {
-  subscription: Subscription | null;
-  usage: StorageUsage | null;
-  c: C;
-}) {
-  const planSlug = subscription?.plan ?? usage?.plan_name ?? 'free';
-  const label = planLabel(planSlug);
-  // Task 1540 findings 1, 2, 4, 6: the plan chip must reflect subscription
-  // status, not just the plan slug — a status='cancelling' or 'trialing'
-  // subscription is NOT "Renews {date}", it lapses to Free on that date.
-  const { badgeKind, statusLine } = billingStatusView({
-    plan: planSlug,
-    status: subscription?.status ?? null,
-    current_period_end: subscription?.current_period_end ?? null,
-    trial_ends_at: subscription?.trial_ends_at ?? null,
-  });
-
+function AccountCard({ chip, c }: { chip: PlanCardView | null; c: C }) {
+  if (!chip) return <Text style={{ padding: 14, fontSize: 13, color: c.ink3 }}>Could not load account status</Text>;
+  const pill = {
+    backgroundColor: c.amberBg, borderColor: c.amber, borderWidth: 1,
+    paddingHorizontal: 8, paddingVertical: 2, borderRadius: 5,
+  } as const;
+  const pillText = { fontSize: 11, fontWeight: '700', color: c.amberDeep, letterSpacing: 0.3 } as const;
   return (
-    <View style={{ padding: 14, gap: 8 }}>
+    <View style={{ padding: 14, gap: 8 }} testID="storage-account-card">
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <View style={{
-          backgroundColor: c.amberBg, borderColor: c.amber, borderWidth: 1,
-          paddingHorizontal: 8, paddingVertical: 2, borderRadius: 5,
-        }}>
-          <Text style={{ fontSize: 11, fontWeight: '700', color: c.amberDeep, letterSpacing: 0.3 }}>
-            {label.toUpperCase()}
-          </Text>
+        <View style={pill}>
+          <Text style={pillText} testID="storage-account-chip">{chip.label.toUpperCase()}</Text>
         </View>
-        {badgeKind && (
-          <View style={{
-            backgroundColor: c.amberBg, borderColor: c.amber, borderWidth: 1,
-            paddingHorizontal: 8, paddingVertical: 2, borderRadius: 5,
-          }}>
-            <Text style={{ fontSize: 11, fontWeight: '700', color: c.amberDeep, letterSpacing: 0.3 }}>
-              {badgeKind === 'trial' ? 'TRIAL' : 'CANCELLING'}
-            </Text>
+        {chip.badge && (
+          <View style={pill}>
+            <Text style={pillText}>{chip.badge}</Text>
           </View>
         )}
-        {statusLine && (
-          <Text style={{ fontSize: 11, color: c.ink3 }}>{statusLine}</Text>
+        {chip.statusLine && (
+          <Text style={{ fontSize: 11, color: c.ink3 }} testID="storage-account-line">{chip.statusLine}</Text>
         )}
       </View>
-
-      {/* No "Manage subscription" call to action here (task 1400) — informational
-          plan facts only. See PLAN_MANAGEMENT_NOTE below the card. */}
-    </View>
-  );
-}
-
-// ── Plan info card (read-only — no purchase CTA, task 1400) ───────────────────
-
-function PlanCard({
-  plan, currentPlanSlug, c,
-}: {
-  plan: Plan;
-  currentPlanSlug: string;
-  c: C;
-}) {
-  const isCurrent = plan.id === currentPlanSlug;
-
-  return (
-    <View style={{
-      borderWidth: 1,
-      borderColor: isCurrent ? c.amber : c.line,
-      borderRadius: 10,
-      backgroundColor: isCurrent ? c.amberBg : c.paper,
-      padding: 14,
-      gap: 8,
-    }}>
-      {/* Header */}
-      <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' }}>
-        <Text style={{ fontSize: 15, fontWeight: '700', color: c.ink }}>{plan.name}</Text>
-        <View style={{ alignItems: 'flex-end' }}>
-          <Text style={{ fontSize: 16, fontWeight: '700', color: c.ink, fontVariant: ['tabular-nums'] }}>
-            {plan.price_eur === 0 ? 'Free' : `€${plan.price_eur.toFixed(2)}/mo`}
-          </Text>
-          {plan.price_yearly_eur > 0 && (
-            <Text style={{ fontSize: 10, color: c.ink3, fontVariant: ['tabular-nums'] }}>
-              €{plan.price_yearly_eur.toFixed(2)}/yr
-            </Text>
-          )}
-        </View>
-      </View>
-
-      {/* Storage label */}
-      <Text style={{ fontSize: 13, color: c.ink2 }}>{plan.storage_label}</Text>
-
-      {/* Top feature */}
-      {plan.features[0] && (
-        <Text style={{ fontSize: 11, color: c.ink3, lineHeight: 15 }} numberOfLines={2}>
-          {plan.features[0]}
-        </Text>
-      )}
-
-      {/* No upgrade/purchase call to action here (task 1400) — plan facts only. */}
-
-      {isCurrent && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-          <Ionicons name="checkmark-circle" size={14} color={c.amber} />
-          <Text style={{ fontSize: 12, color: c.amberDeep, fontWeight: '600' }}>Current plan</Text>
-        </View>
-      )}
+      {/* Task 1821: state only. No "Manage subscription", no "managed on the web" hint. */}
     </View>
   );
 }
@@ -302,17 +206,29 @@ export default function StorageScreen() {
   const { colors: c } = useTheme();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  // Task 1601, root cause 4 — the billing cache is keyed by this. `null`
+  // (never actually reachable — this screen is only navigable to while
+  // signed in) makes both loadCachedBilling/saveCachedBilling no-ops rather
+  // than reading/writing an unscoped, cross-account-leakable entry.
+  const { user } = useAuth();
+  const userId = user?.user_id ?? null;
   // 1315 — measured floating-header height feeding the scroll inset.
   const [headerHeight, setHeaderHeight] = useState(0);
   const [isScrolled, setIsScrolled] = useState(false);
 
   const [subscription, setSubscription] = useState<Subscription | null>(null);
-  const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
+  // Task 1746: the account-stage onboarding document, as status text (no purchase UI).
+  const { document: accountDocument, gate: accountGate } = useAccountState();
 
   // Storage usage is derived from the subscription payload (used_bytes +
   // quota_bytes are embedded there), so there is no separate usage round-trip.
   const usage = usageFromSubscription(subscription);
+  // Task 1037/1605: needs_plan / lapsed / a never-paid trial cancelled
+  // before its first charge. Missing account_state (older server) is ok.
+  const readOnly = accountDocument ? uploadsBlocked(accountGate) : uploadsBlocked(accountGateFor(subscription));
+  // Task 1605 — informational only, no purchase CTA (task 1400).
+  const trialCapMessage = trialCapNote(subscription, formatBytes);
 
   useEffect(() => {
     let cancelled = false;
@@ -321,45 +237,40 @@ export default function StorageScreen() {
       // 1. Instant paint: render last-known billing values from cache so a warm
       //    open shows content immediately instead of a spinner. (Briefly stale —
       //    confirmed by the network refresh below.)
-      const cached = await loadCachedBilling();
+      const cached = await loadCachedBilling(userId);
       if (cancelled) return;
       if (cached) {
         setSubscription(cached.subscription);
-        setPlans(visiblePlans(cached.plans));
         setLoading(false);
       }
 
-      // 2. Revalidate in the background. Billing + plans now sit in their own
-      //    zero-spacing rate-limit bucket, so these two run in parallel.
-      const [sub, freshPlans] = await Promise.all([
-        getSubscription().catch(() => null),
-        getPlans().catch(() => [] as Plan[]),
-      ]);
+      // 2. Revalidate in the background. (Task 1821: the plan catalog is no
+      //    longer fetched; the screen shows no prices.)
+      const sub = await getSubscription().catch(() => null);
       if (cancelled) return;
 
       if (sub) setSubscription(sub);
-      if (freshPlans.length > 0) setPlans(visiblePlans(freshPlans));
 
       // 3. Re-persist the freshest known-good snapshot. Don't clobber a good
-      //    warm cache with an all-empty error result (sub null + no plans).
-      if (sub || freshPlans.length > 0) {
-        void saveCachedBilling(
-          sub ?? cached?.subscription ?? null,
-          freshPlans.length > 0 ? freshPlans : cached?.plans ?? [],
-        );
-      }
+      //    warm cache with an error result.
+      if (sub) void saveCachedBilling(sub, [], userId);
 
       // Cold first-ever open (no cache) ends its spinner here.
       setLoading(false);
     })();
 
     return () => { cancelled = true; };
-  }, []);
+    // `userId` included: if this screen were ever to stay mounted across a
+    // sign-out/sign-in (it doesn't today — navigation unmounts it), a stale
+    // closure over the PREVIOUS user's id must not go on reading/writing
+    // that user's cache entry under the new session.
+  }, [userId]);
 
-  const currentPlanSlug = subscription?.plan ?? usage?.plan_name ?? 'free';
-  const isFree = currentPlanSlug.toLowerCase() === 'free';
-  // Task 1400: no purchase/manage call to action lives in this screen — see
-  // the file header comment and PLAN_MANAGEMENT_NOTE.
+  // Task 1821: the account chip reads the onboarding document's state, so a trial
+  // that ended is never "TRIAL" and an account with no plan is never "No plan plan".
+  // Task 1601: without a document it falls back to the ENTITLED plan, not the raw row.
+  const chip = accountChip({ doc: accountDocument, subscription, fallbackPlanSlug: usage?.plan_name ?? null });
+  // Task 1400 / 1821: no purchase or manage call to action lives in this screen.
 
   return (
     <View style={[layout.root, { backgroundColor: c.paper }]}>
@@ -392,7 +303,7 @@ export default function StorageScreen() {
           <Text style={{ fontSize: 16, color: c.amber, marginLeft: 2 }}>Settings</Text>
         </TouchableOpacity>
         <Text style={{ fontSize: 22, fontWeight: '700', color: c.ink, marginTop: 4 }}>
-          Storage & Plan
+          Storage
         </Text>
       </View>
 
@@ -416,65 +327,37 @@ export default function StorageScreen() {
             <SectionHeader title="Storage usage" c={c} />
             <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
               {usage
-                ? <StorageUsageCard usage={usage} c={c} />
+                ? <StorageUsageCard usage={usage} readOnly={readOnly} chip={chip} c={c} />
                 : <Text style={{ padding: 14, fontSize: 13, color: c.ink3 }}>Could not load storage info</Text>
               }
             </View>
           </View>
 
-          {/* Current plan */}
+          {/* Task 1746: the account's state in words, from the server's onboarding
+              document. Status only: nothing here is tappable (task 1400). */}
+          {accountDocument ? (
+            <View style={layout.section} testID="storage-account-status">
+              <SectionHeader title="Account status" c={c} />
+              <AccountStatusCard doc={accountDocument} />
+            </View>
+          ) : null}
+
+          {/* Account */}
           <View style={layout.section}>
-            <SectionHeader title="Current plan" c={c} />
+            <SectionHeader title="Account" c={c} />
             <View style={[layout.card, { backgroundColor: c.paper, borderColor: c.line }]}>
-              <CurrentPlanCard
-                subscription={subscription}
-                usage={usage}
-                c={c}
-              />
+              <AccountCard chip={chip} c={c} />
             </View>
-            <Text
-              style={[layout.noteText, { color: c.ink3 }]}
-              testID="storage-plan-management-note"
-            >
-              {PLAN_MANAGEMENT_NOTE}
-            </Text>
+            {/* Task 1605 / 1821: the trial storage cap, as a fact. No action, no hint of one. */}
+            {trialCapMessage && (
+              <Text
+                style={[layout.noteText, { color: c.amberDeep }]}
+                testID="storage-trial-cap-note"
+              >
+                {trialCapMessage}
+              </Text>
+            )}
           </View>
-
-          {/* Available plans — informational only, shown for free users or when
-              plans are available. No purchase/upgrade call to action (task 1400).
-              Gated off entirely behind SHOW_PLAN_CATALOG for the first submission
-              (lead review on PR #80): a price list directly under
-              PLAN_MANAGEMENT_NOTE still reads as directions to buy elsewhere. */}
-          {SHOW_PLAN_CATALOG && plans.length > 0 && (
-            <View style={layout.section}>
-              <SectionHeader title={isFree ? 'Plans' : 'Available plans'} c={c} />
-              <View style={{ gap: 8 }}>
-                {plans.map(plan => (
-                  <PlanCard
-                    key={plan.id}
-                    plan={plan}
-                    currentPlanSlug={currentPlanSlug}
-                    c={c}
-                  />
-                ))}
-              </View>
-              <Text style={[layout.noteText, { color: c.ink3, marginTop: 8 }]}>
-                Prices in EUR. Annual billing includes a discount.
-              </Text>
-            </View>
-          )}
-
-          {/* Note when no plans loaded — informational text, not a call to action.
-              Also gated: with the catalog hidden, PLAN_MANAGEMENT_NOTE already
-              shown once under Current plan is enough; a second copy here would
-              be a redundant duplicate. */}
-          {SHOW_PLAN_CATALOG && plans.length === 0 && isFree && (
-            <View style={layout.section}>
-              <Text style={[layout.noteText, { color: c.ink3 }]}>
-                {PLAN_MANAGEMENT_NOTE}
-              </Text>
-            </View>
-          )}
         </ScrollView>
       )}
     </View>

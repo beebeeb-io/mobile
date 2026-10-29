@@ -1,0 +1,7 @@
+# Fetched by ./fetch-raw.sh — too large (>5MB) to commit. sample.nef and
+# sample.dng are committed directly (both under 5MB) and are NOT covered by
+# this ignore rule.
+sample.cr2
+sample.cr3
+sample.arw
+sample.raf

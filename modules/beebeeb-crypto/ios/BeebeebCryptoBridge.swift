@@ -34,13 +34,28 @@ enum BeebeebCryptoBridge {
     // unlocked JS master-key handles are released, such as app lock or sign-out.
 
     private static var cachedMasterKey: MasterKeyHandle?
+    /// Task 1599 followup 3: the user id the cached handle was CONFIRMED to
+    /// belong to, if any. `nil` means "cached, but no JS-verified owner" —
+    /// e.g. `loadMasterKey()`'s own raw-Keychain-read branches below, which
+    /// have no account context to attest. Only `confirmMasterKeyHandle`
+    /// (`BeebeebCryptoModule.swift`, after crypto-context.tsx's ownership
+    /// verdict) and `NativeBackupEngine.start()` (using its OWN persisted,
+    /// previously-JS-confirmed `currentAccountId` — see that call site's
+    /// comment) pass a non-nil `ownerId`. A reader that needs to trust the
+    /// owner (`NativeBackupEngine`'s background-task cache adoption) must
+    /// treat `nil` as "unconfirmed", never as "any account".
+    private static var cachedOwnerId: String?
     private static let masterKeyCacheLock = NSLock()
 
-    static func setCachedMasterKey(_ handle: MasterKeyHandle?) {
+    static func setCachedMasterKey(_ handle: MasterKeyHandle?, ownerId: String? = nil) {
         masterKeyCacheLock.lock()
         cachedMasterKey = handle
+        // A nil handle (a clear) can never carry a stale owner forward; and a
+        // handle set WITHOUT an explicit owner (the default) must not keep
+        // whatever owner a PREVIOUS handle in this same cache slot had.
+        cachedOwnerId = handle == nil ? nil : ownerId
         masterKeyCacheLock.unlock()
-        RuntimeTrace.event("native_master_key_cache.set", ["hasHandle": handle != nil])
+        RuntimeTrace.event("native_master_key_cache.set", ["hasHandle": handle != nil, "hasOwner": ownerId != nil])
     }
 
     static func hasCachedMasterKey() -> Bool {
@@ -60,9 +75,52 @@ enum BeebeebCryptoBridge {
         return cached
     }
 
+    /// The confirmed owner of the currently-cached handle, or `nil` when
+    /// there is none (no cached handle, or one cached without an attested
+    /// owner — see `cachedOwnerId`'s doc comment above).
+    static func cachedMasterKeyOwnerId() -> String? {
+        masterKeyCacheLock.lock()
+        let owner = cachedOwnerId
+        masterKeyCacheLock.unlock()
+        return owner
+    }
+
+    /// One locked handle+owner pair from the SAME cache generation.
+    ///
+    /// Task 1599 followups round 2 review (P1): `cachedMasterKeyIfAvailable()`
+    /// and `cachedMasterKeyOwnerId()` each take and release
+    /// `masterKeyCacheLock` independently. A caller that reads them as two
+    /// separate calls (as the background-task cache adoption in
+    /// `NativeBackupEngine.swift` used to) can observe the HANDLE from one
+    /// cache generation and the OWNER from a later one if `setCachedMasterKey`/
+    /// `clearCachedMasterKey` runs on another thread in between — e.g. a
+    /// foreground `start()`/`confirmMasterKeyHandle` call lands right between
+    /// the two reads. If the newer owner happens to match the caller's
+    /// `accountId`, `CachedKeyOwnership.mayAdopt` would then approve pairing a
+    /// FOREIGN, stale handle with a currently-valid owner id — exactly the
+    /// wrong-key-adoption bug this whole cache-owner mechanism exists to
+    /// prevent. Every caller that needs both values together MUST use this
+    /// snapshot, never the two accessors above in sequence.
+    struct CachedMasterKeySnapshot {
+        let handle: MasterKeyHandle?
+        let ownerId: String?
+    }
+
+    static func cachedMasterKeySnapshot() -> CachedMasterKeySnapshot {
+        masterKeyCacheLock.lock()
+        let handle = cachedMasterKey
+        let owner = cachedOwnerId
+        masterKeyCacheLock.unlock()
+        if handle != nil {
+            RuntimeTrace.event("native_master_key_cache.hit")
+        }
+        return CachedMasterKeySnapshot(handle: handle, ownerId: owner)
+    }
+
     static func clearCachedMasterKey() {
         masterKeyCacheLock.lock()
         cachedMasterKey = nil
+        cachedOwnerId = nil
         masterKeyCacheLock.unlock()
         RuntimeTrace.event("native_master_key_cache.clear")
     }
@@ -79,6 +137,27 @@ enum BeebeebCryptoBridge {
     }
 
     // MARK: - Master key
+
+    /// Task 1667 round 12 (review of mobile#182, item 8): `loadMasterKey()`'s
+    /// keychain read WITHOUT touching the in-process cache. The camera-roll
+    /// engine reads the key outside its lifecycle lock (this can show a
+    /// Face ID / passcode prompt) and caches it, with its verified owner, only
+    /// once it re-validated the start under the lock. `loadMasterKey()` would
+    /// cache it here with no owner, and a start that then did not use it (the
+    /// account changed, a stop came first) would leave an unowned cached
+    /// handle that every later start refuses until the next JS sign-in.
+    static func loadMasterKeyUncached() throws -> MasterKeyHandle? {
+        RuntimeTrace.event("native_master_key_cache.uncached_load", ["promptMayAppear": true])
+        if let bytes = try KeychainManager.load(label: kMasterKeyLabel) {
+            return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+        }
+        #if targetEnvironment(simulator)
+        if let bytes = loadSimulatorFallbackMasterKey() {
+            return try MasterKeyHandle.fromKeychainBytes(bytes: bytes)
+        }
+        #endif
+        return nil
+    }
 
     /// Decrypt the wrapped master key from the Secure Enclave-backed keychain
     /// and reconstruct a `MasterKeyHandle`. Returns `nil` if no key is stored.

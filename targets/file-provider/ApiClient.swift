@@ -10,12 +10,12 @@ final class ApiClient {
 
   private let session: URLSession
 
-  private init() {
+  init(session: URLSession? = nil) {
     let cfg = URLSessionConfiguration.default
     cfg.timeoutIntervalForRequest = 60
     cfg.timeoutIntervalForResource = 600
     cfg.httpMaximumConnectionsPerHost = 4
-    self.session = URLSession(configuration: cfg)
+    self.session = session ?? URLSession(configuration: cfg)
     // App Group UserDefaults handle is no longer needed — session token
     // and baseUrl moved to the shared Keychain (task 0447).
   }
@@ -57,6 +57,7 @@ final class ApiClient {
 
   struct ListResponse: Decodable {
     let files: [FileEntryDto]
+    let next_cursor: String?
   }
 
   struct UploadResponseDto: Decodable {
@@ -79,27 +80,52 @@ final class ApiClient {
 
   /// List the children of `parentId`. Pass `nil` for the root.
   func listFiles(parentId: String?) async throws -> [FileEntryDto] {
-    var components = URLComponents(url: baseUrl.appendingPathComponent("/api/v1/files"), resolvingAgainstBaseURL: false)!
-    if let parentId {
-      components.queryItems = [URLQueryItem(name: "parent_id", value: parentId)]
-    }
-    let request = try authedRequest(url: components.url!, method: "GET")
-    let (data, response) = try await session.data(for: request)
-    try validate(response)
-    return try JSONDecoder().decode(ListResponse.self, from: data).files
+    var entries: [FileEntryDto] = []
+    var cursor: String?
+    var seenCursors = Set<String>()
+    repeat {
+      try Task.checkCancellation()
+      var components = URLComponents(url: baseUrl.appendingPathComponent("/api/v1/files"), resolvingAgainstBaseURL: false)!
+      var query: [URLQueryItem] = []
+      if let parentId { query.append(URLQueryItem(name: "parent_id", value: parentId)) }
+      if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+      components.queryItems = query.isEmpty ? nil : query
+      let request = try authedRequest(url: components.url!, method: "GET")
+      let (data, response) = try await session.data(for: request)
+      try validate(response, data)
+      let page = try JSONDecoder().decode(ListResponse.self, from: data)
+      entries.append(contentsOf: page.files)
+      cursor = page.next_cursor
+      if let cursor, !seenCursors.insert(cursor).inserted {
+        // Never publish a partial listing to replaceChildren's prune.
+        throw ApiError.invalidResponse
+      }
+    } while cursor != nil
+    return entries
   }
 
-  /// Download the encrypted chunk stream for a file.
+  /// Download the encrypted chunk stream for a file into a temporary file.
+  ///
+  /// Task 1722 (G5): the ciphertext goes to disk, not into one `Data`, so a
+  /// large file (the 59.8 MB DNG) never needs its full size in memory; the
+  /// caller decrypts it chunk by chunk. The file holds ciphertext only and
+  /// the caller deletes it (`DownloadedEncryptedFile.url`) when done.
   func downloadEncrypted(fileId: String) async throws -> DownloadedEncryptedFile {
     let url = baseUrl.appendingPathComponent("/api/v1/files/\(fileId)/download")
     let request = try authedRequest(url: url, method: "GET")
-    let (data, response) = try await session.data(for: request)
-    try validate(response)
-    let http = response as? HTTPURLResponse
-    let chunkCount = Int(http?.value(forHTTPHeaderField: "X-Chunk-Count") ?? "1") ?? 1
-    let chunkSize = Int(http?.value(forHTTPHeaderField: "X-Chunk-Size") ?? "") ?? defaultPlaintextChunkSize
+    let (location, response) = try await session.download(for: request)
+    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+      // An error body is a small JSON document; read it for the 409
+      // account-mismatch check, then drop the file.
+      let body = (try? Data(contentsOf: location)) ?? Data()
+      try? FileManager.default.removeItem(at: location)
+      try validate(response, body)
+      throw ApiError.invalidResponse
+    }
+    let chunkCount = Int(http.value(forHTTPHeaderField: "X-Chunk-Count") ?? "1") ?? 1
+    let chunkSize = Int(http.value(forHTTPHeaderField: "X-Chunk-Size") ?? "") ?? defaultPlaintextChunkSize
     return DownloadedEncryptedFile(
-      data: data,
+      url: location,
       chunkCount: max(1, chunkCount),
       chunkSize: max(1, chunkSize)
     )
@@ -122,11 +148,13 @@ final class ApiClient {
     parentId: String?,
     isMedia: Bool,
     chunkSizeBytes: Int,
-    chunkCount: Int
+    chunkCount: Int,
+    expectedUser: String?
   ) async throws -> UploadV2InitResponse {
     var request = try authedRequest(
       url: baseUrl.appendingPathComponent("/api/v1/uploads/init"),
-      method: "POST"
+      method: "POST",
+      expectedUser: expectedUser
     )
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
@@ -144,40 +172,40 @@ final class ApiClient {
     request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
     let (data, response) = try await session.data(for: request)
-    try validate(response)
+    try validate(response, data)
     return try JSONDecoder().decode(UploadV2InitResponse.self, from: data)
   }
 
   /// Upload one encrypted chunk for a v2 session. Body is raw
   /// `nonce || ciphertext || tag` bytes (12 + N + 16 for AES-256-GCM).
-  func uploadChunkV2(uploadSessionId: String, index: Int, encryptedChunk: Data) async throws {
+  func uploadChunkV2(uploadSessionId: String, index: Int, encryptedChunk: Data, expectedUser: String?) async throws {
     let url = baseUrl.appendingPathComponent("/api/v1/uploads/\(uploadSessionId)/chunks/\(index)")
-    var request = try authedRequest(url: url, method: "PUT")
+    var request = try authedRequest(url: url, method: "PUT", expectedUser: expectedUser)
     request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
     request.httpBody = encryptedChunk
 
-    let (_, response) = try await session.data(for: request)
-    try validate(response)
+    let (data, response) = try await session.data(for: request)
+    try validate(response, data)
   }
 
   /// Finalize a v2 chunked upload. Server verifies all chunks are present,
   /// updates the file row, and returns the canonical file metadata.
-  func completeUploadV2(uploadSessionId: String) async throws -> UploadResponseDto {
+  func completeUploadV2(uploadSessionId: String, expectedUser: String?) async throws -> UploadResponseDto {
     let url = baseUrl.appendingPathComponent("/api/v1/uploads/\(uploadSessionId)/complete")
-    var request = try authedRequest(url: url, method: "POST")
+    var request = try authedRequest(url: url, method: "POST", expectedUser: expectedUser)
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.httpBody = Data("{}".utf8)
 
     let (data, response) = try await session.data(for: request)
-    try validate(response)
+    try validate(response, data)
     return try JSONDecoder().decode(UploadResponseDto.self, from: data)
   }
 
   /// Patch encrypted metadata for a file. The server route accepts rename and
   /// move in the same request, which matches iOS Files edit semantics.
-  func patchFile(fileId: String, nameEncrypted: String? = nil, parentId: String? = nil) async throws -> FileEntryDto {
+  func patchFile(fileId: String, nameEncrypted: String? = nil, parentId: String? = nil, expectedUser: String?) async throws -> FileEntryDto {
     let url = baseUrl.appendingPathComponent("/api/v1/files/\(fileId)")
-    var request = try authedRequest(url: url, method: "PATCH")
+    var request = try authedRequest(url: url, method: "PATCH", expectedUser: expectedUser)
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
     var body: [String: Any] = [:]
@@ -190,34 +218,60 @@ final class ApiClient {
     request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
     let (data, response) = try await session.data(for: request)
-    try validate(response)
+    try validate(response, data)
     return try JSONDecoder().decode(FileEntryDto.self, from: data)
   }
 
   /// Soft-delete (trash) a file.
-  func deleteFile(fileId: String) async throws {
+  func deleteFile(fileId: String, expectedUser: String?) async throws {
     let request = try authedRequest(
       url: baseUrl.appendingPathComponent("/api/v1/files/\(fileId)"),
-      method: "DELETE"
+      method: "DELETE",
+      expectedUser: expectedUser
     )
-    let (_, response) = try await session.data(for: request)
-    try validate(response)
+    let (data, response) = try await session.data(for: request)
+    try validate(response, data)
   }
 
   // MARK: - Helpers
 
-  private func authedRequest(url: URL, method: String) throws -> URLRequest {
+  /// Task 1594 round 4 (Codex P1, FileProviderExtension.swift:73): `expectedUser`
+  /// carries the CACHED master key's proven owner (`CryptoBridge.currentKeyOwner()`
+  /// / `FileProviderExtension.masterKey()`) onto every MUTATING request, exactly
+  /// like the main app's `X-Beebeeb-Expected-User` (`expected-user.ts`). Even
+  /// with the round-3 (T4) cache-identity fix, an account switch can still land
+  /// between `masterKey()` returning A's handle and this request actually
+  /// reaching the network — `authedRequest`'s own session-token read is
+  /// independent and always current. The header lets the SERVER (which knows
+  /// the session's real account) refuse with 409 `account_mismatch` when the
+  /// two disagree, closing that window server-side rather than trusting the
+  /// extension process to never race itself. `nil` (no verified owner yet, or
+  /// a read-only request) omits the header — unchanged, pre-1594 behaviour.
+  private func authedRequest(url: URL, method: String, expectedUser: String? = nil) throws -> URLRequest {
     guard let token = sessionToken else { throw ApiError.notAuthenticated }
     var request = URLRequest(url: url)
     ProvenanceHeaders.apply(to: &request)
     request.httpMethod = method
     request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    if let expectedUser, !expectedUser.isEmpty {
+      request.setValue(expectedUser, forHTTPHeaderField: "X-Beebeeb-Expected-User")
+    }
     return request
   }
 
-  private func validate(_ response: URLResponse) throws {
+  private func validate(_ response: URLResponse, _ data: Data) throws {
     guard let http = response as? HTTPURLResponse else { throw ApiError.invalidResponse }
     if http.statusCode == 401 { throw ApiError.notAuthenticated }
+    if http.statusCode == 409, AccountMismatchDetection.isAccountMismatch(data) {
+      // Server-side auth.rs `check_expected_user` (task 1554): the session's
+      // real account doesn't match the `X-Beebeeb-Expected-User` we sent —
+      // the extension's cached key belongs to a DIFFERENT account than the
+      // one the request actually authenticated as. Never fall through to the
+      // generic `.statusCode(409)` branch for this — the caller must treat it
+      // as a clean, non-retryable ownership failure (`mapError`), not a
+      // transient conflict worth retrying with the same stale key.
+      throw ApiError.accountMismatch
+    }
     if !(200..<300).contains(http.statusCode) {
       throw ApiError.statusCode(http.statusCode)
     }
@@ -229,10 +283,15 @@ enum ApiError: Error {
   case notAuthenticated
   case invalidResponse
   case statusCode(Int)
+  /// Task 1594 round 4: 409 `account_mismatch` — the session's account
+  /// doesn't match the `X-Beebeeb-Expected-User` header this request sent.
+  case accountMismatch
 }
 
 struct DownloadedEncryptedFile {
-  let data: Data
+  /// `nonce || ciphertext || tag` frames on disk (task 1722 G5). Ciphertext
+  /// only; whoever downloaded it deletes it.
+  let url: URL
   let chunkCount: Int
   let chunkSize: Int
 }

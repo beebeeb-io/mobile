@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": ">= 18.0.1",
-    "appVersionSource": "remote"
+    "appVersionSource": "local"
   },
   "build": {
     "development": {
@@ -21,7 +21,7 @@
       }
     },
     "production": {
-      "autoIncrement": true,
+      "autoIncrement": false,
       "env": {
         "EXPO_PUBLIC_API_URL": "https://api.beebeeb.io"
       },
@@ -40,6 +40,13 @@
         "EXPO_PUBLIC_API_URL": "http://localhost:3001",
         "EXPO_NO_OTA_UPDATES": "1",
         "EXPO_PUBLIC_BEEBEEB_RUNTIME_TRACE": "1"
+      }
+    },
+    "production-local": {
+      "extends": "production",
+      "credentialsSource": "local",
+      "android": {
+        "buildType": "app-bundle"
       }
     }
   },

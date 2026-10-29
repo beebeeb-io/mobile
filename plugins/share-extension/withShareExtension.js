@@ -16,12 +16,42 @@ const APP_GROUP = 'group.io.beebeeb.shared';
 // entitlements file without keychain-access-groups, silently wiping the
 // 0433 fix and breaking `SharedKeychain.loadMasterKey()` on every fresh build.)
 const KEYCHAIN_ACCESS_GROUP = '$(AppIdentifierPrefix)io.beebeeb.shared';
+// Task 1722 round 4 (Guus 2026-10-15, Q3): the Files key's own keychain group
+// (`$(AppIdentifierPrefix)io.beebeeb.files`) is deliberately NOT listed here:
+// only the main app and the File Provider extension may use that key.
+
+/** The extension's entitlements file, as `expo prebuild` writes it. */
+function extensionEntitlementsPlist() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>${APP_GROUP}</string>
+  </array>
+  <key>keychain-access-groups</key>
+  <array>
+    <string>${KEYCHAIN_ACCESS_GROUP}</string>
+  </array>
+</dict>
+</plist>`;
+}
 const PRINCIPAL_CLASS = 'ShareViewController';
 
 const SOURCE_FILES = [
   'ShareViewController.swift',
-  'BeebeebCryptoShim.swift',
   'ShareUploader.swift',
+  // Task 1594 round 5: the pure X-Beebeeb-Expected-User / 409 account_mismatch
+  // decisions `ShareUploader.swift` calls, extracted so they're testable via
+  // a standalone `swiftc` compile (see targets/share-extension/CLAUDE.md /
+  // the file's own doc comment). References `AccountMismatchDetection`
+  // (below, in CRYPTO_SHARED_FILES) — must stay wired into the SAME target.
+  'ShareUploadRequestPolicy.swift',
+  // Task 1671 round 2: the pure, Foundation-only recent-folders logic (ids-only
+  // persistence, resolve against the fetched list). Unit-tested by
+  // scripts/swift-tests/share-recent-folders-test.swift.
+  'ShareRecentFolders.swift',
   // Share-extension's keychain reader is the canonical `BeebeebKeychainCore`
   // (task 0436); the file at `targets/share-extension/BeebeebKeychainCore.swift`
   // is a symlink to `modules/beebeeb-crypto/ios/Shared/BeebeebKeychainCore.swift`,
@@ -44,6 +74,13 @@ const SOURCE_FILES = [
 // silently drops.
 const CRYPTO_SHARED_FILES = [
   { path: '../modules/beebeeb-crypto/ios/ProvenanceHeaders.swift', name: 'ProvenanceHeaders.swift' },
+  // Task 1594 round 5: `AccountMismatchDetection.swift` is the File Provider
+  // extension's canonical copy (`targets/file-provider/`, task 1594 round 4)
+  // — pure Foundation-only 409-body parsing, referenced directly here (same
+  // pattern as ProvenanceHeaders.swift above) rather than duplicated, so
+  // `ShareUploadRequestPolicy.swift`'s `isAccountMismatchResponse` can call
+  // the exact same, already-tested detection.
+  { path: '../targets/file-provider/AccountMismatchDetection.swift', name: 'AccountMismatchDetection.swift' },
 ];
 
 function withShareExtension(config) {
@@ -63,24 +100,17 @@ function withShareExtension(config) {
     const iosDir = config.modRequest.platformProjectRoot;
     const extDir = path.join(iosDir, targetName);
     // Source files live in targets/share-extension/ (source of truth)
-    // with fallback to plugins/share-extension/ for ShareViewController.swift
     const srcDir = path.resolve(projectRoot, 'targets/share-extension');
-    const pluginSrcDir = path.resolve(projectRoot, 'plugins/share-extension');
 
     if (!fs.existsSync(extDir)) {
       fs.mkdirSync(extDir, { recursive: true });
     }
 
     for (const file of SOURCE_FILES) {
-      // Check targets/share-extension/ first, then plugins/share-extension/
-      let src = path.join(srcDir, file);
-      if (!fs.existsSync(src)) {
-        src = path.join(pluginSrcDir, file);
-      }
+      const src = path.join(srcDir, file);
       const dst = path.join(extDir, file);
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, dst);
-      }
+      // Missing canonical source is an error, never a reason to use old code.
+      fs.copyFileSync(src, dst);
     }
 
     // Activation rule: accept images, movies, file URLs, web URLs, text,
@@ -135,21 +165,7 @@ function withShareExtension(config) {
 </plist>`;
     fs.writeFileSync(path.join(extDir, 'Info.plist'), infoPlist);
 
-    const entitlements = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>com.apple.security.application-groups</key>
-  <array>
-    <string>${APP_GROUP}</string>
-  </array>
-  <key>keychain-access-groups</key>
-  <array>
-    <string>${KEYCHAIN_ACCESS_GROUP}</string>
-  </array>
-</dict>
-</plist>`;
-    fs.writeFileSync(path.join(extDir, `${targetName}.entitlements`), entitlements);
+    fs.writeFileSync(path.join(extDir, `${targetName}.entitlements`), extensionEntitlementsPlist());
 
     // Skip the Xcode-target stitching if it's already wired up (e.g. on a
     // subsequent prebuild). The full target wire-up below is best-effort:
@@ -179,5 +195,12 @@ function withShareExtension(config) {
 
   return config;
 }
+
+// Task 1594 round 5: exported the same way withFileProvider.js exports its
+// own SOURCE_FILES, so src/lib/share-extension-plugin-sources.test.ts can
+// diff this list against the real files on disk.
+withShareExtension.SOURCE_FILES = SOURCE_FILES;
+// Task 1722 round 4: exported for src/lib/file-provider-key-access-group.test.ts.
+withShareExtension.extensionEntitlementsPlist = extensionEntitlementsPlist;
 
 module.exports = withShareExtension;

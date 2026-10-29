@@ -1,0 +1,18 @@
+// Task 2033 (TestFlight 240 launch crash): the camera-roll manifest
+// (`Documents/SQLite/beebeeb-backup.db`) runs on ONE SQLite copy per process,
+// expo-sqlite's. The JS layer (`BackupDatabase.ts`, expo-sqlite) and the
+// native engine (`BackupManifestHandle`, `BackupManifestStore`,
+// `ManifestWriteFence`, `NativeBackupEngine`) both bind `exsqlite3_*`, the
+// symbols ExpoSQLite's static library compiles from this exact header's
+// amalgamation. Never `import SQLite3` in those files: in the app that import
+// binds the vanilla `sqlite3_*` the Rust core's static library exports (a
+// second copy; its first open truncated the -shm under expo's mapping and
+// the two copies never saw each other's locks).
+//
+// Wired by BeebeebCrypto.podspec (SWIFT_INCLUDE_PATHS) and by
+// scripts/swift-ci/run-swift-tests.sh (`-I`), the same module map in both.
+// Guarded by src/lib/manifest-single-sqlite-copy.guard.test.ts.
+module ManifestSQLite [system] {
+  header "../../../../node_modules/expo-sqlite/vendor/sqlite3/sqlite3.h"
+  export *
+}

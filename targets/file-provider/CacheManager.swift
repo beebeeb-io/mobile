@@ -34,6 +34,38 @@ final class CacheManager {
       return
     }
     self.db = handle
+    // Task 1593 round 7 (C2) — `SQLITE_OPEN_CREATE` above means an
+    // extension launched before the main app has ever run (or after
+    // `clearFileProviderCacheState` unlinked the file) creates this
+    // database itself. `PlaintextStorageProtection.swift` is compiled
+    // directly into this target too (see its header comment), so this
+    // extension can call the same `protect()` the main app uses instead of
+    // leaving the file backup-eligible / unprotected until the next time
+    // the main app's `hardenAll()` happens to run.
+    PlaintextStorageProtection.protect(URL(fileURLWithPath: path))
+    // Task 1593 round 10 (Codex thread PRRT_kwDOSLX6T86mhUiZ) — the main
+    // file's own `protect()` above does not cover its SQLite sidecars
+    // (`-journal`, `-wal`/`-shm`); see `protectSQLiteSidecars`'s doc comment.
+    PlaintextStorageProtection.protectSQLiteSidecars(URL(fileURLWithPath: path))
+    // Task 1593 round 8 (R2) — the main app's own writers to this exact
+    // file (`bumpFileProviderCacheVersion`, `resetFileProviderCacheDatabase`,
+    // `PlaintextStorageProtection.resetSQLiteInPlace`) all take a real
+    // `BEGIN IMMEDIATE` write lock on it; this connection's own
+    // `BEGIN IMMEDIATE` calls (`replaceChildren`/`upsert(_:expectedEpoch:)`/
+    // `delete(id:expectedEpoch:)`) can therefore transiently contend with
+    // them. A short busy timeout turns that contention into a brief wait
+    // instead of an immediate SQLITE_BUSY failure.
+    sqlite3_busy_timeout(handle, 2000)
+    // Task 1593 round 6 (new-3) — this connection is the extension's own
+    // writer for `delete(id:)` / `_deleteChildren` (below); without
+    // secure_delete a DELETE's freed b-tree page keeps the decrypted
+    // `name_decrypted` bytes readable on disk until something VACUUMs the
+    // file, which this long-lived extension connection never does (same
+    // finding as the main app's identical fix in
+    // BeebeebCryptoModule.swift's `syncFileProviderCache`). Set this pragma
+    // ahead of the migrations that follow, so it is already in effect
+    // before this connection issues any statement.
+    execute("PRAGMA secure_delete = ON")
     runMigrations()
   }
 
@@ -94,21 +126,240 @@ final class CacheManager {
     queue.sync { _upsert(item) }
   }
 
-  func upsert(_ items: [CachedItem]) {
+  /// Task 1593 round 7 (C1) — `expectedEpoch` is the purge-epoch value the
+  /// caller (`SyncEngine.refreshContainer`) read BEFORE starting the API
+  /// fetch these `items` came from.
+  ///
+  /// Task 1593 round 8 (R2, security re-review) — the epoch itself used to
+  /// be a separate App Group `UserDefaults` counter, which is not a real
+  /// synchronisation primitive: `UserDefaults(suiteName:)` is backed by
+  /// `cfprefsd` with no guaranteed-immediate cross-process visibility, so
+  /// this method's re-check could still observe a STALE value even after
+  /// the main app's bump had already "landed" on its side. The epoch now
+  /// lives in THIS SAME database's own `PRAGMA user_version`, and this
+  /// method opens its write with `BEGIN IMMEDIATE` — a real OS-level write
+  /// lock on the file (this db is never WAL-mode, so that's the lock the
+  /// default rollback journal always uses) — before reading it. That lock
+  /// directly contends with the main app's own `BEGIN IMMEDIATE` writers
+  /// (`bumpFileProviderCacheVersion`, `resetFileProviderCacheDatabase`,
+  /// `PlaintextStorageProtection.resetSQLiteInPlace`): whichever side gets
+  /// there first finishes its whole transaction before the other's BEGIN
+  /// IMMEDIATE can even proceed, so there is no window left where "the
+  /// epoch check passed" and "the epoch changed" can straddle this write.
+  /// Aborts (ROLLBACK, returns `false`) on a mismatch instead of writing —
+  /// a sign-out purge that bumped the version anywhere before this BEGIN
+  /// IMMEDIATE acquired the lock makes this call a no-op instead of
+  /// reinserting decrypted names the purge is in the middle of sweeping.
+  /// Returns whether the write actually happened, so the caller can decide
+  /// whether to also update its `sync_state` anchor.
+  @discardableResult
+  func replaceChildren(parent: String?, with items: [CachedItem], expectedEpoch: Int) -> Bool {
     queue.sync {
-      execute("BEGIN")
+      guard beginImmediate() else { return false }
+      guard currentEpochMatches(expectedEpoch) else {
+        execute("ROLLBACK")
+        return false
+      }
+      _deleteChildren(parent: parent, keepingIds: Set(items.map(\.id)))
       for item in items { _upsert(item) }
-      execute("COMMIT")
+      return commitOrRollback()
     }
   }
 
-  func replaceChildren(parent: String?, with items: [CachedItem]) {
+  /// Task 1593 round 8 (R3) — same purge-epoch gate as `replaceChildren`,
+  /// for the OTHER writers on this cache: `FileProviderExtension.createItem`
+  /// / `modifyItem` run an unbounded-duration network call (upload/patch)
+  /// BEFORE ever touching this cache — the exact same "a sign-out purge can
+  /// land while I'm in flight" window `replaceChildren` closes for reads,
+  /// but for these operations' own cache write instead. The caller captures
+  /// `expectedEpoch` right before starting that network call.
+  @discardableResult
+  func upsert(_ item: CachedItem, expectedEpoch: Int) -> Bool {
     queue.sync {
-      execute("BEGIN")
-      _deleteChildren(parent: parent, keepingIds: Set(items.map(\.id)))
-      for item in items { _upsert(item) }
-      execute("COMMIT")
+      guard beginImmediate() else { return false }
+      guard currentEpochMatches(expectedEpoch) else {
+        execute("ROLLBACK")
+        return false
+      }
+      _upsert(item)
+      return commitOrRollback()
     }
+  }
+
+  /// Public, queue-synchronized read for callers OUTSIDE this class (e.g.
+  /// `SyncEngine.refreshContainer`, which must capture this BEFORE starting
+  /// its network fetch — see `replaceChildren`'s doc comment for the full
+  /// epoch rationale). Internal call sites already inside `queue.sync` use
+  /// `_currentPurgeEpoch()` directly — this method would deadlock if called
+  /// from inside another `queue.sync` block on this same serial queue.
+  ///
+  /// Task 1593 f4 (Codex thread PRRT_kwDOSLX6T86mknXP, item 1a) — under the
+  /// f2 marker-first design the pending marker now stays set for the WHOLE
+  /// purge (see `purgeAll(pendingNonce:)`'s doc comment: it only clears
+  /// after the legacy sweep AND the pinned/temp resweep, not right after
+  /// the reset's own epoch bump commits). A caller like `SyncEngine` that
+  /// captures its epoch via THIS method — not `purgeEpochUnchanged(since:)`
+  /// — has no other way to know a purge is still in flight; without this
+  /// guard it could capture a live, freshly-bumped epoch while the purge's
+  /// own tail (VACUUM, the legacy sweep, the pinned/temp resweep) is still
+  /// running, then have its later gated write land after the tail finishes
+  /// but with an epoch value the purge never actually finished vouching
+  /// for. Returning the sentinel here instead means `currentEpochMatches(_:)`
+  /// — already sentinel-safe on the LIVE side — now also rejects any
+  /// comparison against a captured epoch that came from a pending purge,
+  /// since the sentinel can never equal a real `PRAGMA user_version` value.
+  /// Task 1593 f6 (Codex thread PRRT_kwDOSLX6T86mmDT1, P1) — the single
+  /// `isPurgePending()` guard above only closed the window BEFORE the
+  /// `PRAGMA user_version` read: `isPurgePending()` is a plain
+  /// `FileManager.fileExists` check against a file another PROCESS (the main
+  /// app, running `markPurgePending()`) writes — it is not serialized by
+  /// THIS actor's `queue`, so nothing stops that other process from creating
+  /// the marker in the gap between this guard passing and `_currentPurgeEpoch()`
+  /// actually returning. `_currentPurgeEpoch()` itself briefly blocks behind
+  /// the purge's own SQLite work (same busy-timeout contention documented on
+  /// `sqlite3_busy_timeout` in `init` above), so that gap is not
+  /// instantaneous — it is exactly as long as the purge's reset transaction
+  /// takes. A read that lands in that window returns the purge's freshly
+  /// bumped FINAL epoch while the marker-covered sweeps (VACUUM, the legacy
+  /// sweep, the pinned/temp resweep) are still running, and a caller that
+  /// captured that value would later pass `currentEpochMatches` once the
+  /// marker is cleared — the exact bypass f4/item-1a's single check was
+  /// meant to close. Checking the marker AGAIN, after the read, closes it:
+  /// a marker created anywhere during the read is now caught here instead of
+  /// being missed entirely.
+  func currentPurgeEpoch() -> Int {
+    queue.sync {
+      guard !PlaintextStorageProtection.isPurgePending() else { return Self.epochQueryFailed }
+      let epoch = _currentPurgeEpoch()
+      guard !PlaintextStorageProtection.isPurgePending() else { return Self.epochQueryFailed }
+      return epoch
+    }
+  }
+
+  /// Task 1593 round 11 (Codex thread PRRT_kwDOSLX6T86miVoN, P1) — safe
+  /// "has the epoch moved since I captured it" check for callers OUTSIDE
+  /// this class that gate a multi-step operation (`FileProviderExtension
+  /// .fetchContents`'s download→decrypt→write span) rather than a single
+  /// transactional write. Reuses `currentEpochMatches` — the same
+  /// `epochQueryFailed`-sentinel-safe comparison the three epoch-gated
+  /// writers below already use — instead of a bare `currentPurgeEpoch() ==
+  /// capturedEpoch` at the call site, so a failed read on EITHER side (the
+  /// caller's own earlier capture, or this live re-check) can never
+  /// accidentally read as "unchanged" just because both happened to produce
+  /// the same failure sentinel.
+  /// Task 1593 f1 (fail-closed purge-pending marker) — checked FIRST, before
+  /// the epoch comparison: a pending marker means a purge could not prove
+  /// its own epoch advance landed, so an unchanged-looking epoch is no
+  /// longer trustworthy evidence either. See
+  /// `PlaintextStorageProtection.markPurgePending()`'s doc comment.
+  /// Task 1593 f6 (Codex thread PRRT_kwDOSLX6T86mmDT1, P1) — same
+  /// before/after marker pattern as `currentPurgeEpoch()` above: the initial
+  /// `isPurgePending()` guard only closes the window BEFORE
+  /// `currentEpochMatches` runs its `PRAGMA user_version` read, not the read
+  /// itself, and that read is not serialized against the other PROCESS that
+  /// writes the marker. A marker created while `currentEpochMatches` is
+  /// still executing must still refuse this call — re-checking after the
+  /// read, before returning its result, closes that gap the same way.
+  func purgeEpochUnchanged(since capturedEpoch: Int) -> Bool {
+    queue.sync {
+      guard !PlaintextStorageProtection.isPurgePending() else { return false }
+      let matches = currentEpochMatches(capturedEpoch)
+      guard !PlaintextStorageProtection.isPurgePending() else { return false }
+      return matches
+    }
+  }
+
+  /// Task 1593 round 10 (reviewer F-b) — a failed `PRAGMA user_version`
+  /// query used to return `0`, a perfectly ordinary epoch value a purge's
+  /// very first bump could legitimately produce. A query failure here (a
+  /// bad handle, a locked file the busy timeout still couldn't clear) is
+  /// silent data loss dressed up as a real reading: `_currentPurgeEpoch()
+  /// == expectedEpoch` could accidentally be TRUE against a caller whose own
+  /// earlier capture also happened to read `0`, letting a gated write land
+  /// with no actual epoch check having occurred. `epochQueryFailed` is a
+  /// sentinel no real `PRAGMA user_version` read (an unsigned 32-bit
+  /// column) can ever produce, and `currentEpochMatches(_:)` below refuses
+  /// unconditionally whenever either side of the comparison is this
+  /// sentinel — so a failed capture (the caller's `currentPurgeEpoch()`
+  /// having itself failed) is treated exactly like a failed live read: both
+  /// mean "do not write", never "write, because both sides happen to be
+  /// the same placeholder".
+  private static let epochQueryFailed = Int.min
+
+  private func _currentPurgeEpoch() -> Int {
+    var stmt: OpaquePointer?
+    defer { sqlite3_finalize(stmt) }
+    guard prepare("PRAGMA user_version", &stmt), sqlite3_step(stmt) == SQLITE_ROW else {
+      return Self.epochQueryFailed
+    }
+    return Int(sqlite3_column_int(stmt, 0))
+  }
+
+  /// Task 1593 round 10 (reviewer F-b) — the single comparison every
+  /// epoch-gated writer (`replaceChildren`/`upsert(_:expectedEpoch:)`/
+  /// `delete(id:expectedEpoch:)`) uses instead of a bare `==`. See
+  /// `epochQueryFailed`'s doc comment: `epoch != Self.epochQueryFailed` is
+  /// checked FIRST and independently of the equality, so the sentinel can
+  /// never "match" `expectedEpoch` even in the degenerate case where the
+  /// caller's own capture also failed and produced the same sentinel value.
+  private func currentEpochMatches(_ expectedEpoch: Int) -> Bool {
+    let epoch = _currentPurgeEpoch()
+    return epoch != Self.epochQueryFailed && epoch == expectedEpoch
+  }
+
+  /// Task 1593 f1 (fail-closed purge-pending marker) — the shared entry
+  /// point for every epoch-gated writer (`replaceChildren`,
+  /// `upsert(_:expectedEpoch:)`, `delete(id:expectedEpoch:)`): refusing here
+  /// closes all three at once. See
+  /// `PlaintextStorageProtection.markPurgePending()`'s doc comment.
+  ///
+  /// Task 1593 f6 (Codex thread PRRT_kwDOSLX6T86mmDT1, P1) — the guard above
+  /// only closes the window BEFORE `BEGIN IMMEDIATE` is issued. `BEGIN
+  /// IMMEDIATE` itself blocks behind the purge's own writers under the
+  /// `sqlite3_busy_timeout` set in `init` (same contention documented
+  /// there), and `isPurgePending()` checks a marker file another PROCESS
+  /// writes — not anything serialized by this call. A marker created while
+  /// this call is blocked acquiring the lock is invisible to the guard
+  /// above; without a second check, this call would return `true` believing
+  /// no purge is in progress, and the caller's own `currentEpochMatches`
+  /// re-check right after (see `replaceChildren`/`upsert(_:expectedEpoch:)`/
+  /// `delete(id:expectedEpoch:)`) reads an epoch that is real but not yet
+  /// vouched for — the purge's tail sweeps could still be running. Rechecking
+  /// immediately after the lock is acquired, before any caller can act on a
+  /// `true` result, closes that gap: a marker that appears mid-wait is now
+  /// caught here and the half-open transaction is rolled back rather than
+  /// handed to the caller as a usable write.
+  private func beginImmediate() -> Bool {
+    guard let db else { return false }
+    guard !PlaintextStorageProtection.isPurgePending() else { return false }
+    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
+    guard !PlaintextStorageProtection.isPurgePending() else {
+      execute("ROLLBACK")
+      return false
+    }
+    return true
+  }
+
+  /// Task 1593 round 10 (reviewer F-b) — `execute("COMMIT")`'s result used
+  /// to be discarded at every one of this class's three epoch-gated
+  /// writers: a COMMIT that fails (e.g. `SQLITE_BUSY` racing the main app's
+  /// own `BEGIN IMMEDIATE` writers to this same file) used to be reported
+  /// to the caller as a successful write while the transaction it opened
+  /// was, per SQLite's own semantics, left OPEN — this long-lived
+  /// extension connection would then carry that write lock forward
+  /// indefinitely, since nothing ever issued the matching `ROLLBACK` (or a
+  /// retried `COMMIT`) to close it, silently wedging every subsequent write
+  /// through this connection. `ROLLBACK`ing a failed COMMIT abandons the
+  /// transaction outright rather than retrying it — this connection has no
+  /// currently-established retry policy for a mid-COMMIT failure, and
+  /// leaving the lock held is strictly worse than discarding this one
+  /// write.
+  private func commitOrRollback() -> Bool {
+    if execute("COMMIT") {
+      return true
+    }
+    execute("ROLLBACK")
+    return false
   }
 
   func item(id: String) -> CachedItem? {
@@ -123,7 +374,7 @@ final class CacheManager {
     queue.sync {
       executeBindable("UPDATE file_cache SET is_pinned = ? WHERE id = ?") { stmt in
         sqlite3_bind_int(stmt, 1, pinned ? 1 : 0)
-        sqlite3_bind_text(stmt, 2, (id as NSString).utf8String, -1, nil)
+        bindText(stmt, 2, id)
       }
     }
   }
@@ -132,16 +383,28 @@ final class CacheManager {
     queue.sync {
       executeBindable("UPDATE file_cache SET is_materialized = ? WHERE id = ?") { stmt in
         sqlite3_bind_int(stmt, 1, value ? 1 : 0)
-        sqlite3_bind_text(stmt, 2, (id as NSString).utf8String, -1, nil)
+        bindText(stmt, 2, id)
       }
     }
   }
 
   func delete(id: String) {
+    queue.sync { _delete(id: id) }
+  }
+
+  /// Task 1593 round 8 (R3) — see `upsert(_:expectedEpoch:)`'s doc comment.
+  /// `FileProviderExtension.deleteItem` captures `expectedEpoch` right
+  /// before its `ApiClient.shared.deleteFile` network call.
+  @discardableResult
+  func delete(id: String, expectedEpoch: Int) -> Bool {
     queue.sync {
-      executeBindable("DELETE FROM file_cache WHERE id = ?") { stmt in
-        sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+      guard beginImmediate() else { return false }
+      guard currentEpochMatches(expectedEpoch) else {
+        execute("ROLLBACK")
+        return false
       }
+      _delete(id: id)
+      return commitOrRollback()
     }
   }
 
@@ -150,8 +413,8 @@ final class CacheManager {
       executeBindable(
         "INSERT INTO sync_state(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
       ) { stmt in
-        sqlite3_bind_text(stmt, 1, (key as NSString).utf8String, -1, nil)
-        sqlite3_bind_text(stmt, 2, (value as NSString).utf8String, -1, nil)
+        bindText(stmt, 1, key)
+        bindText(stmt, 2, value)
       }
     }
   }
@@ -161,11 +424,80 @@ final class CacheManager {
       var stmt: OpaquePointer?
       defer { sqlite3_finalize(stmt) }
       guard prepare("SELECT value FROM sync_state WHERE key = ?", &stmt) else { return nil }
-      sqlite3_bind_text(stmt, 1, (key as NSString).utf8String, -1, nil)
+      bindText(stmt, 1, key)
       guard sqlite3_step(stmt) == SQLITE_ROW,
             let cstr = sqlite3_column_text(stmt, 0) else { return nil }
       return String(cString: cstr)
     }
+  }
+
+  // MARK: - Materialized folders (task 1722 round 4, review round 2 minor 6)
+
+  /// `sync_state` keys that list the folders the system has materialized: folders Files has
+  /// listed, whose children are on disk and are refreshed ONLY through the working set (Apple,
+  /// NSFileProviderReplicatedExtension.h, materializedItemsDidChange: "traversals of materialized
+  /// directories do not [trigger an enumeration] ... there is no alternative cache invalidation
+  /// mechanism"). Folder ids only, no names. In `sync_state`, so the sign-out purge's reset
+  /// (`DELETE FROM sync_state`) clears them with the rest of the account's cache.
+  static let materializedContainerKeyPrefix = "materialized.container."
+
+  func materializedContainerIds() -> [String] {
+    queue.sync { _materializedContainerIds() }
+  }
+
+  /// Records a folder the system has just listed. Refused while a sign-out purge is pending.
+  /// Returns whether it was written.
+  @discardableResult
+  func noteContainerMaterialized(_ containerId: String) -> Bool {
+    queue.sync {
+      guard beginImmediate() else { return false }
+      executeBindable("INSERT INTO sync_state(key, value) VALUES(?, '1') ON CONFLICT(key) DO NOTHING") { stmt in
+        bindNullable(stmt, 1, Self.materializedContainerKeyPrefix + containerId)
+      }
+      return commitOrRollback()
+    }
+  }
+
+  /// Replaces the stored folders with `ids`, the system's own materialized set. Epoch-gated like
+  /// `replaceChildren` (a purge that ran after `expectedEpoch` was read refuses the write): nil
+  /// when refused, otherwise whether the stored set changed.
+  func replaceMaterializedContainers(_ ids: Set<String>, expectedEpoch: Int) -> Bool? {
+    queue.sync {
+      guard beginImmediate() else { return nil }
+      guard currentEpochMatches(expectedEpoch) else {
+        execute("ROLLBACK")
+        return nil
+      }
+      guard Set(_materializedContainerIds()) != ids else {
+        execute("ROLLBACK")
+        return false
+      }
+      executeBindable("DELETE FROM sync_state WHERE substr(key, 1, ?) = ?") { stmt in
+        sqlite3_bind_int(stmt, 1, Int32(Self.materializedContainerKeyPrefix.utf8.count))
+        bindNullable(stmt, 2, Self.materializedContainerKeyPrefix)
+      }
+      for id in ids.sorted() {
+        executeBindable("INSERT INTO sync_state(key, value) VALUES(?, '1') ON CONFLICT(key) DO NOTHING") { stmt in
+          bindNullable(stmt, 1, Self.materializedContainerKeyPrefix + id)
+        }
+      }
+      return commitOrRollback() ? true : nil
+    }
+  }
+
+  private func _materializedContainerIds() -> [String] {
+    var stmt: OpaquePointer?
+    defer { sqlite3_finalize(stmt) }
+    let prefix = Self.materializedContainerKeyPrefix
+    guard prepare("SELECT key FROM sync_state WHERE substr(key, 1, ?) = ? ORDER BY key", &stmt) else { return [] }
+    sqlite3_bind_int(stmt, 1, Int32(prefix.utf8.count))
+    bindNullable(stmt, 2, prefix)
+    var ids: [String] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      guard let cstr = sqlite3_column_text(stmt, 0) else { continue }
+      ids.append(String(String(cString: cstr).dropFirst(prefix.count)))
+    }
+    return ids
   }
 
   // MARK: - Internal
@@ -192,7 +524,7 @@ final class CacheManager {
       sync_anchor = excluded.sync_anchor;
     """
     executeBindable(sql) { stmt in
-      sqlite3_bind_text(stmt, 1, (item.id as NSString).utf8String, -1, nil)
+      bindText(stmt, 1, item.id)
       bindNullable(stmt, 2, item.parentId)
       bindNullable(stmt, 3, item.nameEncrypted)
       bindNullable(stmt, 4, item.nameDecrypted)
@@ -226,13 +558,19 @@ final class CacheManager {
     executeBindable(sql) { stmt in
       var index: Int32 = 1
       if let parent {
-        sqlite3_bind_text(stmt, index, (parent as NSString).utf8String, -1, nil)
+        bindText(stmt, index, parent)
         index += 1
       }
       for id in ids.sorted() {
-        sqlite3_bind_text(stmt, index, (id as NSString).utf8String, -1, nil)
+        bindText(stmt, index, id)
         index += 1
       }
+    }
+  }
+
+  private func _delete(id: String) {
+    executeBindable("DELETE FROM file_cache WHERE id = ?") { stmt in
+      bindText(stmt, 1, id)
     }
   }
 
@@ -240,7 +578,7 @@ final class CacheManager {
     var stmt: OpaquePointer?
     defer { sqlite3_finalize(stmt) }
     guard prepare(rowSelectSql + " WHERE id = ?", &stmt) else { return nil }
-    sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+    bindText(stmt, 1, id)
     guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
     return readRow(stmt)
   }
@@ -257,7 +595,7 @@ final class CacheManager {
     guard prepare(rowSelectSql + where_ + " ORDER BY is_folder DESC, name_decrypted ASC", &stmt) else {
       return []
     }
-    if let parent { sqlite3_bind_text(stmt, 1, (parent as NSString).utf8String, -1, nil) }
+    if let parent { bindText(stmt, 1, parent) }
     var rows: [CachedItem] = []
     while sqlite3_step(stmt) == SQLITE_ROW {
       if let row = readRow(stmt) { rows.append(row) }
@@ -314,9 +652,15 @@ final class CacheManager {
     return sqlite3_prepare_v2(db, sql, -1, stmt, nil) == SQLITE_OK
   }
 
-  private func execute(_ sql: String) {
-    guard let db else { return }
-    sqlite3_exec(db, sql, nil, nil, nil)
+  /// Task 1593 round 10 (reviewer F-b) — now returns whether the statement
+  /// actually succeeded (`@discardableResult` so every pre-existing
+  /// fire-and-forget call site — `init`'s pragmas, migrations, the plain
+  /// batch `upsert`'s `BEGIN`/`COMMIT` — keeps compiling unchanged); only
+  /// `commitOrRollback()` above checks it.
+  @discardableResult
+  private func execute(_ sql: String) -> Bool {
+    guard let db else { return false }
+    return sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK
   }
 
   private func executeBindable(_ sql: String, bind: (OpaquePointer?) -> Void) {
@@ -325,6 +669,14 @@ final class CacheManager {
     guard prepare(sql, &stmt) else { return }
     bind(stmt)
     sqlite3_step(stmt)
+  }
+
+  /// Binds text with SQLITE_TRANSIENT so SQLite copies the bytes; a nil
+  /// destructor (SQLITE_STATIC) would keep a pointer into a temporary
+  /// bridged NSString that can be freed before sqlite3_step (task 2038).
+  private func bindText(_ stmt: OpaquePointer?, _ index: Int32, _ value: String) {
+    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    sqlite3_bind_text(stmt, index, value, -1, transient)
   }
 
   private func bindNullable(_ stmt: OpaquePointer?, _ index: Int32, _ value: String?) {

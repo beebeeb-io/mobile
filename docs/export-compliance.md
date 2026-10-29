@@ -11,6 +11,12 @@ in `repos/mobile/docs/app-store/review-notes.md` §4, which points here.
 
 ## 1. Why the key must be `true`
 
+> **Superseded (2026-10-15, §7 + §8).** This section was written while the app was offered in France.
+> Since §7 (France, Russia and Belarus off sale, standard algorithms only per §2) Apple's own per-build
+> questionnaire scored every build `usesNonExemptEncryption = false` (builds 235–237, read back via the
+> App Store Connect API), and §8 now declares `ITSAppUsesNonExemptEncryption = false` in the Info.plist.
+> The argument below applies again only if France is put back on sale (§7 "Re-enabling France").
+
 Apple, "Complying with Encryption Export Regulations": *"Set the value to NO
 if your app… doesn't use encryption, or if it only uses forms of encryption
 that are exempt… Otherwise, set it to YES."* and *"the use of encryption
@@ -159,6 +165,9 @@ Notes, not re-litigated here):
 
 ## 6. Extension targets — no key needed
 
+> **Note (2026-10-15, §8):** the main app's `Info.plist` now carries `ITSAppUsesNonExemptEncryption = false`
+> (not `true` as described below); the extensions still need no key of their own.
+
 Only the main app target's `Info.plist` carries
 `ITSAppUsesNonExemptEncryption` — Apple's compliance questionnaire and the
 Info.plist key apply to the app bundle App Review evaluates, not to each
@@ -230,3 +239,58 @@ The ANSSI cryptology declaration for France (§5 above; LCEN art. 30) and the BI
 self-classification report (§5) are unaffected by this section — both are Initlabs B.V.
 filings independent of Apple's per-app questionnaire, and remain owed regardless of whether
 the app is sold in France.
+
+## 8. 2026-10-15 — `ITSAppUsesNonExemptEncryption = false` in the Info.plist (no more per-build prompt)
+
+**Guus, 2026-10-15:** "why is that export compliance back again? That should NOT be the case
+anymore, should be fixed. fix it".
+
+**Supersedes §7's step 2 ("removed … rather than set to a value") and step 3 (per-build answers
+in App Store Connect).** Under §7 every upload stopped at *Missing Compliance* until someone
+answered the questionnaire, and every answer since build 213 was the same: standard algorithms
+only (§2), not available in France (§7) — which App Store Connect stores as
+`usesNonExemptEncryption = false` (builds 235, 236 and 237 carry exactly that value, read via the
+App Store Connect API on 2026-10-15).
+
+`app.json` (`ios.infoPlist`) and `ios/Beebeeb/Info.plist` now declare that same answer up front:
+`ITSAppUsesNonExemptEncryption = false`. With the key present App Store Connect does not ask per
+build. This is NOT the §7 failure mode: builds 210–212 were rejected because the key was `true`
+**without** an `ITSEncryptionExportComplianceCode`; `false` needs no code and no declaration.
+
+The truthfulness of `false` rests on §2 (standard, published algorithms only) and §7 (France,
+Russia and Belarus off sale). If either changes — a proprietary algorithm, or France back on
+sale — this key must change with it (France: §7 "Re-enabling France", both keys together).
+The ANSSI and BIS obligations in §5 are unaffected.
+
+**Superseded for new builds (2026-10-16, §9).** France is going back on sale. Builds 236 and
+237 keep `usesNonExemptEncryption = false`. Build 238 onward carries both keys in §9.
+
+## 9. 2026-10-16 — France declaration approved; build 238
+
+**Guus, 2026-10-16:** "go with 238".
+
+Read back from the App Store Connect API the same morning:
+
+- Declaration `35c912e6-d4e4-4dcd-a5ed-22650cf41444` is `APPROVED`.
+- `codeValue` is `64c25f1a-bd4f-4c0f-98f8-9c80844890d0`.
+- `availableOnFrenchStore` is true. The attached document is
+  `01-Formulaire-AnnexeI-declaration-Beebeeb-signe.pdf`.
+- Declaration `92c7e83f` is still `CREATED` with no code. It is not used.
+- Builds 236 and 237 are `usesNonExemptEncryption = false`. Apple refuses to change that
+  flag on a processed build (409 on build 235). They are not the France binary.
+- Remote iOS build number before this build was `237`, so production `autoIncrement`
+  assigns **238**.
+- The iOS App Store version `1.0` (`325ca023-b8d7-494b-aa56-79b5b81ccaf3`) was
+  `DEVELOPER_REJECTED`, with build 236 still attached and no open review submission.
+  Marketing version on builds 236 and 237 is `1.0.1`, matching `app.json`.
+
+§7 "Re-enabling France" applies. `app.json` (`ios.infoPlist`) and `ios/Beebeeb/Info.plist`
+set both keys together:
+
+```
+ITSAppUsesNonExemptEncryption: true
+ITSEncryptionExportComplianceCode: 64c25f1a-bd4f-4c0f-98f8-9c80844890d0
+```
+
+Russia and Belarus stay unavailable. France is turned back on only once build 238 is the
+build selected on the version, then that version is submitted for review.

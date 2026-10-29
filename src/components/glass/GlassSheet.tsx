@@ -4,6 +4,10 @@
  * Radius 38 (`GLASS_RADII.sheet`), from the canvas share sheet: a sheet that
  * FLOATS inset from the screen edges rather than being pinned flush to the
  * bottom, which is why all four corners are rounded.
+ *
+ * Task 1586: a MATERIAL specimen (rendered only in the __DEV__ glass
+ * gallery). Presented sheets in the app are full width and draggable —
+ * they go through `src/components/sheet/BottomSheet.tsx`, not this.
  */
 
 import React from 'react';

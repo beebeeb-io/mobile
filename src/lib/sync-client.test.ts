@@ -17,7 +17,7 @@
 // The fix seeds the tree from the on-disk file-index cache (the last
 // known-good FULL listing) before replaying catch-up ops, so ops land on a
 // real base instead of nothing.
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 
 // ---------------------------------------------------------------------------
 // Mocks — sync-client.ts's dependencies. Every test file must mock every
@@ -36,6 +36,13 @@ mock.module('react-native', () => ({
   // 'android' so persistCacheNow's iOS-only File Provider write-through
   // never fires — irrelevant to this test and not otherwise mocked.
   Platform: { OS: 'android' },
+  // Task 1686 — sync-client now imports AppState for the reconnect-pause
+  // seam. A no-op subscription; the tests drive setSyncClientAppState
+  // directly.
+  AppState: {
+    currentState: 'active',
+    addEventListener: () => ({ remove: () => {} }),
+  },
 }));
 
 mock.module('react-native-sse', () => ({
@@ -52,11 +59,18 @@ let getSnapshotImpl: () => Promise<{ seq_id: number; nodes: unknown[] }> = async
 let getSyncOpsCalls: number[] = [];
 let getSyncOpsImpl: (since: number) => Promise<unknown[]> = async () => [];
 
+// Task 1667 round 13 (review item 1): the ops the client sent, with their
+// device id.
+const submittedOps: Array<{ client_op_id: string; device_id: string }> = [];
+
 mock.module('./api', () => ({
   getApiUrl: () => 'https://api.test',
   getToken: async () => 'session-token',
   getStreamToken: async () => ({ stream_token: 'tok', expires_at: '2099-01-01T00:00:00Z' }),
-  submitSyncOps: async () => ({ applied: [], rejected: [] }),
+  submitSyncOps: async (ops: Array<{ client_op_id: string; device_id: string }>) => {
+    submittedOps.push(...ops);
+    return { applied: [], rejected: [] };
+  },
   getSnapshot: async () => {
     getSnapshotCalls += 1;
     return getSnapshotImpl();
@@ -69,24 +83,38 @@ mock.module('./api', () => ({
 
 let cachedIndex: { hash: string; files: unknown[]; storedAt: number; seq?: number } | null = null;
 const savedIndexCalls: Array<{ hash: string; files: unknown[]; storedAt?: number; seq?: number }> = [];
+// Task 1959 round 3: every scope the cache handed out, and the scope each
+// write carried (kept apart from savedIndexCalls so its toEqual checks hold).
+const issuedScopes: Array<{ id: number }> = [];
+const savedScopes: unknown[] = [];
 
 mock.module('./file-index-cache', () => ({
   loadCachedFileIndex: async () => cachedIndex,
-  saveCachedFileIndex: async (hash: string, files: unknown[], storedAt?: number, seq?: number) => {
+  saveCachedFileIndex: async (hash: string, files: unknown[], storedAt?: number, seq?: number, scope?: unknown) => {
     savedIndexCalls.push({ hash, files, storedAt, seq });
+    savedScopes.push(scope);
   },
   clearCachedFileIndex: async () => {},
+  fileIndexCacheWriteScope: () => {
+    const scope = { epoch: { generation: 0, accountId: null }, generation: 0, id: issuedScopes.length + 1 };
+    issuedScopes.push(scope);
+    return scope;
+  },
 }));
 
 mock.module('./file-provider-mount', () => ({
   syncDecryptedEntriesToFileProvider: async () => {},
 }));
 
+// Round 13: reassignable, so a test can make the keychain unreadable.
+let getDeviceIdImpl: () => Promise<string> = async () => 'device-1';
 mock.module('./device-identity', () => ({
-  getDeviceId: async () => 'device-1',
+  getDeviceId: () => getDeviceIdImpl(),
 }));
 
 const { SyncClient, fileEntryToSyncNode } = await import('./sync-client');
+// Task 1959 round 2. Absent before the fix (real module: dependency-free).
+const epoch = await import('./account-epoch').catch(() => null);
 
 function fileEntry(overrides: Record<string, unknown> = {}) {
   return {
@@ -209,7 +237,65 @@ describe('SyncClient catch-up (task 1302)', () => {
 
   // --- Codex review on PR #103 (two P1s) ---------------------------------
 
-  test('does NOT seed from a cache whose cursor is behind lastSeq — the cache write is debounced ~800ms behind the synchronous lastSeq persist, so a kill mid-debounce can leave the cache stale', async () => {
+  test('startup failures back off until the stream successfully opens', async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const timers: Array<{ fn: () => void; ms: number }> = [];
+    globalThis.setTimeout = ((fn, ms) => {
+      timers.push({ fn, ms });
+      return timers.length;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = (() => {}) as typeof clearTimeout;
+    const client = new SyncClient();
+    try {
+      getSnapshotImpl = async () => { throw new Error('outage'); };
+      await expect(client.start()).rejects.toThrow('outage');
+      const delays = [timers[0].ms];
+      for (let cycle = 0; cycle < 2; cycle++) {
+        timers[cycle].fn();
+        for (let tick = 0; tick < 100 && timers.length < cycle + 2; tick++) await Promise.resolve();
+        expect(timers.length).toBe(cycle + 2);
+        delays.push(timers[cycle + 1].ms);
+      }
+      expect(getSnapshotCalls).toBe(3);
+      expect(delays[0]).toBeGreaterThanOrEqual(1200);
+      expect(delays[0]).toBeLessThanOrEqual(1800);
+      expect(delays[1]).toBeGreaterThanOrEqual(2400);
+      expect(delays[1]).toBeLessThanOrEqual(3600);
+      expect(delays[2]).toBeGreaterThanOrEqual(4800);
+      expect(delays[2]).toBeLessThanOrEqual(7200);
+    } finally {
+      client.stop();
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+    }
+  });
+
+  test('rebuild applies a pending create echo missing from the older cache', async () => {
+    secureStore.set('bb_sync_last_seq', '6');
+    secureStore.set('bb_sync_pending_ops', JSON.stringify([{
+      client_op_id: 'pending-create', op_type: 'file_create',
+      payload: { id: 'new-1', name_encrypted: 'enc-new-1' },
+    }]));
+    cachedIndex = { hash: 'old', storedAt: Date.now(), seq: 5, files: [fileEntry({ id: 'old-1' })] };
+    getSyncOpsImpl = async () => [{
+      seq_id: 7, client_op_id: 'pending-create', op_type: 'file_create',
+      payload: { id: 'new-1', name_encrypted: 'enc-new-1' },
+    }];
+    const client = new SyncClient();
+    try {
+      await client.start();
+      expect(client.getAllNodes().map(n => n.id).sort()).toEqual(['new-1', 'old-1']);
+      expect(getSyncOpsCalls).toEqual([5]);
+      expect(secureStore.get('bb_sync_last_seq')).toBe('7');
+      expect(JSON.parse(secureStore.get('bb_sync_pending_ops')!)).toEqual([]);
+      expect(getSnapshotCalls).toBe(0);
+    } finally {
+      client.stop();
+    }
+  });
+
+  test('replays the debounce gap from the stamped cache cursor without losing an already-checkpointed create', async () => {
     secureStore.set('bb_sync_last_seq', '6');
     cachedIndex = {
       hash: 'stale-cursor-hash',
@@ -225,10 +311,10 @@ describe('SyncClient catch-up (task 1302)', () => {
       ],
     };
     // getSyncOps(6) only returns ops AFTER 6 — 'mid-1' (seq 5) is already
-    // "consumed" per lastSeq bookkeeping and is NEVER re-sent. If seeding
-    // from the stale cache were allowed anyway, 'mid-1' would be silently,
-    // permanently missing from the tree.
-    getSyncOpsImpl = async () => [];
+    // Re-request from the stamped cache cursor so the gap is replayed.
+    getSyncOpsImpl = async (since) => since < 5 ? [
+      { seq_id: 5, op_type: 'file_create', payload: { id: 'mid-1', name_encrypted: 'enc-mid-1' } },
+    ] : [];
     getSnapshotImpl = async () => ({
       seq_id: 6,
       nodes: [syncNode({ id: 'old-1' }), syncNode({ id: 'old-2' }), syncNode({ id: 'mid-1' })],
@@ -237,10 +323,9 @@ describe('SyncClient catch-up (task 1302)', () => {
     const client = new SyncClient();
     await client.start();
 
-    // Treated exactly like "no cache" — always an authoritative snapshot,
-    // never an unsafe ops-only reconstruction off a stale base.
-    expect(getSnapshotCalls).toBe(1);
-    expect(getSyncOpsCalls).toEqual([]);
+    // Task 1990: replay from the cache's cursor, rather than skipping the gap.
+    expect(getSnapshotCalls).toBe(0);
+    expect(getSyncOpsCalls).toEqual([4]);
     const ids = client.getAllNodes().map((n: { id: string }) => n.id).sort();
     expect(ids).toEqual(['mid-1', 'old-1', 'old-2']);
   });
@@ -354,4 +439,222 @@ describe('fileEntryToSyncNode (task 1302)', () => {
     expect(node.storage_pool_id).toBe('pool-2');
     expect(node.mime_type).toBe('image/png');
   });
+});
+
+// Task 1959 round 2 (Codex P1 on PR #181, audit of the cache-rows class):
+// SyncProvider stops the client when `user` goes null, which is AFTER
+// logout() -> clearToken() has cleared the index cache. stop() flushes a
+// pending write-through, which wrote the signed-out account's tree back to
+// disk, where the next account's Photos tab rendered it as its cached index.
+describe('SyncClient write-through across a sign-out (task 1959 round 2)', () => {
+  test('a stop() after sign-out does not write the signed-out account\'s tree to the index cache', async () => {
+    getSnapshotImpl = async () => ({ seq_id: 3, nodes: [syncNode({ id: 'a1', name_encrypted: 'enc-a1' })] });
+    const client = new SyncClient();
+    await client.start();
+    savedIndexCalls.length = 0;
+
+    // An op within the ~800 ms debounce before sign-out.
+    client.applyLocalOp('file_rename', { id: 'a1', name_encrypted: 'enc-a1-renamed' });
+    // logout() -> clearToken(): the account epoch moves and the cache is cleared.
+    epoch?.advanceAccountEpoch();
+    // SyncProvider's effect sees user === null.
+    client.stop();
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(savedIndexCalls).toEqual([]);
+  });
+
+  test('without a sign-out the stop() flush still writes (unchanged behaviour)', async () => {
+    getSnapshotImpl = async () => ({ seq_id: 3, nodes: [syncNode({ id: 'a1', name_encrypted: 'enc-a1' })] });
+    const client = new SyncClient();
+    await client.start();
+    savedIndexCalls.length = 0;
+    client.applyLocalOp('file_rename', { id: 'a1', name_encrypted: 'enc-a1-renamed' });
+    client.stop();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(savedIndexCalls.length).toBe(1);
+  });
+
+  // Task 1959 round 3: the write-through writes under the scope captured when
+  // the client was created (its account), never one captured at write time.
+  test('the write-through carries the cache write scope captured at construction', async () => {
+    getSnapshotImpl = async () => ({ seq_id: 3, nodes: [syncNode({ id: 'a1', name_encrypted: 'enc-a1' })] });
+    issuedScopes.length = 0;
+    const client = new SyncClient();
+    const constructionScope = issuedScopes[0];
+    expect(constructionScope).toBeDefined();
+    await client.start();
+    savedScopes.length = 0;
+    client.applyLocalOp('file_rename', { id: 'a1', name_encrypted: 'enc-a1-renamed' });
+    client.stop();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(savedScopes.length).toBe(1);
+    expect(savedScopes[0]).toBe(constructionScope);
+  });
+});
+
+// Task 1667 round 13 (review of mobile#182 at a19037f9, item 1, sweep of
+// every getDeviceId() caller): getDeviceId() now REJECTS while the keychain
+// cannot be read, instead of minting a throwaway id. The sync client must
+// still start (not fail the whole sync engine), and must never send an op
+// with a made-up or empty origin: the op stays pending until the id reads.
+describe('SyncClient with an unreadable device id (task 1667 round 13)', () => {
+  test('start succeeds; ops wait for the device id instead of carrying a made-up one', async () => {
+    secureStore.set('bb_sync_last_seq', '0');
+    getSnapshotImpl = async () => ({ seq_id: 1, nodes: [] });
+    submittedOps.length = 0;
+    let unreadable = true;
+    getDeviceIdImpl = async () => {
+      if (unreadable) {
+        const err = new Error('device id unavailable: the secure storage read failed');
+        err.name = 'DeviceIdUnavailableError';
+        throw err;
+      }
+      return 'device-real';
+    };
+    try {
+      const client = new SyncClient();
+      await client.start(); // must not throw
+      const r = await client.submitOp('folder_create', { id: 'f-1', name_encrypted: 'n', parent_id: null });
+      expect(r.accepted).toBe(true); // optimistic, kept pending
+      expect(submittedOps).toEqual([]); // nothing sent without the real id
+
+      unreadable = false;
+      await client.submitOp('folder_create', { id: 'f-2', name_encrypted: 'n2', parent_id: null });
+      expect(submittedOps.length).toBeGreaterThan(0);
+      expect(submittedOps.every((op) => op.device_id === 'device-real')).toBe(true);
+      client.stop();
+    } finally {
+      getDeviceIdImpl = async () => 'device-1';
+    }
+  });
+});
+
+ describe('1990 sync cursor persistence', () => {
+  test('metadata-only remote updates persist a matching cache and avoid a cold snapshot', async () => {
+    secureStore.set('bb_sync_last_seq', '5');
+    cachedIndex = { hash: 'h', storedAt: 1, seq: 5, files: [fileEntry()] };
+    getSyncOpsImpl = async (since) => since < 6 ? [{ seq_id: 6, op_type: 'file_update', payload: { id: 'file-1', size_bytes: 999 } }] : [];
+    const first = new SyncClient(); await first.start(); first.stop();
+    for (let i=0;i<40;i++) await Promise.resolve();
+    const saved = savedIndexCalls.at(-1);
+    expect(saved?.seq).toBe(6);
+    expect(saved?.files[0].size_bytes).toBe(999);
+    cachedIndex = saved;
+    const second = new SyncClient(); await second.start(); second.stop();
+    expect(getSnapshotCalls).toBe(0);
+  });
+  test('a stamped empty tree is a valid returning-device cache', async () => {
+    secureStore.set('bb_sync_last_seq', '5'); cachedIndex = { hash:'h', storedAt:1, seq:5, files:[] };
+    const client = new SyncClient(); await client.start(); client.stop();
+    expect(getSnapshotCalls).toBe(0); expect(client.getAllNodes()).toEqual([]);
+  });
+  test('a debounce gap replays from the cached cursor instead of taking a snapshot', async () => {
+    secureStore.set('bb_sync_last_seq', '6'); cachedIndex = { hash:'h', storedAt:1, seq:5, files:[fileEntry()] };
+    getSyncOpsImpl = async () => [{seq_id:6,op_type:'file_update',payload:{id:'file-1',size_bytes:9}}];
+    const client = new SyncClient(); await client.start(); client.stop();
+    expect(getSyncOpsCalls).toEqual([5]); expect(getSnapshotCalls).toBe(0);
+    expect(client.getNode('file-1')?.size_bytes).toBe(9);
+  });
+});
+
+// PR #199: failed startup must preserve the complete cache across its debounce.
+test('failed restore snapshot cannot stamp an incomplete tree before retry', async () => {
+  secureStore.set('bb_sync_last_seq', '5');
+  cachedIndex = { hash: 'complete', storedAt: Date.now(), seq: 5, files: [fileEntry({ id: 'old-1' })] };
+  getSyncOpsImpl = async (since) => since < 6 ? [
+    { seq_id: 6, op_type: 'file_restore', payload: { id: 'restored-1' } },
+  ] : [];
+  getSnapshotImpl = async () => { throw new Error('snapshot temporarily unavailable'); };
+  const client = new SyncClient();
+  try {
+    await expect(client.start()).rejects.toThrow('snapshot temporarily unavailable');
+    // Longer than the 800ms cache debounce, shorter than the reconnect floor.
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(savedIndexCalls).toHaveLength(0);
+    getSnapshotImpl = async () => ({ seq_id: 6, nodes: [syncNode({ id: 'old-1' }), syncNode({ id: 'restored-1' })] });
+    await client.reconnect();
+    expect(getSnapshotCalls).toBe(2);
+    expect(getSyncOpsCalls).toEqual([5, 5]);
+    expect(client.getNode('restored-1')).toBeDefined();
+    await client.persistCacheNow();
+    expect(savedIndexCalls.at(-1)?.seq).toBe(6);
+    expect(savedIndexCalls.at(-1)?.files.map((file) => file.id).sort()).toEqual(['old-1', 'restored-1']);
+  } finally { client.stop(); }
+});
+
+const signedInUser = { id: 'user-1' };
+mock.module('./auth', () => ({ useAuth: () => ({ user: signedInUser }) }));
+mock.module('./delete-cascade', () => ({ onFilesDeleted: async () => {} }));
+
+test('SyncProvider becomes ready after its rejected startup recovers without a snapshot', async () => {
+  const React = await import('react');
+  const { default: TestRenderer, act } = await import('react-test-renderer');
+  const { SyncProvider, useSync } = await import('./sync-context');
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  secureStore.set('bb_sync_last_seq', '5');
+  cachedIndex = { hash: 'complete', storedAt: Date.now(), seq: 5, files: [fileEntry()] };
+  let attempts = 0;
+  getSyncOpsImpl = async () => {
+    if (++attempts === 1) throw new Error('temporary catch-up failure');
+    return [];
+  };
+  let latest;
+  let client;
+  const realStart = SyncClient.prototype.start;
+  const start = spyOn(SyncClient.prototype, 'start').mockImplementation(function () {
+    client = this;
+    return realStart.call(this);
+  });
+  function Consumer() { latest = useSync(); return null; }
+  let renderer;
+  try {
+    await act(async () => {
+      renderer = TestRenderer.create(React.createElement(SyncProvider, null, React.createElement(Consumer)));
+    });
+    expect(latest.ready).toBe(false);
+    expect(latest.error?.message).toBe('temporary catch-up failure');
+    await act(async () => { await client.reconnect(); });
+    expect(getSyncOpsCalls).toEqual([5, 5]);
+    expect(getSnapshotCalls).toBe(0);
+    expect(latest.ready).toBe(true);
+    expect(latest.loading).toBe(false);
+    expect(latest.error).toBeNull();
+    expect(latest.allNodes()).toHaveLength(1);
+  } finally {
+    await act(async () => { renderer?.unmount(); });
+    start.mockRestore();
+  }
+});
+
+// 2236: metadata encrypted to the request content key must retain its routing
+// envelope across cache seeding, snapshot persistence and incoming create ops.
+const requestEnvelope2236 = {
+  file_request_id: 'request-2236', sender_ephemeral_pubkey: 'ephemeral-2236', wrapped_content_key: 'wrapped-2236',
+};
+test('2236 request envelope survives cache -> sync -> persisted cache', async () => {
+  secureStore.set('bb_sync_last_seq', '5');
+  cachedIndex = {hash:'h', storedAt:1, seq:5, files:[fileEntry(requestEnvelope2236)]};
+  getSyncOpsImpl = async (since) => since < 6 ? [{seq_id:6,op_type:'file_update',payload:{id:'file-1',size_bytes:1235}}] : [];
+  const client = new SyncClient();
+  try {
+    await client.start();
+    expect(client.getNode('file-1')).toMatchObject(requestEnvelope2236);
+    await client.persistCacheNow();
+    expect(savedIndexCalls.at(-1)?.files[0]).toMatchObject(requestEnvelope2236);
+  } finally { client.stop(); }
+});
+test('2236 request envelope survives a snapshot -> persisted cache', async () => {
+  getSnapshotImpl = async () => ({seq_id:5,nodes:[syncNode(requestEnvelope2236)]});
+  const client = new SyncClient();
+  try {
+    await client.start(); await client.persistCacheNow();
+    expect(savedIndexCalls.at(-1)?.files[0]).toMatchObject(requestEnvelope2236);
+  } finally { client.stop(); }
+});
+test('2236 request envelope survives a create op', async () => {
+  const client = new SyncClient();
+  client.applyRemoteOp({seq_id:1,op_type:'file_create',payload:{id:'request-file',...requestEnvelope2236}});
+  expect(client.getNode('request-file')).toMatchObject(requestEnvelope2236);
+  client.stop();
 });

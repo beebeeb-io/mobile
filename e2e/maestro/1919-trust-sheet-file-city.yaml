@@ -1,0 +1,42 @@
+# Task 1919 review (mobile#178, P1), by COUNTRY since task 2050 — Encryption
+# details names the COUNTRY of THIS file's pool, not "Europe", although the row
+# it opens from (CRDT-backed) carries no per-file location.
+# Precondition: signed in and unlocked on Drive against a LOCAL API that runs
+# server task 2050 (storage_location = { country, country_code }), with two
+# root files region-hel-1.md (a Finnish pool) and region-nbg-1.md (a German pool).
+# Pass -e EVIDENCE_DIR=/abs/path. Starts from the running app (no launchApp).
+# The row's lock button is not exposed in the XCUITest hierarchy (the row
+# groups it; its "Encryption details for ..." label never shows up in
+# `maestro hierarchy`), so it is tapped by point. Points assume the Drive
+# order eu / nbg / hel below Backups on an iPhone 17-class sim (bb-qa-2).
+appId: io.beebeeb.app
+---
+- extendedWaitUntil:
+    visible: "Drive"
+    timeout: 30000
+- assertVisible: "region-hel-1.md"
+- tapOn:
+    point: "81%,55%"
+- extendedWaitUntil:
+    visible: "Encryption details"
+    timeout: 10000
+- extendedWaitUntil:
+    visible: "Finland"
+    timeout: 15000
+- assertNotVisible: "Europe"
+- assertNotVisible: ".*(Falkenstein|Helsinki|Nuremberg|Ede).*"
+- takeScreenshot: "${EVIDENCE_DIR}/2050-trust-sheet-finland"
+- tapOn: "Close"
+- extendedWaitUntil:
+    notVisible: "Encryption details"
+    timeout: 10000
+- tapOn:
+    point: "81%,47%"
+- extendedWaitUntil:
+    visible: "Germany"
+    timeout: 15000
+- assertVisible: "region-nbg-1.md"
+- assertNotVisible: "Finland"
+- assertNotVisible: ".*(Falkenstein|Helsinki|Nuremberg|Ede).*"
+- takeScreenshot: "${EVIDENCE_DIR}/2050-trust-sheet-germany"
+- tapOn: "Close"

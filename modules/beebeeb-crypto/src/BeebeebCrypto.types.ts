@@ -90,6 +90,11 @@ export interface FileProviderDomainInfo {
 export interface FileProviderPrivacyState {
   supported: boolean
   showInFiles: boolean
+  /**
+   * Task 1722 round 4: true when Files was ever mounted on this install (the domain schema stamp
+   * a successful registration writes). Read once by the upgrade check in files-mount-default.ts.
+   */
+  everMounted?: boolean
   trustedMountEnabled: boolean
   mounted: boolean
   registered?: boolean
@@ -152,4 +157,13 @@ export interface ConstellationFrame {
   ringPhase: number
   nodes: ConstellationNodeFrame[]
   edges: ConstellationEdgeFrame[]
+}
+
+/** Ciphertext envelopes only; plaintext folder/file keys stay in native handles. */
+export interface SharedKeyEntry { fileId: string; wrapped: Uint8Array; kind: 1 | 2 }
+export interface FolderLinkMint {
+  kc: string
+  wrappedFolderKey: Uint8Array
+  ownerWrappedKey: Uint8Array
+  ownerWrappedToken: Uint8Array
 }

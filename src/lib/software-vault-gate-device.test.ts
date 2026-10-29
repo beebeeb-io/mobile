@@ -36,7 +36,9 @@ mock.module('react-native', () => ({
   Platform: { OS: 'ios' },
 }));
 mock.module('../../modules/beebeeb-crypto', () => ({
+  clearCachedMasterKey: () => undefined,
   computeRecoveryCheck: () => undefined,
+  confirmMasterKeyHandle: () => undefined,
   createMasterKeyHandle: () => undefined,
   createRequestKeypairWithHandle: () => undefined,
   decryptNames: () => undefined,

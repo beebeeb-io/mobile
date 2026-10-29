@@ -28,8 +28,8 @@ import {
   DEFAULT_QUALITY,
 } from '../lib/thumbnail-quality';
 import { BeebeebThumbnails } from '../../modules/beebeeb-crypto';
-import { getFileIndex } from '../lib/api';
-import { loadCachedFileIndex, saveCachedFileIndex } from '../lib/file-index-cache';
+import { ensurePhotoPermission } from '../lib/photo-permissions';
+import { loadFileIndex } from '../lib/file-index-loader';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
 import { seedLocalIdentifierMap } from '../lib/local-identifier-map';
 import { formatBytes } from '../lib/format';
@@ -110,8 +110,13 @@ export default function ThumbnailQualityScreen() {
 
     void (async () => {
       try {
-        const { status } = await MediaLibrary.requestPermissionsAsync();
-        if (cancelled || status !== 'granted') return;
+        // Task 1688 — get first: a granted (full OR limited) library must
+        // not re-prompt; this screen's sample-photo preview only asks the
+        // system for access when there is nothing granted yet. The visit
+        // itself is the explicit action, so a first-time request here is
+        // unchanged behavior.
+        const { granted } = await ensurePhotoPermission(MediaLibrary);
+        if (cancelled || !granted) return;
         const result = await MediaLibrary.getAssetsAsync({
           first: 1,
           mediaType: MediaLibrary.MediaType.photo,
@@ -143,12 +148,8 @@ export default function ThumbnailQualityScreen() {
   const loadScope = useCallback(async () => {
     setLoadingScope(true);
     try {
-      const cached = await loadCachedFileIndex();
-      const index = await getFileIndex(cached?.hash);
-      const files = !index.changed && cached
-        ? cached.files
-        : index.files ?? cached?.files ?? [];
-      if (index.changed && index.files) await saveCachedFileIndex(index.hash, index.files);
+      // Task 1959: through the coalescing loader, not a fresh /files/index walk per mount.
+      const files = (await loadFileIndex()).files ?? [];
 
       const localMap = await getRemoteToLocalMap();
       const eligible = files.filter((f) => (
@@ -381,7 +382,9 @@ export default function ThumbnailQualityScreen() {
                   </View>
 
                   <Text style={[styles.caption, { color: c.ink3 }]}>
-                    Photos backed up from this iPhone are eligible; originals offloaded to iCloud are fetched as needed. Runs 8 workers in parallel.
+                    {Platform.OS === 'ios'
+                      ? 'Photos backed up from this iPhone are eligible; originals offloaded to iCloud are fetched as needed. Runs 8 workers in parallel.'
+                      : 'Photos backed up from this phone are eligible. Runs 8 workers in parallel.'}
                   </Text>
 
                   <TouchableOpacity

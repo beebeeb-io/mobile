@@ -46,7 +46,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
       return
     }
 
-    let window = UIWindow(windowScene: windowScene)
+    // WindowControlsAwareWindow, not a plain UIWindow: keeps content clear of
+    // the iPadOS 26+ window controls (task 1588) — see the class below.
+    let window = WindowControlsAwareWindow(windowScene: windowScene)
     self.window = window
     // Kept in sync for any code that still reads `(delegate as? AppDelegate)?.window`.
     appDelegate.window = window
@@ -105,5 +107,61 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
       continue: userActivity,
       restorationHandler: { _ in }
     )
+  }
+}
+
+// @beebeeb-ipad-window-controls (task 1588)
+//
+// On iPadOS 26+ this iPhone-only app runs in iPhone compatibility mode inside a
+// system window, and the system draws the window controls (the close /
+// minimise / tile "traffic lights") over the window's top-leading corner. The
+// plain safe area does NOT include them: on an iPad Air 11" (M3), iPadOS 27,
+// the controls sat on top of every screen title ("Drive", "Settings", the
+// signup header logo). App Review tests on exactly that iPad.
+//
+// UIKit exposes the controls through the corner-adapted safe-area layout
+// region: `.safeArea(cornerAdaptation: .vertical)` is the safe area pushed
+// down past the controls. The difference between it and the plain safe area is
+// how far the controls intrude, and we hand exactly that to the root view
+// controller as `additionalSafeAreaInsets.top` — which every React Native
+// screen already honours through react-native-safe-area-context. On an
+// iPhone (no window controls) the two regions are equal, so the extra inset is
+// 0 and nothing changes.
+//
+// Measured on the WINDOW (not on the root view), because the root view's own
+// safe area already includes the additional inset we set — measuring there
+// would feed back into itself and oscillate.
+final class WindowControlsAwareWindow: UIWindow {
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    applyWindowControlsInset()
+  }
+
+  override func safeAreaInsetsDidChange() {
+    super.safeAreaInsetsDidChange()
+    applyWindowControlsInset()
+  }
+
+  private func applyWindowControlsInset() {
+    guard let root = rootViewController else { return }
+    let extra: CGFloat
+    if #available(iOS 26.0, *) {
+      extra = WindowControlsInset.extraTop(
+        plainSafeAreaTop: safeAreaInsets.top,
+        cornerAdaptedSafeAreaTop: edgeInsets(for: .safeArea(cornerAdaptation: .vertical)).top
+      )
+    } else {
+      extra = 0
+    }
+    if root.additionalSafeAreaInsets.top != extra {
+      root.additionalSafeAreaInsets.top = extra
+    }
+  }
+}
+
+enum WindowControlsInset {
+  /// How far the window controls reach below the plain safe area (never negative).
+  static func extraTop(plainSafeAreaTop: CGFloat, cornerAdaptedSafeAreaTop: CGFloat) -> CGFloat {
+    return max(0, cornerAdaptedSafeAreaTop - plainSafeAreaTop)
   }
 }

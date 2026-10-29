@@ -1,0 +1,89 @@
+package expo.modules.beebeebcrypto
+
+import org.junit.Assert.*
+import org.junit.Test
+import kotlin.concurrent.thread
+
+class SharedKeyRegistryTest {
+  private class FakeKey : AutoCloseable { var closes = 0; override fun close() { closes++ } }
+  @Test fun release_replace_and_clear_close_native_handles() {
+    val r = SharedKeyRegistry<FakeKey>()
+    val folder = FakeKey(); val id = r.storeFolder(folder, "root")
+    r.releaseFolder(id); r.releaseFolder(id); assertEquals(1, folder.closes)
+    val old = FakeKey(); val replacement = FakeKey()
+    r.storeFile("file", old); r.storeFile("file", replacement)
+    assertEquals(1, old.closes); assertEquals(0, replacement.closes)
+    r.clear(); r.clear(); assertEquals(1, replacement.closes)
+  }
+  @Test fun rejected_stale_insert_is_disposed() {
+    val r = SharedKeyRegistry<FakeKey>(); val epoch = r.generation; r.clear()
+    val file = FakeKey(); val folder = FakeKey()
+    assertFalse(r.storeFile("file", file, epoch)); assertEquals(1, file.closes)
+    assertNull(r.storeFolderIfCurrent(folder, "root", epoch)); assertEquals(1, folder.closes)
+  }
+  @Test fun aliases_and_identical_replacements_close_once() {
+    val r = SharedKeyRegistry<FakeKey>(); val key = FakeKey()
+    val id = r.storeFolder(key, "root"); r.storeFile("one", key); r.storeFile("two", key)
+    r.storeFile("one", key); r.releaseFolder(id); assertEquals(0, key.closes)
+    r.clear(); assertEquals(1, key.closes)
+  }
+  @Test fun rejected_capacity_insert_is_disposed() {
+    val r = SharedKeyRegistry<FakeKey>(); val key = FakeKey()
+    repeat(100000) { r.storeFile("$it", key) }
+    val rejected = FakeKey(); assertFalse(r.storeFile("overflow", rejected))
+    assertEquals(1, rejected.closes); r.clear(); assertEquals(1, key.closes)
+  }
+
+  @Test fun borrowed_access_survives_preview_close_and_can_be_read_again() {
+    var closes = 0; val key = Any()
+    SharedKeyAccess(key, false) { closes++ }.use { assertSame(key, it.handle) }
+    SharedKeyAccess(key, false) { closes++ }.use { assertSame(key, it.handle) }
+    assertEquals(0, closes)
+  }
+  @Test fun owned_access_closes_exactly_once() {
+    var closes = 0
+    val access = SharedKeyAccess(Any(), true) { closes++ }
+    access.close(); access.close(); assertEquals(1, closes)
+  }
+  @Test fun registry_returns_a_stored_file_handle() {
+    val r = SharedKeyRegistry<Any>(); val key = Any()
+    assertTrue(r.storeFile("a", key)); assertSame(key, r.file("a"))
+  }
+  @Test fun registry_refuses_the_100001st_file() {
+    val r = SharedKeyRegistry<Any>(); val key = Any()
+    repeat(100000) { assertTrue(r.storeFile("$it", key)) }
+    assertFalse(r.storeFile("overflow", key)); assertTrue(r.storeFile("0", key))
+  }
+  @Test fun clear_drops_folders_and_files() {
+    val r = SharedKeyRegistry<Any>(); val id = r.storeFolder(Any(), "root")
+    r.storeFile("a", Any()); r.clear(); assertNull(r.folder(id)); assertNull(r.file("a"))
+  }
+  @Test fun a_released_folder_id_is_invalid() {
+    val r = SharedKeyRegistry<Any>(); val id = r.storeFolder(Any(), "root")
+    r.releaseFolder(id); assertNull(r.folder(id))
+  }
+  @Test fun ids_are_never_reused_after_clear() {
+    val r = SharedKeyRegistry<Any>(); val id = r.storeFolder(Any(), "root")
+    r.clear(); assertTrue(r.storeFolder(Any(), "root") > id)
+  }
+  @Test fun table_entry_wins_over_derivation() {
+    val key = Any(); var calls = 0
+    assertSame(key, pickKey(key) { calls++; Any() }); assertEquals(0, calls)
+  }
+  @Test fun concurrent_store_and_clear_never_crash() {
+    val r = SharedKeyRegistry<Any>()
+    val workers = (0..7).map { w -> thread { repeat(1000) { i ->
+      r.storeFile("$w-$i", Any()); r.file("$w-$i"); if (i % 4 == 0) r.clear()
+    } } }; workers.forEach { it.join() }; r.clear(); assertNull(r.file("0-0"))
+  }
+  @Test fun handle_registry_release_and_clear_invoke_the_shared_clear_hook() {
+    val r = BeebeebCryptoHandleRegistry(); var calls = 0
+    r.onCleared = { calls++ }
+    r.release(-1); assertEquals(1, calls)
+    r.clear(); assertEquals(2, calls)
+  }
+  @Test fun decrypt_names_merges_table_and_master_results_in_order() {
+    assertEquals(listOf("owner", "guest", "error:bad", "last"),
+      mergeNameResults(4, listOf(1 to "guest"), listOf(0 to "owner", 2 to "error:bad", 3 to "last")))
+  }
+}

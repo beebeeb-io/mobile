@@ -28,6 +28,7 @@ import { useCrypto } from '../lib/crypto-context';
 import { listFileRequests, closeFileRequest, type FileRequest } from '../lib/api';
 import { fromBase64, toBase64url } from '../lib/file-request-crypto';
 import { formatBytes } from '../lib/format';
+import { formatDate } from '../lib/date-format';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 type Status = 'open' | 'closed' | 'expired';
@@ -215,7 +216,7 @@ export default function FileRequestsScreen({
                   {r.expires_at ? (
                     <Text style={[styles.meta, { color: c.ink3 }]}>
                       {status === 'expired' ? 'expired ' : 'expires '}
-                      {new Date(r.expires_at).toLocaleDateString()}
+                      {formatDate(r.expires_at)}
                     </Text>
                   ) : null}
                 </View>

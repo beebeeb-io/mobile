@@ -1,3 +1,4 @@
+import { appVersion } from '../lib/app-version';
 /**
  * BackupService — manages the backup folder hierarchy and the per-device
  * `.device.json` manifest.
@@ -18,8 +19,10 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
+import { recordRuntimeTrace } from '../lib/runtime-trace';
 
 let Device: { deviceName: string | null; modelName: string | null; osName: string | null; osVersion: string | null } = {
   deviceName: null, modelName: null, osName: null, osVersion: null,
@@ -38,9 +41,17 @@ import {
   moveFile,
   renameFile,
   trashFiles,
-  getFileIndex,
   type FileEntry,
 } from '../lib/api';
+import { FILE_INDEX_REVALIDATE_MS, loadFileIndex } from '../lib/file-index-loader';
+import {
+  accountEpoch,
+  isCurrentAccountEpoch,
+  isStaleAccountError,
+  sameAccountEpoch,
+  StaleAccountError,
+  type AccountEpoch,
+} from '../lib/account-epoch';
 import type { EncryptedData } from '../../modules/beebeeb-crypto';
 import {
   getContactsBackupStatus,
@@ -53,6 +64,7 @@ import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { guessMimeType } from '../lib/media';
 // 0817 — reconcile derived state against /files/index (server truth).
 import { getAllUploadedRemoteIds, resetUploadedState } from './BackupDatabase';
+import { backupWriteTicket } from '../lib/backup-write-ticket';
 import { offlineManager } from '../lib/offline-manager';
 import {
   pruneThumbnailsForRemoteFiles,
@@ -61,6 +73,9 @@ import {
 } from '../lib/thumbnail-cache';
 import { loadNameCache, pruneNameCache } from '../lib/name-cache';
 import { getDeviceId } from '../lib/device-identity';
+import { BACKUP_FOLDER_CACHE_KEY } from '../lib/backup-folder-cache';
+// Task 1594: stop (never fork the tree) when this key can't read the names.
+import { VaultKeyMismatchError } from './vault-key-mismatch';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -153,10 +168,28 @@ function isEncryptionUnavailableError(err: unknown): boolean {
 // Constants
 // ---------------------------------------------------------------------------
 
-const FOLDER_CACHE_KEY = 'beebeeb_backup_folders';
+// Task 1962 Bug 4: cleared at sign-out by account-cleanup.ts.
+const FOLDER_CACHE_KEY = BACKUP_FOLDER_CACHE_KEY;
+/**
+ * Task 1667 round 13 (review of mobile#182 at a19037f9, item 2): the
+ * once-per-DEVICE "legacy root backups migrated" record. It used to live in
+ * the folder cache (`legacyMigration.completedAt`), which sign-out clears
+ * since this PR (1962 Bug 4), so every sign-in ran the migration again and
+ * moved the user's own root "Photos" folder and contacts.vcf / calendar.ics.
+ * Its own key, never cleared by sign-out or account deletion: it holds no
+ * account data (a timestamp and three counts).
+ */
+export const LEGACY_MIGRATION_DONE_KEY = 'beebeeb_backup_legacy_migration';
+/**
+ * The root "Photos" folder id the May 2026 JS photo runner stored
+ * (PhotoBackupRunner, commits 8ca1047..b082fef, which created that folder
+ * with an ENCRYPTED name). Read only, as a legacy marker.
+ */
+const LEGACY_PHOTOS_FOLDER_ID_KEY = 'beebeeb_photos_folder_id';
+/** The plaintext names the pre-category backup code wrote at the vault root. */
+const LEGACY_ROOT_NAMES = { photosFolder: 'Photos', contacts: 'contacts.vcf', calendar: 'calendar.ics' } as const;
 const MANIFEST_FILENAME = '.device.json';
 const MANIFEST_VERSION = 1;
-const APP_VERSION = '1.0.0';
 const FALLBACK_CHUNK_SIZE = 4 * 1024 * 1024;
 const NONCE_LENGTH = 12;
 const GCM_TAG_LENGTH = 16;
@@ -174,6 +207,20 @@ type NameDecryptResult = {
   name: string;
   mimeType: string | null;
   canonical: boolean;
+  /**
+   * Task 1594 round 6 (Codex P1, BackupService.ts:440): true only when this
+   * name was proven readable by an actual master-key decryption. A legacy
+   * PLAINTEXT `name_encrypted` value (the early-return path in
+   * `decryptNameDetails` below, taken when the value isn't even a
+   * `{nonce,ciphertext}` envelope) never touches the key at all — it is not
+   * evidence the loaded key belongs to this account, and must never count
+   * toward the "the key decrypts fine at this level" proof `findChildFolder`
+   * uses to bypass `VaultKeyMismatchError`. Without this flag, one unrelated
+   * plaintext legacy folder next to a wrong-key `Backups` tree was enough to
+   * make the wrong-key tree look "foreign but the key otherwise works here"
+   * and get silently forked, instead of blocking with a mismatch error.
+   */
+  cryptographicallyVerified: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -215,6 +262,16 @@ interface DeviceInfo {
   app_version: string;
 }
 
+function deviceName(): string {
+  return Device.deviceName ?? 'Unknown Device';
+}
+
+/**
+ * Round 13 (review item 1): rejects with `DeviceIdUnavailableError` while the
+ * keychain cannot be read. Its callers write the encrypted device manifest
+ * (`.device.json`); a rejected write is retried by the next run, instead of
+ * writing a made-up id into the manifest. Every UI caller catches it.
+ */
 async function getDeviceInfo(): Promise<DeviceInfo> {
   return {
     // Canonical device id (task 0863). The manifest's device_id is write-only
@@ -224,10 +281,10 @@ async function getDeviceInfo(): Promise<DeviceInfo> {
     // `beebeeb_device_id` value (when no sync id exists) so the manifest stays
     // byte-identical across the upgrade.
     device_id: await getDeviceId(),
-    device_name: Device.deviceName ?? 'Unknown Device',
+    device_name: deviceName(),
     device_model: Device.modelName ?? 'Unknown Model',
     os_version: `${Device.osName ?? Platform.OS} ${Device.osVersion ?? ''}`.trim(),
-    app_version: APP_VERSION,
+    app_version: appVersion().version,
   };
 }
 
@@ -252,7 +309,14 @@ async function readFolderCache(): Promise<FolderCache> {
   }
 }
 
-async function writeFolderCache(cache: FolderCache): Promise<void> {
+/**
+ * Task 1959 round 3: `epoch` is REQUIRED — the account epoch the writer
+ * started under (captured before its first await). Every writer awaits the
+ * network or SecureStore before it writes; a write whose account has signed
+ * out since is dropped instead of landing in the next account's cache.
+ */
+async function writeFolderCache(cache: FolderCache, epoch: AccountEpoch): Promise<void> {
+  if (!isCurrentAccountEpoch(epoch)) return;
   await storeSet(FOLDER_CACHE_KEY, JSON.stringify(cache));
 }
 
@@ -317,8 +381,34 @@ function parseNameMetadata(plaintext: string): { name: string; mimeType: string 
 }
 
 /**
+ * Task 1594 round 2 (F2): does `err` prove the key is wrong for this entry
+ * (a deterministic AEAD authentication failure), or is it some OTHER native
+ * exception that says nothing about the key? Core's decrypt is a single
+ * `Result<String, CoreError>` with exactly one decryption-failure variant —
+ * `CoreError::Decryption` / UniFFI `CryptoError::Decryption`, message
+ * `"decryption failed: ciphertext is invalid or key is wrong"`
+ * (`repos/core/beebeeb-core/src/error.rs`, `beebeeb-uniffi/src/lib.rs`) — so
+ * that message IS the "the API allows distinguishing it" case. Anything else
+ * (e.g. `BeebeebCryptoModule.getHandle`'s "Invalid master key handle ID",
+ * thrown if a handle was released mid-flight) is a bridge/lifecycle fault,
+ * not proof of a wrong key, and gets the retry-once fallback instead.
+ */
+function isDefiniteDecryptAuthFailure(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /decryption failed|ciphertext is invalid|key is wrong/i.test(message);
+}
+
+/**
  * Decrypt a name_encrypted value to its plaintext name. Plaintext legacy
  * values are accepted, but undecryptable encrypted envelopes return null.
+ *
+ * Task 1594 round 2 (F2): a single native exception that is NOT a definite
+ * decryption-auth failure (see `isDefiniteDecryptAuthFailure`) is retried
+ * ONCE before this folder counts as undecryptable/foreign — the native API
+ * gives no other way to distinguish a transient bridge fault from a real
+ * wrong-key failure, so a lone non-decryption exception must not be treated
+ * as proof of a foreign key (`findChildFolder` below would otherwise be able
+ * to mistake a released-handle race for a foreign folder).
  */
 async function decryptNameDetails(entry: FileEntry): Promise<NameDecryptResult | null> {
   const enc = requireEncryption();
@@ -328,19 +418,29 @@ async function decryptNameDetails(entry: FileEntry): Promise<NameDecryptResult |
       name: entry.name_encrypted,
       mimeType: entry.is_folder ? null : guessMimeType(entry.name_encrypted),
       canonical: false,
+      cryptographicallyVerified: false,
     };
   }
+  const attemptDecrypt = () => enc.decryptMetadataFn(entry.id, parsed.nonce, parsed.ciphertext);
+  let plaintext: string;
   try {
-    const plaintext = await enc.decryptMetadataFn(entry.id, parsed.nonce, parsed.ciphertext);
-    const metadata = parseNameMetadata(plaintext);
-    return {
-      name: metadata.name,
-      mimeType: metadata.mimeType ?? (entry.is_folder ? null : guessMimeType(metadata.name)),
-      canonical: metadata.canonical,
-    };
-  } catch {
-    return null;
+    plaintext = await attemptDecrypt();
+  } catch (err) {
+    if (isDefiniteDecryptAuthFailure(err)) return null;
+    try {
+      recordRuntimeTrace('backup.name_decrypt_transient_retry', {});
+      plaintext = await attemptDecrypt();
+    } catch {
+      return null;
+    }
   }
+  const metadata = parseNameMetadata(plaintext);
+  return {
+    name: metadata.name,
+    mimeType: metadata.mimeType ?? (entry.is_folder ? null : guessMimeType(metadata.name)),
+    canonical: metadata.canonical,
+    cryptographicallyVerified: true,
+  };
 }
 
 async function decryptName(entry: FileEntry): Promise<string | null> {
@@ -372,8 +472,49 @@ async function findChildFolder(parentId: string | undefined, name: string): Prom
   // Early-exit cursor walk: stop at the first matching folder but never miss one
   // past page 1. A capped single page here let ensureFolder create DUPLICATE
   // backup folder trees when a parent had >200 children (task 0755).
-  const match = await findFile(parentId, async (f) => f.is_folder && (await decryptName(f)) === name);
-  return match ?? null;
+  let decryptableFolders = 0;
+  let cryptographicallyDecryptedFolders = 0;
+  let undecryptableFolders = 0;
+  const match = await findFile(parentId, async (f) => {
+    if (!f.is_folder) return false;
+    const details = await decryptNameDetails(f);
+    if (details === null) {
+      undecryptableFolders += 1;
+      return false;
+    }
+    decryptableFolders += 1;
+    // Task 1594 round 6 (Codex P1): a legacy PLAINTEXT name never exercised
+    // the key — it must not count as proof the key works at this level.
+    if (details.cryptographicallyVerified) cryptographicallyDecryptedFolders += 1;
+    return details.name === name;
+  });
+  if (match) return match;
+  // Task 1594: "no match" is only trustworthy when the key has been proven to
+  // work AT THIS LEVEL. Round 2 (F2): the round-1 rule ("any undecryptable
+  // sibling → stop") blocked backup FOREVER for an account already hit by the
+  // original 1594 bug — its own real folders decrypt fine, but the wrong-key
+  // leftover tree sitting alongside them never will, so every future run hit
+  // this same wall with advice ("sign out, sign in, enter your phrase") that
+  // cannot fix a problem that isn't in this session's key. Once at least one
+  // sibling at this level was CRYPTOGRAPHICALLY decrypted (round 6: not
+  // merely a legacy plaintext name that never touched the key — see
+  // `cryptographicallyVerified` on `NameDecryptResult`), the key is proven to
+  // work here — any undecryptable one left is provably a FOREIGN key's folder,
+  // not possibly "ours but unreadable right now" (that ambiguity is exactly
+  // what a transient exception is retried once for, in decryptNameDetails,
+  // before it ever reaches this count). Only when NO folder here was actually
+  // decrypted with this key do we not know whether the wanted folder is one of
+  // the unreadable ones — stop, same as before.
+  if (undecryptableFolders > 0) {
+    if (cryptographicallyDecryptedFolders === 0) throw new VaultKeyMismatchError(undecryptableFolders);
+    // No file/folder names are logged — only the count, at this parent level.
+    recordRuntimeTrace('backup.foreign_folder_skipped', {
+      parentId: parentId ?? 'root',
+      undecryptableFolders,
+      decryptableFolders,
+    });
+  }
+  return null;
 }
 
 // In-flight find-or-create coalescing (0811). The find-then-create in
@@ -425,11 +566,68 @@ async function moveLegacyItem(item: FileEntry, parentId: string, newPlaintextNam
   }
 }
 
+type LegacyMigration = NonNullable<FolderCache['legacyMigration']>;
+
+/**
+ * Round 13 (item 2): the device's migration record. Its own key first; else
+ * a record an earlier build left in the folder cache, copied to the key so a
+ * later sign-out (which clears the cache) cannot re-arm the migration.
+ */
+async function readLegacyMigration(cache: FolderCache): Promise<LegacyMigration | undefined> {
+  const raw = await storeGet(LEGACY_MIGRATION_DONE_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as LegacyMigration;
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch {
+      // An unreadable record still says "done": never run twice.
+      return { completedAt: 'unknown' };
+    }
+  }
+  if (cache.legacyMigration?.completedAt) {
+    await storeSet(LEGACY_MIGRATION_DONE_KEY, JSON.stringify(cache.legacyMigration));
+    return cache.legacyMigration;
+  }
+  return undefined;
+}
+
+/**
+ * Round 13 (item 2): which legacy layout item a root entry is, by a marker
+ * only the pre-category backup code (May 2026, before names were encrypted)
+ * left, never by its decrypted name:
+ * - a folder whose RAW `name_encrypted` is the plaintext "Photos" (the JS
+ *   photo runner before 8ca1047), or whose id is the one that runner stored
+ *   in `beebeeb_photos_folder_id` (8ca1047..b082fef, encrypted name);
+ * - a file whose RAW `name_encrypted` is "contacts.vcf" / "calendar.ics" (the
+ *   native contacts/calendar uploads before 6f1d007 sent no parent and a
+ *   plaintext name).
+ * Since 60a941f every client encrypts names and the server rejects a
+ * plaintext one, so a folder or file the user made (web, app) never has a
+ * plaintext name and is never moved. Before round 13 the check compared the
+ * DECRYPTED name, so a user's own root "Photos" folder matched.
+ */
+function legacyRootItemKind(
+  f: FileEntry,
+  legacyPhotosFolderId: string | null,
+): 'camera_roll' | 'contacts' | 'calendar' | null {
+  if (f.is_folder) {
+    if (f.name_encrypted === LEGACY_ROOT_NAMES.photosFolder) return 'camera_roll';
+    if (legacyPhotosFolderId && f.id === legacyPhotosFolderId) return 'camera_roll';
+    return null;
+  }
+  if (f.name_encrypted === LEGACY_ROOT_NAMES.contacts) return 'contacts';
+  if (f.name_encrypted === LEGACY_ROOT_NAMES.calendar) return 'calendar';
+  return null;
+}
+
 async function migrateLegacyRootBackups(
   cache: FolderCache,
   categoryIds: Record<BackupCategory, string>,
 ): Promise<FolderCache> {
-  if (cache.legacyMigration?.completedAt) return cache;
+  // Round 13 (item 2): once per DEVICE, recorded in its own key (main's
+  // semantics; the folder cache this used is cleared at every sign-out now).
+  const done = await readLegacyMigration(cache);
+  if (done?.completedAt) return { ...cache, legacyMigration: done };
 
   const summary: Record<BackupCategory, number> = {
     camera_roll: 0,
@@ -445,35 +643,30 @@ async function migrateLegacyRootBackups(
     return cache;
   }
 
-  // Decrypt names for comparison — legacy items may have plaintext or encrypted names
+  const legacyPhotosFolderId = await storeGet(LEGACY_PHOTOS_FOLDER_ID_KEY);
+  const targets: Record<BackupCategory, { parent: string; name: string }> = {
+    camera_roll: { parent: categoryIds.camera_roll, name: 'Photos (legacy)' },
+    contacts: { parent: categoryIds.contacts, name: 'contacts.legacy.vcf' },
+    calendar: { parent: categoryIds.calendar, name: 'calendar.legacy.ics' },
+  };
   for (const f of rootChildren) {
-    const decrypted = await decryptName(f);
-    if (f.is_folder && decrypted === 'Photos') {
-      if (await moveLegacyItem(f, categoryIds.camera_roll, 'Photos (legacy)')) {
-        summary.camera_roll += 1;
-      }
-    }
-    if (!f.is_folder && decrypted === 'contacts.vcf') {
-      if (await moveLegacyItem(f, categoryIds.contacts, 'contacts.legacy.vcf')) {
-        summary.contacts += 1;
-      }
-    }
-    if (!f.is_folder && decrypted === 'calendar.ics') {
-      if (await moveLegacyItem(f, categoryIds.calendar, 'calendar.legacy.ics')) {
-        summary.calendar += 1;
-      }
+    const kind = legacyRootItemKind(f, legacyPhotosFolderId);
+    if (!kind) continue;
+    if (await moveLegacyItem(f, targets[kind].parent, targets[kind].name)) {
+      summary[kind] += 1;
     }
   }
 
-  return {
-    ...cache,
-    legacyMigration: {
-      completedAt: new Date().toISOString(),
-      camera_roll: summary.camera_roll,
-      contacts: summary.contacts,
-      calendar: summary.calendar,
-    },
+  const legacyMigration: LegacyMigration = {
+    completedAt: new Date().toISOString(),
+    camera_roll: summary.camera_roll,
+    contacts: summary.contacts,
+    calendar: summary.calendar,
   };
+  // Device-level, so not epoch-gated: the moves above already happened.
+  await storeSet(LEGACY_MIGRATION_DONE_KEY, JSON.stringify(legacyMigration));
+  recordRuntimeTrace('backup.legacy_root_migration.done', { ...summary });
+  return { ...cache, legacyMigration };
 }
 
 async function selfHealKnownBackupMetadata(
@@ -767,12 +960,42 @@ async function flattenDuplicateBackupFolders(): Promise<void> {
 // wrong.
 
 const RECONCILE_HASH_KEY = 'beebeeb_reconcile_index_hash';
-let _reconcileInFlight: Promise<void> | null = null;
+/** Task 1959 round 2: the running reconcile and the account epoch it belongs
+ *  to. A caller of another epoch never joins it. */
+let _reconcileInFlight: { epoch: AccountEpoch; promise: Promise<void> } | null = null;
+
+/**
+ * Task 1959: the reconcile asks the server at most once per this interval.
+ *
+ * It is reached from `ensureBackupFolders()`, and that runs on every
+ * `getDeviceManifest()`. SettingsScreen's `refreshBackupStats` effect calls
+ * `getDeviceManifest()` every time `backupProgress.completed` changes, i.e.
+ * once per backed-up item, and the AppState listener in backup-context runs it
+ * on every return to the foreground. The hash gate below did not help during
+ * a backup: each completed item changes the vault, so every call came back
+ * `changed: true` with the whole index (39,783 rows for Guus), and the server
+ * walks the whole vault either way (~2.4 s). That is how one upload produced
+ * 18 GET /files/index in 10 minutes.
+ *
+ * A server-side delete (0817's case) is still picked up: on the next call
+ * after the interval, and on the next foreground after it. ensureBackupFolders
+ * is find-or-create, so a deleted Backups root is recreated regardless.
+ */
+export const RECONCILE_MIN_INTERVAL_MS = FILE_INDEX_REVALIDATE_MS;
+/** When the last successful server check ran, and for which account epoch:
+ *  account A's reconcile never throttles account B's. */
+let _lastReconcile: { epoch: AccountEpoch; at: number } | null = null;
+
+/** Test hook: forget the reconcile throttle. */
+export function resetReconcileThrottleForTests(): void {
+  _lastReconcile = null;
+  _reconcileInFlight = null;
+}
 
 /** Reset the persisted backup folder cache so ensureBackupFolders rebuilds the
  *  tree from scratch (used when the whole Backups root is gone). */
-async function clearFolderCache(): Promise<void> {
-  await writeFolderCache({});
+async function clearFolderCache(epoch: AccountEpoch): Promise<void> {
+  await writeFolderCache({}, epoch);
 }
 
 /** 0818 — if any deleted id is a cached backup folder (root/device/category),
@@ -780,6 +1003,9 @@ async function clearFolderCache(): Promise<void> {
  *  reusing a now-deleted folder. Called by the delete-cascade dispatcher. */
 export async function invalidateBackupFolderCacheIfDeleted(deletedIds: Set<string>): Promise<void> {
   if (deletedIds.size === 0) return;
+  // Round 3: the delete happened in this account; the read below is a window
+  // for a sign-out after which the cache is the next account's.
+  const epoch = accountEpoch();
   const cache = await readFolderCache();
   const backupFolderIds = [
     cache.rootId,
@@ -787,7 +1013,7 @@ export async function invalidateBackupFolderCacheIfDeleted(deletedIds: Set<strin
     ...Object.values(cache.categoryIds ?? {}),
   ].filter((id): id is string => typeof id === 'string');
   if (backupFolderIds.some((id) => deletedIds.has(id))) {
-    await clearFolderCache();
+    await clearFolderCache(epoch);
     console.info('[BackupService] delete-cascade: a backup folder was deleted — cleared folder cache');
   }
 }
@@ -807,12 +1033,15 @@ async function selfHealCategoryBackup(
   category: 'contacts' | 'calendar',
   indexIds: Set<string>,
   rootGone: boolean,
+  live: () => void = () => {},
 ): Promise<void> {
   try {
     const status =
       category === 'contacts'
         ? await getContactsBackupStatus()
         : await getCalendarBackupStatus();
+    // Task 1959 round 2: the account may have changed during the read above.
+    live();
     // Never backed up → nothing to heal (don't reset a fresh install).
     if (!status.hasKnownBackupState) return;
     const folderId = status.parentFolderId ?? null;
@@ -826,6 +1055,7 @@ async function selfHealCategoryBackup(
       `[BackupService] reconcile: ${category} backup folder gone server-side — cleared native dedup/state so the next run re-uploads`,
     );
   } catch (err) {
+    if (isStaleAccountError(err)) throw err;
     // Best-effort — a failed self-heal must never break the reconcile.
     console.warn(`[BackupService] reconcile: ${category} self-heal skipped`, err);
   }
@@ -837,23 +1067,55 @@ async function selfHealCategoryBackup(
  * callers share one pass. Safe to call on backup warm-up and app foreground.
  */
 export async function reconcileDerivedStateAgainstServer(): Promise<void> {
-  if (_reconcileInFlight) return _reconcileInFlight;
+  // Task 1959 round 2 (Codex P1 on PR #181): everything below compares and
+  // prunes LOCAL state against the ids /files/index returned. It belongs to
+  // the account epoch it started under, and stops at the first await after
+  // that account is gone, before the next read or write of local state.
+  const epoch = accountEpoch();
+  // Task 1667 round 8: the manifest re-queue below runs behind a write ticket
+  // taken here (account epoch + storage-purge generation).
+  const writeTicket = backupWriteTicket();
+  if (_reconcileInFlight && sameAccountEpoch(_reconcileInFlight.epoch, epoch)) {
+    return _reconcileInFlight.promise;
+  }
+  // Task 1959: throttle — see RECONCILE_MIN_INTERVAL_MS.
+  if (
+    _lastReconcile
+    && sameAccountEpoch(_lastReconcile.epoch, epoch)
+    && Date.now() - _lastReconcile.at < RECONCILE_MIN_INTERVAL_MS
+  ) {
+    return;
+  }
 
-  _reconcileInFlight = (async () => {
+  const live = (): void => {
+    if (!isCurrentAccountEpoch(epoch)) throw new StaleAccountError('backup reconcile');
+  };
+
+  const promise: Promise<void> = (async () => {
     try {
       const lastHash = (await storeGet(RECONCILE_HASH_KEY)) ?? undefined;
+      live();
       let resp;
       try {
-        resp = await getFileIndex(lastHash);
+        // Forced: orphan detection needs the server's CURRENT list (a stale
+        // list would miss a file uploaded since and re-queue it as an orphan).
+        // Through the shared loader so it joins any /files/index request a
+        // screen already has in flight, and refreshes the index cache.
+        resp = await loadFileIndex({ force: true });
       } catch (err) {
+        if (isStaleAccountError(err)) throw err;
         // Network/auth blip — leave state as-is and retry next warm-up. NEVER
         // demote on an absent index we couldn't fetch.
         console.warn('[BackupService] reconcile: /files/index fetch failed, skipping', err);
         return;
       }
+      // The loader only resolves with rows of the epoch it was called under,
+      // which `live()` just above proved is this reconcile's.
+      live();
+      _lastReconcile = { epoch, at: Date.now() };
 
       // Hash short-circuit: nothing changed since the last reconcile → no-op.
-      if (!resp.changed || !resp.files) {
+      if (!resp.files || !resp.hash || resp.hash === lastHash) {
         return;
       }
 
@@ -861,8 +1123,10 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
 
       // --- Backup manifest (camera roll) -------------------------------------
       const cache = await readFolderCache();
+      live();
       const rootGone = cache.rootId != null && !indexIds.has(cache.rootId);
       const uploadedRemote = await getAllUploadedRemoteIds();
+      live();
       const backupOrphans = rootGone
         ? [...uploadedRemote]
         : [...uploadedRemote].filter((id) => !indexIds.has(id));
@@ -871,11 +1135,12 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
         // The founder's exact case: the entire Backups tree was deleted
         // server-side. Re-queue ALL uploaded assets (so re-enabling backup
         // re-uploads them) and drop the stale folder cache so the tree rebuilds.
-        const requeued = await resetUploadedState();
-        await clearFolderCache();
+        const requeued = await resetUploadedState(undefined, writeTicket);
+        live();
+        await clearFolderCache(epoch);
         console.info(`[BackupService] reconcile: Backups root gone — re-queued ${requeued} asset(s), cleared folder cache`);
       } else if (backupOrphans.length > 0) {
-        const requeued = await resetUploadedState(backupOrphans);
+        const requeued = await resetUploadedState(backupOrphans, writeTicket);
         console.info(`[BackupService] reconcile: re-queued ${requeued} orphaned backup asset(s)`);
       }
 
@@ -884,26 +1149,35 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
       // they're reconciled separately: a gone category folder (or a gone root)
       // clears the native scan/upload state + SHA dedup so the next run
       // re-uploads instead of silently skipping as "unchanged".
-      await selfHealCategoryBackup('contacts', indexIds, rootGone);
-      await selfHealCategoryBackup('calendar', indexIds, rootGone);
+      live();
+      await selfHealCategoryBackup('contacts', indexIds, rootGone, live);
+      live();
+      await selfHealCategoryBackup('calendar', indexIds, rootGone, live);
+      live();
 
       // --- Offline-pinned copies --------------------------------------------
       const offlineFileOrphans = offlineManager.offlineFileIds().filter((id) => !indexIds.has(id));
       for (const id of offlineFileOrphans) {
+        live();
         await offlineManager.removeFile(id);
       }
+      live();
       const offlineFolderOrphans = offlineManager.offlineFolderIds().filter((id) => !indexIds.has(id));
       for (const id of offlineFolderOrphans) {
+        live();
         await offlineManager.removeFolder(id, []);
       }
 
       // --- Name cache (0807) -------------------------------------------------
+      live();
       const nameCache = await loadNameCache();
+      live();
       const nameOrphans = Object.keys(nameCache).filter((id) => !indexIds.has(id));
-      if (nameOrphans.length > 0) await pruneNameCache(nameOrphans);
+      if (nameOrphans.length > 0) await pruneNameCache(nameOrphans, epoch);
 
       // --- Thumbnails --------------------------------------------------------
       // Disk: drop any cached thumbnail whose file isn't in the index.
+      live();
       await pruneThumbnailsForRemoteFiles(indexIds);
       // Memory (JS) + native FSM/cache: invalidate the union of orphans we found
       // (covers the founder's deleted backup files + any deleted offline/named
@@ -912,7 +1186,9 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
         ...new Set([...backupOrphans, ...offlineFileOrphans, ...nameOrphans]),
       ];
       if (orphanUnion.length > 0) {
+        live();
         await invalidateCachedThumbnails(orphanUnion);
+        live();
         await invalidateNativeThumbnailCache(orphanUnion);
       }
 
@@ -922,16 +1198,24 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
       // can't reach. The 0818 dispatcher — wired into React — reconciles it via
       // getIndexedIds() + unindexFile() against this same indexIds set.
 
+      live();
       await storeSet(RECONCILE_HASH_KEY, resp.hash);
       console.info(`[BackupService] reconcile complete (index hash ${resp.hash.slice(0, 8)}…, ${indexIds.size} live files)`);
     } catch (err) {
+      if (isStaleAccountError(err)) {
+        console.info('[BackupService] reconcile abandoned: the account changed while it ran');
+        return;
+      }
       console.warn('[BackupService] reconcile failed (will retry next warm-up):', err);
     } finally {
-      _reconcileInFlight = null;
+      // Only clear our own entry (`epoch` is this call's object): a reconcile
+      // of the next account may already be registered.
+      if (_reconcileInFlight?.epoch === epoch) _reconcileInFlight = null;
     }
   })();
+  _reconcileInFlight = { epoch, promise };
 
-  return _reconcileInFlight;
+  return promise;
 }
 
 /** Ensure `Backups/{deviceName}/{category}/` exists. Returns the device folder
@@ -942,6 +1226,9 @@ export async function reconcileDerivedStateAgainstServer(): Promise<void> {
 export async function ensureBackupFolders(
   category: BackupCategory,
 ): Promise<{ deviceFolderId: string; categoryFolderId: string }> {
+  // Task 1959 round 3: the folder ids resolved below belong to the account
+  // signed in NOW; the cache write at the end is dropped if it signed out.
+  const epoch = accountEpoch();
   let cache = await readFolderCache();
 
   // 0813/0814 — before resolving the tree, flatten any pre-existing duplicate
@@ -966,7 +1253,11 @@ export async function ensureBackupFolders(
   // produced duplicates is closed by ensureFolder's in-flight coalescing above
   // plus sequencing the enables, not by trusting a possibly-stale cache. The
   // cache is still written below for diagnostics / future validated reuse.
-  const info = await getDeviceInfo();
+  // Task 1667 round 13 (review item 1): the folders need the device NAME
+  // only. `getDeviceInfo()` also reads the device id, which now rejects
+  // while the keychain cannot be read (it never mints one), and that must
+  // not stop the folder resolve.
+  const info = { device_name: deviceName() };
   const rootId = await ensureFolder(undefined, ROOT_FOLDER_NAME);
   const deviceFolderId = await ensureFolder(rootId, info.device_name);
 
@@ -993,7 +1284,7 @@ export async function ensureBackupFolders(
     rootId,
     deviceId: deviceFolderId,
     categoryIds,
-  });
+  }, epoch);
 
   return { deviceFolderId, categoryFolderId };
 }
@@ -1134,7 +1425,7 @@ export async function getDeviceManifest(): Promise<DeviceManifest | null> {
 
   const text = await decryptDownloadedText(manifestFile);
   try {
-    return mergeLegacyMigration(JSON.parse(text) as DeviceManifest, cache.legacyMigration);
+    return mergeLegacyMigration(JSON.parse(text) as DeviceManifest, await readLegacyMigration(cache));
   } catch {
     return null;
   }
@@ -1153,7 +1444,10 @@ async function writeManifest(manifest: DeviceManifest, deviceFolderId: string): 
   const uri = `${FileSystem.cacheDirectory}device_manifest_${fileId}.json`;
   const enc = requireEncryption();
 
-  await FileSystem.writeAsStringAsync(uri, json);
+  // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+  await gatedPlaintextWrite('device manifest', uri, FileSystem, () =>
+    FileSystem.writeAsStringAsync(uri, json),
+  );
   try {
     await encryptedUpload({
       fileId,
@@ -1175,7 +1469,7 @@ export async function updateDeviceManifest(updates: Partial<DeviceManifest>): Pr
   const cache = await readFolderCache();
   const current = (await getDeviceManifest()) ?? mergeLegacyMigration(
     buildDefaultManifest(await getDeviceInfo()),
-    cache.legacyMigration,
+    await readLegacyMigration(cache),
   );
   const next: DeviceManifest = {
     ...current,
@@ -1198,7 +1492,7 @@ export async function updateBackupCategoryState(
   const cache = await readFolderCache();
   const current = (await getDeviceManifest()) ?? mergeLegacyMigration(
     buildDefaultManifest(info),
-    cache.legacyMigration,
+    await readLegacyMigration(cache),
   );
 
   const next: DeviceManifest = {
@@ -1232,7 +1526,7 @@ export async function initializeBackup(
   const cache = await readFolderCache();
   const current = (await getDeviceManifest()) ?? mergeLegacyMigration(
     buildDefaultManifest(info),
-    cache.legacyMigration,
+    await readLegacyMigration(cache),
   );
 
   const categoryState: BackupCategoryState = {

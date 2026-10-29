@@ -19,7 +19,7 @@ import type { TextStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { fonts } from '../../theme';
 import type { Colors } from '../../theme';
-import { parseMarkdown } from '../../lib/markdown/parse';
+import { isSafeMarkdownHref, parseMarkdown } from '../../lib/markdown/parse';
 import type { MdBlock, MdInline, MdListNode } from '../../lib/markdown/types';
 import { computeCodeView, MAX_PREVIEW_CHARS } from './CodeRenderer';
 
@@ -70,7 +70,10 @@ function renderInline(nodes: MdInline[], colors: Colors, keyPrefix: string): Rea
           <Text
             key={key}
             style={[styles.link, { color: colors.amber }]}
-            onPress={() => { void Linking.openURL(node.href).catch(() => {}); }}
+            onPress={() => {
+              if (!isSafeMarkdownHref(node.href)) return;
+              void Linking.openURL(node.href).catch(() => {});
+            }}
             accessibilityRole="link"
           >
             {renderInline(node.children, colors, key)}

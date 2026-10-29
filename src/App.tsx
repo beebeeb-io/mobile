@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, AppState, type AppStateStatus, Keyboard, Linking, Platform, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, type AppStateStatus, type ImageSourcePropType, Keyboard, Linking, Platform, StyleSheet, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -19,6 +19,7 @@ import { ThemeProvider, useTheme } from './lib/theme-context';
 import type { PerformanceStorageProfile } from './lib/performance-storage-settings';
 import { ToastProvider } from './lib/toast-context';
 import { recordRuntimeTrace } from './lib/runtime-trace';
+import { flushMarksBeforeSignOut } from './lib/sign-out-mark-flush';
 import { BBLogo } from './components/BBLogo';
 import {
   hasToken,
@@ -28,7 +29,6 @@ import {
   getMe,
   getToken,
   logout,
-  getStorageUsage,
   registerSessionExpiredHandler,
   registerAccountDeletedHandler,
 } from './lib/api';
@@ -36,6 +36,9 @@ import type { User } from './lib/api';
 import { stashAccountDeletedNotice } from './lib/account-deleted-notice';
 import { AuthContext } from './lib/auth';
 import { CryptoProvider, SIMULATOR_MASTER_KEY_FILE, useCrypto, usesSoftwareVaultFallback } from './lib/crypto-context';
+// Task 1594: the vault key is bound to its owner (key-ownership.ts).
+import { clearKeyOwner, readKeyOwner } from './lib/key-ownership';
+import { getMeNamingKeyOwner, retryStartupGetMe } from './lib/cold-start-owner';
 import { markUnlocked, wasRecentlyUnlocked } from './lib/lock-state';
 import { SyncProvider } from './lib/sync-context';
 import { useNetworkStatus } from './lib/useNetworkStatus';
@@ -44,9 +47,18 @@ import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import * as BeebeebCrypto from '../modules/beebeeb-crypto';
 import { populateFileProviderCache } from './lib/file-provider-mount';
+import { ensureFilesMountedByDefault } from './lib/files-mount-default';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
-import { purgeAllPlaintextCaches } from './lib/account-cleanup';
+import {
+  accountDeletionPurgePending,
+  clearAccountDeletionPurge,
+  noteAccountDeleted,
+  accountIdForDeletedElsewhere,
+  purgeAllPlaintextCaches,
+} from './lib/account-cleanup';
+import { singleFlight } from './lib/single-flight';
+import { createSignedOutPurger } from './lib/signed-out-purge';
 import {
   setupNotificationHandler,
   registerForPushNotifications,
@@ -74,10 +86,17 @@ try {
 
 // Eager screens — auth entry points and tab destinations (Tab navigator handles its own lazy mounting)
 import LoginScreen from './screens/LoginScreen';
-import TwoFactorChallengeScreen from './screens/TwoFactorChallengeScreen';
+import WelcomeScreen from './screens/WelcomeScreen';
 import SignupScreen from './screens/SignupScreen';
+import { markWelcomeSeen, readWelcomeSeen } from './lib/welcome-seen';
+import { applyDevFixtureName } from './lib/onboarding/dev-fixture';
+import { requestAccountStateRefresh } from './lib/account-state';
+import { isSignupUnlockInProgress } from './lib/signup-unlock-guard';
+import { AccountOnboardingOverlay } from './components/onboarding/AccountOverlay';
+import TwoFactorChallengeScreen from './screens/TwoFactorChallengeScreen';
 import FilesScreen from './screens/FilesScreen';
 import SharedScreen from './screens/SharedScreen';
+import SharedFolderActivityScreen from './screens/SharedFolderActivityScreen';
 import PhotosScreen from './screens/PhotosScreen';
 import SettingsScreen from './screens/SettingsScreen';
 
@@ -96,7 +115,9 @@ import { ConstellationScannerScreen as DevicePairingScanScreen } from './screens
 import DevicePairingShowScreen from './screens/DevicePairingShowScreen';
 import ConstellationSendScreen from './screens/ConstellationSendScreen';
 import BiometricLockScreen from './screens/BiometricLockScreen';
-import OnboardingScreen from './screens/OnboardingScreen';
+import { NeedsPlanOverlay } from './screens/NeedsPlanScreen';
+import { AccountStateProvider, useAccountState } from './lib/account-state-context';
+import { readOnlyUploadMessage } from './lib/account-state';
 import PhraseNotConfirmedScreen from './screens/PhraseNotConfirmedScreen';
 import DocumentScannerScreen from './screens/DocumentScannerScreen';
 import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
@@ -117,10 +138,12 @@ import CreateFileRequestScreen from './screens/CreateFileRequestScreen';
 import ErrorBoundary from './components/ErrorBoundary';
 import ConfirmActionPrompt from './components/ConfirmActionPrompt';
 import { DiagnosticPanel, LAST_CONNECTED_KEY } from './components/DiagnosticPanel';
-import { BackupProvider, useBackup } from './lib/backup-context';
+import { BackupProvider } from './lib/backup-context';
+import { SettingsAttentionProvider, useSettingsAttention } from './lib/settings-attention-context';
+import { settingsTabBadge } from './lib/settings-attention';
 import { AnnouncementProvider } from './lib/announcement-context';
 import AnnouncementBanner from './components/AnnouncementBanner';
-import { discardAllPendingShares, processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
+import { discardAllPendingShares, getPendingSharesCount, processPendingShares } from '../plugins/share-extension/PendingSharesHandler';
 import { useToast } from './lib/toast-context';
 import { clearWidgetData } from './utils/widgetData';
 import { ensureDevicePerformanceProfile } from './lib/device-performance';
@@ -138,7 +161,6 @@ import { shouldClearPendingMarkerOnBoot, shouldRouteToPhraseGate } from './lib/p
 import AndroidThumbnailRepairWorker from './lib/AndroidThumbnailRepairWorker';
 import { BeebeebThumbnails } from '../modules/beebeeb-crypto';
 
-const ONBOARDING_KEY = 'beebeeb_onboarding_done';
 const PHRASE_VERIFIED_KEY = 'beebeeb_phrase_verified';
 const MASTER_KEY_CHECK_LABEL = 'io.beebeeb.master-key-check';
 const MASTER_KEY_FALLBACK_LABEL = 'io.beebeeb.master-key.fallback';
@@ -260,6 +282,8 @@ export type RootStackParamList = {
     email?: string;
   } | undefined;
   TwoFactorChallenge: { partialToken: string };
+  // Task 1746: first-run screen and native signup (signed-out stack).
+  Welcome: undefined;
   Signup: undefined;
   // Main app
   Tabs: undefined;
@@ -285,11 +309,13 @@ export type RootStackParamList = {
     performanceStorageProfile?: PerformanceStorageProfile;
     /**
      * Server `has_thumbnail` truth for the opened file (0883 auto self-repair).
-     * Only owner navigators (Photos/Files) pass it; when `false` the preview
-     * decrypt path generates + uploads a thumbnail from the downloaded plaintext.
+     * Only owner navigators (Photos/Files) pass it. The full-source path repairs
+     * missing or known degraded thumbnails from the local plaintext.
      * Undefined ⇒ unknown ⇒ self-repair skips (avoids network-probe storms).
      */
     hasThumbnail?: boolean;
+    /** Known encrypted thumbnail bytes for local-source quality repair (0554). */
+    thumbnailBytes?: number | null;
     // ── File-request uploads (0643) ──
     // When set, the file arrived through a file request and must be decrypted
     // with the request content key (resolved from these), NOT the master-key
@@ -297,18 +323,29 @@ export type RootStackParamList = {
     fileRequestId?: string | null;
     senderEphemeralPubkey?: string | null;
     wrappedContentKey?: string | null;
+    /**
+     * Task 1587 — open straight in the text editor (a file just created from
+     * the Files "+" menu). Honoured once, only if the file passes the normal
+     * edit gate once its text has loaded; otherwise the read view shows.
+     */
+    startInEditMode?: boolean;
   };
+  SharedFolderActivity: { folderId?: string } | undefined;
   ShareSheet: {
     fileId: string;
     fileName: string;
     mimeType?: string;
     sizeBytes?: number;
+    /**
+     * Task 2238 — the target is a FOLDER: the sheet mints a snapshot bundle of
+     * every file below it (a `file` share on the folder row cannot download).
+     */
+    isFolder?: boolean;
   };
   // Incoming share link: beebeeb://s/:token or https://app.beebeeb.io/s/:token
   SharedView: { token: string };
   BackupGuides: undefined;
   // Auth / onboarding upgrade screens
-  RecoveryPhrase: { phrase?: string[] };
   RecoveryPhraseVerify: { phrase: string[] };
   RecoveryUnlock: undefined;
   // Task 1445 (ruling 2) — cold relaunch mid-onboarding, phrase words gone.
@@ -344,7 +381,15 @@ const linking = {
   // beebeeb.io is the marketing domain. Both must be intercepted so a tapped
   // share link (app.beebeeb.io/s/:token) opens the in-app SharedView instead of
   // launching the app to the default tab and stranding the recipient.
-  prefixes: ['beebeeb://', 'https://app.beebeeb.io', 'https://beebeeb.io'],
+  // exp+beebeeb:// is the dev scheme prebuild derives from the app.json slug;
+  // the Android manifest already claims it, so it belongs in prefixes too
+  // (task 1683e) or such URLs reach the app but never route.
+  prefixes: [
+    'beebeeb://',
+    'exp+beebeeb://',
+    'https://app.beebeeb.io',
+    'https://beebeeb.io',
+  ],
   config: {
     screens: {
       // `__DEV__` only: a direct route to the glass primitives gallery
@@ -479,10 +524,19 @@ const offlineStyles = StyleSheet.create({
 });
 
 // ---------------------------------------------------------------------------
-// Tab icons — SF Symbols (task 1308a). The native tab bar renders + tints
-// these itself (tabBarActiveTintColor/tabBarInactiveTintColor), so there is
-// no `color`/`focused` prop to thread through a wrapper component the way
-// the old Feather-based TabIcon needed — just the outline/filled pair.
+// Tab icons — platform-branching.
+//
+// iOS: SF Symbols (task 1308a). The native tab bar renders + tints these
+// itself (tabBarActiveTintColor/tabBarInactiveTintColor), so there is no
+// `color`/`focused` prop to thread through a wrapper component — just the
+// outline/filled pair.
+//
+// Android: SF Symbols don't exist there; react-native-bottom-tabs only
+// accepts image sources (require() or {uri}) for its BottomNavigationView.
+// We ship monochrome Lucide-outline SVGs (assets/tab-icons/) that the bar
+// tints itself via itemIconTintList — same geometry language as the app's
+// Feather/Lucide icon set (src/components/Icon.tsx). One glyph per tab; the
+// iOS filled/outline distinction doesn't carry over, but tint conveys state.
 // ---------------------------------------------------------------------------
 
 const TAB_SF_SYMBOLS: Record<string, { focused: SFSymbol; unfocused: SFSymbol }> = {
@@ -495,7 +549,18 @@ const TAB_SF_SYMBOLS: Record<string, { focused: SFSymbol; unfocused: SFSymbol }>
   Search: { focused: 'magnifyingglass', unfocused: 'magnifyingglass' },
 };
 
-function tabAppleIcon(routeName: string, focused: boolean): { sfSymbol: SFSymbol } {
+// Monochrome (black) single-glyph assets; the native bar applies its tint.
+const TAB_ANDROID_ICONS: Record<string, number> = {
+  Files: require('../assets/tab-icons/folder.svg'),
+  Shared: require('../assets/tab-icons/users.svg'),
+  Photos: require('../assets/tab-icons/image.svg'),
+  Settings: require('../assets/tab-icons/settings.svg'),
+  Search: require('../assets/tab-icons/search.svg'),
+};
+function tabIcon(routeName: string, focused: boolean): ImageSourcePropType | { sfSymbol: SFSymbol } {
+  if (Platform.OS === 'android') {
+    return TAB_ANDROID_ICONS[routeName] ?? TAB_ANDROID_ICONS.Files;
+  }
   const pair = TAB_SF_SYMBOLS[routeName];
   return { sfSymbol: focused ? (pair?.focused ?? 'questionmark') : (pair?.unfocused ?? 'questionmark') };
 }
@@ -505,16 +570,38 @@ function tabAppleIcon(routeName: string, focused: boolean): { sfSymbol: SFSymbol
 // imported counts, and depends on `user` so we never upload while signed out.
 // ---------------------------------------------------------------------------
 
-function ShareSheetImporter({ enabled }: { enabled: boolean }) {
+// Task 1593 — see the signed-out effect in App().
+const signedOutPurger = createSignedOutPurger({
+  full: () => purgeAllPlaintextCaches(),
+});
+
+function ShareSheetImporter({ enabled: enabledProp }: { enabled: boolean }) {
   const { showToast } = useToast();
   const { isUnlocked, encryptChunk, encryptMetadata } = useCrypto();
+  // Task 1037: a needs_plan / lapsed account cannot upload. Leave the shared
+  // files in the dropbox (they import once the account can take uploads)
+  // instead of failing them on every foreground. Wait for the first account
+  // read so a blocked account never starts a drain.
+  const { ready: accountReady, gate: accountGate } = useAccountState();
+  const blockedMessage = readOnlyUploadMessage(accountGate);
+  const enabled = enabledProp && accountReady;
   const enabledRef = useRef(enabled);
+  const blockedMessageRef = useRef(blockedMessage);
+  const blockedToastShownRef = useRef(false);
   const cryptoRef = useRef({ isUnlocked, encryptChunk, encryptMetadata });
   enabledRef.current = enabled;
+  blockedMessageRef.current = blockedMessage;
   cryptoRef.current = { isUnlocked, encryptChunk, encryptMetadata };
 
   const drain = useCallback(async () => {
     if (!enabledRef.current) return;
+    if (blockedMessageRef.current) {
+      if (!blockedToastShownRef.current && (await getPendingSharesCount().catch(() => 0)) > 0) {
+        blockedToastShownRef.current = true;
+        showToast({ type: 'info', message: `Shared files were not imported. ${blockedMessageRef.current}` });
+      }
+      return;
+    }
     try {
       const crypto = cryptoRef.current;
       const result = await processPendingShares({
@@ -539,9 +626,11 @@ function ShareSheetImporter({ enabled }: { enabled: boolean }) {
   }, [showToast]);
 
   // Drain on first render once enabled, then again on every foreground.
+  // Also re-run when the account stops being read-only (Refresh after a plan
+  // was chosen) so waiting shares import straight away.
   useEffect(() => {
     if (enabled) drain();
-  }, [enabled, drain]);
+  }, [enabled, blockedMessage, drain]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
@@ -646,9 +735,7 @@ function BiometricGuard({
     if (token) {
       await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
     }
-    // Pre-populate FileProvider cache with decrypted names so iOS Files
-    // shows real names immediately without needing to open the Files tab first.
-    populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
+    // The domain registrar prewarms mounted Files roots after unlock.
     // Resume any thumbnail worker pool jobs that were paused during lock.
     if (Platform.OS === 'ios') {
       try { await BeebeebThumbnails.resumeWorkers(); } catch {}
@@ -699,7 +786,6 @@ function VaultRecoveryGate({ enabled, navReady, navReadyEpoch }: { enabled: bool
     const currentRoute = navigationRef.getCurrentRoute()?.name;
     if (
       currentRoute === 'RecoveryUnlock' ||
-      currentRoute === 'RecoveryPhrase' ||
       currentRoute === 'RecoveryPhraseVerify'
     ) {
       return;
@@ -717,10 +803,9 @@ function VaultRecoveryGate({ enabled, navReady, navReadyEpoch }: { enabled: bool
 // Task 1445 (ruling 2) — routes a cold relaunch that lands mid-onboarding
 // (session + master key already persisted, phrase never confirmed) to the
 // blocking PhraseNotConfirmed screen instead of the vault. `enabled` is
-// pre-gated by App() on `shouldRouteToPhraseGate` (App.tsx below), which is
-// deliberately disjoint from the live-signup `pendingRecoveryPhrase` path —
-// that path still shows the real words via OnboardingScreen; this gate only
-// fires once the words are genuinely gone (see phrase-confirmation-gate.ts).
+// pre-gated by App() on `shouldRouteToPhraseGate` (App.tsx below). Since task
+// 1037 the app no longer creates accounts, so this only still matters for an
+// account created in-app by an older build whose phrase was never confirmed.
 // Mirrors VaultRecoveryGate's shape exactly, including the navReadyEpoch
 // re-fire-on-remount fix (1283) — the same CryptoProvider user-keyed remount
 // that motivated it here can swallow a navigate() here too.
@@ -732,7 +817,6 @@ function PhraseGate({ enabled, navReady, navReadyEpoch }: { enabled: boolean; na
     const currentRoute = navigationRef.getCurrentRoute()?.name;
     if (
       currentRoute === 'PhraseNotConfirmed' ||
-      currentRoute === 'RecoveryPhrase' ||
       currentRoute === 'RecoveryPhraseVerify' ||
       currentRoute === 'RecoveryUnlock' ||
       currentRoute === 'DeleteAccount'
@@ -746,13 +830,17 @@ function PhraseGate({ enabled, navReady, navReadyEpoch }: { enabled: boolean; na
   return null;
 }
 
-function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
+// Task 1722 round 4 (Guus 2026-10-15, Q1 "Files on by default"): on every unlock and
+// foreground, the signed-in account gets Beebeeb in iOS Files unless it turned Files off in
+// Settings (src/lib/files-mount-default.ts: register when mounted, mount when not, stay off
+// after an explicit off). Q2: sign-out still removes the domain and the Files key.
+function FileProviderDomainRegistrar({ enabled, userId }: { enabled: boolean; userId: string | null }) {
   const crypto = useCrypto();
   const registeringRef = useRef(false);
   const attemptedRef = useRef(false);
 
   const register = useCallback(async () => {
-    if (Platform.OS !== 'ios' || !enabled || !crypto.isUnlocked) return;
+    if (Platform.OS !== 'ios' || !enabled || !crypto.isUnlocked || !userId) return;
     if (registeringRef.current || attemptedRef.current) return;
 
     registeringRef.current = true;
@@ -760,20 +848,20 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
     try {
       const token = await getToken();
       if (!token) return;
-      await BeebeebCrypto.mirrorSessionToAppGroup(token, getApiUrl()).catch(() => false);
-      const result = await BeebeebCrypto.registerFileProviderDomain();
+      const { action, result } = await ensureFilesMountedByDefault(userId);
       // "registered" is not "presented in Files". userVisibleRootError != null
       // means iOS could not surface the location (the user may have removed it),
       // so don't treat it as mounted.
       const mounted =
+        !!result &&
         result.registered &&
         result.cacheDatabaseReady !== false &&
         !result.userVisibleRootError;
       if (mounted) {
-        void populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
+        void populateFileProviderCache(crypto.decryptMetadata, { recursive: false, decryptNames: crypto.decryptNames }).catch(() => {});
       }
       if (__DEV__) {
-        console.log('[FileProvider] domain registration', result);
+        console.log('[FileProvider] domain registration', action, result);
       }
     } catch (error) {
       if (__DEV__) {
@@ -782,11 +870,11 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
     } finally {
       registeringRef.current = false;
     }
-  }, [crypto.decryptMetadata, crypto.isUnlocked, enabled]);
+  }, [crypto.decryptMetadata, crypto.decryptNames, crypto.isUnlocked, enabled, userId]);
 
   useEffect(() => {
     attemptedRef.current = false;
-  }, [crypto.isUnlocked, enabled]);
+  }, [crypto.isUnlocked, enabled, userId]);
 
   useEffect(() => {
     void register();
@@ -815,20 +903,10 @@ function FileProviderDomainRegistrar({ enabled }: { enabled: boolean }) {
 
 function TabNavigator() {
   const { colors: c } = useTheme();
-  const backup = useBackup();
-  // Check storage on mount — show badge on Settings tab when >= 80% full
-  const [storageWarning, setStorageWarning] = useState(false);
-  useEffect(() => {
-    getStorageUsage()
-      .then(u => { if (u.plan_limit_bytes > 0) setStorageWarning(u.used_bytes / u.plan_limit_bytes >= 0.8); })
-      .catch(() => {});
-  }, []);
-
-  // Backup badge is driven by the native backup engine state.
-  const backupRunning =
-    ['preparing', 'encrypting', 'uploading'].includes(backup.backupProgress.state) ||
-    backup.backupProgress.inProgress > 0;
-  const backupFailed = backup.backupProgress.failed > 0;
+  // Task 2245 (P1): ONE source for the Settings badge and the Settings root
+  // rows. Storage refreshes on foreground (inside the hook) and when
+  // Settings gains focus (SettingsScreen calls `refresh()`).
+  const settingsAttention = useSettingsAttention();
   // 1308a — native tab badges take ONLY a string; there is no per-badge
   // background/text colour hook on iOS at all (`tabBarBadgeBackgroundColor`/
   // `tabBarBadgeTextColor` are Android-only — confirmed reading the
@@ -843,7 +921,11 @@ function TabNavigator() {
   // that distinction is exactly what's gone now), so folding it into the
   // same string loses no legible signal that survives this library's badge
   // model. Recorded in DEVIATIONS.md.
-  const settingsBadge: string | undefined = backupFailed || storageWarning ? '!' : undefined;
+  // Task 2245 rung finding: passing `undefined` removes the prop, and the
+  // native tab bar keeps the last badge (“!” stayed after both reasons
+  // cleared). An empty string is converted to nil by the tab view and is a
+  // real prop transition, so the badge clears.
+  const settingsBadge: string = settingsTabBadge(settingsAttention);
 
   return (
     <Tab.Navigator
@@ -859,7 +941,7 @@ function TabNavigator() {
         },
       }}
       screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused }) => tabAppleIcon(route.name, focused),
+        tabBarIcon: ({ focused }) => tabIcon(route.name, focused),
         // The scene must not paint under the capsule's rounded corners.
         sceneStyle: { backgroundColor: c.paper },
       })}
@@ -915,6 +997,9 @@ export default function App() {
   const { colors: c, resolved } = useTheme();
   const [user, setUser] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
+  // Task 1746: null until read. false = a fresh install that has not seen the Welcome
+  // screen; it is the first screen of the signed-out stack until then.
+  const [welcomeSeen, setWelcomeSeen] = useState<boolean | null>(null);
   const [loadingStatus, setLoadingStatus] = useState('');
   const [loadingFailed, setLoadingFailed] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
@@ -931,13 +1016,23 @@ export default function App() {
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const backgroundAtRef = useRef<number | null>(null);
   const startupRunIdRef = useRef(0);
+  // Task 1667 round 9: the signed-in account, for the account-deleted handler
+  // (registered once, so it cannot read `user` itself).
+  const currentUserIdRef = useRef<string | null>(null);
+  // Task 1667 round 14 (review of mobile#182 at 18312919): at a cold start
+  // `currentUserIdRef` is still null when refreshAuth's getMe can answer 403
+  // account_deleted. The stored key's owner record is the stored session's
+  // account (a different signed-in account purges it at unlock, and every
+  // sign-out clears it), the same owner native trusts for the signed-in
+  // account (`confirmMasterKeyHandle`). Read before getMe, so the deletion
+  // names that account and native discards only its kept marks. Round 15:
+  // on both paths, refreshAuth and the cold launch's retryGetMe
+  // (src/lib/cold-start-owner.ts).
+  const coldStartOwnerRef = useRef<string | null>(null);
 
-  // Onboarding: shown once after first signup
-  const [onboardingDone, setOnboardingDone] = useState(true); // true by default, corrected in startup
   // Phrase verification: false until the user types back their recovery words.
   // Defaults to true so existing (pre-phrase-flow) users are unaffected.
   const [phraseVerified, setPhraseVerified] = useState(true);
-  const [pendingRecoveryPhrase, setPendingRecoveryPhrase] = useState<string[] | null>(null);
   const [navReady, setNavReady] = useState(false);
   // 1283 — increments on EVERY NavigationContainer onReady, including remounts (the container
   // remounts under CryptoProvider's user-keyed remount on sign-in). navReady alone is stale-true
@@ -949,8 +1044,21 @@ export default function App() {
 
   const refreshAuth = useCallback(async () => {
     try {
-      const me = await getMe();
+      // Task 1593 — never let a signed-out purge still running delete the new
+      // session's first cache writes.
+      await signedOutPurger.settled();
+      // Round 15: the same owner-naming call as the cold launch (retryGetMe).
+      const me = await getMeNamingKeyOwner({
+        owner: coldStartOwnerRef,
+        signedInUserId: currentUserIdRef.current,
+        readKeyOwner,
+        getMe,
+      });
+      signedOutPurger.sessionStarted(); // task 1593 r3: reopen the plaintext gate
       setUser(me);
+      // Task 1667 round 9: a new session — purges are ordinary sign-outs again
+      // (an account deletion made every purge since run as 'account-deleted').
+      clearAccountDeletionPurge();
       SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
       // Register this device with the clients API first so we can thread
       // the canonical client_devices UUID into the push-token registration.
@@ -965,6 +1073,8 @@ export default function App() {
         console.warn('[App] initLocalIdentifierMap failed', err),
       );
     } catch (err) {
+      // Round 14: the 403 account_deleted handler already ran (inside getMe);
+      // getMeNamingKeyOwner has cleared the owner.
       // Only a definitive 401 means the session is gone — and request() has
       // already cleared the invalid token in that case. Transient failures
       // (offline/network ApiError(0), 5xx, Secure-Enclave warm-up) must NOT
@@ -984,9 +1094,21 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
-  const signOut = useCallback(async () => {
+  const runSignOut = useCallback(async () => {
     // Remove the push token before clearing the session.
     void unregisterPushToken();
+    // Task 1667 round 2 (Codex P1 "Preserve uploads that have not reached the
+    // server map"): mark every completed camera-roll upload the server's
+    // per-device map does not have yet WHILE the session still works (the
+    // purge below runs after logout() revoked it). Bounded natively by a hard
+    // 8 s deadline and here by 8 s + margin even if the native promise never
+    // settles (round 3); what is left is kept for this account's next sign-in
+    // on this device.
+    // Round 9: not after an account deletion. Nothing of a deleted account is
+    // kept for a next sign-in, so there is nothing to mark for it.
+    if (Platform.OS === 'ios' && !accountDeletionPurgePending()) {
+      await flushMarksBeforeSignOut(() => BeebeebCrypto.flushBackupServerMarksForSignOut());
+    }
     try {
       await logout();
     } catch {
@@ -1005,6 +1127,7 @@ export default function App() {
     await SecureStore.deleteItemAsync(MASTER_KEY_CHECK_LABEL).catch(() => {});
     await SecureStore.deleteItemAsync(MASTER_KEY_FALLBACK_LABEL).catch(() => {});
     await FileSystem.deleteAsync(SIMULATOR_MASTER_KEY_FILE, { idempotent: true }).catch(() => {});
+    await clearKeyOwner(); // task 1594 — the owner record goes with the key
     // Task 1399 follow-up (Codex P1): a zero-knowledge app must not leave
     // decrypted thumbnails/names/caches on disk for whoever signs in next on
     // this device. Every ordinary sign-out purges them, not just deletion —
@@ -1020,47 +1143,40 @@ export default function App() {
     // sign-out already clears it; it did not, until this line.
     await SecureStore.deleteItemAsync(PHRASE_VERIFIED_KEY).catch(() => {});
     setPhraseVerified(true);
-    setPendingRecoveryPhrase(null);
     setUser(null);
   }, []);
+  // Task 1667 round 4 (Codex P1 "Serialize overlapping database purge
+  // holds"): one sign-out at a time. Sign out tapped twice (two confirmation
+  // alerts), or two screens asking at once, joins the run already in progress
+  // instead of starting a second flush, logout and storage purge.
+  const signOut = useMemo(() => singleFlight(runSignOut), [runSignOut]);
 
   // Retry getMe() on transient startup failures. A 401 is definitive: the
   // API client clears the invalid token, and startup must render signed-out
   // instead of staying in diagnostics. Network/server/timeout failures keep
   // the restoring surface so a valid stored token is not treated as logout.
-  const retryGetMe = useCallback(async (): Promise<User | null> => {
-    const delays = [1000, 3000, 5000];
-    for (const delay of delays) {
-      try {
-        return await Promise.race([
-          getMe(),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('timeout')), 10_000),
-          ),
-        ]);
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 401) {
-          throw err;
-        }
-        await new Promise(r => setTimeout(r, delay));
-      }
-    }
-    return null; // all retries failed with transient failures
-  }, []);
+  // Task 1667 round 15 (review item 4): the cold launch names the stored
+  // key's owner during getMe too (getMeNamingKeyOwner), so a cold-launch 403
+  // account_deleted names the account instead of discarding every account's
+  // kept marks.
+  const retryGetMe = useCallback(
+    (): Promise<User | null> =>
+      retryStartupGetMe(
+        () =>
+          getMeNamingKeyOwner({
+            owner: coldStartOwnerRef,
+            signedInUserId: currentUserIdRef.current,
+            readKeyOwner,
+            getMe,
+          }),
+        (err) => err instanceof ApiError && err.status === 401,
+      ),
+    [],
+  );
 
   // Shared preferences loader — called from runStartup and also when
   // diagnostics are on screen so prefs are ready when the user retries.
   const loadPreferences = useCallback(async (tokenExists: boolean) => {
-    // Check onboarding state. A fresh install with no token should not show
-    // onboarding immediately after an existing user signs in; signup owns its
-    // recovery phrase flow explicitly.
-    try {
-      const done = await SecureStore.getItemAsync(ONBOARDING_KEY);
-      setOnboardingDone(done !== 'false' || tokenExists);
-    } catch {
-      setOnboardingDone(true); // assume done if SecureStore unavailable (web)
-    }
-
     // Check phrase verification state — only applies to new OPAQUE signups.
     // Existing users who pre-date the phrase flow are treated as verified.
     try {
@@ -1144,7 +1260,13 @@ export default function App() {
           setUser(me);
           SecureStore.setItemAsync(LAST_CONNECTED_KEY, new Date().toISOString()).catch(() => {});
           // Register this device with the clients API (best-effort, cold launch).
-          void registerDevice();
+          void registerDevice().then((clientDeviceId) => {
+            // Android token acquisition owns the permission prompt and channel
+            // setup; iOS already acquires its token inside registerDevice().
+            if (Platform.OS === 'android') {
+              void registerForPushNotifications(clientDeviceId);
+            }
+          });
           // Hydrate PhotoKit identifier map on cold launch too (refreshAuth
           // only fires for the sign-in path; runStartup is the cold-launch
           // path and needs its own hydration so prefetch doesn't race the
@@ -1263,7 +1385,7 @@ export default function App() {
   // Register session-expired handler so 401s auto-sign-out
   useEffect(() => {
     registerSessionExpiredHandler(() => {
-      setUser(null);
+      setUser(null); // plaintext purge: the signed-out effect (task 1593)
     });
   }, []);
 
@@ -1275,9 +1397,35 @@ export default function App() {
   useEffect(() => {
     registerAccountDeletedHandler((deletedAt, shredAfter) => {
       stashAccountDeletedNotice({ deletedAt, shredAfter });
-      setUser(null);
+      // Task 1667 round 9 (Codex P1): the account is gone, so the signed-out
+      // purge below runs as 'account-deleted' for it and keeps nothing of it
+      // (no pending marks), not as an ordinary sign-out.
+      // Round 14: at a cold start the account is named by the stored key's
+      // owner (read in refreshAuth before getMe). Only when neither is known
+      // does the purge discard every kept mark (fail closed).
+      noteAccountDeleted(accountIdForDeletedElsewhere(currentUserIdRef.current, coldStartOwnerRef.current));
+      setUser(null); // plaintext purge: the signed-out effect (task 1593)
     });
   }, []);
+
+  // Task 1593 (round 2) — THE one place decrypted plaintext is purged when the
+  // app reaches its signed-out surface, whatever got it there: signOut(), a
+  // 401 in refreshAuth, session expiry, account deleted elsewhere, a rejected
+  // token or no token at launch, the startup-failure fallback, diagnostics →
+  // "Sign in". Every case gets the full signOut() purge incl. the native
+  // registry (round 3: a cold signed-out launch too) — src/lib/signed-out-purge.ts.
+  useEffect(() => {
+    signedOutPurger.noteUser(user != null);
+  }, [user]);
+  useEffect(() => {
+    // Round 15 (review item 5): cleared at sign-out, so a later session's
+    // refreshAuth reads the key owner instead of naming the previous user.
+    currentUserIdRef.current = user ? user.user_id : null;
+  }, [user]);
+  const onSignedOutSurface = !checking && !showDiagnostics && !showSecureStorageError && user == null;
+  useEffect(() => {
+    if (onSignedOutSurface) void signedOutPurger.enterSignedOut();
+  }, [onSignedOutSurface]);
 
   // Lock the app when it goes to background and biometric pref is on.
   // The user-configurable delay (BIOMETRIC_DELAY_KEY, in ms) lets a quick
@@ -1393,70 +1541,73 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
-  // Called from SignupScreen when OPAQUE registration succeeds and the
-  // recovery-phrase onboarding is about to start. Prevents the welcome overlay
-  // from covering the phrase flow and marks phrase verification as pending.
-  const skipOnboarding = useCallback((phrase?: string[]) => {
-    setOnboardingDone(true);
-    setPhraseVerified(false);
-    setPendingRecoveryPhrase(phrase && phrase.length > 0 ? phrase : null);
-    SecureStore.setItemAsync(ONBOARDING_KEY, 'true').catch(() => {});
-    SecureStore.setItemAsync(PHRASE_VERIFIED_KEY, 'pending').catch(() => {});
-  }, []);
-
   // Called from RecoveryPhraseVerifyScreen on successful word verification.
   const markPhraseVerified = useCallback(async () => {
     try {
       await SecureStore.setItemAsync(PHRASE_VERIFIED_KEY, 'verified');
     } catch { /* SecureStore unavailable (web) */ }
     setPhraseVerified(true);
-    setPendingRecoveryPhrase(null);
   }, []);
 
   const isAuthenticated = user !== null;
 
-  // Task 1445 (ruling 2). Deliberately disjoint from the effect right below:
-  // that one fires while pendingRecoveryPhrase still holds the real words
-  // (live signup, same JS session) and shows them via OnboardingScreen. This
-  // fires only once the words are genuinely gone (a real relaunch reset the
-  // in-memory state) — see phrase-confirmation-gate.ts for why the two must
-  // never both be true at once.
+  // Task 1746, DEV-ONLY (the whole effect is a no-op in release): render the account UI
+  // from a contract fixture. xcrun simctl openurl <udid> "beebeeb://dev/onboarding-fixture?name=account.trial_ended.ios"
+  useEffect(() => {
+    if (!__DEV__) return;
+    const apply = (url: string | null) => {
+      if (!url || !url.includes('dev/onboarding-fixture')) return;
+      const m = /[?&]name=([^&#]+)/.exec(url);
+      const changed = applyDevFixtureName(m ? decodeURIComponent(m[1]) : 'off');
+      console.info(`[Beebeeb] dev onboarding fixture ${m ? m[1] : 'off'} changed=${changed}`);
+      if (changed) requestAccountStateRefresh();
+    };
+    Linking.getInitialURL().then(apply).catch(() => {});
+    const sub = Linking.addEventListener('url', ({ url }) => apply(url));
+    return () => sub.remove();
+  }, []);
+
+  // Task 1746: first-run Welcome screen. Read once; a live session marks it seen so an
+  // upgrading user who signs out later lands on Login, never on a first-run screen.
+  useEffect(() => {
+    let alive = true;
+    void readWelcomeSeen().then((seen) => {
+      if (alive) setWelcomeSeen((prev) => (prev === null ? seen : prev));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (user) {
+      setWelcomeSeen(true);
+      void markWelcomeSeen();
+    }
+  }, [user]);
+
+  // Task 1445 (ruling 2): an account whose recovery phrase was never
+  // confirmed is sent to PhraseNotConfirmed. Since task 1037 no account is
+  // created in-app, so this only applies to one made by an older build.
   const needsPhraseGate = shouldRouteToPhraseGate({
     isAuthenticated,
     phraseVerified,
-    hasInMemoryPendingPhrase: pendingRecoveryPhrase != null,
   });
 
-  useEffect(() => {
-    if (!isAuthenticated || phraseVerified || !pendingRecoveryPhrase || !navReady) return;
-    let attempts = 0;
-    const interval = setInterval(() => {
-      attempts += 1;
-      if (!navigationRef.isReady()) return;
-      const route = navigationRef.getCurrentRoute()?.name;
-      if (route === 'RecoveryPhrase' || route === 'RecoveryPhraseVerify') {
-        clearInterval(interval);
-        return;
-      }
-      navigationRef.navigate('RecoveryPhrase', { phrase: pendingRecoveryPhrase });
-      if (attempts >= 10) clearInterval(interval);
-    }, 250);
-    return () => clearInterval(interval);
-  }, [isAuthenticated, navReady, pendingRecoveryPhrase, phraseVerified]);
-
-  // Listen for successful login/signup from auth screens
+  // Listen for a successful login from the auth screens
   // by polling the token after navigation events
   const handleNavigationStateChange = useCallback(async () => {
-    if (!user) {
-      const tokenExists = await hasToken();
-      if (tokenExists) {
-        await refreshAuth();
-      }
+    if (user) return;
+    // Task 1746 (restores the 1594 round 6 guard removed with the old signup): while
+    // signup is storing the new account's key, `user` must not flip underneath it.
+    if (isSignupUnlockInProgress()) return;
+    const tokenExists = await hasToken();
+    if (tokenExists) {
+      await refreshAuth();
     }
   }, [user, refreshAuth]);
 
   // Loading splash while checking auth, or diagnostic panel when server is unreachable
-  if (checking || showDiagnostics || showSecureStorageError) {
+  if (checking || welcomeSeen === null || showDiagnostics || showSecureStorageError) {
     return (
       <SafeAreaProvider>
         <View style={{ flex: 1, backgroundColor: c.paper, alignItems: 'center', justifyContent: 'center', paddingHorizontal: showDiagnostics || showSecureStorageError ? 0 : 32 }}>
@@ -1501,13 +1652,19 @@ export default function App() {
   }
 
   return (
-    <AuthContext.Provider value={{ user, refreshAuth, signOut, phraseVerified, skipOnboarding, markPhraseVerified }}>
-      <CryptoProvider key={user?.user_id ?? 'signed-out'}>
+    <AuthContext.Provider value={{ user, refreshAuth, signOut, phraseVerified, markPhraseVerified }}>
+      {/* Task 1594: userId binds the vault key to this account — a key owned by
+          anyone else is purged before it is loaded (key-ownership.ts). */}
+      <CryptoProvider key={user?.user_id ?? 'signed-out'} userId={user?.user_id ?? null}>
+      {/* Task 1037: account_state (needs_plan / lapsed) for this account.
+          Inside the user-keyed CryptoProvider so it resets on every sign-in. */}
+      <AccountStateProvider userId={user?.user_id ?? null}>
       <SafeAreaProvider>
       <SyncProvider>
       <ToastProvider>
       <AnnouncementProvider>
       <BackupProvider>
+        <SettingsAttentionProvider>
         <NavigationContainer
           ref={navigationRef}
           // 1320 — without this react-navigation uses its light DefaultTheme and
@@ -1526,7 +1683,7 @@ export default function App() {
             {isAuthenticated && startupLockChecked && !locked && Platform.OS === 'android'
               ? <AndroidThumbnailRepairWorker enabled />
               : null}
-            <FileProviderDomainRegistrar enabled={isAuthenticated && startupLockChecked && !locked} />
+            <FileProviderDomainRegistrar enabled={isAuthenticated && startupLockChecked && !locked} userId={user?.user_id ?? null} />
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               {isAuthenticated ? (
                 <>
@@ -1557,9 +1714,12 @@ export default function App() {
                   <Stack.Screen
                     name="ShareSheet"
                     component={ShareSheetScreen}
+                    // 1586 — the sheet animates itself (shared BottomSheet:
+                    // slide up, drag between detents, slide down, THEN pop),
+                    // so the route has no transition of its own.
                     options={{
                       presentation: 'transparentModal',
-                      animation: 'slide_from_bottom',
+                      animation: 'none',
                       contentStyle: { backgroundColor: 'transparent' },
                     }}
                   />
@@ -1569,17 +1729,13 @@ export default function App() {
                     options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                   />
                   <Stack.Screen name="Trash" component={TrashScreen} />
+                  <Stack.Screen name="SharedFolderActivity" component={SharedFolderActivityScreen} options={{ headerShown: true, title: 'Activity' }} />
                   <Stack.Screen name="FileRequests" component={FileRequestsScreen} />
                   <Stack.Screen name="CreateFileRequest" component={CreateFileRequestScreen} />
                   <Stack.Screen name="BackupGuides" component={BackupGuidesScreen} />
                   <Stack.Screen name="Privacy" component={PrivacyScreen} options={{ headerShown: false }} />
                   <Stack.Screen name="DeleteAccount" component={DeleteAccountScreen} options={{ headerShown: false }} />
                   <Stack.Screen name="Storage" component={StorageScreen} options={{ headerShown: false }} />
-                  <Stack.Screen
-                    name="RecoveryPhrase"
-                    component={OnboardingScreen}
-                    options={{ gestureEnabled: false }}
-                  />
                   <Stack.Screen
                     name="RecoveryPhraseVerify"
                     component={RecoveryPhraseVerifyScreen}
@@ -1655,21 +1811,31 @@ export default function App() {
                 </>
               ) : (
                 <>
+                  {welcomeSeen === false ? (
+                    <Stack.Screen name="Welcome" component={WelcomeScreen} />
+                  ) : null}
                   <Stack.Screen
                     name="Login"
                     component={LoginScreen}
                     options={{ animationTypeForReplace: 'pop' }}
                   />
                   <Stack.Screen
+                    name="Signup"
+                    component={SignupScreen}
+                    // Swiping back mid-ceremony would drop a phrase the person has
+                    // already written down; the flow has its own Back and Cancel.
+                    options={{ gestureEnabled: false }}
+                  />
+                  <Stack.Screen
                     name="TwoFactorChallenge"
                     component={TwoFactorChallengeScreen}
                     options={{ headerShown: false, gestureEnabled: false }}
                   />
-                  <Stack.Screen name="Signup" component={SignupScreen} />
                 </>
               )}
             </Stack.Navigator>
         </NavigationContainer>
+        </SettingsAttentionProvider>
 
         {/* Offline banner */}
         {!isConnected && <OfflineBanner />}
@@ -1677,19 +1843,16 @@ export default function App() {
         {/* Server-sent announcement banner */}
         <AnnouncementBanner />
 
-        {/* Onboarding overlay — shown once after first signup */}
-        {isAuthenticated && !onboardingDone && (
-          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: c.paper2 }}>
-            <OnboardingScreen
-              onComplete={async () => {
-                try {
-                  await SecureStore.setItemAsync(ONBOARDING_KEY, 'true');
-                } catch { /* web */ }
-                setOnboardingDone(true);
-              }}
-            />
-          </View>
-        )}
+        {/* Task 1037: a needs_plan account cannot use the app until a plan
+            is chosen on the web. Covers the whole file UI; the biometric
+            lock below still renders on top of it. */}
+        {isAuthenticated && <NeedsPlanOverlay />}
+
+        {/* Task 1746: the account-stage onboarding document. Blocks the file UI only for
+            a required step this build can do (confirm the email, accept the Terms), a
+            client that is too old, or a required step it cannot do. Text first, never a
+            purchase element. Rendered after NeedsPlanOverlay so it wins when both apply. */}
+        {isAuthenticated && <AccountOnboardingOverlay />}
 
         {/* Biometric lock overlay — shown when app resumes from background */}
         {isAuthenticated && (
@@ -1704,7 +1867,9 @@ export default function App() {
         {/* Share Extension dropbox — uploads files dropped by BeebeebShare */}
         <ShareSheetImporter enabled={isAuthenticated && startupLockChecked && !locked} />
 
-        {/* Android-only password prompt for step-up re-auth (no-op on iOS) */}
+        {/* The app's own password-prompt sheet for step-up re-auth — every
+            platform drives this now (task 1610, Issue 2 round 2); no more
+            native Alert.prompt on iOS. */}
         <ConfirmActionPrompt />
 
         <StatusBar style={resolved === 'dark' ? 'light' : 'dark'} />
@@ -1713,6 +1878,7 @@ export default function App() {
       </ToastProvider>
       </SyncProvider>
       </SafeAreaProvider>
+      </AccountStateProvider>
       </CryptoProvider>
     </AuthContext.Provider>
   );

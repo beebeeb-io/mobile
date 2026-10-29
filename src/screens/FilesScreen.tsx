@@ -1,3 +1,7 @@
+import { sharedFileKeyIsLoaded, sharedKeyOutcome, getSharedKeyResolver } from '../lib/shared-folder-keys';
+import { sharedOutcomeMessage } from '../lib/preview-load-error';
+import { loadFileIndex } from '../lib/file-index-loader';
+import { bottomAnchorInset } from '../components/glass/tab-bar-inset';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -22,7 +26,8 @@ import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { Icon } from '../components/Icon';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
+import { useAndroidFilesBack } from '../lib/use-android-files-back';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Haptics from 'expo-haptics';
@@ -34,6 +39,7 @@ import { openFilesEntry } from '../lib/open-lock-gate';
 import { lockedToastMessage } from '../lib/lock-copy';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Clipboard from 'expo-clipboard';
@@ -52,22 +58,41 @@ import {
   useTabBarBottomInset,
 } from '../components/glass';
 import { UploadActivityCard } from '../components/UploadActivityCard';
+// Task 1685 fix 4 — bounded queue for fire-and-forget thumbnail generation.
+import { thumbnailUploadQueue } from '../lib/upload-queue';
+// Task 1685 fix 5 — throttled upload-progress state (≈4 Hz, stage transitions always pass).
+import { UPLOAD_PROGRESS_MIN_INTERVAL_MS, createProgressThrottle } from '../lib/upload-progress-throttle';
+// Task 1685 fix 6 — pre-upload dedupe: pure match/decision logic (unit-tested in upload-conflict.test.ts).
+import {
+  findDecryptedNameConflict,
+  nextAvailableName,
+  planBatchResolutions,
+  type BatchConflictInput,
+  type BatchDecision,
+  type ConflictResolution,
+} from '../lib/upload-conflict';
+// Task 1685 review should-fixes 1+2 — upload loop serialization + Resume-offer rule.
+import { canOfferResume, createUploadGate, type UploadGate } from '../lib/upload-gate';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
-import PresenceAvatars from '../components/PresenceAvatars';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
 import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
-import { ApiError, listAllFiles, getFileIndex, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getFolderPresence, getUploadStatus, getApiUrl, getToken } from '../lib/api';
+import { ApiError, listAllFiles, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getUploadStatus, getApiUrl, getToken, abortUploadForFile, abandonFileUpload, getUploadResumeForFile, forgetUploadResume } from '../lib/api';
+import type { UploadResumeInfo } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
+import { ensurePhotoPermission } from '../lib/photo-permissions';
 import { generateAndUploadThumbnail } from '../lib/thumbnail';
 import { FileIcon } from '../components/FileIcon';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
 import { getLocalIdentifier } from '../lib/local-identifier-map';
-import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
-import type { FileEntry, StorageUsage, ProofOfExistence, PresenceUser, SyncNode } from '../lib/api';
+import { knownPoolLocation, newPoolLookupState, resolvePoolLocationsShared } from '../lib/sync-storage-locations';
+import type { FileEntry, StorageUsage, ProofOfExistence, SyncNode } from '../lib/api';
+import { storageLocationLabel, fileStorageCountry } from '../lib/storage-regions';
+import { loadFileStorageLocation } from '../lib/file-storage-location';
+import { rowNameDisplay } from '../lib/row-name';
 import type { RootStackParamList, TabParamList } from '../App';
 import { useCrypto } from '../lib/crypto-context';
 import { decryptMetadata as decryptMetadataWithKey } from '../../modules/beebeeb-crypto';
@@ -76,26 +101,44 @@ import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson, fileMetadataP
 import { syncDecryptedEntriesToFileProvider, removeFromFileProviderCache } from '../lib/file-provider-mount';
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
+import { buildAddMenuActions, NEW_FILE_ACTION_ID } from '../lib/new-document';
+import { createNewDocumentFile, decryptFolderNames, previewParamsForNewDocument } from '../lib/create-new-document';
+import { abandonTextFileUpload } from '../lib/text-file-save';
+import NewFileSheet, { type NewFileRequest } from '../components/NewFileSheet';
 import { useSync } from '../lib/sync-context';
 import { useSearchIndex } from '../lib/use-search-index';
+import { decryptNamesInBackground } from '../lib/background-name-decrypt';
 import { onFilesDeleted } from '../lib/delete-cascade';
 import { loadNameCache, scheduleSaveNameCache, type NameCache } from '../lib/name-cache';
+import { accountEpoch } from '../lib/account-epoch';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { offlineManager, type OfflineStatus } from '../lib/offline-manager';
 import { useOfflineVersion } from '../lib/use-offline';
-import { decryptToTempFile } from '../lib/native-decrypt';
+import { cacheUploadedPreview, decryptToTempFile } from '../lib/native-decrypt';
+import { extensionForRaw } from '../lib/raw-format';
+import { fileCategory as previewFileCategory } from '../lib/file-category';
 import { BBActionSheet, type ActionSheetRow, type ActionSheetFileHeader } from '../components/BBActionSheet';
 import { MenuView, type MenuAction, type NativeActionEvent } from '@react-native-menu/menu';
 import { useBackup } from '../lib/backup-context';
 import type { SearchIndexEntry, SearchResult } from '../lib/search-index';
 import { donateSiriShortcut } from '../lib/siri-shortcuts';
 import { perfMark } from '../lib/perf-mark';
-import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
+import { loadCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
 import { formatBytes as formatSize } from '../lib/format';
+import { useAccountState } from '../lib/account-state-context';
+import {
+  READ_ONLY_TITLE,
+  isAccountRefusalCode,
+  lapsedBannerText,
+  trialEndedBannerText,
+  readOnlyUploadMessage,
+  requestAccountStateRefresh,
+} from '../lib/account-state';
 import {
   appendFolderToBreadcrumbStack,
   filterSelfChildEntries,
   folderCacheKey,
+  loadFolderWithCachedRows,
   shouldApplyFilesForFolderToVisibleRows,
   shouldApplyFolderRequestToVisibleState,
   type BreadcrumbEntry,
@@ -136,6 +179,8 @@ const FAB_SIZE = 56;
 const LIST_BOTTOM_CLEARANCE = FAB_BOTTOM_GAP + FAB_SIZE + 16;
 /** UploadActivityCard rests just above the FAB, not touching it. */
 const UPLOAD_CARD_GAP_ABOVE_FAB = 8;
+/** Task 1685 fix 6 — upper bound on waiting for the folder's decrypted names before the dedupe check. */
+const FOLDER_NAMES_HYDRATION_WAIT_MS = 2_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -170,8 +215,60 @@ async function copyPhotoAssetToUploadCache(sourceUri: string, fileId: string, na
   const safeName = name.replace(/[^a-zA-Z0-9._()-]/g, '_');
   const targetUri = `${FileSystem.cacheDirectory}upload-${fileId}-${safeName || 'photo.jpg'}`;
   await FileSystem.deleteAsync(targetUri, { idempotent: true }).catch(() => {});
-  await FileSystem.copyAsync({ from: sourceUri, to: targetUri });
+  // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+  await gatedPlaintextWrite('upload copy', targetUri, FileSystem, () =>
+    FileSystem.copyAsync({ from: sourceUri, to: targetUri }),
+  );
   return targetUri;
+}
+
+/** Task 1593 — delete the upload-* copy (never the picker's own source file). */
+async function discardUploadCacheCopy(copyUri: string, sourceUri: string): Promise<void> {
+  if (copyUri === sourceUri) return;
+  await FileSystem.deleteAsync(copyUri, { idempotent: true }).catch(() => {});
+}
+
+async function cacheRawUploadedPreview(
+  fileId: string,
+  name: string,
+  mimeType: string | null | undefined,
+  sourceUri: string,
+  sizeBytes: number | null | undefined,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  try {
+    const cached = await cacheUploadedPreview(fileId, extensionForRaw(name), sourceUri, sizeBytes);
+    recordRuntimeTrace('preview.upload_source.seed', {
+      fileId,
+      outcome: cached ? 'cached' : 'skipped',
+      elapsedMs: Date.now() - startedAt,
+      sizeBytes: sizeBytes ?? null,
+    });
+    return cached;
+  } catch (err) {
+    recordRuntimeTrace('preview.upload_source.seed', {
+      fileId,
+      outcome: 'failed',
+      elapsedMs: Date.now() - startedAt,
+      errorName: err instanceof Error ? err.name : typeof err,
+      message: err instanceof Error ? err.message : String(err),
+      sizeBytes: sizeBytes ?? null,
+    });
+    return false;
+  }
+}
+
+function queueRawUploadedPreview(
+  fileId: string,
+  name: string,
+  mimeType: string | null | undefined,
+  sourceUri: string,
+  sizeBytes: number | null | undefined,
+): Promise<boolean> {
+  if (previewFileCategory(mimeType ?? undefined, name) !== 'raw') return Promise.resolve(false);
+  // Share the upload-side bounded queue with thumbnail work so a large RAW batch
+  // cannot start unbounded post-upload plaintext copies.
+  return thumbnailUploadQueue.run(() => cacheRawUploadedPreview(fileId, name, mimeType, sourceUri, sizeBytes));
 }
 
 /**
@@ -294,6 +391,9 @@ function syncNodeToFileEntry(node: SyncNode): FileEntry {
   return {
     id: node.id,
     name_encrypted: node.name_encrypted,
+    file_request_id: node.file_request_id,
+    sender_ephemeral_pubkey: node.sender_ephemeral_pubkey,
+    wrapped_content_key: node.wrapped_content_key,
     mime_type: node.mime_type,
     size_bytes: node.size_bytes,
     is_folder: node.is_folder,
@@ -342,22 +442,15 @@ function fileCategory(entry: FileEntry): 'folder' | 'image' | 'pdf' | 'audio' | 
 /**
  * Return a unique filename by appending (1), (2), … until there's no
  * collision with `existingNames` (lowercased names of files in the folder).
+ * Task 1685: delegates to the shared, unit-tested implementation in
+ * upload-conflict.ts so screen and planner can never drift apart.
  */
 function getUniqueMobileName(name: string, existingNames: ReadonlySet<string>): string {
-  const dot = name.lastIndexOf('.');
-  const base = dot > 0 ? name.slice(0, dot) : name;
-  const ext  = dot > 0 ? name.slice(dot) : '';
-  let n = 1;
-  let candidate = name;
-  while (existingNames.has(candidate.toLowerCase())) {
-    candidate = `${base} (${n})${ext}`;
-    n++;
-  }
-  return candidate;
+  return nextAvailableName(name, existingNames);
 }
 
 type ConflictChoice =
-  | { action: 'replace'; existingId: string }
+  | { action: 'overwrite'; existingId: string }
   | { action: 'keep-both'; finalName: string }
   | { action: 'cancel' };
 
@@ -365,6 +458,11 @@ type ConflictChoice =
  * Show a native Alert dialog asking the user what to do when a filename
  * already exists in the current folder.
  * Returns a Promise that resolves with the user's choice.
+ *
+ * Task 1685: the button is now "Overwrite" (it stores the incoming file as a
+ * NEW VERSION of the existing row — the vault is versioned, nothing is
+ * destroyed), and the silent auto-version shortcut this prompt used to skip
+ * is gone: every single-file conflict asks.
  */
 function promptFileConflict(
   filename: string,
@@ -374,11 +472,11 @@ function promptFileConflict(
   return new Promise((resolve) => {
     Alert.alert(
       `"${filename}" already exists`,
-      'What would you like to do?',
+      'Overwrite stores the new file as a new version of the existing one. Keep both stores it under a new name.',
       [
         {
-          text: 'Replace',
-          onPress: () => resolve({ action: 'replace', existingId }),
+          text: 'Overwrite',
+          onPress: () => resolve({ action: 'overwrite', existingId }),
         },
         {
           text: 'Keep both',
@@ -390,6 +488,46 @@ function promptFileConflict(
           onPress: () => resolve({ action: 'cancel' }),
         },
       ],
+    );
+  });
+}
+
+// Task 1685 fix 6 — batch conflict prompt. Per-file decisions, with an
+// "apply to the remaining conflicts" shortcut so a re-upload after a crash
+// (where EVERYTHING conflicts) is two taps, not 64.
+type BatchConflictChoice = 'overwrite' | 'skip' | 'keep-both' | 'overwrite-rest' | 'skip-rest' | 'cancel';
+
+interface BatchConflictPromptInfo {
+  incomingName: string;
+  incomingSizeBytes: number | null;
+  existingName: string;
+  existingSizeBytes: number | null;
+}
+
+function sizeLine(incoming: number | null, existing: number | null): string {
+  if (incoming != null && existing != null && incoming !== existing) {
+    return ` The existing one is ${formatSize(existing)}; the new one is ${formatSize(incoming)}.`;
+  }
+  return '';
+}
+
+function promptBatchConflict(conflict: BatchConflictPromptInfo, remainingAfterThis: number): Promise<BatchConflictChoice> {
+  return new Promise((resolve) => {
+    const buttons: Array<{ text: string; style?: 'cancel' | 'default' | 'destructive'; onPress: () => void }> = [
+      { text: 'Overwrite', onPress: () => resolve('overwrite') },
+      { text: 'Keep both', onPress: () => resolve('keep-both') },
+      { text: 'Skip', onPress: () => resolve('skip') },
+    ];
+    if (remainingAfterThis > 0) {
+      const total = remainingAfterThis + 1;
+      buttons.push({ text: `Overwrite all ${total}`, onPress: () => resolve('overwrite-rest') });
+      buttons.push({ text: `Skip all ${total}`, onPress: () => resolve('skip-rest') });
+    }
+    buttons.push({ text: 'Cancel upload', style: 'cancel', onPress: () => resolve('cancel') });
+    Alert.alert(
+      `"${conflict.incomingName}" already exists`,
+      `This folder already has "${conflict.existingName}".${sizeLine(conflict.incomingSizeBytes, conflict.existingSizeBytes)} Overwrite adds the new file as a new version of it; Skip leaves it out of this upload; Keep both stores it under a new name.`,
+      buttons,
     );
   });
 }
@@ -514,6 +652,8 @@ function HighlightedName({
 interface FileRowItemProps {
   item: FileEntry;
   decryptedName: string | undefined;
+  /** Task 1592 — the batch decrypt could not decrypt this row's name. */
+  nameUnavailable?: boolean;
   onPress: (item: FileEntry) => void;
   onLongPress: (item: FileEntry) => void;
   onShare: (item: FileEntry) => void;
@@ -541,6 +681,7 @@ interface FileRowItemProps {
 const FileRowItem = React.memo(function FileRowItem({
   item,
   decryptedName,
+  nameUnavailable = false,
   onPress,
   onLongPress,
   onShare,
@@ -561,8 +702,24 @@ const FileRowItem = React.memo(function FileRowItem({
   const { colors: c } = useTheme();
   const swipeableRef = useRef<Swipeable>(null);
   const category = fileCategory(item);
-  const isEncryptedFallback = !decryptedName && !!item.name_encrypted?.startsWith('{');
-  const nameText = decryptedName ?? displayName(item);
+  const [sharedLabel, setSharedLabel] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    setSharedLabel(null);
+    if (nameUnavailable) void getSharedKeyResolver()?.originLabel(item.id).then(label => { if (current) setSharedLabel(label); });
+    return () => { current = false; };
+  }, [item.id, nameUnavailable]);
+  // Task 1592 — pending → placeholder bar; failed → settled words (never an
+  // endless placeholder); otherwise the name.
+  const nameDisplay = rowNameDisplay({
+    decryptedName,
+    fallbackName: displayName(item),
+    nameEncrypted: item.name_encrypted,
+    isFolder: item.is_folder,
+    nameUnavailable,
+  });
+  const isEncryptedFallback = nameDisplay.kind === 'pending';
+  const nameText = nameDisplay.kind === 'pending' ? '' : nameDisplay.text;
   const isPendingUpload = !item.is_folder && item.is_uploading === true;
 
   const handleSwipeOpen = useCallback((_dir: 'left' | 'right', swipeable: Swipeable) => {
@@ -648,7 +805,7 @@ const FileRowItem = React.memo(function FileRowItem({
             <HighlightedName
               name={nameText}
               query={highlightQuery}
-              style={[styles.fileName, { color: c.ink }]}
+              style={[styles.fileName, { color: nameDisplay.kind === 'unavailable' ? c.ink3 : c.ink }, nameDisplay.kind === 'unavailable' && styles.nameUnavailable]}
               matchColor={c.amberDeep}
               numberOfLines={2}
             />
@@ -682,6 +839,8 @@ const FileRowItem = React.memo(function FileRowItem({
         </View>
         <Text style={[styles.fileMeta, { color: c.ink3 }]}>
           {(() => {
+            const sharedMessage = sharedOutcomeMessage(sharedKeyOutcome(item.id), sharedLabel);
+            if (sharedMessage) return sharedMessage;
             const loc = storageLocation(item.storage_pool_id);
             const locSuffix = loc.shortCode ? `  ·  ${loc.shortCode}` : '';
             if (item.is_folder) return `${formatDate(item.updated_at)}${locSuffix}`;
@@ -694,7 +853,7 @@ const FileRowItem = React.memo(function FileRowItem({
           <Text style={[styles.cryptoMeta, { color: c.ink4 }]} numberOfLines={1}>
             {isPendingUpload
               ? 'Waiting for encrypted chunks'
-              : `AES-256-GCM · ${trustLocation(item.storage_pool_id).region} · ${trustLocation(item.storage_pool_id).city}`}
+              : `AES-256-GCM · ${storageLocationLabel(fileStorageCountry(item))}`}
           </Text>
         )}
       </View>
@@ -755,6 +914,8 @@ const FileRowItem = React.memo(function FileRowItem({
 interface FileGridItemProps {
   item: FileEntry;
   decryptedName: string | undefined;
+  /** Task 1592 — the batch decrypt could not decrypt this row's name. */
+  nameUnavailable?: boolean;
   onPress: (item: FileEntry) => void;
   onLongPress: (item: FileEntry) => void;
   onTrustPress: (item: FileEntry) => void;
@@ -781,6 +942,7 @@ interface FileGridItemProps {
 const FileGridItem = React.memo(function FileGridItem({
   item,
   decryptedName,
+  nameUnavailable = false,
   onPress,
   onLongPress,
   onTrustPress,
@@ -799,20 +961,36 @@ const FileGridItem = React.memo(function FileGridItem({
 }: FileGridItemProps) {
   const { colors: c } = useTheme();
   const category = fileCategory(item);
-  const isEncryptedFallback = !decryptedName && !!item.name_encrypted?.startsWith('{');
-  const nameText = decryptedName ?? displayName(item);
+  const [sharedLabel, setSharedLabel] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    setSharedLabel(null);
+    if (nameUnavailable) void getSharedKeyResolver()?.originLabel(item.id).then(label => { if (current) setSharedLabel(label); });
+    return () => { current = false; };
+  }, [item.id, nameUnavailable]);
+  // Task 1592 — pending → placeholder bar; failed → settled words (never an
+  // endless placeholder); otherwise the name.
+  const nameDisplay = rowNameDisplay({
+    decryptedName,
+    fallbackName: displayName(item),
+    nameEncrypted: item.name_encrypted,
+    isFolder: item.is_folder,
+    nameUnavailable,
+  });
+  const isEncryptedFallback = nameDisplay.kind === 'pending';
+  const nameText = nameDisplay.kind === 'pending' ? '' : nameDisplay.text;
   const isFolder = item.is_folder;
   const isPendingUpload = !isFolder && item.is_uploading === true;
 
   const loc = storageLocation(item.storage_pool_id);
   const locSuffix = loc.shortCode ? ` · ${loc.shortCode}` : '';
-  const metaText = isFolder
+  const metaText = sharedOutcomeMessage(sharedKeyOutcome(item.id), sharedLabel) ?? (isFolder
     ? `${formatDate(item.updated_at)}${locSuffix}`
     : isPendingUpload
       ? `Upload pending · ${formatSize(item.size_bytes)}${locSuffix}`
     : (sortOrder === 'size-desc' || sortOrder === 'size-asc')
       ? `${formatSize(item.size_bytes)}${locSuffix}`
-      : `${formatSize(item.size_bytes)} · ${formatDate(item.updated_at)}${locSuffix}`;
+      : `${formatSize(item.size_bytes)} · ${formatDate(item.updated_at)}${locSuffix}`);
 
   return (
     <TouchableOpacity
@@ -854,7 +1032,7 @@ const FileGridItem = React.memo(function FileGridItem({
             <HighlightedName
               name={nameText}
               query={highlightQuery}
-              style={[styles.gridName, { color: c.ink }]}
+              style={[styles.gridName, { color: nameDisplay.kind === 'unavailable' ? c.ink3 : c.ink }, nameDisplay.kind === 'unavailable' && styles.nameUnavailable]}
               matchColor={c.amberDeep}
               numberOfLines={2}
             />
@@ -892,7 +1070,7 @@ const FileGridItem = React.memo(function FileGridItem({
         </Text>
         {!isFolder && (
           <Text style={[styles.cryptoMetaGrid, { color: c.ink4 }]} numberOfLines={1}>
-            {isPendingUpload ? 'Waiting for chunks' : `AES-256-GCM · ${trustLocation(item.storage_pool_id).city}`}
+            {isPendingUpload ? 'Waiting for chunks' : `AES-256-GCM · ${storageLocationLabel(fileStorageCountry(item))}`}
           </Text>
         )}
       </View>
@@ -1021,7 +1199,9 @@ function ProofDetailModal({ proof, fileName, onClose, showToast }: ProofDetailMo
       if (await Sharing.isAvailableAsync()) {
         // Write to a temp .txt file so the share sheet treats it as a document
         const tmpPath = `${FileSystem.cacheDirectory}beebeeb-proof-${proof.proofId.slice(0, 8)}.txt`;
-        await FileSystem.writeAsStringAsync(tmpPath, proofText, { encoding: FileSystem.EncodingType.UTF8 });
+        await gatedPlaintextWrite('proof export', tmpPath, FileSystem, () =>
+          FileSystem.writeAsStringAsync(tmpPath, proofText, { encoding: FileSystem.EncodingType.UTF8 }),
+        );
         await Sharing.shareAsync(tmpPath, {
           mimeType: 'text/plain',
           dialogTitle: 'Share proof',
@@ -1088,7 +1268,7 @@ function ProofDetailModal({ proof, fileName, onClose, showToast }: ProofDetailMo
       </ScrollView>
 
       {/* Footer with Share button */}
-      <View style={[proofStyles.footer, { borderTopColor: c.line, paddingBottom: insets.bottom || 16, backgroundColor: c.paper }]}>
+      <View style={[proofStyles.footer, { borderTopColor: c.line, paddingBottom: bottomAnchorInset(insets.bottom, insets.bottom || 16), backgroundColor: c.paper }]}>
         <TouchableOpacity
           style={[proofStyles.shareBtn, { backgroundColor: c.amber, opacity: sharing ? 0.6 : 1 }]}
           onPress={() => void handleShare()}
@@ -1175,6 +1355,7 @@ const proofStyles = StyleSheet.create({
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function FilesScreen() {
+  const isFocused = useIsFocused();
   const navigation = useNavigation<Nav>();
   const route = useRoute<RouteProp<TabParamList, 'Files'>>();
   const insets = useSafeAreaInsets();
@@ -1186,6 +1367,16 @@ export default function FilesScreen() {
   const { showToast } = useToast();
   const { user, phraseVerified } = useAuth();
   const isAuthenticated = user !== null;
+  // Task 1037: a needs_plan or lapsed account is read-only (the server
+  // refuses upload init with 409 plan_required / account_lapsed). Say so up
+  // front instead of starting an upload that fails with a generic error.
+  const { gate: accountGate } = useAccountState();
+  const blockIfReadOnly = useCallback((): boolean => {
+    const message = readOnlyUploadMessage(accountGate);
+    if (!message) return false;
+    Alert.alert(READ_ONLY_TITLE, message, [{ text: 'OK' }]);
+    return true;
+  }, [accountGate]);
   const { backupProgress, includeVideos, isPhotoBackupEnabled } = useBackup();
 
   // Navigation state: stack of folders
@@ -1316,17 +1507,21 @@ export default function FilesScreen() {
   // been read once, so a locked file's image never flashes on a cold launch.
   const [lockStateReady, setLockStateReady] = useState(false);
 
-  // Presence — collaborators currently viewing the folder we're inside.
-  // Empty for the root view; only populated when navigated into a shared folder.
-  const [presence, setPresence] = useState<PresenceUser[]>([]);
-
   // Crypto
-  const { isUnlocked, unlockAttempted, decryptMetadata, decryptNames, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId } = useCrypto();
+  const { isUnlocked, unlock, unlockAttempted, decryptMetadata, decryptNames, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId } = useCrypto();
+  useEffect(() => { if (isUnlocked) void loadFileIndex().catch(() => {}); }, [isUnlocked]);
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
+  // Task 1592 — rows whose name the batch decrypt could not decrypt (shown as
+  // "Folder — name unavailable" instead of an endless placeholder).
+  const [unavailableNameIds, setUnavailableNameIds] = useState<Record<string, true>>({});
   // Task 0807: persistent (fileId,version) name cache + a ref mirror of
   // decryptedNames so the per-folder decrypt effect can read the latest names
   // without re-running on every name update (which would loop).
   const nameCacheRef = useRef<NameCache>({});
+  // Task 1959 round 3: the account the names in nameCacheRef belong to,
+  // captured when the load below STARTED. Persisting them is dropped once
+  // that account has signed out (name-cache.ts saveNameCacheNow).
+  const nameCacheEpochRef = useRef(accountEpoch());
   const decryptedNamesRef = useRef<Record<string, string>>({});
   const decryptedMimeTypesRef = useRef<Record<string, string | null>>({});
   const [decryptedMimeTypes, setDecryptedMimeTypes] = useState<Record<string, string | null>>({});
@@ -1349,9 +1544,11 @@ export default function FilesScreen() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      const epoch = accountEpoch();
       const cache = await loadNameCache();
       if (cancelled) return;
       nameCacheRef.current = cache;
+      nameCacheEpochRef.current = epoch;
       const ids = Object.keys(cache);
       if (ids.length === 0) return;
       const seedNames: Record<string, string> = {};
@@ -1434,7 +1631,7 @@ export default function FilesScreen() {
       searchReconciledRef.current = false;
       return;
     }
-    if (!searchIndexReady || !sync.ready || searchReconciledRef.current) return;
+    if (!isFocused || loading || !searchIndexReady || !sync.ready || searchReconciledRef.current) return;
     searchReconciledRef.current = true;
 
     let cancelled = false;
@@ -1445,47 +1642,41 @@ export default function FilesScreen() {
         .filter(
           (n) => !n.is_trashed && !indexed.has(n.id) && (n.name_encrypted ?? '').startsWith('{'),
         );
-      const BATCH = 12;
-      for (let i = 0; i < missing.length && !cancelled; i += BATCH) {
-        await Promise.all(
-          missing.slice(i, i + BATCH).map(async (node) => {
-            try {
-              const payload = encryptedMetadataPayloadToBytes(node.name_encrypted ?? '');
-              if (!payload) return;
-              const plaintext = await decryptMetadata(node.id, payload.nonce, payload.ciphertext);
-              const { name, mimeType } = parseDecryptedMetadata(plaintext);
-              if (cancelled || !name) return;
-              indexFile(node.id, {
-                name,
-                path: name,
-                // 1338b — was always '' for files (mimeType was parsed then
-                // discarded), so `searchResultToFileEntry` → `fileCategory`
-                // had no real mime for a vault-search result and the bottom
-                // bar's kind filter fell back to guessing from the filename
-                // extension for every reconciled node. Thread the real,
-                // already-decrypted type through — same field `toSearchIndexEntry`
-                // (above) already fills correctly for indexed-on-write nodes.
-                type: node.is_folder ? 'folder' : (mimeType ?? ''),
-                size: node.size_bytes ?? 0,
-                parent: node.parent_id,
-                starred: false,
-                created: '',
-                modified: '',
-                tags: [],
-              });
-            } catch {
-              // request-upload (content-key) or a transient decrypt failure — it
-              // gets indexed when its folder is opened. Non-fatal.
-            }
-          }),
+      const byId = new Map(missing.map((node) => [node.id, node]));
+      try {
+        await folderNamesReadyRef.current;
+        const applied = await decryptNamesInBackground(
+          missing.map((node) => ({ fileId: node.id, nameEncrypted: node.name_encrypted ?? '' })),
+          decryptNames,
+          (item, metadata) => {
+            const node = byId.get(item.fileId);
+            if (!node || !metadata.name) return;
+            indexFile(node.id, {
+              name: metadata.name,
+              path: metadata.name,
+              type: node.is_folder ? 'folder' : (metadata.mimeType ?? ''),
+              size: node.size_bytes ?? 0,
+              parent: node.parent_id,
+              starred: false,
+              created: '',
+              modified: '',
+              tags: [],
+            });
+          },
+          () => cancelled,
         );
+        recordRuntimeTrace('files.search_reconcile', { candidates: missing.length, applied, cancelled });
+      } catch {
+        // Search is best-effort; visible folders resolve their own names.
+        if (!cancelled) searchReconciledRef.current = false;
       }
     })();
 
     return () => {
       cancelled = true;
+      searchReconciledRef.current = false;
     };
-  }, [isUnlocked, searchIndexReady, sync, getIndexedIds, indexFile, decryptMetadata]);
+  }, [isUnlocked, isFocused, loading, currentFolder.id, searchIndexReady, sync.ready, sync.allNodes, getIndexedIds, indexFile, decryptNames]);
 
   // 0789 — Sort + "+" add menus are now the real iOS UIMenu pull-down (MenuView),
   // anchored under the button. Only the file-row long-press still routes through the
@@ -1505,8 +1696,43 @@ export default function FilesScreen() {
 
   // Upload state — drives the Live-Activity upload card above the FAB (1301).
   // stage 1 = encrypting · stage 2 = uploading · stage 3 = storing/done.
+  // Task 1685 fix 2: the FAB stays ACTIVE during an upload — the queue is
+  // appendable mid-flight (Guus: "tijdens upload van file op ios kun je niet
+  // extra files uploaden met + knop"). The old disabled-FAB decision is gone;
+  // uploads simply queue up behind the running one.
   const [upload, setUpload] = useState<UploadActivityState | null>(null);
-  const uploadingName = upload?.fileName ?? null;
+
+  // Task 1685 fix 6 — resolves when the per-folder name effect below finishes
+  // (cache/index seeds applied + decrypt batch applied). The pre-upload dedupe
+  // must AWAITS this before matching names: findConflict used to return null
+  // whenever decryptedNames hadn't hydrated yet, and the batch path then
+  // silently skipped the conflict check entirely.
+  const folderNamesReadyRef = useRef<Promise<void>>(Promise.resolve());
+  /** Wait (bounded) until the current folder's decrypted names have been applied. */
+  const waitForFolderNames = useCallback(async (): Promise<void> => {
+    await Promise.race([
+      folderNamesReadyRef.current,
+      new Promise<void>((resolve) => setTimeout(resolve, FOLDER_NAMES_HYDRATION_WAIT_MS)),
+    ]);
+  }, []);
+
+  // Task 1685 review should-fix 1 — ONE upload loop at a time. A second pick
+  // while a batch runs used to start a SECOND concurrent serial loop: two
+  // writers on the single `upload` card state (either loop's setUpload(null)
+  // could vanish the other's card) and 2 concurrent encrypted streams. Every
+  // upload entry point (single doc, photo batch, resume) runs through this
+  // gate; a pick made while busy is QUEUED behind the running loop and says so
+  // with a toast. (The gate promise-chain never rejects: a task's own failure
+  // is the task caller's to handle.)
+  const uploadGateRef = useRef<UploadGate | null>(null);
+  if (uploadGateRef.current === null) uploadGateRef.current = createUploadGate();
+
+  // Task 1685 review should-fix 2 — fileId of the upload currently in flight,
+  // set around every encryptedUpload and cleared when it settles. For a FRESH
+  // upload the tapped placeholder row carries the SERVER id (unknown until the
+  // attempt finishes), so handlePendingUpload additionally gates on the gate's
+  // busy flag; the ref makes the RESUME-of-a-resume row match exactly.
+  const activeUploadFileIdRef = useRef<string | null>(null);
 
   // Trust details sheet — opened by tapping the lock icon on a row/grid cell.
   const [trustFile, setTrustFile] = useState<FileEntry | null>(null);
@@ -1522,26 +1748,6 @@ export default function FilesScreen() {
     const name = decryptedNames[file.id] ?? displayName(file);
     return decryptedMimeTypes[file.id] ?? file.mime_type ?? guessMimeType(name);
   }, [decryptedMimeTypes, decryptedNames]);
-  const shouldAutoVersionUpload = useCallback((
-    existingFile: FileEntry,
-    incomingName: string,
-    incomingMimeType: string | null | undefined,
-    incomingSizeBytes: number | null | undefined,
-  ): boolean => {
-    const existingName = decryptedNames[existingFile.id] ?? displayName(existingFile);
-    const existingMimeType = mimeTypeFor(existingFile) ?? guessMimeType(existingName);
-    const resolvedIncomingMimeType = incomingMimeType ?? guessMimeType(incomingName);
-    const sameType =
-      !existingMimeType ||
-      !resolvedIncomingMimeType ||
-      existingMimeType.toLowerCase() === resolvedIncomingMimeType.toLowerCase();
-    if (!sameType) return false;
-
-    // Mobile does not have a stable hash for all picker assets yet. Size is the
-    // cheap signal we have; when the picker omits size, prefer versioning over
-    // creating "name (1)" duplicates for same-name, same-type uploads.
-    return incomingSizeBytes == null || existingFile.size_bytes !== incomingSizeBytes;
-  }, [decryptedNames, mimeTypeFor]);
   const withDecryptedMime = useCallback((file: FileEntry): FileEntry => {
     const mimeType = mimeTypeFor(file);
     return mimeType === file.mime_type ? file : { ...file, mime_type: mimeType };
@@ -1552,6 +1758,10 @@ export default function FilesScreen() {
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
+
+  // Task 1587 — "+" → New file: the type picker + name step (NewFileSheet,
+  // on the shared BottomSheet). Errors are shown inline in the sheet.
+  const [newFileOpen, setNewFileOpen] = useState(false);
 
   // Export state (1177) — a top-of-Files "Exporting…" indicator shown for the
   // whole prepare phase (download + decrypt → temp) of Save to Files / Save to
@@ -1596,13 +1806,24 @@ export default function FilesScreen() {
     if (!isUnlocked) {
       setDecryptedNames({});
       setDecryptedMimeTypes({});
+      setUnavailableNameIds({});
       return;
     }
     const folderId = currentFolder.id;
     const folderKey = folderCacheKey(folderId);
 
+    // Task 1685 fix 6 — signal for waitForFolderNames(): every exit path of
+    // this effect resolves the promise, so a dedupe check never waits on a
+    // folder whose names were resolved from cache/index (zero decrypts) and
+    // never waits past the batch actually applying.
+    let releaseNames!: () => void;
+    folderNamesReadyRef.current = new Promise<void>((resolve) => { releaseNames = resolve; });
+
     const encrypted = files.filter((f) => (f.name_encrypted ?? '').startsWith('{'));
-    if (encrypted.length === 0) return;
+    if (encrypted.length === 0) {
+      releaseNames();
+      return;
+    }
 
     // ── Phase 1: seed from cache/index, collect misses ──────────────────────
     const knownNames = decryptedNamesRef.current;
@@ -1640,6 +1861,7 @@ export default function FilesScreen() {
       recordRuntimeTrace('files.folder_decrypt', {
         folderId, total: encrypted.length, cacheHits, batchDecrypted: 0, batchCalls: 0,
       });
+      releaseNames();
       return;
     }
 
@@ -1651,6 +1873,7 @@ export default function FilesScreen() {
       const normal = misses.filter((f) => !isRequestUpload(f));
       const appliedNames: Record<string, string> = {};
       const appliedMimes: Record<string, string | null> = {};
+      const failedNames: Record<string, true> = {};
 
       if (normal.length > 0) {
         try {
@@ -1661,7 +1884,20 @@ export default function FilesScreen() {
           if (cancelled) return;
           results.forEach((r, i) => {
             const f = normal[i];
-            if (!f || !r || r.error || !r.name) return;
+            if (!f || !r) return;
+            if (r.error || !r.name) {
+              // Task 1592 — a per-row failure is settled (not "still
+              // loading"). A JS-only build without the native batch is not.
+              if (r.error !== 'decryptNames unavailable') {
+                failedNames[f.id] = true;
+                recordRuntimeTrace('files.name_decrypt_failed', {
+                  fileId: f.id,
+                  isFolder: f.is_folder,
+                  error: r.error ?? 'empty name',
+                });
+              }
+              return;
+            }
             appliedNames[f.id] = r.name;
             appliedMimes[f.id] = r.mimeType ?? null;
           });
@@ -1715,10 +1951,13 @@ export default function FilesScreen() {
         };
         cacheChanged = true;
       }
-      if (cacheChanged) scheduleSaveNameCache(nameCacheRef.current);
+      if (cacheChanged) scheduleSaveNameCache(nameCacheRef.current, nameCacheEpochRef.current);
 
       if (Object.keys(appliedNames).length > 0) {
         setDecryptedNames((prev) => ({ ...prev, ...appliedNames }));
+      }
+      if (Object.keys(failedNames).length > 0) {
+        setUnavailableNameIds((prev) => ({ ...prev, ...failedNames }));
       }
       if (Object.keys(appliedMimes).length > 0) {
         setDecryptedMimeTypes((prev) => ({ ...prev, ...appliedMimes }));
@@ -1742,8 +1981,13 @@ export default function FilesScreen() {
           folderId,
         ).catch(() => {});
       }
+      releaseNames();
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // A dep change (or unmount) mid-batch must never leave the dedupe wait hanging.
+      releaseNames();
+    };
   }, [currentFolder.id, files, isUnlocked, decryptNames, getRequestContentKey]);
 
   // Load pinned folders from SecureStore on mount
@@ -1850,11 +2094,13 @@ export default function FilesScreen() {
   // the destination folder's entries cached we render them immediately (instant,
   // then reconciled by the sync derive below); otherwise we clear to an empty
   // list under the loading skeleton until authoritative data arrives.
+  const folderFetchGenerationRef = useRef(0);
   const renderedFolderKeyRef = useRef(folderCacheKey(currentFolder.id));
   useLayoutEffect(() => {
     const key = folderCacheKey(currentFolder.id);
     if (renderedFolderKeyRef.current === key) return;
     renderedFolderKeyRef.current = key;
+    folderFetchGenerationRef.current += 1;
     filesFolderKeyRef.current = key;
     const cached = folderFilesCacheRef.current[key];
     if (cached && cached.length > 0) {
@@ -1871,12 +2117,44 @@ export default function FilesScreen() {
     setError(null);
   }, [currentFolder.id]);
 
+  // Task 2055 — sync nodes carry only `storage_pool_id`; the country comes from
+  // GET /files rows of the same file (learned per POOL, see sync-storage-locations).
+  const poolLookupRef = useRef(newPoolLookupState());
+  const poolLocationsRef = useRef(poolLookupRef.current.known);
+  const entriesFromNodes = useCallback((nodes: SyncNode[]): FileEntry[] => {
+    return nodes.map((n) => {
+      const entry = syncNodeToFileEntry(n);
+      const loc = knownPoolLocation(poolLocationsRef.current, n);
+      return loc ? ({ ...entry, storage_location: loc } as FileEntry) : entry;
+    });
+  }, []);
+  const resolvePoolLocations = useCallback(async (parentId: string | null, nodes: SyncNode[]) => {
+    try {
+      // Callers for a pool already being looked up await the SAME request, then
+      // each re-derives its own folder's rows (PR 188 review).
+      const settled = await resolvePoolLocationsShared(
+        poolLookupRef.current,
+        nodes,
+        () => listAllFiles(parentId ?? undefined),
+      );
+      if (!settled) return;
+      const fresh = sync.children(parentId).filter((n) => !n.is_trashed);
+      if (fresh.length > 0) {
+        applyFilesForFolder(parentId, entriesFromNodes(fresh), { preserveCachedOnEmpty: true });
+      }
+    } catch {
+      // a failed lookup is not marked tried: the next tree bump retries it
+    }
+  }, [sync, applyFilesForFolder, entriesFromNodes]);
+
   // ------------------------------------------------------------------
   // Fetch files
   // ------------------------------------------------------------------
 
   const fetchFiles = useCallback(async (parentId: string | null, isRefresh = false) => {
+    const generation = ++folderFetchGenerationRef.current;
     const isRequestStillVisible = () =>
+      generation === folderFetchGenerationRef.current &&
       shouldApplyFolderRequestToVisibleState(parentId, filesFolderKeyRef.current);
     const hasVisibleFiles = filesCountRef.current > 0;
     if (isRequestStillVisible()) {
@@ -1894,46 +2172,32 @@ export default function FilesScreen() {
       refresh: isRefresh,
     });
     let renderedCachedIndex = false;
+    const folderStartedAt = Date.now();
+    recordRuntimeTrace('files.folder_load.start', { parentId, generation, refresh: isRefresh });
 
     try {
-      const cachedIndex = await loadCachedFileIndex();
-      if (!isRefresh && !hasVisibleFiles && cachedIndex) {
-        const cachedFiles = filesForFolderFromIndex(cachedIndex, parentId);
-        if (cachedFiles.length > 0) {
-          renderedCachedIndex = true;
+      const result = await loadFolderWithCachedRows(
+        () => listAllFiles(parentId ?? undefined),
+        !isRefresh && !hasVisibleFiles
+          ? async () => {
+              const cacheStartedAt = Date.now();
+              const cachedIndex = await loadCachedFileIndex();
+              recordRuntimeTrace('files.folder_cache.loaded', { parentId, elapsedMs: Date.now() - cacheStartedAt, entries: cachedIndex?.files.length ?? 0 });
+              return cachedIndex ? filesForFolderFromIndex(cachedIndex, parentId) : null;
+            }
+          : null,
+        (cachedFiles) => {
+          if (!isRequestStillVisible()) return;
           if (applyFilesForFolder(parentId, cachedFiles, { preserveCachedOnEmpty: true })) {
+            renderedCachedIndex = true;
             setLoading(false);
             setRefreshing(true);
           }
-        }
-      }
-
-      try {
-        const index = await getFileIndex(cachedIndex?.hash);
-        const sourceIndex = !index.changed && cachedIndex
-          ? cachedIndex
-          : index.files
-            ? { hash: index.hash, files: index.files, storedAt: Date.now() }
-            : null;
-        if (index.files) {
-          await saveCachedFileIndex(index.hash, index.files);
-        }
-        if (sourceIndex) {
-          const result = filesForFolderFromIndex(sourceIndex, parentId);
-          const rendered = applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
-          endPerf({ count: result.length, source: 'index' });
-          if (rendered) setHasLoadedOnceTrue();
-          return;
-        }
-      } catch (err) {
-        if (!(err instanceof ApiError) || (err.status !== 400 && err.status !== 404 && err.status !== 405)) {
-          throw err;
-        }
-      }
-
-      const result = await listAllFiles(parentId ?? undefined);
-      const rendered = applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: !isRefresh });
+        },
+      );
+      const rendered = isRequestStillVisible() && applyFilesForFolder(parentId, result, { preserveCachedOnEmpty: false });
       endPerf({ count: result.length, source: 'folder' });
+      recordRuntimeTrace('files.folder_load.complete', { parentId, generation, count: result.length, applied: rendered, elapsedMs: Date.now() - folderStartedAt });
       if (rendered) setHasLoadedOnceTrue();
     } catch (err) {
       endPerf({ error: true });
@@ -2007,14 +2271,16 @@ export default function FilesScreen() {
         const haveAuthoritativeData =
           liveNodes.length > 0 || (cachedFolderFiles?.length ?? 0) > 0 || folderResolvedInTree;
         if (haveAuthoritativeData) {
+          folderFetchGenerationRef.current += 1;
           applyFilesForFolder(
             currentFolder.id,
-            liveNodes.map(syncNodeToFileEntry),
+            entriesFromNodes(liveNodes),
             // When the folder is resolved-empty in the tree, don't preserve a
             // stale cache — clear to the real (empty) state.
             { preserveCachedOnEmpty: !folderResolvedInTree },
           );
           lastLoadedFolderRef.current = currentFolder.id;
+          void resolvePoolLocations(currentFolder.id, liveNodes);
           setLoading(false);
           setError(null);
           setHasLoadedOnceTrue();
@@ -2037,11 +2303,13 @@ export default function FilesScreen() {
     if (lastLoadedFolderRef.current !== currentFolder.id) return;
     const liveNodes = sync.children(currentFolder.id).filter((n) => !n.is_trashed);
     if (liveNodes.length > 0) {
+      folderFetchGenerationRef.current += 1;
       applyFilesForFolder(
         currentFolder.id,
-        liveNodes.map(syncNodeToFileEntry),
+        entriesFromNodes(liveNodes),
         { preserveCachedOnEmpty: true },
       );
+      void resolvePoolLocations(currentFolder.id, liveNodes);
     }
     // Re-derive whenever the tree mutates (treeVersion bumps on every op).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2066,20 +2334,6 @@ export default function FilesScreen() {
     loginFetchKickedRef.current = true;
     void fetchFiles(currentFolder.id, false);
   }, [isAuthenticated, unlockAttempted, currentFolder.id, fetchFiles]);
-
-  // Load presence for the current folder. The endpoint silently returns []
-  // when the folder isn't shared or the API doesn't exist yet.
-  useEffect(() => {
-    if (!currentFolder.id) {
-      setPresence([]);
-      return;
-    }
-    let cancelled = false;
-    getFolderPresence(currentFolder.id)
-      .then((users) => { if (!cancelled) setPresence(users); })
-      .catch(() => { if (!cancelled) setPresence([]); });
-    return () => { cancelled = true; };
-  }, [currentFolder.id]);
 
   // Storage usage — fetched once on mount, refreshed alongside pull-to-refresh
   const fetchUsage = useCallback(async () => {
@@ -2111,6 +2365,21 @@ export default function FilesScreen() {
     setFolderStack((prev) => prev.slice(0, index + 1));
   }, []);
 
+  useAndroidFilesBack({
+    selecting: selectMode,
+    searching: searchActive,
+    folderDepth: folderStack.length,
+    exitSelection: () => {
+      setSelectMode(false);
+      setSelectedIds(new Set());
+    },
+    closeSearch: () => {
+      setSearchActive(false);
+      setSearchQuery('');
+    },
+    goToParent: () => setFolderStack((prev) => prev.slice(0, Math.max(1, prev.length - 1))),
+  });
+
   // Open the collapsed-breadcrumb popover, measuring the "…" chip so the popover
   // hangs directly under it.
   const openBreadcrumbPopover = useCallback(() => {
@@ -2127,12 +2396,33 @@ export default function FilesScreen() {
     navigateToBreadcrumb(stackIndex);
   }, [navigateToBreadcrumb]);
 
+  // Task 1685 fix 7 — durable resume affordance. api.ts records, once per
+  // upload attempt, a per-file pointer (fileId → resumeKey + sourceUri + name
+  // + parent + mime + size). This memo map caches the per-file lookups so
+  // repeated taps never repeat SecureStore reads; the first tap after a
+  // relaunch pays a single local read (ms), not a network round-trip.
+  const resumeInfosRef = useRef<Map<string, UploadResumeInfo | null>>(new Map());
+  const getResumeInfoForTap = useCallback(async (fileId: string): Promise<UploadResumeInfo | null> => {
+    const memo = resumeInfosRef.current.get(fileId);
+    if (memo !== undefined) return memo;
+    const info = await getUploadResumeForFile(fileId).catch(() => null);
+    resumeInfosRef.current.set(fileId, info);
+    return info;
+  }, []);
+
   // 1303 — a pending (never-finalized) upload placeholder gets a real
   // affordance instead of a dead-end toast: tap → status + Discard. Discard
   // trashes the row server-side (stale_upload_cleanup reaps its blobs at the
   // 7-day mark regardless) and drops it from the visible list immediately.
+  // Task 1685 fix 7 — the discarded attempt's resume pointer is dropped too.
   const discardPendingUpload = useCallback(async (file: FileEntry) => {
+    void forgetUploadResume(file.id);
+    resumeInfosRef.current.set(file.id, null);
     try {
+      // Task 1683f: discarding a pending upload cancels its in-flight engine
+      // too (same contract as trash).
+      abortUploadForFile(file.id);
+      void abandonFileUpload(file.id).catch(() => {});
       await deleteFile(file.id);
       setFiles((prev) => prev.filter((f) => f.id !== file.id));
       showToast({ type: 'success', message: 'Pending upload discarded' });
@@ -2142,28 +2432,150 @@ export default function FilesScreen() {
     }
   }, [currentFolder.id, fetchFiles, showToast]);
 
-  const handlePendingUpload = useCallback(async (file: FileEntry) => {
-    let detail = 'This upload never finished.';
-    try {
-      const status = await getUploadStatus(file.id);
-      if (!status.is_uploading) {
-        // Server says it actually completed — the local flag is stale; reconcile.
-        fetchFiles(currentFolder.id, true);
-        return;
-      }
-      detail = `${status.uploaded_chunks.length} of ${status.chunk_count} encrypted chunks were stored before the upload stopped.`;
-    } catch {
-      // keep the generic line — the dialog still offers the way out
+  // Task 1685 fix 7 — actually resume an interrupted attempt: re-run
+  // encryptedUpload with the recorded inputs. api.ts recomputes the identical
+  // resumeKey, finds the stored resume state and continues from
+  // lastUploadedChunkIndex against the same upload session; if the server
+  // swept the session in the meantime, its bounded re-init takeover restarts
+  // it under the same file id. Requires the recorded source file to still
+  // exist — an evicted cache copy honestly reports instead of faking resume.
+  const resumePendingUpload = useCallback(async (file: FileEntry, info: UploadResumeInfo) => {
+    const sourceInfo = await FileSystem.getInfoAsync(info.sourceUri).catch(() => ({ exists: false }) as { exists: boolean });
+    if (!sourceInfo.exists) {
+      showToast({
+        type: 'error',
+        message: `"${info.name}" is no longer on this device, so this upload can't continue. Discard it and add the file again.`,
+      });
+      return;
     }
-    Alert.alert(
-      'Upload pending',
-      `${detail}\n\nDiscarding removes this placeholder and its stored chunks. To upload the file, add it again from its source.`,
-      [
-        { text: 'Discard upload', style: 'destructive', onPress: () => { void discardPendingUpload(file); } },
-        { text: 'Keep', style: 'cancel' },
-      ],
-    );
-  }, [currentFolder.id, discardPendingUpload, fetchFiles]);
+
+    // Task 1685 review should-fix 1 — a resume is an upload loop like any
+    // other: it queues behind a running batch instead of becoming a second
+    // concurrent writer on the single upload card.
+    const runResume = async (): Promise<void> => {
+      const loc = trustLocation(undefined);
+      const display = info.name || displayName(file) || 'file';
+      setUpload({ fileName: display, stage: 2, percent: 0, place: loc.place, region: loc.region });
+      const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
+      activeUploadFileIdRef.current = file.id;
+      try {
+        const uploaded = await encryptedUpload({
+          fileId: file.id,
+          uri: info.sourceUri,
+          name: info.name,
+          parentId: info.parentId ?? undefined,
+          mimeType: info.mimeType ?? undefined,
+          encryptChunkFn: encryptChunk,
+          encryptMetadataFn: encryptMetadata,
+          masterKeyHandleId: getMasterKeyHandleId(),
+          onProgress: (progress) => {
+            if (!allowProgress.allow(progress)) return;
+            const percent = progress.bytesTotal > 0
+              ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
+              : 0;
+            setUpload((prev) => {
+              const base = prev ?? { fileName: display, stage: 2 as UploadStage, percent: 0, place: loc.place, region: loc.region };
+              const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
+              return {
+                ...base,
+                stage,
+                percent,
+                chunksUploaded: progress.chunksUploaded,
+                chunksTotal: progress.chunksTotal,
+                chunkSizeBytes: progress.chunkSizeBytes,
+                bytesUploaded: progress.bytesUploaded,
+                bytesTotal: progress.bytesTotal,
+                cryptoBytesPerSec: progress.cryptoBytesPerSec,
+                // Task 2062: the country the server named at init, while the bytes move.
+                place: progress.storageCountry ?? base.place,
+              };
+            });
+          },
+        });
+        const finalLoc = trustLocation(uploaded.storage_pool_id, uploaded);
+        setUpload({ fileName: display, stage: 'done', percent: 100, place: finalLoc.place, region: finalLoc.region });
+        const copyUri = info.sourceUri;
+        const seedPreview = queueRawUploadedPreview(uploaded.id, info.name, info.mimeType, copyUri, uploaded.size_bytes);
+        setFiles((prev) => upsertFileEntry(prev, uploaded));
+        indexFile(uploaded.id, toSearchIndexEntry(uploaded, info.name, currentFolder.id));
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showToast({ type: 'success', message: `"${display}" stored in ${finalLoc.place}` });
+        fetchFiles(currentFolder.id, true);
+        setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
+        // Resume pointer is spent — the upload completed.
+        void forgetUploadResume(uploaded.id);
+        resumeInfosRef.current.set(uploaded.id, null);
+        // Post-crash the thumbnail jobs never ran: regenerate both variants
+        // through the bounded queue, then clean up the plaintext upload copy
+        // (only the screen-owned `upload-*` cache file — never the picker's own).
+        void Promise.allSettled([
+          seedPreview,
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes)),
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes, 'large')),
+        ]).then(() => {
+          const leaf = copyUri.split('/').pop() ?? '';
+          if (leaf.startsWith('upload-')) void discardUploadCacheCopy(copyUri, '');
+        });
+      } catch (err) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
+        showToast({ type: 'error', message: `Resume failed: ${friendlyError(err)}` });
+        setUpload(null);
+        // The attempt may have advanced since — re-read the pointer next tap.
+        resumeInfosRef.current.delete(file.id);
+      } finally {
+        activeUploadFileIdRef.current = null;
+      }
+    };
+
+    const gate = uploadGateRef.current!;
+    if (gate.isBusy()) {
+      showToast({ type: 'info', message: 'Resume queued — it starts when the current upload finishes.' });
+    }
+    void gate.run(runResume).catch(() => {
+      // The resume path toasts its own failures; this only guards the gate.
+    });
+  }, [currentFolder.id, fetchFiles, showToast, encryptChunk, encryptMetadata, getMasterKeyHandleId, getFileKeyBytes, indexFile]);
+
+  // Task 1685 fix 3 — respond to the tap IMMEDIATELY. The old handler awaited
+  // getUploadStatus (a network round-trip) BEFORE showing anything, which read
+  // as "I tap and nothing happens for a long time". The dialog now opens with
+  // local state alone; the server status refines asynchronously and only
+  // reconciles the list — never a second, stacked dialog.
+  const handlePendingUpload = useCallback(async (file: FileEntry) => {
+    const resumeInfo = await getResumeInfoForTap(file.id);
+    // Task 1685 review should-fix 2 — never offer Resume for a row that is
+    // uploading RIGHT NOW (or while any upload loop runs): a duplicate resume
+    // would double-PUT chunks / double-finalize. For a fresh upload the row's
+    // server id isn't known client-side until the attempt finishes, so the
+    // gate's busy flag carries that case; the ref pins the resume-of-resume row.
+    const gate = uploadGateRef.current!;
+    const uploadInFlight = gate.isBusy() || activeUploadFileIdRef.current !== null;
+    const offerResume = canOfferResume(resumeInfo, activeUploadFileIdRef.current, file.id, uploadInFlight);
+    const detail = offerResume
+      ? `"${resumeInfo!.name}" was interrupted before it finished. Resume continues the upload with the parts that were already stored.`
+      : uploadInFlight
+        ? 'An upload is in progress right now. Discarding removes this placeholder and its stored chunks. To upload the file again, add it from its source.'
+        : 'This upload never finished.\n\nDiscarding removes this placeholder and its stored chunks. To upload the file, add it again from its source.';
+    const buttons: Array<{ text: string; style?: 'cancel' | 'default' | 'destructive'; onPress?: () => void }> = [];
+    if (offerResume && resumeInfo) {
+      buttons.push({ text: 'Resume upload', onPress: () => { void resumePendingUpload(file, resumeInfo); } });
+    }
+    buttons.push({ text: 'Discard upload', style: 'destructive', onPress: () => { void discardPendingUpload(file); } });
+    buttons.push({ text: 'Keep', style: 'cancel' });
+    Alert.alert(offerResume ? 'Upload pending — can resume' : 'Upload pending', detail, buttons);
+    // Async refinement — silent. If the server already finished the upload,
+    // refresh so the stale placeholder goes away; otherwise nothing to say
+    // that the dialog didn't already say.
+    void (async () => {
+      try {
+        const status = await getUploadStatus(file.id);
+        if (!status.is_uploading) fetchFiles(currentFolder.id, true);
+      } catch {
+        // unreachable server — the dialog already offered its ways out
+      }
+    })();
+  }, [currentFolder.id, discardPendingUpload, fetchFiles, getResumeInfoForTap, resumePendingUpload]);
 
   const ensureFileReady = useCallback(async (file: FileEntry): Promise<boolean> => {
     if (file.is_folder) return true;
@@ -2215,6 +2627,7 @@ export default function FilesScreen() {
               // 0883 — let Preview auto self-repair a missing thumbnail for this
               // owner media file from the downloaded plaintext (undefined ⇒ skip).
               hasThumbnail: f.has_thumbnail,
+              thumbnailBytes: f.thumbnail_bytes,
               // File-request uploads (0643): pass the sealed-key fields so Preview
               // decrypts with the request content key, not the master-key path.
               fileRequestId: f.file_request_id ?? null,
@@ -2248,6 +2661,7 @@ export default function FilesScreen() {
       );
       return;
     }
+    if (blockIfReadOnly()) return;
     let picked: DocumentPicker.DocumentPickerResult;
     try {
       picked = await DocumentPicker.getDocumentAsync({
@@ -2262,86 +2676,117 @@ export default function FilesScreen() {
 
     const asset = picked.assets[0];
 
-    // ── Conflict check ────────────────────────────────────────────────────
+    // ── Conflict check (task 1685 fix 6 — prompt, never silent) ────────────
+    // The old auto-version shortcut (same name + size differs → version with
+    // NO prompt) is gone: every conflict asks. Wait for the folder's decrypted
+    // names first — findConflict returns null when they lag, which used to
+    // mean the check silently passed.
+    await waitForFolderNames();
     let uploadFileId = await generateFileId();   // new UUID by default
     let uploadFileName = asset.name;       // original name by default
     let v2InitNameEncrypted: string | undefined;
 
     const existingFile = findConflict(asset.name);
     if (existingFile) {
-      if (shouldAutoVersionUpload(existingFile, asset.name, asset.mimeType, asset.size)) {
+      const uniqueName = getUniqueMobileName(asset.name, folderFileNames());
+      const choice = await promptFileConflict(asset.name, existingFile.id, uniqueName);
+      if (choice.action === 'cancel') return;
+      if (choice.action === 'overwrite') {
+        // Reuse the existing file ID → server stores a new version of it
         uploadFileId = existingFile.id;
         v2InitNameEncrypted = existingFile.name_encrypted;
       } else {
-        const uniqueName = getUniqueMobileName(asset.name, folderFileNames());
-        const choice = await promptFileConflict(asset.name, existingFile.id, uniqueName);
-        if (choice.action === 'cancel') return;
-        if (choice.action === 'replace') {
-          // Reuse existing file ID → server auto-creates a version
-          uploadFileId = existingFile.id;
-          v2InitNameEncrypted = existingFile.name_encrypted;
-        } else {
-          // Keep both: upload under the suffixed name with a fresh ID
-          uploadFileName = choice.finalName;
-        }
+        // Keep both: upload under the suffixed name with a fresh ID
+        uploadFileName = choice.finalName;
       }
     }
 
-    const loc = trustLocation(undefined);
-    setUpload({ fileName: uploadFileName, stage: 1, percent: 0, city: loc.city, region: loc.region });
-    try {
-      const uploaded = await encryptedUpload({
-        fileId: uploadFileId,
-        uri: asset.uri,
-        name: uploadFileName,
-        parentId: currentFolder.id ?? undefined,
-        mimeType: asset.mimeType ?? undefined,
-        v2InitNameEncrypted,
-        encryptChunkFn: encryptChunk,
-        encryptMetadataFn: encryptMetadata,
-        masterKeyHandleId: getMasterKeyHandleId(),
-        onProgress: (progress) => {
-          const percent = progress.bytesTotal > 0
-            ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
-            : 0;
-          setUpload((prev) => {
-            const base = prev ?? { fileName: asset.name, stage: 1 as UploadStage, percent: 0, city: loc.city, region: loc.region };
-            const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
-            return {
-              ...base,
-              stage,
-              percent,
-              chunksUploaded: progress.chunksUploaded,
-              chunksTotal: progress.chunksTotal,
-              chunkSizeBytes: progress.chunkSizeBytes,
-              bytesUploaded: progress.bytesUploaded,
-              bytesTotal: progress.bytesTotal,
-              cryptoBytesPerSec: progress.cryptoBytesPerSec,
-            };
-          });
-        },
-      });
-      const finalLoc = trustLocation(uploaded.storage_pool_id);
-      setUpload({ fileName: uploadFileName, stage: 'done', percent: 100, city: finalLoc.city, region: finalLoc.region });
-      setFiles((prev) => upsertFileEntry(prev, uploaded));
-      // Add to the encrypted search index so the new file is searchable
-      // across the whole vault from the very next keystroke.
-      indexFile(uploaded.id, toSearchIndexEntry(uploaded, uploadFileName, currentFolder.id));
-      // Fire-and-forget: generate + upload medium and large encrypted thumbnails for media files.
-      void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes);
-      void generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes, 'large');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      donateSiriShortcut('upload');
-      showToast({ type: 'success', message: `"${uploadFileName}" stored in ${finalLoc.city}` });
-      fetchFiles(currentFolder.id, true);
-      // Hold the "Stored · Key stayed here" flash briefly before clearing.
-      setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
-    } catch (err) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
-      setUpload(null);
+    // Task 1685 review should-fix 1 — the upload itself is the gated unit: the
+    // picker and the conflict prompt stay immediate, the bytes wait their turn.
+    const runSingleFile = async (): Promise<void> => {
+      const loc = trustLocation(undefined);
+      setUpload({ fileName: uploadFileName, stage: 1, percent: 0, place: loc.place, region: loc.region });
+      // Task 1685 fix 5 — surface progress at ≈4 Hz, not per native poll tick:
+      // setUpload re-renders this 5,400-line screen + its FlatList per call.
+      const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
+      activeUploadFileIdRef.current = uploadFileId;
+      try {
+        const uploaded = await encryptedUpload({
+          fileId: uploadFileId,
+          uri: asset.uri,
+          name: uploadFileName,
+          parentId: currentFolder.id ?? undefined,
+          mimeType: asset.mimeType ?? undefined,
+          v2InitNameEncrypted,
+          encryptChunkFn: encryptChunk,
+          encryptMetadataFn: encryptMetadata,
+          masterKeyHandleId: getMasterKeyHandleId(),
+          onProgress: (progress) => {
+            if (!allowProgress.allow(progress)) return;
+            const percent = progress.bytesTotal > 0
+              ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
+              : 0;
+            setUpload((prev) => {
+              const base = prev ?? { fileName: asset.name, stage: 1 as UploadStage, percent: 0, place: loc.place, region: loc.region };
+              const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
+              return {
+                ...base,
+                stage,
+                percent,
+                chunksUploaded: progress.chunksUploaded,
+                chunksTotal: progress.chunksTotal,
+                chunkSizeBytes: progress.chunkSizeBytes,
+                bytesUploaded: progress.bytesUploaded,
+                bytesTotal: progress.bytesTotal,
+                cryptoBytesPerSec: progress.cryptoBytesPerSec,
+                // Task 2062: the country the server named at init, while the bytes move.
+                place: progress.storageCountry ?? base.place,
+              };
+            });
+          },
+        });
+        const finalLoc = trustLocation(uploaded.storage_pool_id, uploaded);
+        setUpload({ fileName: uploadFileName, stage: 'done', percent: 100, place: finalLoc.place, region: finalLoc.region });
+        const seedPreview = queueRawUploadedPreview(uploaded.id, uploadFileName, asset.mimeType, asset.uri, uploaded.size_bytes);
+        setFiles((prev) => upsertFileEntry(prev, uploaded));
+        // Add to the encrypted search index so the new file is searchable
+        // across the whole vault from the very next keystroke.
+        indexFile(uploaded.id, toSearchIndexEntry(uploaded, uploadFileName, currentFolder.id));
+        // Fire-and-forget: generate + upload medium and large encrypted thumbnails for media files.
+        // Task 1685 fix 4 — bounded: both variants go through the shared 2-slot
+        // queue, so a burst of manual uploads can't stack unbounded full-image
+        // decodes (the bulk-crash class of task 1669).
+        void Promise.allSettled([
+          seedPreview,
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes)),
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes, 'large')),
+        ]);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        donateSiriShortcut('upload');
+        showToast({ type: 'success', message: `"${uploadFileName}" stored in ${finalLoc.place}` });
+        fetchFiles(currentFolder.id, true);
+        // Hold the "Stored · Key stayed here" flash briefly before clearing.
+        setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
+      } catch (err) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        // Task 1037: a trial that lapsed while the app was open shows up here
+        // first. Re-read the account so the banner and backup follow.
+        if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
+        showToast({ type: 'error', message: `Upload failed: ${friendlyError(err)}` });
+        setUpload(null);
+      } finally {
+        activeUploadFileIdRef.current = null;
+      }
+    };
+
+    const gate = uploadGateRef.current!;
+    if (gate.isBusy()) {
+      showToast({ type: 'info', message: 'Upload queued — it starts when the current one finishes.' });
     }
-  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
+    void gate.run(runSingleFile).catch(() => {
+      // The single-file path toasts its own failure; this only guards the gate.
+    });
+  }, [currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, findConflict, waitForFolderNames, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
 
   const pickAndUploadPhotos = useCallback(async () => {
     if (!phraseVerified) {
@@ -2352,6 +2797,7 @@ export default function FilesScreen() {
       );
       return;
     }
+    if (blockIfReadOnly()) return;
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Permission required', 'Allow photo library access to upload photos.');
@@ -2378,114 +2824,250 @@ export default function FilesScreen() {
     }
     if (picked.canceled || picked.assets.length === 0) return;
 
-    const total = picked.assets.length;
-    let successCount = 0;
-    let lastLoc = trustLocation(undefined);
-    let lastName = '';
-    // Track names already used in this batch to avoid duplicate suffixes
-    const usedInBatch = new Set<string>();
-    let exportFailures = 0;
-    for (let i = 0; i < total; i++) {
-      const asset = picked.assets[i]!;
-      if (!asset.uri) {
-        // iCloud-offloaded originals can fail to export (network, storage); a missing uri
-        // would previously just skip with no signal — count and report honestly below.
-        exportFailures += 1;
-        continue;
+    // Task 1685 review should-fix 1 — the batch loop is the gated unit: the
+    // picker stays immediate, the upload waits its turn behind any running
+    // loop instead of starting a second concurrent serial loop (two writers
+    // on the single `upload` card state, two encrypted streams).
+    const runBatch = async (): Promise<void> => {
+      // Task 1685 fix 6 — pre-upload existence check. Wait for the folder's
+      // decrypted names first (the old findConflict returned null while they
+      // lagged, so the check silently passed), match every picked name against
+      // the current folder, and ASK per conflicting file — with an
+      // apply-to-remaining shortcut — before any bytes move. The old batch flow
+      // decided silently: auto-version on size-differs, auto-rename otherwise,
+      // which is exactly how re-uploading after a crash duplicated everything.
+      const total = picked.assets.length;
+      await waitForFolderNames();
+      const folderNamesById: Record<string, string> = {};
+      for (const f of files) {
+        if (f.is_folder) continue;
+        const n = decryptedNamesRef.current[f.id];
+        if (n) folderNamesById[f.id] = n;
       }
-      const isVideoAsset = asset.type === 'video';
-      const rawName =
-        asset.fileName ?? `${isVideoAsset ? 'video' : 'photo'}-${Date.now()}-${i}.${isVideoAsset ? 'mp4' : 'jpg'}`;
-      const conflict = findConflict(rawName);
-      const shouldVersion = !!conflict && shouldAutoVersionUpload(
-        conflict,
-        rawName,
-        asset.mimeType ?? (isVideoAsset ? 'video/mp4' : 'image/jpeg'),
-        asset.fileSize,
-      );
-      // Batch photo uploads stay silent. Same-name, same-type changed files
-      // become versions; unresolved collisions still keep both with a suffix.
-      const name = conflict && !shouldVersion
-        ? getUniqueMobileName(rawName, new Set([...folderFileNames(), ...usedInBatch]))
-        : rawName;
-      usedInBatch.add(name.toLowerCase());
-
-      const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
-      lastName = display;
-      setUpload({ fileName: display, stage: 1, percent: 0, city: lastLoc.city, region: lastLoc.region });
-      try {
-        const fileId = shouldVersion && conflict ? conflict.id : await generateFileId();
-        const v2InitNameEncrypted = shouldVersion && conflict ? conflict.name_encrypted : undefined;
-        const uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
-        const uploaded = await encryptedUpload({
-          fileId,
-          uri: uploadUri,
-          name,
-          parentId: currentFolder.id ?? undefined,
-          mimeType: asset.mimeType ?? (isVideoAsset ? 'video/mp4' : 'image/jpeg'),
-          v2InitNameEncrypted,
-          encryptChunkFn: encryptChunk,
-          encryptMetadataFn: encryptMetadata,
-          masterKeyHandleId: getMasterKeyHandleId(),
-          onProgress: (progress) => {
-            const percent = progress.bytesTotal > 0
-              ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
-              : 0;
-            setUpload((prev) => {
-              const base = prev ?? { fileName: display, stage: 1 as UploadStage, percent: 0, city: lastLoc.city, region: lastLoc.region };
-              const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
-              return {
-                ...base,
-                stage,
-                percent,
-                chunksUploaded: progress.chunksUploaded,
-                chunksTotal: progress.chunksTotal,
-                chunkSizeBytes: progress.chunkSizeBytes,
-                bytesUploaded: progress.bytesUploaded,
-                bytesTotal: progress.bytesTotal,
-                cryptoBytesPerSec: progress.cryptoBytesPerSec,
-              };
-            });
-          },
-        });
-        lastLoc = trustLocation(uploaded.storage_pool_id);
-        setFiles((prev) => upsertFileEntry(prev, uploaded));
-        indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
-        // Fire-and-forget: image picker only returns images, so always thumbnail (medium + large).
-        void generateAndUploadThumbnail(uploaded.id, uploadUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes);
-        void generateAndUploadThumbnail(uploaded.id, uploadUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large');
-        successCount += 1;
-      } catch (err) {
-        console.warn('[UPLOAD] Error type:', typeof err, err instanceof Error ? err.constructor.name : 'unknown');
-        console.warn('[UPLOAD] Error message:', err instanceof Error ? err.message : String(err));
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        showToast({ type: 'error', message: `${name}: ${friendlyError(err)}` });
-      }
-    }
-    if (successCount > 0) {
-      setUpload({ fileName: lastName, stage: 'done', percent: 100, city: lastLoc.city, region: lastLoc.region });
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      donateSiriShortcut('upload');
-      showToast({
-        type: 'success',
-        message: successCount === 1
-          ? `Item stored in ${lastLoc.city}`
-          : `${successCount} items stored in ${lastLoc.city}`,
+      const folderNameSet = new Set(Object.values(folderNamesById).map((n) => n.toLowerCase()));
+  
+      const rawNames: string[] = picked.assets.map((asset, index) => {
+        const isVideo = asset.type === 'video';
+        return asset.fileName ?? `${isVideo ? 'video' : 'photo'}-${Date.now()}-${index}.${isVideo ? 'mp4' : 'jpg'}`;
       });
-      fetchFiles(currentFolder.id, true);
-      setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
-    } else {
-      setUpload(null);
+  
+      const conflicts: BatchConflictInput[] = [];
+      for (let i = 0; i < total; i++) {
+        const asset = picked.assets[i]!;
+        if (!asset.uri) continue;
+        const existingId = findDecryptedNameConflict(rawNames[i]!, folderNamesById);
+        if (!existingId) continue;
+        const existingRow = files.find((f) => f.id === existingId);
+        if (!existingRow) continue;
+        conflicts.push({
+          index: i,
+          incomingName: rawNames[i]!,
+          incomingMimeType: asset.mimeType ?? null,
+          incomingSizeBytes: asset.fileSize ?? null,
+          existingId,
+          existingName: folderNamesById[existingId] ?? displayName(existingRow),
+          existingNameEncrypted: existingRow.name_encrypted ?? '',
+          existingSizeBytes: existingRow.size_bytes ?? null,
+        });
+      }
+  
+      let skippedConflicts = 0;
+      let batchDecisions = new Map<number, BatchDecision>();
+      if (conflicts.length > 0) {
+        const resolutions: Array<ConflictResolution | undefined> = new Array(conflicts.length).fill(undefined);
+        let cancelledBatch = false;
+        for (let c = 0; c < conflicts.length; c++) {
+          if (resolutions[c]) continue;
+          const conflict = conflicts[c]!;
+          const choice = await promptBatchConflict(
+            {
+              incomingName: conflict.incomingName,
+              incomingSizeBytes: conflict.incomingSizeBytes,
+              existingName: conflict.existingName,
+              existingSizeBytes: conflict.existingSizeBytes,
+            },
+            conflicts.length - c - 1,
+          );
+          if (choice === 'cancel') { cancelledBatch = true; break; }
+          const resolved: ConflictResolution =
+            choice === 'overwrite-rest' ? 'overwrite' : choice === 'skip-rest' ? 'skip' : choice;
+          resolutions[c] = resolved;
+          if (choice === 'overwrite-rest') resolutions.fill('overwrite', c + 1);
+          if (choice === 'skip-rest') resolutions.fill('skip', c + 1);
+        }
+        if (cancelledBatch) {
+          setUpload(null);
+          return;
+        }
+        batchDecisions = planBatchResolutions(
+          conflicts,
+          resolutions as ConflictResolution[],
+          new Set([...folderNameSet, ...rawNames.map((n) => n.toLowerCase())]),
+        );
+        for (const decision of batchDecisions.values()) {
+          if (decision.action === 'skip') skippedConflicts += 1;
+        }
+      }
+  
+      let successCount = 0;
+      let lastLoc = trustLocation(undefined);
+      let lastName = '';
+      // Track names already used in this batch to avoid duplicate suffixes.
+      // Pre-seed with the planner's keep-both finals so a later plain upload of
+      // the same name can never steal a reserved name.
+      const usedInBatch = new Set<string>();
+      for (const decision of batchDecisions.values()) {
+        if (decision.action === 'keep-both') usedInBatch.add(decision.finalName.toLowerCase());
+      }
+      let exportFailures = 0;
+      for (let i = 0; i < total; i++) {
+        const asset = picked.assets[i]!;
+        if (!asset.uri) {
+          // iCloud-offloaded originals can fail to export (network, storage); a missing uri
+          // would previously just skip with no signal — count and report honestly below.
+          exportFailures += 1;
+          continue;
+        }
+        const decision = batchDecisions.get(i);
+        if (decision?.action === 'skip') continue;
+  
+        const isVideoAsset = asset.type === 'video';
+        let name = rawNames[i]!;
+        let fileId = await generateFileId();
+        let v2InitNameEncrypted: string | undefined;
+        if (decision?.action === 'version-existing') {
+          // Overwrite → a new version of the existing row (same id + name bytes).
+          fileId = decision.existingId;
+          v2InitNameEncrypted = decision.existingNameEncrypted;
+        } else if (decision?.action === 'keep-both') {
+          name = decision.finalName;
+        } else if (usedInBatch.has(name.toLowerCase())) {
+          // Plain within-batch duplicate (same name picked twice, neither row
+          // conflicted server-side): suffix silently — the planner reserved
+          // nothing for these, and the first occurrence keeps its plain name.
+          name = getUniqueMobileName(name, new Set([...folderNameSet, ...usedInBatch]));
+        }
+        usedInBatch.add(name.toLowerCase());
+  
+        const display = total > 1 ? `${name} (${i + 1}/${total})` : name;
+        lastName = display;
+        setUpload({ fileName: display, stage: 1, percent: 0, place: lastLoc.place, region: lastLoc.region });
+        // Task 1685 fix 5 — ≈4 Hz progress state, not per poll tick.
+        const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
+        activeUploadFileIdRef.current = fileId;
+        // Task 1593 — the pre-encryption copy in Library/Caches (upload-*) is
+        // plaintext: delete it once the upload and both thumbnails are done.
+        let uploadUri: string | null = null;
+        const preparationStartedAt = Date.now();
+        recordRuntimeTrace('upload.photo.prepare_start', { fileId, batchIndex: i + 1, batchTotal: total, sizeBytes: asset.fileSize ?? null });
+        try {
+          uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
+          recordRuntimeTrace('upload.photo.source_ready', { fileId, elapsedMs: Date.now() - preparationStartedAt });
+          const uploaded = await encryptedUpload({
+            fileId,
+            uri: uploadUri,
+            name,
+            parentId: currentFolder.id ?? undefined,
+            mimeType: asset.mimeType ?? (isVideoAsset ? 'video/mp4' : 'image/jpeg'),
+            v2InitNameEncrypted,
+            encryptChunkFn: encryptChunk,
+            encryptMetadataFn: encryptMetadata,
+            masterKeyHandleId: getMasterKeyHandleId(),
+            onProgress: (progress) => {
+              if (!allowProgress.allow(progress)) return;
+              const percent = progress.bytesTotal > 0
+                ? Math.round((progress.bytesUploaded / progress.bytesTotal) * 100)
+                : 0;
+              setUpload((prev) => {
+                const base = prev ?? { fileName: display, stage: 1 as UploadStage, percent: 0, place: lastLoc.place, region: lastLoc.region };
+                const stage: UploadStage = progress.phase === 'preparing' ? 1 : progress.phase === 'finalizing' ? 3 : 2;
+                return {
+                  ...base,
+                  stage,
+                  percent,
+                  chunksUploaded: progress.chunksUploaded,
+                  chunksTotal: progress.chunksTotal,
+                  chunkSizeBytes: progress.chunkSizeBytes,
+                  bytesUploaded: progress.bytesUploaded,
+                  bytesTotal: progress.bytesTotal,
+                  cryptoBytesPerSec: progress.cryptoBytesPerSec,
+                  // Task 2062: the country the server named at init, while the bytes move.
+                  place: progress.storageCountry ?? base.place,
+                };
+              });
+            },
+          });
+          // Retain the completed RAW source before publishing its row. Opening it
+          // immediately must not download the same 50–100 MB we just uploaded.
+          const copyUri = uploadUri;
+          const seedPreview = queueRawUploadedPreview(uploaded.id, name, asset.mimeType, copyUri, uploaded.size_bytes);
+          lastLoc = trustLocation(uploaded.storage_pool_id, uploaded);
+          setFiles((prev) => upsertFileEntry(prev, uploaded));
+          indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, currentFolder.id));
+          // Fire-and-forget: image picker only returns images, so always thumbnail (medium + large).
+          // Task 1685 fix 4 — bounded: per-variant jobs in the shared 2-slot queue
+          // (≤2 concurrent full-image decodes process-wide; queued jobs are just
+          // closures, so a 64-asset batch can no longer stack 128 decodes).
+          uploadUri = null;
+          void Promise.allSettled([
+            seedPreview,
+            thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes)),
+            thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large')),
+          ]).then(() => discardUploadCacheCopy(copyUri, asset.uri));
+          successCount += 1;
+        } catch (err) {
+          if (uploadUri) void discardUploadCacheCopy(uploadUri, asset.uri);
+          console.warn('[UPLOAD] Error type:', typeof err, err instanceof Error ? err.constructor.name : 'unknown');
+          console.warn('[UPLOAD] Error message:', err instanceof Error ? err.message : String(err));
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          if (err instanceof ApiError && isAccountRefusalCode(err.code)) requestAccountStateRefresh();
+          showToast({ type: 'error', message: `${name}: ${friendlyError(err)}` });
+        } finally {
+          activeUploadFileIdRef.current = null;
+        }
+      }
+      if (successCount > 0) {
+        setUpload({ fileName: lastName, stage: 'done', percent: 100, place: lastLoc.place, region: lastLoc.region });
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        donateSiriShortcut('upload');
+        showToast({
+          type: 'success',
+          message: successCount === 1
+            ? `Item stored in ${lastLoc.place}`
+            : `${successCount} items stored in ${lastLoc.place}`,
+        });
+        fetchFiles(currentFolder.id, true);
+        setTimeout(() => setUpload((cur) => (cur && cur.stage === 'done' ? null : cur)), 1800);
+      } else {
+        setUpload(null);
+      }
+      if (skippedConflicts > 0) {
+        // Task 1685 fix 6 — a skipped conflict is a decision, not a failure; say it anyway.
+        showToast({
+          type: 'info',
+          message: skippedConflicts === 1
+            ? 'Skipped 1 file that was already in this folder'
+            : `Skipped ${skippedConflicts} files that were already in this folder`,
+        });
+      }
+      if (exportFailures > 0) {
+        // 1294 follow-up — an asset the system could not export (iCloud original that failed to
+        // download, storage pressure) used to vanish silently. Say so.
+        Alert.alert(
+          'Some items could not be read',
+          `${exportFailures} ${exportFailures === 1 ? 'item' : 'items'} could not be exported from your photo library. Check that originals are downloadable (iCloud) and try again.`,
+        );
+      }
+    };
+
+    const gate = uploadGateRef.current!;
+    if (gate.isBusy()) {
+      showToast({ type: 'info', message: 'Upload queued — it starts when the current one finishes.' });
     }
-    if (exportFailures > 0) {
-      // 1294 follow-up — an asset the system could not export (iCloud original that failed to
-      // download, storage pressure) used to vanish silently. Say so.
-      Alert.alert(
-        'Some items could not be read',
-        `${exportFailures} ${exportFailures === 1 ? 'item' : 'items'} could not be exported from your photo library. Check that originals are downloadable (iCloud) and try again.`,
-      );
-    }
-  }, [currentFolder.id, fetchFiles, phraseVerified, showToast, findConflict, shouldAutoVersionUpload, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
+    void gate.run(runBatch).catch(() => {
+      // Per-file errors are toasted inside runBatch; this only guards the gate.
+    });
+  }, [files, currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, waitForFolderNames, encryptChunk, encryptMetadata, indexFile]);
 
   const openDocumentScanner = useCallback(() => {
     if (!phraseVerified) {
@@ -2496,8 +3078,9 @@ export default function FilesScreen() {
       );
       return;
     }
+    if (blockIfReadOnly()) return;
     navigation.navigate('DocumentScanner', { parentId: currentFolder.id ?? undefined });
-  }, [currentFolder.id, navigation, phraseVerified]);
+  }, [currentFolder.id, navigation, phraseVerified, blockIfReadOnly]);
 
   // 0777 — FAB button feedback (Medium), then the native add sheet.
   // 0789 — the "+" FAB opens the native iOS UIMenu pull-down (see addMenuActions /
@@ -2580,6 +3163,148 @@ export default function FilesScreen() {
     }
   }, [submitNewFolder]);
 
+  // ── Task 1587 — "+" → New file (NewFileSheet) ─────────────────────────────
+  /** Decrypted names of EVERY sibling in the current folder (folders too: a
+   *  file and a folder with the same name side by side do not survive a sync
+   *  to a case-insensitive file system). */
+  const currentFolderNames = useCallback((): string[] => {
+    const out: string[] = [];
+    for (const f of files) {
+      const n = decryptedNames[f.id];
+      if (n) out.push(n);
+    }
+    return out;
+  }, [files, decryptedNames]);
+
+  /** "+" → New file. The same gates as every other upload: a verified
+   *  recovery phrase, and an unlocked vault — a locked vault is offered an
+   *  unlock (Face ID / keychain) rather than a plaintext path. */
+  const openNewFileSheet = useCallback(() => {
+    if (!phraseVerified) {
+      Alert.alert(
+        'Save your recovery phrase first',
+        'Verify your recovery phrase before creating files. Go to Settings → Security to complete verification.',
+        [{ text: 'OK' }],
+      );
+      return;
+    }
+    if (blockIfReadOnly()) return;
+    if (!isUnlocked) {
+      Alert.alert(
+        'Unlock to create a file',
+        'New files are encrypted on this phone before they leave it, so the vault has to be unlocked first.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Unlock',
+            onPress: () => {
+              // unlock() can resolve without unlocking (an unlock already in
+              // flight that then fails, a cancelled Face ID) — open the sheet
+              // only when the vault really is open (task 1587 review).
+              void unlock(undefined, 'new_file_sheet')
+                .then(() => {
+                  let open = false;
+                  try { open = getMasterKeyHandleId() != null; } catch { open = false; }
+                  if (open) setNewFileOpen(true);
+                })
+                .catch(() => {});
+            },
+          },
+        ],
+      );
+      return;
+    }
+    setNewFileOpen(true);
+  }, [phraseVerified, blockIfReadOnly, isUnlocked, unlock, getMasterKeyHandleId]);
+
+  /**
+   * Every decryptable name in a FRESH, complete listing of the folder — the
+   * on-screen list can lag a sibling added or renamed from another device,
+   * and the server cannot check names itself: it only ever sees encrypted
+   * ones. Every row is decrypted now on the folder-name effect's paths
+   * (request uploads via getRequestContentKey); the on-screen cache is only a
+   * fallback for a failed decrypt — lib/create-new-document.ts
+   * `decryptFolderNames`, unit-tested.
+   */
+  const freshFolderNames = useCallback(async (parentId: string | null): Promise<string[]> => {
+    const siblings = await listAllFiles(parentId ?? undefined);
+    return decryptFolderNames(siblings, {
+      isRequestUpload,
+      decryptNormalNames: async (normal) => {
+        const results = await decryptNames(
+          normal.map((f) => ({ fileId: f.id, nameEncrypted: f.name_encrypted ?? '' })),
+        );
+        return normal.map((_, i) => {
+          const r = results[i];
+          return r && !r.error && r.name ? r.name : null;
+        });
+      },
+      decryptRequestUploadName: async (f) => {
+        const payload = encryptedMetadataPayloadToBytes(f.name_encrypted ?? '');
+        if (!payload) throw new Error('unreadable metadata');
+        const plaintext = await decryptMetadataWithKey(
+          await getRequestContentKey(f),
+          payload.nonce,
+          payload.ciphertext,
+        );
+        return parseDecryptedMetadata(plaintext).name;
+      },
+      cachedName: (f) => decryptedNamesRef.current[f.id],
+    });
+  }, [decryptNames, getRequestContentKey]);
+
+  /**
+   * NewFileSheet's `onCreate`: the flow itself (fresh-listing clash check,
+   * starter file, encrypted upload through the SAME path as "Upload file",
+   * abandon on failure) is lib/create-new-document.ts, unit-tested with
+   * mocks; this wires the real deps and does the UI side. Throws a
+   * user-facing Error on failure; the sheet shows it inline.
+   */
+  const createNewDocument = useCallback(async (req: NewFileRequest) => {
+    const parentId = currentFolder.id ?? null;
+    const uploaded = await createNewDocumentFile(
+      req,
+      parentId,
+      {
+        isUnlocked: () => isUnlocked,
+        listFolderNames: freshFolderNames,
+        generateFileId,
+        writeTempFile: async (fileId, content) => {
+          if (!FileSystem.cacheDirectory) throw new Error('No cache directory available');
+          // Named after the file id, never the (plaintext) name.
+          const uri = `${FileSystem.cacheDirectory}new-${fileId}`;
+          await gatedPlaintextWrite('new text file', uri, FileSystem, () =>
+            FileSystem.writeAsStringAsync(uri, content, { encoding: FileSystem.EncodingType.UTF8 }),
+          );
+          return uri;
+        },
+        deleteTempFile: (uri) => FileSystem.deleteAsync(uri, { idempotent: true }),
+        upload: ({ fileId, uri, name, parentId: pid, mimeType }) => encryptedUpload({
+          fileId,
+          uri,
+          name,
+          parentId: pid ?? undefined,
+          mimeType,
+          encryptChunkFn: encryptChunk,
+          encryptMetadataFn: encryptMetadata,
+          masterKeyHandleId: getMasterKeyHandleId(),
+        }),
+        abandonUpload: abandonTextFileUpload,
+      },
+      friendlyError,
+    );
+    const { name, mimeType } = req;
+    setFiles((prev) => upsertFileEntry(prev, uploaded));
+    setDecryptedNames((prev) => ({ ...prev, [uploaded.id]: name }));
+    setDecryptedMimeTypes((prev) => ({ ...prev, [uploaded.id]: mimeType }));
+    indexFile(uploaded.id, toSearchIndexEntry(uploaded, name, parentId));
+    setNewFileOpen(false);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    showToast({ type: 'success', message: `${name} created · encrypted` });
+    fetchFiles(parentId, true);
+    navigation.navigate('Preview', previewParamsForNewDocument(uploaded, req));
+  }, [isUnlocked, currentFolder.id, freshFolderNames, encryptChunk, encryptMetadata, getMasterKeyHandleId, indexFile, fetchFiles, navigation, showToast]);
+
   // 0789 — "+" add menu as native iOS UIMenu items, with trailing SF Symbols.
   // (Placed after all four upload handlers are declared.)
   // 0791 — `imageColor` MUST be set explicitly. On the New Architecture the
@@ -2587,13 +3312,11 @@ export default function FilesScreen() {
   // int that defaults to 0 when JS omits it); native then tints the symbol with
   // `RCTConvert.uiColor(0)` = fully transparent, so the glyph renders blank with
   // its space reserved. Passing the label color tints it visibly on both arches.
+  // 1587 — the table (and its order: uploads, then an inline "create" section
+  // with New file / New folder) lives in
+  // lib/new-document.ts so it is unit-tested.
   const addMenuActions = useMemo<MenuAction[]>(
-    () => [
-      { id: 'photo', title: 'Upload photo or video', image: 'photo.on.rectangle', imageColor: c.ink },
-      { id: 'file', title: 'Upload file', image: 'doc', imageColor: c.ink },
-      { id: 'scan', title: 'Scan document', image: 'doc.viewfinder', imageColor: c.ink },
-      { id: 'folder', title: 'New folder', image: 'folder.badge.plus', imageColor: c.ink },
-    ],
+    () => buildAddMenuActions(c.ink, Platform.OS) as MenuAction[],
     [c.ink],
   );
 
@@ -2604,7 +3327,8 @@ export default function FilesScreen() {
       case 'scan': openDocumentScanner(); return;
       case 'folder': showNewFolderPrompt(); return;
     }
-  }, [pickAndUploadPhotos, pickAndUploadFile, openDocumentScanner, showNewFolderPrompt]);
+    if (nativeEvent.event === NEW_FILE_ACTION_ID) openNewFileSheet();
+  }, [pickAndUploadPhotos, pickAndUploadFile, openDocumentScanner, showNewFolderPrompt, openNewFileSheet]);
 
   const confirmNewFolderModal = useCallback(async () => {
     const trimmed = newFolderName.trim();
@@ -2704,6 +3428,12 @@ export default function FilesScreen() {
           onPress: async () => {
             try {
               const ids = [...selectedIds];
+              // Task 1683f: cancel any in-flight upload for the selected files
+              // before the rows go away (best-effort server abandon each).
+              for (const id of ids) {
+                abortUploadForFile(id);
+                void abandonFileUpload(id).catch(() => {});
+              }
               const result = await trashFiles(ids);
               const trashedIds = new Set([...result.trashed, ...result.already_trashed]);
               setFiles((prev) => prev.filter((f) => !trashedIds.has(f.id)));
@@ -2747,11 +3477,14 @@ export default function FilesScreen() {
     void (async () => {
       if (!(await ensureFileReady(item))) return;
       exitSelectMode();
+      if (sharedFileKeyIsLoaded(item.id)) { Alert.alert('Share', 'Not available for files added by others yet.'); return; }
       navigation.navigate('ShareSheet', {
         fileId: id,
         fileName: name,
         mimeType: mimeTypeFor(item) ?? undefined,
         sizeBytes: item.size_bytes,
+        // Task 2238 — a folder's link is a snapshot bundle of its files.
+        isFolder: item.is_folder === true,
       });
     })();
   }, [selectedIds, files, decryptedNames, exitSelectMode, navigation, mimeTypeFor, ensureFileReady]);
@@ -3168,6 +3901,7 @@ export default function FilesScreen() {
       const decryptedUri = await decryptToTempFile(
         item.id, keyProvider, extForSave(), item.size_bytes, item.chunk_count, handleId,
         {
+          useProvidedFileKey: requestUpload,
           // 1180 — crash-safe Save progress. The native handle path
           // (downloadAndDecryptFileNative, handleId != null) streams to disk, so
           // onProgress is memory-safe. Push each event into the ISOLATED banner
@@ -3188,6 +3922,7 @@ export default function FilesScreen() {
         localPlaintextUri: decryptedUri,
         mimeType: itemMimeType,
         hasServerThumbnail: item.has_thumbnail,
+        serverThumbnailBytes: item.thumbnail_bytes,
         isRequestUpload: requestUpload,
         getFileKeyBytes,
         onRepaired: (id) => {
@@ -3204,14 +3939,21 @@ export default function FilesScreen() {
         return;
       }
       const safeName = (name.replace(/[^a-zA-Z0-9._()-]/g, '_') || 'file');
-      const namedUri = `${FileSystem.cacheDirectory}${safeName}`;
+      // Task 1593 — under a registered caches dir (lib/caches-plaintext-registry.ts)
+      // so a copy a crash left behind is swept on sign-out.
+      const exportDir = `${FileSystem.cacheDirectory}beebeeb-export/`;
+      const namedUri = `${exportDir}${safeName}`;
       setExporting({ name });
       try {
+        await FileSystem.makeDirectoryAsync(exportDir, { intermediates: true }).catch(() => {});
         const decryptedUri = await decryptForSave();
         // Copy to a correctly-named temp so the saved file keeps its real name
         // (the decrypt cache keys files by id), then drop the copy afterwards.
         await FileSystem.deleteAsync(namedUri, { idempotent: true }).catch(() => {});
-        await FileSystem.copyAsync({ from: decryptedUri, to: namedUri });
+        // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+        await gatedPlaintextWrite('Save to Files copy', namedUri, FileSystem, () =>
+          FileSystem.copyAsync({ from: decryptedUri, to: namedUri }),
+        );
         // Prepare phase done — dismiss the indicator the moment the native
         // sheet opens (shareAsync only resolves once it's dismissed).
         setExporting(null);
@@ -3243,8 +3985,13 @@ export default function FilesScreen() {
       // Videos need post-import verification so we can avoid a false success
       // toast when PhotoKit creates a placeholder but no visible video. Full
       // read/write permission lets getAssetInfoAsync validate the new asset.
-      const perm = await MediaLibrary.requestPermissionsAsync(!isVideo);
-      if (perm.status !== 'granted') {
+      // Task 1688 — get first: an already-granted library (including
+      // LIMITED access, where saving into the selected set works) must not
+      // re-present the "Select More Photos" sheet from a plain save action;
+      // only a not-granted library prompts, and only because the user just
+      // tapped Save to Photos.
+      const perm = await ensurePhotoPermission(MediaLibrary, { writeOnly: !isVideo });
+      if (!perm.granted) {
         Alert.alert(
           'Permission required',
           'Allow Photos access to save to your library.',
@@ -3322,6 +4069,11 @@ export default function FilesScreen() {
             style: 'destructive',
             onPress: async () => {
               try {
+                // Task 1683f: trash cancels an in-flight upload for this file —
+                // abort the engine (native or JS loop) and best-effort abandon
+                // the server session before the row goes away.
+                abortUploadForFile(item.id);
+                void abandonFileUpload(item.id).catch(() => {});
                 await deleteFile(item.id);
                 setFiles((prev) => prev.filter((f) => f.id !== item.id));
                 // 0818 — cascade the delete to every derived store; expand the
@@ -3362,9 +4114,12 @@ export default function FilesScreen() {
       }
     };
 
-    const showDetails = () => {
-      const loc = storageLocation(item.storage_pool_id);
-      const storedIn = loc.flag ? `${loc.flag} ${loc.label}` : loc.label;
+    const showDetails = async () => {
+      // Task 1592 / 2050 — the same "Stored in" source as the Info and Encryption
+      // details sheets: the file's own COUNTRY (GET /files/:id when the row
+      // carries none); "Europe" if it cannot be read, and for a folder.
+      const fileLocation = item.is_folder ? null : await loadFileStorageLocation(item);
+      const storedIn = storageLocationLabel(fileStorageCountry({ storage_location: fileLocation }));
       const lines = item.is_folder
         ? [
             `Name:      ${name}`,
@@ -3394,11 +4149,14 @@ export default function FilesScreen() {
         case 'Share':
           void (async () => {
             if (!(await ensureFileReady(item))) return;
-            navigation.navigate('ShareSheet', {
+            if (sharedFileKeyIsLoaded(item.id)) { Alert.alert('Share', 'Not available for files added by others yet.'); return; }
+      navigation.navigate('ShareSheet', {
               fileId: item.id,
               fileName: name,
               mimeType: itemMimeType ?? undefined,
               sizeBytes: item.size_bytes,
+              // Task 2238 — a folder's link is a snapshot bundle of its files.
+              isFolder: item.is_folder === true,
             });
           })();
           return;
@@ -3450,7 +4208,7 @@ export default function FilesScreen() {
             showToast({ type: 'success', message: `"${name}" is now unlocked` });
           })();
           return;
-        case 'Details': showDetails(); return;
+        case 'Details': void showDetails(); return;
       }
     };
 
@@ -3464,9 +4222,9 @@ export default function FilesScreen() {
       testID: sheetActionTestId(opt),
       onPress: () => dispatchAction(opt),
     }));
-    const subtitle = item.is_folder
+    const subtitle = sharedOutcomeMessage(sharedKeyOutcome(item.id), null) ?? (item.is_folder
       ? 'Folder'
-      : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`;
+      : `${formatSize(item.size_bytes)}  ·  ${formatDate(item.updated_at)}`);
     setRowSheet({
       header: {
         name,
@@ -3751,11 +4509,14 @@ export default function FilesScreen() {
     const name = decryptedNames[item.id] ?? displayName(item);
     void (async () => {
       if (!(await ensureFileReady(item))) return;
+      if (sharedFileKeyIsLoaded(item.id)) { Alert.alert('Share', 'Not available for files added by others yet.'); return; }
       navigation.navigate('ShareSheet', {
         fileId: item.id,
         fileName: name,
         mimeType: mimeTypeFor(item) ?? undefined,
         sizeBytes: item.size_bytes,
+        // Task 2238 — a folder's link is a snapshot bundle of its files.
+        isFolder: item.is_folder === true,
       });
     })();
   }, [navigation, decryptedNames, mimeTypeFor, ensureFileReady]);
@@ -3772,6 +4533,9 @@ export default function FilesScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              // Task 1683f: trash cancels an in-flight upload for this file.
+              abortUploadForFile(item.id);
+              void abandonFileUpload(item.id).catch(() => {});
               await deleteFile(item.id);
               setFiles((prev) => prev.filter((f) => f.id !== item.id));
               // 0818 — cascade to every derived store, subtree-expanded.
@@ -3844,6 +4608,7 @@ export default function FilesScreen() {
     <FileRowItem
       item={withDecryptedMime(item)}
       decryptedName={decryptedNames[item.id]}
+      nameUnavailable={!!unavailableNameIds[item.id]}
       onPress={openFile}
       onLongPress={handleLongPress}
       onShare={handleSwipeShare}
@@ -3861,7 +4626,7 @@ export default function FilesScreen() {
       testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
+  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, handleSwipeShare, handleSwipeDelete, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
 
   // Grid sizing — 3 columns, evenly spaced, responsive to screen width
   const GRID_COLUMNS = 3;
@@ -3876,6 +4641,7 @@ export default function FilesScreen() {
     <FileGridItem
       item={withDecryptedMime(item)}
       decryptedName={decryptedNames[item.id]}
+      nameUnavailable={!!unavailableNameIds[item.id]}
       onPress={openFile}
       onLongPress={handleLongPress}
       onTrustPress={openTrust}
@@ -3892,7 +4658,7 @@ export default function FilesScreen() {
       testID={isShowingSearchResults ? `search-result-${item.id}` : fileRowTestId(item)}
       highlightQuery={searchHighlightQuery}
     />
-  ), [decryptedNames, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
+  ), [decryptedNames, unavailableNameIds, withDecryptedMime, openFile, handleLongPress, openTrust, selectMode, selectedIds, toggleSelect, sortOrder, gridCardWidth, offlineStatusFor, proofs, lockedFileIds, lockStateReady, isShowingSearchResults, searchHighlightQuery, fileRowTestId]);
 
   const renderEmpty = () => {
     if (loading) return null;
@@ -4042,11 +4808,6 @@ export default function FilesScreen() {
               {currentFolder.name}
             </Text>
           </MenuView>
-          {!searchActive && presence.length > 0 && (
-            <View style={styles.presenceWrap}>
-              <PresenceAvatars users={presence} />
-            </View>
-          )}
           <View style={{ flex: 1 }} />
           {!searchActive && files.length > 0 && (
             <TouchableOpacity
@@ -4118,6 +4879,37 @@ export default function FilesScreen() {
         </View>
       )}
 
+      {/* Task 1037: lapsed account. Persistent (no dismiss) and neutral: no
+          price and no purchase link (task 1400, App Review 3.1.1(a)). */}
+      {!selectMode && accountGate.kind === 'lapsed' && (
+        <View
+          style={[styles.readOnlyBanner, { backgroundColor: c.amberBg, borderColor: c.amber }]}
+          accessibilityRole="alert"
+          testID="lapsed-banner"
+        >
+          <Ionicons name="lock-closed-outline" size={16} color={c.amberDeep} style={styles.readOnlyBannerIcon} />
+          <Text style={[styles.readOnlyBannerText, { color: c.ink }]}>
+            {lapsedBannerText(accountGate.dataDeletionAt)}
+          </Text>
+        </View>
+      )}
+
+      {/* Task 1746: a no-card trial ended with usage above the allowance. Read-only
+          above the allowance; download, export, delete and empty-trash stay. Facts
+          only (task 1400): the server's sentence, no price, no purchase link. */}
+      {!selectMode && accountGate.kind === 'trial_ended' && (
+        <View
+          style={[styles.readOnlyBanner, { backgroundColor: c.amberBg, borderColor: c.amber }]}
+          accessibilityRole="alert"
+          testID="trial-ended-banner"
+        >
+          <Ionicons name="lock-closed-outline" size={16} color={c.amberDeep} style={styles.readOnlyBannerIcon} />
+          <Text style={[styles.readOnlyBannerText, { color: c.ink }]} testID="trial-ended-banner-text">
+            {trialEndedBannerText(accountGate)}
+          </Text>
+        </View>
+      )}
+
       {/* Storage warning — shown when nearing or exceeding plan limit */}
       {!selectMode && usage && usage.plan_limit_bytes > 0 && (() => {
         const ratio = usage.used_bytes / usage.plan_limit_bytes;
@@ -4142,7 +4934,7 @@ export default function FilesScreen() {
             activeOpacity={0.7}
             onPress={() => Alert.alert(
               isFull ? 'Storage full' : 'Storage almost full',
-              `Free up space by deleting files. ${PLAN_MANAGEMENT_NOTE}`,
+              'Free up space by deleting files.',
             )}
             style={[
               styles.storageBanner,
@@ -4479,7 +5271,7 @@ export default function FilesScreen() {
               // to reserve it itself now — `Math.max(insets.bottom, 12)`
               // mirrors GlassTabBar's own `insets.bottom || 12` fallback for
               // devices with no home-indicator inset.
-              { paddingBottom: Math.max(insets.bottom, 12) },
+              { paddingBottom: bottomAnchorInset(insets.bottom, Math.max(insets.bottom, 12)) },
             ]}
           >
             <Ionicons name="search" size={20} color={actionBarMaterial.labelMuted} />
@@ -4567,43 +5359,31 @@ export default function FilesScreen() {
       )}
 
       {/* Floating action button — hidden in select mode. Opens the native iOS
-          UIMenu pull-down (0789). While an upload is in flight the FAB is a plain
-          disabled button so the menu can't fire mid-upload. Also hides while
-          search is active — 1357's bottom search bar now occupies the FAB's
-          whole bottom-right corner (the entire tab-bar band, not just a
+          UIMenu pull-down (0789). Task 1685 fix 2: it stays ACTIVE while an
+          upload is running — picking more files appends them to the queue
+          behind the in-flight uploads instead of being blocked. Also hides
+          while search is active — 1357's bottom search bar now occupies the
+          FAB's whole bottom-right corner (the entire tab-bar band, not just a
           floating stack beside it). */}
       {!selectMode && !searchActive && (
-        uploadingName ? (
-          <TouchableOpacity
-            style={[styles.fab, { bottom: tabBarBottomInset + FAB_BOTTOM_GAP, backgroundColor: c.amber }]}
-            activeOpacity={0.8}
-            disabled
-            testID="fab-add"
+        <MenuView
+          // 1284 — the menu ROWS are a native UIMenu and cannot carry RN testIDs; target them
+          // by their visible titles. This id covers opening the menu without coordinate taps.
+          testID="fab-add"
+          onPressAction={onAddAction}
+          actions={addMenuActions}
+          shouldOpenOnLongPress={false}
+          themeVariant={themeScheme}
+          style={[styles.fab, { bottom: tabBarBottomInset + FAB_BOTTOM_GAP, backgroundColor: c.amber }]}
+        >
+          <View
+            style={styles.fabInner}
             accessibilityLabel="Add file or folder"
             accessibilityRole="button"
           >
             <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
-          </TouchableOpacity>
-        ) : (
-          <MenuView
-            // 1284 — the menu ROWS are a native UIMenu and cannot carry RN testIDs; target them
-            // by their visible titles. This id covers opening the menu without coordinate taps.
-            testID="fab-add"
-            onPressAction={onAddAction}
-            actions={addMenuActions}
-            shouldOpenOnLongPress={false}
-            themeVariant={themeScheme}
-            style={[styles.fab, { bottom: tabBarBottomInset + FAB_BOTTOM_GAP, backgroundColor: c.amber }]}
-          >
-            <View
-              style={styles.fabInner}
-              accessibilityLabel="Add file or folder"
-              accessibilityRole="button"
-            >
-              <Text style={[styles.fabText, { color: c.ink }]}>+</Text>
-            </View>
-          </MenuView>
-        )
+          </View>
+        </MenuView>
       )}
 
       {/* 0789 — file-row long-press still uses the reusable bottom sheet; sort + "+"
@@ -4685,6 +5465,15 @@ export default function FilesScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* 1587 — "+" → New file: the D3 type picker + name step. */}
+      <NewFileSheet
+        visible={newFileOpen}
+        onClose={() => setNewFileOpen(false)}
+        existingNames={currentFolderNames}
+        folderLabel={currentFolder.name}
+        onCreate={createNewDocument}
+      />
+
       {/* Breadcrumb collapsed-path popover — indented tree of the in-between
           folders, anchored under the "…" chip. The native UIMenu can't draw an
           indent, so we render our own. Indent caps at 3 columns; folders deeper
@@ -4759,6 +5548,7 @@ export default function FilesScreen() {
       <TrustDetailsSheet
         file={trustFile}
         fileName={trustFileName}
+        mimeType={trustFile ? mimeTypeFor(trustFile) : null}
         onClose={closeTrust}
       />
 
@@ -4916,6 +5706,7 @@ const styles = StyleSheet.create({
   proofBadge: { flexShrink: 0, marginLeft: 2 },
   lockedBadge: { flexShrink: 0, marginLeft: 2 },
   fileName: { fontSize: 14, fontWeight: '500', flexShrink: 1 },
+  nameUnavailable: { fontStyle: 'italic' },
   fileNameEncrypted: { fontStyle: 'italic' },
   fileMeta: { fontSize: 11, marginTop: 2 },
   cryptoMeta: { fontFamily: fonts.mono, fontSize: 10, marginTop: 1, letterSpacing: 0.2 },
@@ -5000,6 +5791,21 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   storageBannerText: { flex: 1, fontSize: 12, fontWeight: '500' },
+  // Task 1037 — lapsed (read-only) account banner. Same shape as the storage
+  // banner, but the text wraps: the deletion date must never be truncated.
+  readOnlyBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginHorizontal: spacing.lg,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    gap: 8,
+  },
+  readOnlyBannerIcon: { marginTop: 1 },
+  readOnlyBannerText: { flex: 1, fontSize: 12, lineHeight: 17, fontWeight: '500' },
   storageBannerHint: { fontSize: 12, fontWeight: '700' },
 
   // 1177 — top-of-Files "Exporting…" indicator (Save to Files / Save to Photos
@@ -5061,7 +5867,6 @@ const styles = StyleSheet.create({
   fabText: { fontSize: 28, fontWeight: '600', marginTop: -2 },
 
   sharedBadge: { marginLeft: 4 },
-  presenceWrap: { flexDirection: 'row', alignItems: 'center', marginRight: 8 },
 
   // Android new-folder modal
   modalOverlay: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },

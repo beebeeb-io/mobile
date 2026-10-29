@@ -4,12 +4,228 @@ Per the workspace `CLAUDE.md` → "How we work" → "Design before code": where 
 design artefact and the shipped code disagree, the deviation is recorded HERE,
 in the same commit as the code, with the ruling that caused it.
 
+## Full-speed L2 — Settings categories (2026-10-26)
+
+**Design:** workspace `docs/superpowers/specs/2026-10-26-settings-ia-design.md` and its delivery plan, written before implementation. This supersedes the single long settings page and generic Advanced grouping.
+
+**Ruling:** Guus requested clearer categories and removal of confusing duplicates; full-speed program §5.6 item 5 explicitly allows implementation after the design PR without waiting for approval. Publication is blocked by the session's network/approval policy; the docs branch and client branch are prepared locally for the lead.
+
+**Changes:** eight category entries; distinct account/device notifications; backup albums versus folders displayed in Photos; photo loading and quality under Backups & files; diagnostics under development-only Help; thumbnail-quality entry limited to iOS because Android has no consumer for its saved value; platform-neutral biometric/system-settings/rating labels. Existing routes, keys, consent, iOS purchase restrictions and storage-country capability gates remain.
+
+**Verification:** targeted isolated unit tests and TypeScript, with evidence recorded in the workspace delivery plan. Maestro flows are updated but not run: program §5.4 reserves runtime checks for the release window.
+
+## Task 2050 — Storage location by COUNTRY, never city (supersedes the 1919 datacenter rows)
+
+**Design:** no `design/ios26-canvas/` artboard covers Settings > Data residency, the per-file
+"Stored in" rows or the upload data line. The web app's finished version (web PR #175) is the
+copy reference.
+
+**Ruling (Guus, 2026-10-19, `docs/specs/2026-10-19-storage-location-by-country.md`, canon
+`docs/canon/data-residency.md`):** "Describe data locations by country, not city: Germany and
+Finland now, the Netherlands coming soon. Replace any city names (like Falkenstein) with this."
+
+**What shipped (mobile):**
+- Settings > Data residency lists, from the API only: **Europe** (Default chip, "Any of our European
+  data centers. We place your files."), then under "Or choose a country" the live countries, then
+  coming-soon countries (a "Coming soon" chip, not selectable). PUT carries the item id (`europe`,
+  `de`, `fi`).
+- **Round 2 (Guus, 2026-10-19, workspace task 2054): the "Only store in <country>" switch is HIDDEN on iOS and Android** (`STRICT_PLACEMENT_ON_MOBILE` in `src/lib/regions.ts`). Native Camera Backup would dead-letter assets after 10 tries on the 409 `region_unavailable_strict`. A person who already has strict on (from web or desktop) is never switched off by the app: a country change PUTs their stored value unchanged, and Settings shows one non-interactive line ("Only store in Germany is on. Change it on the web or desktop app."). Task 2054 flips the flag after native backup handles the refusal. The paragraph below describes the switch as built; it is not shown on mobile until then.
+- New: an off-by-default **"Only store in <country>"** switch under the list while a country is
+  selected (copy as web: "Off by default. If Germany cannot take a new file, the upload stops
+  instead of going to another EU country."). It uses the server's `region_strict` on GET/PUT
+  `/me/region`. The app had no strict UI before. Strict carries to another country and ends when the
+  person goes back to Europe (PUT replaces the whole choice).
+- The 409 `region_unavailable_strict` upload refusal is worded by country ("Germany can't take new
+  files right now, so this upload stopped. Your choice is set to only Germany. Try again later, or
+  allow other EU countries in Settings."). The native uploader's error envelope has no `country`
+  field, so for that path the name is read back from the server's own sentence.
+- Per-file "Stored in" (Info sheet, Encryption details, Prove it, the row subtitle, Details alert)
+  shows `storage_location.country`; a file with no country reads "Europe". The default pool's city
+  fallback (`GET /api/v1/region`) is gone. List rows built from the sync tree carry no per-file
+  location and read "Europe"; the sheets read the country from `GET /files/:id`.
+- Upload activity card: "-> Europe" while uploading until the server names the file's country,
+  then "Stored in Germany . key stayed here"; toasts say "stored in Germany".
+- An older server (task 1919 shape, `kind: "datacenter"` with a city) is folded into one row per
+  country by `country_code`; its city is never rendered, and an entry with no country is dropped.
+- No flag emojis (supersedes the 2026-05-30 picker exception).
+
+**Guard:** `src/lib/no-city-in-copy.guard.test.ts` fails when Falkenstein / Helsinki / Nuremberg /
+Nuernberg / Ede appears in non-test source in `src/` or in native UI sources.
+
+**Correction to the entries below (left visible on purpose):** the 1919 section and the Info-sheet
+"Stored in" line of task 1583 describe city copy ("Falkenstein, Germany"). That is superseded by this
+entry; the app no longer reads or shows a city anywhere.
+
+## Task 1919 — Data residency: Europe (default) + datacenters from the API, "Force region" removed
+
+**Design:** no canvas artboard covers Settings > Data residency; the 1422 rows (one live region
+plus hardcoded "Helsinki" and "Ede" coming-soon rows) were a first pass.
+
+**Ruling (Guus, 2026-10-17, recorded in task 1919):** "Europe" is the default: no specific country,
+any of our European datacenters (the server places the data). Below it the person can choose one
+datacenter. Live ones are selectable, not-yet-live ones are listed as coming soon. The list comes
+from the API, never from a client list.
+
+**What shipped:** `GET /api/v1/storage-regions` drives every row (no static ids, cities, countries
+or coming-soon rows in the app); the choice is `PUT /api/v1/me/region` with the id verbatim. The
+local-only "Force region" switch is gone: the server has no force mode, so the control did
+nothing. If the list cannot be loaded the picker shows no rows and says so.
+
+**Per-file "Stored in":** the file rows say "Europe" (not the default pool's city) once more than one
+datacenter is live, because the app's file lists do not carry a per-file location. The Info sheet
+reads the file's own `storage_location.city`. Closing the row gap needs the server to include the
+location in the sync tree nodes (open question for the server lane).
+
+## Task 1746 — native signup, first-run screen and account-stage screens (no canvas artboard)
+
+**Design:** `design/ios26-canvas/` has one auth artboard, Sign in. It has no artboard for
+account creation, the first-run screen, the signup steps, the account-stage steps
+(`verify_email`, `accept_terms`), the "version too old" screen or the account status card.
+Precedent: task 1037 (NeedsPlan) and the removed SignupScreen, which had none either.
+
+**What shipped:** the new screens are styled after their siblings (`LoginScreen`,
+`NeedsPlanScreen`): plain surface, brand mark, ONE amber primary per screen, JetBrains Mono for
+codes, counters and the recovery phrase, no emojis. Components: `src/components/onboarding/*`,
+`src/screens/WelcomeScreen.tsx`, `src/screens/SignupScreen.tsx`.
+
+**Why:** the screens are driven by the server's onboarding document (spec section 5), and the
+design lane has not drawn them. They are a first pass for review, not a design ruling; flow,
+copy and visuals belong to the design lane (task 1703 says the same of the first-run screen).
+
+### What the spec asks for and this build does differently
+
+1. **Server copy is not always rendered verbatim (spec 5.3).** The server writes ONE sentence per
+   account state, not per client: `copy.trial_end_over_allowance` ends "...unless you subscribe or
+   free up space." and is sent to an iOS account too (`beebeeb-api/src/onboarding/mod.rs`
+   `account_copy` takes no client context). A "subscribe" call to action inside the app is what
+   App Store 3.1.3 and task 1400 forbid. The app therefore renders server copy through
+   `noPurchaseCopy` (`src/lib/onboarding/account-summary.ts`): verbatim when it has no purchase
+   vocabulary, the known clause reduced to "...unless you free up space.", and anything else with
+   purchase vocabulary dropped for client-authored status text. **Server finding:** `account_copy`
+   should vary by `purchase.cta_allowed`; once it does, this reduction is a no-op.
+2. **The Files banner for `trial_ended` omits the sentence "Plans are managed from your account on
+   the web."** that spec 4b.7 puts in the banner. The spec itself flags it as untested with App
+   Review (open question 4) and names "drop that last sentence" as the more restrained fallback. The
+   sentence is on Storage & Plan (status card and the existing plan note). T17 (1754) decides.
+3. **No offer, no `offers`, no purchase steps at all.** The parser does not read `offers`; the
+   model has no field for it. `PurchaseInfo.ctaAllowed` is false for every surface not in
+   `COMPILED_PURCHASE_SURFACES`, which is empty in this binary (spec 5.1 principle 6). A required
+   purchase step (`choose_plan`, `start_trial`, ...) stops at a text-only screen.
+4. **`use_web` fallbacks are plain text while `WEB_ACCOUNT_LINKS_ENABLED` is off** (App Review
+   3.1.1(a), task 1400). `update_app` opens this app's App Store page, never a server-named URL.
+5. **Account-stage `accept_terms` is implemented** (the spec's 5.5 lists it for both stages). Every
+   account without a terms acceptance record, which is every account created before task 1740,
+   carries a required one, so without a screen all existing users would hit the "cannot do this
+   step" fallback on their first launch of this build.
+6. **The Welcome screen is shown once to a fresh install** and marked seen the moment any session
+   exists. It covers the "how it works" part of 1703 only; the Face ID opt-in and the design pass
+   are still 1703's.
+7. **`describeApiEnvironment`** treats any loopback port as `Local` (was :3001 only), so a lane on
+   its own port can show "API environment: Local" in Metro.
+8. **`CryptoProvider.unlock(phrase?, source?, freshMasterKey?)`** takes the new account's master key
+   from the signup ceremony through the same branch as a typed recovery phrase. No second way to
+   adopt a key was added.
+9. **The signup screen disables the swipe-back gesture** so an accidental swipe cannot drop a
+   phrase the person has already written down.
+
+## Task 1724 — native video controls reserve space below Preview's floating bottom bar
+
+**Design:** `design/preview-redesign-ios.html` section 01 treats photo/video
+media as full-bleed content with floating top and bottom chrome.
+
+**What shipped:** video previews still use the same black full-bleed stage,
+but the native `VideoView` itself is inset at the bottom by Preview's floating
+bottom bar clearance. This applies to the single-file media branch, the
+document-style video branch, and video pages inside the photo/video pager.
+
+**Why:** on iOS, `expo-video` draws the native transport controls inside the
+`VideoView` bounds. With the view occupying the whole screen, the playhead sat
+directly behind Preview's own Share/Save/Versions/Info bar. Tapping to reveal
+chrome also revealed the native controls, so both bars competed for the same
+touch area. Reserving the control clearance keeps the native playhead tappable
+while preserving the black media ground behind the floating chrome.
+
+## Task 1724 — File Provider known-empty folders and pager preview leases
+
+**Design:** Files should enumerate cached File Provider folders immediately
+while refreshing in the background, and preview plaintext cache ownership must
+flow through `releasePreviewCopy`.
+
+**What shipped:** an empty cached File Provider folder that already has a
+`container.<id>.anchor` now enumerates `[]` immediately and refreshes in the
+background. The cold, anchor-less case still waits for a typed refresh outcome.
+Photo pager pages now release the preview copy lease they render directly for
+RAW source files and loopback video streams when the page unloads or unmounts.
+
+**Why:** rows alone cannot distinguish "never synced" from "synced and empty".
+The anchor is the cache's durable synchronized marker. For Preview, deleting a
+RAW temp URI directly or clearing a loopback URI left the `decryptToTempFile`
+lease live, so purge/account cleanup could see stale ownership.
+
+## Task 1723 PR163 CI — slow native SQLite harness gets a longer test budget only
+
+**Design:** no product design change. This is a CI-only repair for the Swift
+compile gate.
+
+**Ruling (Codex, 2026-10-04):** keep the File Provider reset behavior
+unchanged. The harness intentionally holds SQLite exclusive locks and executes
+two busy-timeout reset attempts; on GitHub's macOS runner, compiling and
+running that native harness exceeded the previous 20 second Bun test budget.
+The fix is to lengthen that one harness timeout, not relax the assertions or
+change product SQLite behavior.
+
 This file did not exist before task 1563 (mobile) — several earlier PreviewScreen.tsx
 comments reference "DEVIATIONS.md" for phases 3/4 of the doc-header/light-mode work,
 but no such file was ever actually committed in this repo. Created here per the
 workspace CLAUDE.md's convention (`repos/mobile DEVIATIONS.md`, as instantiated in
 this repo for the first time); the earlier phase 3/4 references remain undocumented
 and are out of scope for this task.
+
+## Task 1724 iOS progressive video streaming
+
+**Design / security contract:** Native iOS video preview should match Android
+PR 162's progressive model: fetch encrypted `/chunks/{index}` blobs directly,
+authenticate/decrypt each chunk with the existing opaque `MasterKeyHandle`, and
+serve only verified plaintext bytes from a loopback Range server. The player may
+start after chunk 0 and the final chunk are verified, while the remaining chunks
+continue buffering in the background.
+
+**Local implementation boundary:** This slice adds the iOS streaming engine as a
+new native helper and intentionally does not wire `BeebeebCryptoModule.swift`,
+because another native lane owns the Expo bridge in task 1724. The bridge must
+call `NativeVideoStreamer.start(...)`, register cancellation through
+`NativeVideoStreamer.cancel(requestId:)`, expose
+`NativeVideoStreamer.cancel(streamId:)`, and call
+`NativeVideoStreamer.cancelAll()` before/inside plaintext purge and account
+switch flows.
+
+**Safety invariants:** stream URLs contain a random 128-bit capability segment,
+the server uses Apple's Network framework and accepts only loopback peers,
+partial sparse files stay under a `.streaming` path instead of the final preview
+cache path, cache promotion happens only after every chunk has been
+authenticated, and cancellation/account purge closes connections and deletes
+partials before another account can write or serve stale plaintext.
+
+## Task 1723 CI-only native Swift harness routing
+
+**Design / CI contract:** Ubuntu `unit-tests` owns portable source guards and
+the count-shaped `isolated: N pass, 0 fail across F files` gate. The macOS
+`swift-gate` job owns native Swift compilation/runtime harnesses because Linux
+CI has no Swift/iOS frameworks.
+
+**What shipped:** the File Provider source guards still run in the Ubuntu unit
+suite. The four native Swift runtime harnesses embedded in
+`file-provider-purge-hygiene.test.ts` and
+`file-provider-enumerator-initial-refresh.test.ts` are explicitly macOS-only in
+those files and are required in the existing macOS `swift-gate` job with
+`BB_REQUIRE_NATIVE_SWIFT_HARNESSES=1`.
+
+**Why:** PR 163 introduced hostless Swift harnesses into the Bun unit suite.
+They were valid coverage, but running them unconditionally in Ubuntu made the
+portable unit job red for host/toolchain reasons rather than product reasons.
+This keeps source guards on every platform and moves the runtime Swift proof to
+the job that can actually compile and run it, without silently dropping the
+coverage.
 
 ## Task 1563 (mobile) — ⋯ menu replaces the Edit/Preview segmented control
 
@@ -335,3 +551,756 @@ so a scroll's touch-up still fires `onPress`. Worked around for evidence
 capture with an extra tap after scrolling (which only toggles the bars back
 on, not the scroll position) — not fixed, since it is pre-existing and out
 of scope for a content-inset task.
+
+## Task 1568 (mobile) — audio player has no design mock; look derived by analogy
+
+**Design:** `design/preview-redesign-ios.html` has no audio mock at all — the
+same gap task 1565 (finding 2) and 1563's own notes already flagged for
+video ("there is no separate video mock… DERIVED by analogy to the photo
+one"). Confirmed again for this task: `grep -i audio design/
+preview-redesign-ios.html` matches nothing.
+
+**What shipped:** a centered card (icon, title, format+duration, play/pause,
+scrub bar, elapsed/remaining in JetBrains Mono) sitting on the doc-branch's
+themed root (`c.paper`), not the media branch's forced-dark full-bleed stage
+— audio has no visual content of its own to bleed edge-to-edge, so it
+belongs with PDF/DOCX/etc.'s doc header and background, not image/video's.
+Amber is used ONLY on the play button while `status.playing` is true (brand
+rule: amber reserved for encryption state + primary actions) — paused/
+loading states stay on neutral `paper2`/`ink`/`ink3` tokens, no color
+otherwise added to the design. See `AudioRenderer.tsx`'s own doc comment for
+the full reasoning, including why the "playing" icon uses a fixed `#000000`
+literal rather than the theme's `c.ink` token (amber's hex value is fixed
+across light/dark, so the icon riding on it needs to be too).
+
+**Also found while building this** (not a design deviation, a correctness
+bug, fixed as part of this task): `extensionForMime()` collapsed EVERY audio
+mime/extension to a hardcoded `'.mp3'` before this task, regardless of the
+file's real container — a `.wav`/`.m4a`/`.aac` upload was being decrypted to
+a temp file literally named `*.mp3`. Fixed via the new `extensionForAudio()`
+(`lib/audio-format.ts`), mime-mapped first with a filename fallback. Proven
+end-to-end on-device (not just by the unit tests): with the FLAC preview
+open, `xcrun simctl get_app_container … data` + `ls Library/Caches/preview/`
+showed the live temp file as `<uuid>.flac`, and after closing the preview
+the file was gone from that same listing — see this task's Notes for the
+exact commands/output.
+
+**expo-audio config plugin, minimal permissions:** `expo-audio`'s config
+plugin defaults to requesting `NSMicrophoneUsageDescription` (iOS) and
+`RECORD_AUDIO` (Android) and enabling background-playback capability
+(`UIBackgroundModes: ['audio']`, Android foreground-service permissions) —
+none of which this app needs (playback-only, background audio explicitly
+"not required" per the brief). `app.json`'s plugin entry sets
+`microphonePermission: false`, `recordAudioAndroid: false`,
+`enableBackgroundPlayback: false` so none of those permissions/capabilities
+are added — consistent with the product's privacy stance of never asking
+for a permission the app doesn't use.
+
+## Task 1569 (mobile) — RAW camera preview
+
+**No design mock exists** (`grep -i raw design/preview-redesign-ios.html`
+matches nothing) — derived by analogy to the existing photo branch, since an
+earlier comment in `PreviewScreen.tsx` ("images/RAW on black") already
+anticipated RAW joining the same full-bleed black media stage as photos/
+video, not the doc branch's themed card. `RawRenderer` reuses that exact
+visual frame (media header, `imageBleedBg` black background, bottom bar).
+
+**Route considered and set aside: `exifr` (both for the thumbnail AND the
+EXIF half).** See `src/lib/raw-preview.ts`'s own top doc comment for the
+full account — short version: `exifr.thumbnail()` only produced a usable
+image for 2 of this task's 6 real fixtures, and even after switching to a
+hand-rolled "largest embedded JPEG" byte scanner for the image (which DOES
+work for all 6), `exifr`'s EXIF parsing broke the Release build outright —
+its only RN-resolvable build contains an internal dynamic `import()` that
+Hermes cannot compile ("Invalid expression encountered"), reproduced and
+confirmed on this exact build before being replaced with a ~150-line
+hand-rolled TIFF/EXIF reader (`parseTiffExifTags`/`findJpegExifTiffOffset`,
+unit-tested, zero third-party bundle risk). `exifr` was removed from
+`package.json` entirely.
+
+**Investigated on-device (bb-ios27, Release) — a claim below turned out
+WRONG, corrected here rather than rewritten (workspace CLAUDE.md's own
+"leave the wrong claim visible" rule):** early in this task the screen
+rendered its header/bottom bar chrome correctly but a fully BLANK BLACK
+content area — no spinner, no image, no error text, no crash. At the time
+`RawRenderer`'s root `View` used `flex: 1`, and `PreviewScreen.tsx`'s
+`mediaStage` (this component's direct parent) sets `alignItems:'center'/
+justifyContent:'center'` — the same shape as the WebView-under-a-centered-
+parent trap this repo's `CLAUDE.md` already documents — so switching `fill`/
+`center` to percentage `width:'100%'/height:'100%'` (matching `mediaImage`'s
+own style) looked like the fix and was documented as one, including a
+broadened `CLAUDE.md` note generalizing the WebView trap to "any `flex:1`
+child."
+
+**That diagnosis was wrong.** The blank area persisted identically AFTER the
+percentage-sizing change (still fully black, still no error). Root-caused
+properly a few iterations later, with an on-screen debug harness (console
+output is not observable in this Release/simulator setup — no capture method
+tried surfaced JS `console.*` at all): the REAL bug was `findLargestJpegSpan`
+picking a structurally-valid-looking but WRONG span (see that function's own
+doc comment and the "Real bug" note below) — the `<Image>` was being handed
+a genuinely corrupt/wrong JPEG, which iOS's image view renders as nothing,
+not an error. A hardcoded `flex:1` colored box placed in the exact same JSX
+slot DID fill the screen correctly, proving the centering-parent theory was
+never the cause here. **The percentage-sizing change and the broadened
+CLAUDE.md note are left in place** (harmless, and consistent with the
+sibling `isImage` branch's own established pattern) **but did not fix
+anything** — flagging this so a future reader doesn't cite this task as a
+second confirmed case of the WebView-class bug affecting plain Views; it
+isn't one.
+
+**Real bug found and fixed (the actual one): `findLargestJpegSpan` picked
+the wrong span for `sample.cr2`.** RAW sensor data following the real
+embedded preview can, by byte-pattern coincidence, form a complete,
+well-formed-looking JPEG (valid SOI/markers/EOI) that is LARGER than the
+genuine preview but decodes (confirmed with both Pillow and ImageMagick) to
+a flat, wrong, noise-banded image. "Largest span wins" alone picked this
+false positive 92% of the time it mattered (1 of this task's 6 fixtures hit
+it directly; the other 5 never had a competing false-positive span large
+enough to matter). Fixed by rejecting candidate spans whose own declared
+SOF dimensions are implausible for their byte size (over ~1.0 bytes/pixel —
+every genuine preview across all 6 fixtures measured 0.05–0.83) before
+falling through to the next-largest candidate. See `findLargestJpegSpan`'s
+own doc comment in `raw-preview.ts` for the full account, byte offsets, and
+measured ratios.
+
+**Second real bug found and fixed, same investigation: `bytesToBase64` used
+`String.fromCharCode(...chunk)` in 0x8000-byte chunks** — correct under
+Bun/V8 (verified: byte-for-byte identical to Node's `Buffer` encoding, even
+for the full 4.45MB real file), but produced a subtly corrupted encoding
+under Hermes on-device that a header-only check (`sips`/`file`) does not
+catch (dimensions still report correctly; only a real decode fails). Fixed
+by switching to a plain one-character-at-a-time loop, matching this
+codebase's OTHER base64 encoders (`transfer-api.ts`) exactly — none of them
+chunk+spread either. Neither of these two bugs individually was sufficient
+to explain the symptom alone; both were real, both are fixed, and the
+`sample.cr2` preview was independently re-verified correct in the simulator
+after each.
+
+## Task 1583 (mobile) — Info sheet: rows, "Stored in", stacking vs `design/preview-redesign-ios.html` section 03
+
+Guus's device screenshot (build 219) of the Info sheet: unreadable row labels, the
+bottom bar floating over the sheet and its Versions list, and rows that were machine
+detail or contradicted the card above them. Against the section 03 mock:
+
+- **Rows.** The mock lists Modified / Uploaded from / Folder / Shared, then versions.
+  The sheet keeps Modified / Folder / Shared and adds Format, Type (mono), Created and,
+  for RAW, the camera rows (the mock's figcaption: "Info shows camera, lens and
+  exposure"), then **Stored in** ("Falkenstein, Germany", from `GET /api/v1/region`,
+  the server's documented source for "stored in {city}"; "Europe" when unknown, never
+  the old "EU region" filler). Dropped: Chunks (machine detail), Encryption
+  ("Decrypted on this device" read as contradicting "Encrypted on your device"; the
+  card says it in words), Version (the Versions section lists every version).
+  "Uploaded from" is still absent: the client `FileEntry` / `FileVersionEntry` types carry
+  no device field (server not checked for one). Rule lives in
+  `src/lib/preview-info.ts`.
+- **Label colour.** The mock's `dt` colour (#8F8A80) is ~4.2:1 on the light paper, under
+  AA for 13pt text. Labels use `ink2` (9.2:1 dark, 6.8:1 light), values `ink`.
+- **Stacking.** The mock's sheet (z 16) covers the bottom bar (z 12) and does not reach
+  the top bar. The sheet layer now sits at zIndex 18: above `bottomBarWrap` (15), below
+  `chromeLayer` (20), so close and ⋯ stay live while it is open. The task file asked for
+  the header "dimmed or hidden" while the sheet is open; the mock keeps it undimmed and
+  Guus's report is that those buttons must work, so it stays. ⋯ with the sheet open now
+  closes the sheet and opens the menu instead of stacking the two.
+- **Versions, one home.** The mock keeps a Versions bar button AND a versions list in the
+  sheet. Both stay; the button now opens the sheet scrolled to the Versions section
+  (before, it opened the same sheet at the top as Info did).
+- ~~**Still deviating (unchanged from 1563):** an opaque `c.paper` sheet, inset with four
+  rounded corners, not the mock's edge-to-edge glass sheet.~~
+  **Geometry fixed 2026-09-27** (Guus, device: "Why does it seem that the info sheet is not
+  full width?"): the sheet is now full width (left/right 0), attached to the bottom edge
+  (bottom 0, home-indicator inset as padding inside the sheet), top corners only at
+  `GLASS_RADII.sheet` (38pt — the mock's 9cqw is ~38.8pt on a 402pt screen).
+  **Still deviating:** the material — opaque `c.paper`, not the mock's
+  `rgba(30,30,29,.92)` + 24px blur — and no 1px top hairline (the mock's
+  `border-top: rgba(255,255,255,.08)`); the sheet height stays 72% (capped below the
+  header) rather than the mock's 62%, so the Versions list has room. The ⋯ menu was
+  checked against section 02: the mock draws it as a right-anchored popover
+  (`.menu{right:3.5cqw;width:58cqw}`), not a sheet, and the code's
+  `PreviewOptionsPopover` matches that — unchanged.
+
+## Task 1586 (mobile) — every bottom sheet full width + draggable by the handle
+
+Guus, build 221 (verbatim): "Only the share sheet is not full width, but make sure that every
+sheet going from bottom to 70%-isch, is full width" and "Oh and sheets should be draggable by the
+handle right. The top handle. So you can drop it more down/halfway etc".
+
+All partial-height sheets (Info, Share, Encryption details) now render through ONE primitive,
+`src/components/sheet/BottomSheet.tsx`: left/right/bottom 0, top corners `GLASS_RADII.sheet`,
+home-indicator inset inside, grab handle (+ header) draggable between detents (half 50 % /
+default 72 % / large 90 %, `src/lib/sheet-detents.ts`), fling or low release dismisses,
+rubber-band above the top detent, content scrolls at every detent with hand-over at its top,
+VoiceOver-adjustable handle. Deliberate exceptions:
+
+- **The Share sheet** floated inset 10pt with four 38pt corners (1315, "the canvas floats the
+  share sheet"). Guus's ruling above supersedes the canvas: it is full width now.
+- **`BBActionSheet`** (file-row long-press menu) stays on its own implementation: it was already
+  full width and bottom-attached, and a content-height action menu has no half/default/large to
+  snap between — the whole sheet already drags down to dismiss (0777). Radius stays `radii.xl`.
+- **Encryption details** (`TrustDetailsSheet`) gets half + default only; its content is shorter
+  than a 90 % sheet.
+- **Info sheet large detent** stops below the preview's top chrome (close / title / ⋯ stay above
+  the sheet and usable, 1583) — ~84 % on an iPhone 17 Pro instead of 90 %.
+- **Share sheet + keyboard:** while the software keyboard is up the sheet sits on it and grows to
+  its tallest detent (not verified on the simulator — it runs with the hardware keyboard).
+- **`GlassSheet` / the glass gallery's sheet specimens** keep their floating geometry: they are
+  material swatches on a __DEV__ page, not presented sheets.
+
+## Task 1587 (mobile) — "+" → New file (D3 "icon wells" picker + name step)
+
+**Design:** `design/ios-new-file-d-variants.html` V3 "D3" (Guus's pick, 2026-09-27) for the
+picker; `design/ios-new-file.html` step 3 for the name step. The brief says a new file is
+created **empty**.
+
+**What shipped instead, and why (none of these was ruled on by Guus; recorded so they are
+reviewed, not discovered):**
+
+- **The new file is not empty.** A Markdown note starts as `# <name>\n\n` (a level-1 heading
+  from the name, then a blank line); a Text file (any extension) starts as a single `\n`.
+  Reason: the preview decrypt path (native `downloadAndDecryptFileNative` and the JS fallback)
+  refuses a 0-byte plaintext ("Invalid download size metadata"), so an empty file could be
+  created but never opened — found on bb-qa-2 while verifying. The 0-byte decrypt gap itself
+  (which also bites when a user clears a note and saves) is follow-up item 9 in workspace task
+  1585, not fixed here. `lib/new-document.ts` `initialDocumentContent`.
+- **Label sizes:** the tile name under the well is 12pt and "SOON" 9.5pt; the mock is about 9pt
+  and 7pt at phone scale, chosen by the implementing lane for legibility on a phone.
+- **The outline document icon is drawn with Views** (seven hairline Views + a Text), not the
+  mock's SVG path: there is no SVG library in the tree and no new native deps were allowed.
+  The extension inside it is smaller than the mock's (4.3/5.4/7.2 units for 4/3/2 letters, no
+  tracking for 4) with 1.5 units of clear space to each stroke, because the first build's
+  "DOCX" ran edge to edge (Guus's screenshot) — `docIconLabelMetrics`, unit-tested.
+- **No "Stored in" row on the name step.** The mock shows where the file is stored; before the
+  upload there is no storage pool to name, and naming a city we have not yet chosen would be a
+  claim we cannot check. The step shows "Saves to <folder>" only.
+- **Android "+" menu is flat** (Upload photo, Upload file, Scan, New file, New folder) instead of
+  iOS's inline "create" section: `@react-native-menu/menu`'s Android side has no
+  `displayInline`, so the section would render as a blank row opening a submenu.
+
+## Task 1591 — store-blocking UI fixes (App Store capture pass, 2026-09-27)
+
+- **Recovery phrase header / buttons (no artboard).** No canvas artboard exists for the
+  onboarding screens (see the 1445 line above). Changed to the brand rule, not to a design:
+  the mark (36 pt) and wordmark (20 pt) sit in one row with a 10 pt gap (the 48 pt mark used
+  to overhang a 44 pt box into the wordmark), and "Copy all words" became the secondary
+  (outlined) button so "I've saved my recovery phrase" is the screen's ONE amber primary.
+- **Preview status bar follows the surface, not only the theme.** Photo/video/RAW stage and
+  the code/editor surfaces (`#282c34`) are dark in both themes, so the status bar is
+  light-content there and the doc header's top scrim uses its dark stops over them.
+  `lib/status-bar-style.ts`.
+- **Encryption details copy.** "Key source" now states core's derivation (HKDF-SHA256 from
+  your master key, per file; sealed request key for file-request uploads) and "Encrypted by
+  <this device's name>" became "Encrypted on — Your device, before upload": the server keeps
+  no record of which client encrypted a file, so naming this device was false for any file
+  another client uploaded. `lib/trust-details.ts`.
+- **Prove it** shows the decrypted first 512 bytes on the left (it showed the ciphertext on
+  both sides) and no longer prints the API download URL. `lib/encryption-proof.ts`.
+
+## Task 1592 (mobile) — iOS polish for build 223 (from the build-222 regression)
+
+No design mock covers these states; recorded so they are reviewed, not discovered (none was
+ruled on by Guus):
+
+- **Failed preview load → "Try again".** Every renderer's "Couldn't load …" state now carries
+  an outline "Try again" button (secondary action, so not amber — brand rule). A file whose
+  row is still marked as uploading reads "Still uploading" / "This file is still uploading.
+  Try again in a moment." instead of the raw native exception. `lib/preview-load-error.ts`.
+- **A name that cannot be decrypted** reads "Folder — name unavailable" / "File — name
+  unavailable" in ink3 italic instead of the grey placeholder bar forever. `lib/row-name.ts`.
+- **Info sheet "Shared" row:** "…" while loading; hidden (not "Not shared") when the share
+  state cannot be read (e.g. a share recipient). `lib/preview-info.ts` `resolveInfoShareCount`.
+- **Dates** in the share-link expiry, file-request expiry, last-backup date and ZIP/archive
+  entries use the device locale with a spelled month ("4 Oct 2026 at 23:28" on en-GB,
+  "Oct 4, 2026, 11:28 PM" on en-US) instead of all-numeric or hard-coded English.
+  `lib/date-format.ts`. Other dates in the app keep their existing (English month) format.
+
+## Task 1037 (mobile) — no in-app signup; needs_plan screen and lapsed banner
+
+No design mock covers these states. They are recorded here so they get reviewed rather than discovered:
+
+- **In-app sign-up removed.** `SignupScreen`, `SignupEmailCodeStep` and the post-signup recovery-phrase onboarding (`OnboardingScreen`, route `RecoveryPhrase`) are gone. The Login footer is one line of plain text: "Create your account on the web at beebeeb.io, then sign in here." It has no link, because the web sign-up shows trial prices (task 1400, App Review 3.1.1(a)). `WEB_ACCOUNT_LINKS_ENABLED` in `lib/web-links.ts` turns it into a link to `{web app}/signup` once a link-out is allowed.
+- **needs_plan** (`screens/NeedsPlanScreen.tsx`): a full-screen overlay above the navigator, styled like `PhraseNotConfirmedScreen` (plain surface, brand mark, one amber primary). The primary is `Refresh`, the secondary is `Sign out`, and the copy is plain text pointing to beebeeb.io. The same switch adds an `Open beebeeb.io` link to `/choose-plan`.
+- **lapsed**: a persistent, non-dismissable amber banner at the top of Files (the storage-banner shape, with wrapping text so the deletion date is never cut off). Settings and Storage & Plan show a `READ-ONLY` badge and "Read-only · deleted on {date}". Neither has a purchase or manage link, because the app has no billing link-out anywhere.
+- **Trial with a payment mandate** (`trial_auto_converts`): "Trial ends {date} · continues automatically" under the existing `TRIAL` badge. A legacy no-card trial keeps "Trial ends {date}".
+
+## Task 1605 (mobile) — no "pay now" button; informational cap/cancel copy only
+
+The brief (`.claude/tasks/in-development/1605-trial-abuse-limits-cancel-readonly-retention-cap.md`,
+mirroring the web half) asks for a **"Pay now to unlock \<plan\> storage" button** on the trial
+card, calling `POST /billing/trial/pay-now` to charge the first period immediately. **Not shipped
+on mobile — no purchase/pay-now action exists in this app, on this screen or anywhere else.**
+
+**Why:** task 1400 (App Review 3.1.1(a), same rule `account-state.ts` and `StorageScreen.tsx`'s
+file headers already state) — this app has no In-App Purchase product configured, and neither a
+button nor a link to an external purchasing mechanism is allowed on this storefront.
+`POST /billing/trial/pay-now` charges real money; a tappable button that calls it is exactly the
+purchase call-to-action task 1400 removed everywhere else (`SHOW_PLAN_CATALOG = false`, no
+"Manage subscription" CTA, no signup screen, no lapsed-banner purchase link).
+
+**What shipped instead:** the same informational-only pattern as every other billing fact on this
+screen (`PLAN_MANAGEMENT_NOTE`):
+- Storage & Plan's status line reads "Uploads stopped · Access until \<date\> · Files deleted on
+  \<date\>" for a never-paid trial cancelled before its first charge (never "Access until" alone,
+  never "Renews") — `billing-status.ts`'s `billingStatusView`, task 1605 branch.
+- An active mandated trial under the 25 GB cap shows one line: "This account is on the 25 GB
+  trial storage cap until your first payment clears. Manage your plan from your account on the
+  web." — `billing-status.ts`'s `trialCapNote`. No button, no price emphasis beyond the cap size
+  itself, no "pay now" / "upgrade" wording (see the module's own test asserting this).
+- A 409 `trial_cancelled_read_only` upload/backup/share refusal and a 413 `quota_exceeded` with
+  `is_trial_cap: true` both get their own honest message via `account-state.ts`/`friendlyError()`
+  — "Resume your trial on the web" / "Manage your plan from your account on the web", never a
+  local purchase action.
+
+This is a deviation from the BRIEF, not from a design mock or a Guus ruling — recorded here per
+the same "flagged, never shipped silently" convention rather than silently dropping the button or
+silently adding one that would risk App Review rejection.
+
+## Task 1689 — PhotosScreen's 1322 "blur ALWAYS on" decision is amended (2026-10-02, bug-rel lane)
+
+Task 1322 deliberately mounted `ScrollEdgeBlur` UNCONDITIONALLY on PhotosScreen — the only such
+mount in the app — with two recorded reasons: Photos is permanently full-bleed, and `isScrolled`
+was permanently false on the shipping platform because the native grid never reported scroll.
+Task 1689 (light-mode "rare fade" at rest) changes this, and the change is a deviation from that
+recorded decision, recorded here per the same convention:
+
+- **What changed:** the mount is now gated `{isScrolled ? <ScrollEdgeBlur …/> : null}`, matching
+  every sibling screen (Files 4545, Settings 1826, Trash 386, Shared 737, Storage 403,
+  BackupInsights 629). The trigger was Guus's 2026-10-02 report: in light mode the 0.30-alpha
+  light tint (`glass-recipe.ts`'s derived `SCROLL_EDGE.lightTint`) renders as a visible
+  "plain-band fade" over the grid's paper background at rest — with `contentInsetTop` the first
+  row starts BELOW the header at rest, so the strip has nothing to make legible then.
+- **What did NOT change:** 1322's second reason (no scroll signal on iOS) still holds — the
+  native grid deliberately defers every bridge dispatch to rest positions. So `isScrolled` is
+  derived from the grid's own `onVisiblePhotoIdsChange` via a top-photo-visible heuristic rather
+  than a native scroll event; the FlatList fallback keeps its real `onScroll` derivation.
+- **Recorded trade-off:** during the drag itself (before the grid settles) the header rides over
+  unblurred content for the duration of the gesture — the same deferred-side-effect trade the
+  native grid already makes for thumbnail prefetch. At rest (the bug state) the fade is gone in
+  both schemes; while scrolled, the blur does exactly what 1322 wanted.
+
+## Task 1690 — share sheet: always ONE full link (split presentation removed)
+
+**Design:** the share-flow artefacts show the share result as two separate
+items — `design/hifi/flows-upload-share.jsx` ("Share B — Decryption key
+separate from URL", a bare URL plus a "Decryption key · send through a
+different channel" box) and web's `hifi-upload-share.jsx`. The shipped share
+sheet additionally badged the key box "SEND SEPARATELY" and copied the URL
+and the key as two separate clipboard items.
+
+**Ruling (Guus, verbatim, 2026-10-02):**
+> "Met delen voortaan altijd full link, er staat nu dat het los is maar is
+> eigenlijk alsnog 1 geheel. Maak er gewoon 1 geheel van."
+
+**What shipped instead (2026-10-02):** the share sheet always presents and
+copies ONE complete link — `/s/<token>#key=<K_c>` built by the new
+`src/lib/share-full-link.ts` `buildFullShareLink()`. The bare-URL + raw-key
+state pair, the "SEND SEPARATELY" badge, the 'link'/'key' copy targets and
+the "separate channels" copy are removed. The key still travels only in the
+URL fragment (1531 semantics untouched). The share link base now comes from
+`getWebAppUrl()` (EXPO_PUBLIC_APP_URL / extra.appUrl, derived from the API
+URL otherwise) — the same source LoginScreen/NeedsPlanScreen use — instead of
+a hardcoded production origin, so local QA builds produce localhost:5173
+links; production output is unchanged.
+
+**Why:** the ruling is dated after the artefact and explicitly supersedes it
+(precedent: task 1357, "a verbal ruling from Guus supersedes the artefact").
+
+## Task 1704 slice 3 (mobile) — RecoveryUnlockScreen heading: canonical "Vault locked"
+
+**Design:** no design artefact pins this screen's copy — `design/hifi/*.jsx`
+and `design/ios26-canvas/` contain no RecoveryUnlock heading/subheading entry.
+
+**Ruling (1684/1693, decision D-2026-10-02 option A — "net zoals in iOS"):
+** the locked vault state carries the canonical title `Vault locked` with a
+brief honest explanation and NO password form (1693 shipped exactly that on
+web: "canonical title `Vault locked` (iOS parity)"). Task 1704 slice 3's
+brief requires the post-reset / keychain-empty landing to use that same
+language and offer the 12-word phrase unlock.
+
+**What shipped (2026-10-02):** `RecoveryUnlockScreen`'s heading changed from
+"Unlock your vault" to the canonical `Vault locked`, and its subheading now
+states the two-tier story honestly (password unlocks the account; the
+12-word recovery phrase unlocks the vault). Copy lives in
+`src/lib/vault-locked-copy.ts`, pinned by `src/lib/vault-locked-copy.test.ts`
+(source-scan precedent: `sheet-sweep.test.ts`). Layout and styles unchanged;
+the screen's phrase input, retryable error banner and "Use another account"
+escape are untouched.
+
+**Why:** a Guus ruling supersedes the (absent) artefact (precedent: task
+1357); recorded here because the shipped language intentionally diverges
+from the screen's previous heading.
+
+## 1721 — upload preparation wording (2026-10-03)
+Guus reports RAW uploads lingering before transfer. Stage 1 includes local copying,
+metadata encryption and session initialization; its label is now "Preparing on
+your device…". Live encryption throughput remains in stage 2. No design geometry changed.
+
+## 1723 — release preview regression repair (2026-10-03)
+
+The Android streaming merge regressed iOS preview behaviors already covered in
+the pre-PR `6ec146c` source: content-area swipe-to-close, locked-pager tap
+affordances, the partial-file error card, PhotoPage export/resource bounds and
+RAW EXIF keyed by file id. This repair restores those local PreviewScreen
+behaviors while preserving the merged streaming UI's buffered-video badge and
+single-file video streaming path. No design geometry changes.
+
+## Task 1724 — cold folder latency (2026-10-04, Guus ruling)
+
+Guus reports initial Files and every subfolder block for too long and asks for the delay to be fixed. Folder-specific paginated requests must start immediately and must not wait for the full vault index to hydrate, fetch, or persist. Persisted index rows are an optional temporary display; a late cache result cannot overwrite settled folder rows. Background search reconciliation uses bounded native batch decrypts and yields to visible browsing; no encryption or sync cursor checks are removed.
+
+File Provider registration/mount prewarms root only; opened subfolders refresh on demand using the existing extension Secure Enclave path. Remove the duplicate full-vault walk at biometric unlock to avoid competing with browsing. Purge leases/epoch checks remain in force.
+## 1724 — native iOS preview decrypt pipeline (2026-10-04)
+
+Guus reported that iOS previews waited for the whole encrypted download before
+decrypting, which made photos and videos feel slow. The previous native bridge
+used `URLSessionDownloadTask`, wrote the full encrypted response, split it into
+chunk files, then handed the complete set to Rust. This task intentionally
+deviates from that whole-file staging model: `downloadAndDecryptFileNative`
+now parses the existing chunk metadata, decrypts each complete authenticated
+`nonce || ciphertext || tag` frame as it arrives, and promotes the preview
+plaintext only after every frame, byte count and final size has verified.
+
+Security constraints recorded with the change: partial plaintext lives under
+the already-registered `Library/Caches/preview/` plaintext cache, native also
+marks the directory/temp/final paths excluded from backup with
+`completeUntilFirstUserAuthentication`, failed/cancelled writers remove only
+their own UUID temp, and metadata is bounded with checked arithmetic. This
+slice improves whole-file preview latency; AVPlayer loopback progressive
+playback remains a separate 1724 slice. Evidence logs:
+`/tmp/bb-1724-pipeline/red-preview-chunk-pipeline.mutation.log`,
+`/tmp/bb-1724-pipeline/green-preview-chunk-pipeline.run.log`,
+`/tmp/bb-1724-pipeline/ios-build-gate-final-wrapper.log`.
+
+## Task 1724 — video stream lifetime (2026-10-04, JS slice)
+
+Guus reports video playback still behaving like a whole-file download before useful playback. The streaming URI becoming playable is not a completed plaintext cache copy: JS now keeps a cache-path stream registry, joins duplicate opens to the same active partial stream, holds the plaintext gate lease until native terminal/cancel, and cancels the native stream on purge or last preview release. Runtime traces omit loopback capability URLs. This is a lifetime/security repair for the progressive stream path; native chunk scheduling and range-server behavior are owned by the native bridge slice.
+
+## Task1724 — iOS progressive playback bridge
+
+The bridge resolves a standard loopback byte-range source before the full video finishes buffering, preserving native opaque handles and authenticated chunk decryption. Native purge marks its pending gate first and cancels all streams before sweeping plaintext; handle/key release also closes capabilities. Terminal progress survives until polling reads it once. Streaming startup runs away from the UI executor. No keys, bearer tokens or capability URLs are exported to runtime logs.
+
+## Task1724 — preview pruning excludes native working files
+
+Native pipelines own UUID hidden temporary files/directories beneath the registered preview cache. JS cache eviction handles finished public cache entries only: it must not unlink a live native writer's temporary resource. Native cancel/error owns temporary cleanup, while the existing account plaintext purge sweeps the entire cache.
+
+Cancellation ordering: JS stops progress polling immediately on explicit cancel or abort so the UI settles, but the `terminal` promise stays pending until native cancellation returns. `native-decrypt` releases the writer gate from `terminal`, so resolving it before native drain would allow purge or another writer while the native stream could still be touching plaintext.
+
+Task1724 CI registration: register the new preview frame pipeline driver in the existing Swift test manifest and use its counted assertion format. Missing registration caused the CI gate to fail before publication could complete.
+
+Task1724 native CI: keep compiler flags nonempty for every driver so the runner supports system Bash3.2 with nounset, as used by GitHub macOS. RED reproduced flags[@] unbound after the stream driver; verify all5drivers with /bin/bash.
+
+Task1724 native working-storage cleanup: JS preview pruning intentionally skips native hidden working files to avoid unlinking live writers. Native now owns stale crash cleanup once per process per preview cache directory, before creating any new UUID temp file or stream directory. The cleanup only removes the two native-owned UUID patterns (`.<output>.<UUID>.tmp` and `.beebeeb-stream-<fileId>-<UUID>/`), preserves public cache entries and unrecognized dot files, and never repeats in the same process so a JS reload cannot delete files created by active native writers.
+Evidence logs: `/tmp/bb-1724-pipeline-p2/native-preview-working-storage.mutation.log`, `/tmp/bb-1724-pipeline-p2/native-preview-working-storage.run.log`, `/tmp/bb-1724-pipeline-p2/preview-chunk-pipeline.run.log`, `/tmp/bb-1724-pipeline-p2/native-video-streamer-harness.run.log`.
+Task1724 failed stream terminal/export helper: playable loopback success is now distinct from background terminal success. The JS wrapper exposes a non-rejecting `terminalStatus` union so the registry can evict a stream that later reports an authenticated chunk error instead of joining a dead capability URL. Failed entries release their writer lease, serialize their partial-output cleanup before retry, and preserve consumer lease accounting. `materializeVideoPreviewForExport(fileId, extension)` is the export/share bridge: it acquires an independent preview lease, waits for active stream terminal success, verifies the promoted local file exists, and returns only that file URI. Export/share callers must release the helper lease with `releasePreviewCopy(fileId, extension)` in their finally block.
+Race follow-up: the process-once prepared marker is written only after the first sweep completes while holding the helper lock. A DEBUG barrier test proves a second prepare cannot return and create a live UUID temp until the initial sweep has finished, so the first sweep cannot delete that live writer.
+The prepared key resolves symlinks as well as standardizing the URL, so an alias path to the same cache cannot trigger a second first-sweep in the same process. Evidence logs: `/tmp/bb-1724-pipeline-p2-race/native-preview-working-storage.race-mutation.log`, `/tmp/bb-1724-pipeline-p2-race/native-preview-working-storage.run.log`, `/tmp/bb-1724-pipeline-p2-race/preview-chunk-pipeline.run.log`, `/tmp/bb-1724-pipeline-p2-race/native-video-streamer-harness.run.log`.
+
+Task1724 video export: use materializeVideoPreviewForExport terminal-success contract for loopback previews, hold an independent exporter lease until Sharing.shareAsync finishes, and release on error/abort. Never pass a localhost capability to sharing. Export slice source88a2bc5 supersedes intermediate polling drafte233140.
+
+Task1724 terminal status cancellation precedence: a final native progress snapshot may already contain `error` while JS is cancelling or aborting the stream. Cancellation owns that terminal: the wrapper forwards the snapshot but waits for native cancel drain and resolves `terminalStatus` as `cancelled`. The registry treats `cancelled` like an AbortError failure, evicts the loopback capability, rejects export materialization, and makes retry wait for partial-output cleanup before starting a new writer.
+
+## Task1722 — Files change enumeration recovery (2026-10-04)
+
+Guus reports Beebeeb is empty in iOS Files on build234. Existing signalEnumerator calls led to enumerateChanges returning an empty success without delivering cache updates. The cache has no persisted deletion journal. Derive an opaque anchor from stable current FileProviderItem identity/versions/display metadata instead of the extension-only sync_state timestamp. A mismatched or legacy anchor returns syncAnchorExpired, requesting a complete current folder enumeration; an identical snapshot returns no changes. This restores populated listings and deletions while avoiding a reload loop when background refresh signals unchanged rows. No session/key export or weaker extension authentication.
+
+- 2026-10-04, task1722 user physical authentication-loop evidence: trusted foreground registration must explicitly resolve Apple Files authentication throttling after verified shared credentials/unlocked ownership are ready. Keep extension authorization and Secure Enclave checks unchanged; no domain reset.
+
+## Task 1722 — Files-only Secure Enclave key (2026-10-04)
+
+User reports populated root, numbered undecrypted subfolder names, and file-open -2005; requests verification without phone. Existing shared extension key combines privateKeyUsage with devicePasscode authentication while Files provides no LAContext. Repair the trusted-mount contract using a separate versioned Files SE key/blob: privateKeyUsage with WhenPasscodeSetThisDeviceOnly protection (passcode required, device bound, unavailable while locked). Provision from existing main-app trusted key store/load/rewrap paths, include in existing delete/purge paths, and use only this key in Files. No primary/shared-extension fallback, no plaintext simulator fallback; preserve ownership and purge-epoch checks. Existing share/backup key policy remains unchanged. Local verification must exercise production Swift policy/loader/provisioning paths including denied/missing keys and real chunk/name codec fixtures, then full tests/typecheck and signed native archive. Physical SE behavior remains a separate unverified rung.
+
+- **Superseded 2026-10-14 by `9d85641`, recorded 2026-10-15 (task 1722 review M7).** "Provision from existing main-app trusted key store/load/rewrap paths" no longer describes the code. The Files key exists only while Files is mounted: `store`/`load`/`setAccessControl` call `syncFileProviderWrappedKey(mounted: fileProviderMountConsented())` best effort and never fail the vault operation; the mount and every unlocked foreground registration provision it from the verified in-memory handle when it is missing (`resumeFileProviderAuthenticationIfReady`); Settings toggle-off, every sign-out purge and `KeychainManager.delete` remove it. ACL unchanged (`privateKeyUsage`, `WhenPasscodeSetThisDeviceOnly`). Whether a no-prompt Files key may exist at all is decision 1722 Q3, still open: this branch must not merge or reach TestFlight before Guus rules.
+  - **Correction 2026-10-15 (review round 2, fixed in round 3).** Two parts of the line above no longer hold. The callers do not pass a consent value they read once: they pass the rule (`allowed: fileProviderKeyAllowed`, mount consent and no purge marker), which `syncFileProviderWrappedKey` reads under one lock before and after its write. And the resume does not provision "when it is missing" (both keychain items exist): it hands the vault key to the same writer, which checks by unwrapping. See "review round 2" below.
+
+## Task 1722 — review round 1 (2026-10-15)
+
+- **Files content stays in App Group `temp/`, not `NSFileProviderManager.temporaryDirectoryURL()` (review I1).** Apple suggests the manager's temporary directory for `fetchContents`; on a simulator it resolved to `<device>/data/tmp/`, outside every app container: not registered, not protected by us, unreachable by the sign-out purge. Apple's requirement is "a regular file on the same volume as the user-visible URL"; the App Group container is on the same APFS data volume on iOS, and fileproviderd receives a read-write sandbox extension for the URL we return. Deviation from Apple's suggestion, deliberate; device rungs D1/D2 confirm the clone and unlink on a phone. The first extension instance of each process deletes what a killed process left in `temp/` (Apple makes the extension responsible for such files). Guard: `plaintext-storage.test.ts`.
+- **A change Beebeeb does not store returns the item unchanged.** Files sends `modifyItem(changedFields: lastUsedDate)` after every open; it used to stamp `updatedAt = now` and the system's content type into the row, so the item came back with a new content version and fileproviderd downloaded, decrypted and wrote the same file a second time (simulator log 2026-10-14 00:40:17 and 00:40:24). Found while checking review M4; not in the review.
+- **The listing snapshot no longer hashes the content type (review M4).** The app writes the server `mime_type` (often null) and the extension the decrypted one, so each flip forced a full rescan. `beebeeb.files.snapshot.v2`: the changed anchor format costs one rebuild after the upgrade, then none for a MIME-only change.
+- **The resume undoes a Files key write that raced a purge or a toggle-off (review M1),** with the same rule the domain add uses (`shouldUndoFileProviderAdd` plus the purge-pending marker).
+- **Not changed: -2005 is still resolved on every unlocked foreground (review M6 left).** `mapError` sends any error it does not know, including every `NSURLErrorDomain` error, to `.cannotSynchronize`, which create/modify/delete treat as "back off until signalled". Today the per-foreground resolution is what retries a Files upload that failed offline; resolving -2005 once per build would leave those items stuck until the file changes. Map transport errors per operation first, then narrow the resolution.
+
+## Task 1722 — review round 2 (2026-10-15, fixed in round 3)
+
+- **One writer for the Files key.** Every Files key write and delete goes through `KeychainManager.syncFileProviderWrappedKey` / `deleteFileProviderKey`, under one `NSLock`. Before, the foreground resume (a Swift Task) and a store or unlock (the module queue, or a backup's thread) could both miss the key and each generate one; the blob then ended up wrapped by a key the extension's lookup does not return, a -1000 that nothing repaired, because the resume only asked whether both keychain items existed. The lock is held only around synchronous keychain calls.
+- **"Provisioned" means it unwraps.** The writer asks what the extension will find: exactly one key under the Files tag (no access group in the count, so a legacy key counts) and a blob that the extension's own `loadFileProviderMasterKey` unwraps to this vault key (compared in constant time, the copy zeroed). Anything else is deleted (every key under the tag) and written again from nothing, then checked again; a write that still does not check out is deleted. A keychain that cannot answer (errSecInteractionNotAllowed, a locked phone) is left alone, so a lookup failing there cannot lead to a second key. A working key is no longer re-wrapped on every unlock.
+- **The consent is read under the lock, before and after the write.** `store`, `load` and `setAccessControl` pass the rule (`fileProviderKeyAllowed`: mount consent and no purge marker), the resume passes its own (the domain add's `shouldUndoFileProviderAdd` with the purge generation, plus the purge marker). A Settings toggle-off and a sign-out purge turn the consent off before they delete the key through the same lock, so a writer either sees the consent off before it writes, undoes its write after it, or has its key deleted when it releases the lock. The order "consent off, then delete" is pinned by a test (it was mutation B).
+- **modifyItem returns the fields it does not apply as still pending** (`declinedFields`: everything except contents, filename, parent). Returning `[]` made the system put our nil `lastUsedDate` on disk after every open (Files builds Recents from it). Per the `NSFileProviderReplicatedExtension` header a pending set identical to the fields passed in marks them unsupported until the item changes, so they are not sent again; the header documents that rule "starting in macOS 12.0", and it has not been observed on iOS yet (simulator or device rung). A rename of an undecrypted name still returns the name as applied, so our label goes back on disk.
+- **Not done here, waiting for Guus:** the subfolder working-set redesign (review round 2 minor 6) and moving the Files key into a keychain group of its own (decision Q3, option (b) in the round-2 review). See the task file.
+  - **Update 2026-10-15 04:10.** Guus has ruled (recorded verbatim in the task file): Q3 "Yes, own keychain group (Recommended)", the Files key in an access group entitled only to the app and the File Provider, so the Share extension cannot use it; Q1 "Files on by default"; Q2 "Always reset on sign-out". They land in round 4 with the working-set gap (minor 6: track the folders Files has materialized, so changes in them and TF 236 placeholder names reach Files). None of it is in this round; this branch still must not reach TestFlight before round 4.
+
+## Task 1722 — round 4 (2026-10-15): Guus's rulings Q1-Q3 and the subfolder working set
+
+Rulings (AskUserQuestion, 2026-10-15, verbatim in the task file): Q1 "Files on by default", Q2 "Always reset on sign-out", Q3 "Yes, own keychain group (Recommended)".
+
+- **Q3, the Files key in its own keychain group.** The Files key (`io.beebeeb.sekey.files.v2`) and its wrapped blob (`io.beebeeb.masterkey.files.v2`) live in `R8352WDJJR.io.beebeeb.files`, which only the app and the File Provider extension are entitled to (`app.json`, `plugins/file-provider/withFileProvider.js`; the Share extension and the widget plugins do not list it, and a test holds the committed `ios/*/*.entitlements` byte for byte to what the plugins write). The app lists it after `io.beebeeb.shared`, so the shared group stays the default for keychain adds that name no group. The extension looks the key and the blob up in that group only, with no lookup without a group. Policy unchanged: `privateKeyUsage`, `WhenPasscodeSetThisDeviceOnly`, exists only while Files is on. Migration: round-3 builds wrote `...files.v1` into the shared group (no TestFlight build had it; simulators and local builds did). Every Files key write (store, unlock, Face ID toggle, foreground resume) first deletes the v1 key and blob from the shared group and from every group, under the Files key lock, then writes a NEW key in the Files group when Files is on; every Files key delete (toggle-off, sign-out purge, `KeychainManager.delete`) also removes v1, and a v2 copy in any other group. No key bytes are moved between groups. Provisioning profiles: every local profile for the four bundle ids carries `keychain-access-groups: ["R8352WDJJR.*", "com.apple.token"]`, so the new group needs no portal change (App Store profiles are held by EAS and were not inspected).
+
+- **Q1, Files on by default; reverses task 0314's opt-in.** A signed-in account gets Beebeeb in iOS Files as soon as the vault is unlocked, without the switch and without a second device-owner prompt (`src/lib/files-mount-default.ts`, called by App.tsx's registrar on every unlock and foreground). What "default on" means: fresh sign-in, mounted; every later unlock or foreground, the existing domain is registered again and never re-mounted (a mount resets the domain, and on iOS removing a domain deletes Files items that have not uploaded); a session expiry or any sign-out (Q2, "Always reset on sign-out"), the domain and the Files key are removed as before and the next sign-in of that account mounts again; the Settings switch still turns Files off, and that off is kept for the account across sign-outs (it is a privacy choice a session expiry must not undo): stored on the device only (AsyncStorage, a 16-hex digest of the account id, nothing else), written BEFORE the domain is removed (if it cannot be written, nothing is removed and Settings shows the error), cleared only after a successful turn-on, and an unreadable record counts as off. Upgrade from TestFlight 236 (opt-in, and every sign-out cleared the consent exactly as a toggle-off did, so the two cannot be told apart): checked once per device before the first default; on stays on; off on an install that mounted Files before (`everMounted`, the domain schema stamp only a successful mount writes) counts as an explicit off for the account signed in at that moment, so that user turns Files on once; never mounted means never chosen, so on. Any switch flip settles that check. Design: the Settings row, its label "Mount Beebeeb in Files" and its warning "Anyone who can unlock this iPhone can access the mounted Files location." are unchanged; the switch now reads on after sign-in. `design/hifi/hifi-ios-app.jsx` draws "Files app integration" with the toggle on; `design/ios26-canvas/Settings.dc.html` has no Files row. Not changed: while Files is off (an account that turned it off, or signed out) iOS still shows its default "Beebeeb" location answering "Authentication Required", and "Open Beebeeb" only opens the app (Q1 option A was not chosen).
+  - **Correction 2026-10-15 06:05 (simulator rung, same round).** "stored on the device only (AsyncStorage, ...)" was wrong for this app: every sign-out purge deletes `RCTAsyncLocalStorage_V1` (a registered plaintext store), so the off choice and the upgrade marker did not outlive a sign-out (the second sign-in still read "off" only from AsyncStorage's in-memory copy), and the next AsyncStorage write in that process failed ("Failed to write manifest file"), which made a turn-on that had mounted Files report "Files mount failed" and flip the switch back. The choice and the marker now live in SecureStore (`AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY`), where the app already keeps per-account backup preferences and the Face ID lock; sign-out does not delete them. A clear that fails after a successful turn-on no longer reports a failure (the stale off only keeps Files off at the next sign-in).
+
+- **Subfolder working set (review round 2, minor 6): tracked materialized folders, no domain reset.** iOS never lists a folder it has materialized again and ignores signals for any container but the working set, so before this a web-side change in a folder Files had already listed, or a TestFlight 236 row cached without a name, never reached Files. The working set is now the root's children plus the children of every folder the system has materialized: the extension keeps those folder ids in the cache (`sync_state` keys `materialized.container.<id>`, ids only, cleared by the sign-out reset), from each folder listing and from `materializedItemsDidChange` / `enumeratorForMaterializedItems` (plus one read per extension process, for phones upgraded from a build that did not track them), and refreshes a materialized folder whose listing is older than 5 minutes when the working set is enumerated (at most 8 per pass, one pass at a time, a folder that keeps failing is not retried within the interval). Chosen over bumping `fileProviderDomainSchemaVersion`: Apple documents this as the replicated-extension contract (`NSFileProviderReplicatedExtension.h`, materializedItemsDidChange), a reset would fix only the one upgrade, and on iOS the only domain removal mode is `RemoveAll` (`PreserveDirtyUserData` is `API_UNAVAILABLE(ios)` in `NSFileProviderManager.h`), which deletes Files-created items that have not uploaded. Known cost, not changed: a changed snapshot is still reported as an expired anchor, and the system then rescans every item it knows (now including the materialized folders' children); a diff-based change enumeration would avoid that. Not paged: the working set is vended in one page.
+
+## Task 1820 — no-card trial codes, mapped by code (2026-10-06)
+
+Server task 1755 refuses with typed codes whose own sentences point at buying ("Choose a plan", "Subscribe to unlock", "pay at checkout"). The iOS binary shows account state only (App Store 3.1.x, task 1400), so `friendlyError` maps `trial_previously_subscribed`, `trial_already_used`, `trial_sharing_unavailable`, `trial_share_limit_reached`, `no_subscription_to_cancel`, `trial_convert_unavailable`, `trial_checkout_retired`, `trial_temporarily_unavailable` and `trial_rate_limited` by code to authored sentences in `src/lib/trial-refusals.ts` and never prints the server's. `request()` now keeps these codes on the `ApiError` (it kept only an allowlist before, so they arrived code-less with the server's wording).
+
+The trial-storage-cap upload refusal now names the cap the server sent (`limit_bytes`: 10 GB for a no-card trial, 25 GB for the older mandated one) and no longer says "until your first payment" or "Manage your plan" (both hinted at a purchase). Deviation from task 1605's wording, deliberate.
+
+`trial_ended` text: files kept (usage within the allowance, nothing pending) versus a deadline ("will be deleted on <date>"); the client fallback used to say "read-only until <date>", which understated what happens on that date.
+
+Not changed (pre-existing, out of 1820): `readOnlyUploadMessage` for `needs_plan` ("Choose your plan on the web at beebeeb.io") and the generic `quota_exceeded` text ("upgrade your plan") still carry plan wording.
+
+### 1820 round 2 (PR #168 review)
+- The native camera-backup engine's 413 trial-cap stop reason is now built from the server's `limit_bytes` with the same purchase-free sentence as the JS `trialCapMessage` (it was hard-coded "25 GB ... until your first payment clears. Manage your plan ...").
+- `trial_ended` is "files kept" only on explicit evidence (storage present, `over_allowance === false`, no deletion date); missing storage or a missing `over_allowance` gets the conservative read-only copy. The Files banner now says the files are kept in that case.
+
+## Task 1821 — no purchase wording anywhere in the binary; account chip from the onboarding document (2026-10-06)
+
+App Store 3.1.1 / 3.1.3: the app shows account STATE only. `src/lib/no-purchase-vocabulary.test.ts` now scans every string literal, template piece and JSX text under `src/` (scanner: `scripts/purchase-vocabulary-scan.ts`) for subscribe / upgrade / plan(s) / price / pay / buy / purchase / checkout / billing / renew / "on the web" next to a plan or money word. A hit fails unless it is in the reviewed allowlist in the test (each entry has a reason; an entry that no longer matches also fails).
+
+Copy that changed, and why it differs from the earlier wording:
+- `readOnlyUploadMessage(needs_plan)`: "Choose your plan on the web at beebeeb.io to start uploading." became "Uploads are paused on this account."
+- `readOnlyUploadMessage(trial_cancelled_read_only)`: lost "before its first payment" and "Resume your trial on the web"; now "This trial was cancelled, so uploads and backup are off. You can still browse and download your files."
+- Generic `quota_exceeded`: "Storage full. Free up space or upgrade your plan..." became "This account has reached its storage limit. Free up space to keep uploading." The trial-cap variant lost "until your first payment" and "Manage your plan from your account on the web"; after the rebase it is task 1820's `trialCapMessage` (names the server's cap), whose trailing "your account is managed on the web" clause is also removed here.
+- `needs_plan` full-screen: title "Uploads are paused on this account", body "Your files stay encrypted. Tap Refresh to check the account again." The "Open beebeeb.io" link to `/choose-plan` is gone (it was a link to a purchase page when `WEB_ACCOUNT_LINKS_ENABLED` was on); `CHOOSE_PLAN_PATH` is deleted.
+- Storage screen: title "Storage & Plan" became "Storage"; section "Current plan" became "Account"; "NN% used — consider upgrading" became "NN% used". The plan catalog (`PlanCard`, `SHOW_PLAN_CATALOG`, prices in EUR) was behind a `false` flag since task 1400 and is deleted, with the `getPlans()` fetch. Settings: row "Subscription" became "Account", section "Storage & plan" became "Storage".
+- `billing_read_only` reason: "Billing is read-only" became "Read-only"; lapsed line "Files you do not move or renew are deleted on <date>" became "Files are deleted on <date>"; needs_plan headline "This account has no plan yet" became "Uploads are paused on this account".
+
+RULING NEEDED (Guus), spec 4b.7 conflict: the server's sentence "Plans are managed from your account on the web." (`purchase.copy.plans_managed_on_web`, shown by task 1746 under the account card and on the storage-full toasts and alert as `PLAN_MANAGEMENT_NOTE`) is itself an "on the web" plan-management hint, which the 1821 brief rules out. It is no longer rendered anywhere (`billing-copy.ts` deleted; `summarizeAccount` still parses it into `plansManagedNote`, unrendered). If App Review guidance says the sentence is required for a reader app, restoring it is one `<Text>` in `AccountStatusCard`.
+
+Account chip (Settings "Account" row, Storage "Account" card): `src/lib/plan-chip.ts` + `src/lib/onboarding/plan-card.ts` read `account.state` from the onboarding document: allowance = "Allowance" + size; trialing / trialing_no_card = "Trial" + "Ends <date>" (no plan name, so no "BASIC TRIAL"); trial_ended = "Trial ended" + "Read-only · deleted on <date>" or "Files kept · <n> allowance"; lapsed = "Plan ended"; needs_plan = "No plan" + "Uploads are off" (the Storage usage line no longer appends " plan", which made "No plan plan"); active = the account's own plan name + "Renews <date>". Without a document the subscription row is used, and `billingStatusView` now treats a `trialing` row whose end date has passed as "Trial ended <date>" with no TRIAL chip (stale cache). Both screens go through `accountChip`; the 1605 sweep test now asserts that no screen calls `billingStatusView` itself.
+
+Rebased onto PR #168 (task 1820): its `trialCapMessage` and the native stop reason ended "...; your account is managed on the web." (an "on the web" management hint, caught by the 1821 guard); that clause is gone from `src/lib/trial-refusals.ts` and `AccountRefusalDetection.swift`. The native engine's own stop reasons (`NativeBackupEngine.swift`) had the old needs_plan / cancelled-trial wording ("Choose your plan on the web at beebeeb.io...", "before its first payment... Resume your trial on the web"); they now match the JS copy. The guard also scans the string literals of `modules/**/*.swift` (allowlist: the chunk-layout diagnostic that says "plans").
+
+## Full-speed L1 — composition video backup (2026-10-26)
+Task 0677: non-file-backed PhotoKit videos export to a temporary flat QuickTime movie on disk, then use the same core `fromFile` chunk ladder as URL-backed videos. Keep originals on their existing direct-file path. Export files live in the existing protected, backup-excluded, sign-out-purged PhotoKit cache; delete owned exports on failure/cancel and after encryption. No whole-video `Data(contentsOf:)` fallback. Apple's AVAssetExportSession writes to a file URL and propagates cancellation via `export(to:as:)`; use that API on iOS 18+, with the cancellable legacy equivalent for older supported systems. Real slo-mo fidelity and peak-memory acceptance remain a release-device rung.
+
+## Mobile PR #202 review fix (Guus, 2026-10-26)
+Sweep abandoned backup-video exports at backup batch startup. Serialize export reservation, cleanup and sweeping with one lock; keep reserved paths active through export and encryption, removing only unreserved regular backup-video movie files. Preserve original PhotoKit URLs and unrelated files. Verification: fail-first isolated Swift harness, isolated unit runner, Swift parse/compile, bunx tsc --noEmit. Owner: Codex, fs-l1fix-202; lead merges.
+## Full-speed L1 — sync catch-up completeness (2026-10-26)
+Task 1990 / merged scale N21: consume `/sync/ops` pages to the first advertised head (legacy servers: until a short page), reject stalled pages, batch cursor persistence, persist metadata-only/echo updates, and stamp cache contents at the cursor captured with them. Returning clients can replay from an older stamped cache rather than snapshot on a debounce gap; known-empty stamped caches are valid. Transient catch-up errors retry through reconnect backoff without fetching an expensive snapshot. No wire change; per-user-sequence migration and SQLite/sharded store remain L7/1969/1991 prerequisites.
+
+## Mobile PR #199 review fixes (Guus, 2026-10-26)
+A failed startup must not publish an incomplete tree as a trusted cache checkpoint. Suppress cache/File Provider write-through until startup has a complete base; retry from the preserved cache. Emit startup completion on every successful start, including scheduled retries, and let SyncProvider mark the tree ready and clear the recovered error. Verification: fail-first regression tests through the isolated runner, then bunx tsc --noEmit. Owner: Codex, fs-l1fix-199; L1's trees remain untouched.
+## Full-speed L1 — complete File Provider folder refresh (2026-10-26)
+Task 1993 / scale contract N24: follow opaque `next_cursor` to the final page before the existing atomic `replaceChildren` prune. A failed or repeated page rejects the refresh, preserving the previous complete cached listing. Old servers omitting the cursor remain single-page compatible. File Provider continues to enumerate its complete local snapshot; server pagination belongs to the refresh so a partial page cannot prune cached children. Local macOS Swift URLProtocol regression covers 1,000 children and failure paths. Device Files enumeration and signed application compile remain release rungs.
+## Full-speed L1 — honest partial Empty Trash (2026-10-26)
+Task 1946 / server 1921 contract: continue sequential deletion after typed 409 `not_trashed` or `has_live_descendants`, retain refused rows, reconcile after partial outcomes, and report deleted/kept counts. Unknown/auth/network errors stop the batch; already deleted rows still receive local derived-store cleanup. Keep per-item device-owner confirmation and existing server APIs; no retry of destructive requests.
+
+## Full-speed L1 — account-refusal poll backoff (2026-10-26)
+Task 1661: while backup is refused, retry after 15/30/60 seconds (60-second cap), pause timers in background, and recheck immediately on foreground. Serialize ticks and discard a response after the effect is stopped/backgrounded. Resume once on the first unblocked response, preserving the existing 1605 account-state decision and per-account backup preference contract.
+
+## Task 1178 — preview export feedback (2026-10-26, L1)
+
+Design call before implementation: reuse the existing opaque ExportProgressBanner in a non-interactive overlay above the preview bottom actions, in both media and document viewers. Its own themed surface supplies contrast over arbitrary pixels. Show it during preparation, dismiss before presenting the native share sheet, and clear it on every exit. Feed native download/decrypt events through its existing throttled imperative ref so export ticks do not rerender the preview. A stream materialization with no byte events remains an honest indeterminate spinner. No new progress model or dependency. Device placement and large-file export are deferred release rungs under the full-speed program section 5.6.
+## Task 0726 — 2FA error context (2026-10-26, L1)
+
+The merged 0726 requirement permits request context. Use the selected authenticator/backup mode to name which code was not accepted on HTTP 401. The server uses the same status for wrong code and expired partial challenge, so the text preserves both possibilities and offers sign-in again. Never classify by matching error text. No auth protocol or success-path change.
+## Tasks 1335/1381 — Maestro maintenance (2026-10-26, L1)
+
+Plan: keep run-all's existing login-test bootstrap and remove redundant, unreferenced login-flow.yaml as task 1335 permits. Update historical helper comments to point at the maintained flow. Document the FAB native menu counterexample and the legacy flatten latch (latched only after a clean pass, retried on deferrals). Add a separate FAB→New folder→confirm recipe for the release batch; do not claim it ran. This changes QA/docs only. Verify YAML parsing, all referenced runFlow files exist, and one run-all login-test invocation; device execution is deferred by COMMON.
+
+Review pass: the native Alert.prompt uses its default OK confirmation, so the prepared recipe targets OK (not the Android Create button). YAML parsed: 25; existing direct runFlow references: 12; run-all login bootstrap count: 1. No runtime pass claimed.
+## Task 2041 — File Provider harness waits (2026-10-26, L1)
+
+Plan: the harness waits for the cache write and then immediately asserts a later signal/anchor update. First force a bounded 150 ms signal delay in the working-set scenarios and capture the old observer assertion failing; then wait for the signal/changed anchor itself with a deadline. Preserve the assertion (do not weaken it), and prove a missing signal still fails. This changes test synchronization only. The task's 20-run CPU stress rung remains deferred to the lead; no CPU load or full gate in this lane.
+
+Review pass: deterministic 150 ms signal-delay baseline was RED (0/1) on the old immediate assertion. Final targeted file: 21 passed / 0 failed; TypeScript exit 0. Redirecting the real MaterializedSetTracker working-set signal to root was RED (0/1, named missing-working-set assertion), then restoring production source returned GREEN (1/0). The extra anchor assertion raised that scenario's expected count from 10 to 11. No stress/device pass claimed.
+## Full-speed L1 — backup crypto effect dependency (2026-10-26)
+Task0862 explicitly authorizes the missing decryptChunkFn dependency. Cleanup writer plan: add that existing callback to the backup encryption effect dependency list; no hook or callback identity change, no wrapper or new behavior. Existing key ownership and reset/recovery tests lock the provider behavior before and after. No new test that merely mirrors the dependency array.
+
+Review pass (solo, separate from writer pass): one dependency added; callback identity remains stable. Existing owner-key and reset/recovery flows: 35 passed / 0 failed across two isolated files; typecheck exit0, diff check0. No configured lint command exists in package.json; no dependency installed. No native or wire change.
+## Full-speed L1 — degraded thumbnail repair (2026-10-26)
+Design: task0554/0552 and 0883. Extend the existing owner-only, local-plaintext repair to known existing thumbnails below 30 KiB; unknown size is not proof of poor quality. Preserve missing-thumbnail repair, request-key exclusion, PhotoKit ownership, single-flight/backoff and concurrency. Pass server bytes through owner routes and photo pager entries. Never download an original for repair; thumbnail-only opens remain cheap. Video uses the existing native generator from its already-decrypted local file (no frame is exposed by the player). Real network/quality/device checks stay delayed release rungs.
+Cleanup plan (writer pass): keep one repair worker, extend its eligibility guard, update its stale missing-only documentation. No new queue, dependency or metadata endpoint. Lock eligibility/idempotency/failure behavior first; review separately after targeted checks.
+
+Review pass (solo, separate from writer): repaired the full-source cache-hit branch as well as fresh decrypt, kept request-key/PhotoKit exclusions, and kept thumbnail-only/loopback video paths unchanged. Final targeted files:18 passed/0 failed (12 eligibility/dedup/backoff +4 no-whole-file guards +2 native thumbnail-source checks); RED10/2 on old missing-only guard. Typecheck0, diff0. Initial new test needed the repository's Bun @ts-nocheck convention because Expo tsconfig excludes Bun types; production source is typechecked. Physical PUT count/quality and permission/account-switch matrix remain release checks; frame reuse from the video player is unavailable through its current API, so local video repair uses the existing native generator.
+## Full-speed L1 — contacts/calendar account refusal (2026-10-26)
+Task 1662 / existing 1605 account-refusal contract: the shared native uploader reports typed billing/trial-cap refusals to the same engine pause/reason used by camera backup. Contacts/calendar stop new exports while that account is refused, keep dedup hashes unchanged on failure, and resume enabled categories when the subscription poll proves uploads allowed. A manual enable retries explicitly. No settings screens, server contracts, crypto framing or account binding changes. Stacked on task1661's serial poll.
+
+Cleanup writer plan (2026-10-26): update only the changed refusal-state comment to match auxiliary refusal clearing and 15/30/60/60 foreground polling. No runtime behavior change; Swift parse is the appropriate check.
+Cleanup review pass: comment now describes the implemented shared reason, enabled-category resume and capped serial foreground poll; Swift parse exit0, diff check exit0. No stale fixed-15-second/only-start claim remains in this comment.
+Correction: e750b31 matched the earlier error-enum comment and removed a source region; parse alone did not catch that semantic error. Restored from5464820 and bounded replacement immediately before the refusal property. Verified every non-comment line is byte-identical to5464820; correction is explicit and append-only.
+
+## Active video export identity (2026-10-26)
+Validation reproduced active video exports being swept when Foundation enumerates a symlink alias of the reserved directory (`/private/tmp` versus `/tmp`). Canonicalize reservation/sweep/cleanup identities with POSIX realpath of the existing parent; the existing native recovery test failed before the fix and passes after it.
+
+## PR 203 review recovery (2026-10-26)
+Native refusal progress is polled for every enabled backup category, including auxiliary-only configurations. Retrying an auxiliary backup also resumes an already-running camera engine paused by that same refusal; it never starts disabled camera backup. Verification: provider and native regression tests fail before the repair, then isolated suite and TypeScript.
+## Task 0560 — native pinch release (2026-10-26, L1)
+
+Use the task's recorded native requirement: freeze layout while the pinch is active, commit one anchored column change under a short cross-dissolve on release, and leave the grid visible on cancellation. The React Native fallback already does this; it does not fix iOS. Plan: first capture the native handler's active/release/cancel transitions in a Swift harness, then replace only the live-pinch scheduling path, remove its now-unused display-link fields/helpers, and preserve thumbnail deferral, column thresholds, anchor math, selection and perf counters. No new dependencies. Physical gesture fidelity is a deferred release rung.
+
+Full-speed changed-file cleanup writer plan: regression already4/0. Remove the pinch test's obsolete live-pinch fixture branches/fields now that the RED baseline is captured; require exact current method markers. Preserve UIKit boundary stubs and five behavioral assertions. Do not delete unrelated PhotoGridLayout transition machinery without layout coverage.
+
+Cleanup review pass (solo): test-only7 obsolete fixture lines and two legacy method-selection fallbacks removed; exact method markers checked. Native pinch1 passed/0failed (5 native assertions); earlier photo-grid3/0 unchanged. No production edit or dependencies; original RED remains l1-pinch-red.log. Deeper unused UIKit transitions deferred pending geometry coverage.
+
+## PR 208 validation (2026-10-26)
+Carry the active-video-export alias repair from PR 203/e6215eb so the existing native recovery regression preserves active files on this host. Verification: isolated suite and TypeScript; no unresolved review threads at initial inspection. Graphify refresh was attempted in PR 203 and refused an incomplete replacement graph.
+## Task 0676 — retire unused native backup pipeline (2026-10-26, L1)
+
+Cleanup plan (writer pass): preserve the live NativeBackupEngine camera-roll folder assignment, existing encrypted ShareUploader path, and legacy backup.db purge entry. First run the storage and share-plugin regressions. Then delete the unused PhotoBackupManager (only configure is called) and BeebeebCryptoShim (zero callers), remove their call/list entries and correct their documentation. Keep old on-disk purge paths for upgrades; no behavior, key-format, upload or dependency changes. Verification: targeted storage/plugin/manifest fence tests, TypeScript, Swift parse and a source-reference count. Review pass is separate and solo under the L1 no-child instruction. Signed app/extension linkage and backup/share device rungs remain with the lead's release batch.
+
+Review pass: live NativeBackupEngine uses the same io.beebeeb.photoBackupParentFolderId setting; no caller of either retired class remains. Legacy backup.db registry entry retained. The share guard initially failed on the stale generated shim/uploader copy; synchronized the canonical source into ios/BeebeebShare and removed the retired shim's four project references. Final: 34 passed / 0 failed across storage, plugin and write-fence tests; share static guards exit 0 (6 sources synchronized, 10 persistence sites); TypeScript and Swift parse exit 0. No signed build or device run claimed.
+
+## PR 209 review: retain live SQLite coverage (2026-10-26)
+The manager deletion retires only its own assertions: keep transient binds and manifest isolation checks on the live engine/store and four remaining SQLite3 files. Replace the internal comment “upgrade purge” with “migration purge” to avoid purchase vocabulary. Existing targeted guards reproduce all three failures before repair. Verification: those guards, isolated suite, and TypeScript. Also carry the native active-export alias repair from PR 203/e6215eb; Graphify refresh there refused an incomplete replacement graph.
+## Tasks 0681/0722 — UniFFI Xcode group membership (2026-10-26, L1)
+
+Plan: lock the app/share/File Provider source-phase memberships and repeat-run idempotence in a parsed-project plugin test before changing wiring. Normalize only references to Beebeeb/beebeeb_uniffi.swift into its existing app navigator group, reusing that file reference in each target's separate build-file object. Remove duplicate navigator memberships without changing build settings or framework links. Preserve all target compilation memberships. Regenerate the committed project with that same helper; full signed linkage is the lead's release rung.
+
+Review pass: original plugin fixture was RED (0/1, 3 navigator groups). The first normalizer ordering also caught an unwanted fifth source membership; normalize before and after wiring and remove obsolete aliases. Final 3 passed / 0 failed across project behavior and both plugin-source lists; project behavior covers a seeded legacy alias and two plugin runs, all 4 build memberships retained. TypeScript, JavaScript syntax and diff checks exit 0. Full clean-prebuild/signed-linkage remains deferred.
+
+## PR 210 validation (2026-10-26)
+The original Swift gate log fails in the known task-1722 stale materialized-folder harness, not in compilation. Rebase preserves both deviation histories. Carry PR 203/e6215eb active-export alias repair for the existing native recovery test; verify isolated suite and TypeScript, then inspect fresh CI. No unresolved review threads at inspection. Graphify refresh in PR 203 refused its partial replacement graph.
+## Full-speed L1 — empty note reopen (2026-10-26)
+Task1585 item9: current native PreviewChunkPlan already accepts one authenticated empty frame, but JS cache/fallback/offline paths still treat zero as unknown/error. Contract: an empty note is a real zero-byte plaintext authenticated by its nonce+tag frame; never bypass authentication by writing an empty file from metadata alone. Reject zero output for nonzero expected size. Preserve unknown-size cache semantics and large/unknown fallback bounds. Tests first, minimal guard changes in native-decrypt.ts; native pipeline existing assertions run separately. No new storage path or crypto format.
+Review/cleanup pass: only known safe integer zero gains empty-cache semantics; unknown size still requires a nonempty cache. AES-GCM fixtures authenticate a real 28-byte frame; corrupt tags fail. Cache version-size mismatches and truncated nonempty native results remain errors. No metadata-only synthetic plaintext. Final isolated Bun files: 57 passed / 0 failed across5; tsc exit0. Native empty probe:6 assertions passed /0failed (real CryptoKit authentication); the unchanged broader preview pipeline harness FAILED its host backup-exclusion metadata assertion, so full native harness/device proof is still open. Offline-cache old-code mutation RED0passed/1failed; restored green follows. Native iOS already accepts the empty chunk plan; Android/L3 must verify equivalent native behavior. No dependencies or on-disk format changed.
+
+## PR 215 validation (2026-10-26)
+Rebase preserves both deviation histories. Carry the PR 203/e6215eb active-export directory-alias repair so native recovery retains active files on this host. Verification: isolated suite and TypeScript; no unresolved review threads at inspection. Graphify refresh in PR 203 refused its incomplete replacement graph.
+
+## PR 215 Swift gate repair (2026-10-26)
+The CI gate rejected an unregistered empty-preview-frame driver (21/22 drivers), and direct compilation reproduced an invalid @main entry point when the runner copies it as main.swift. Register the driver with both production sources, use the runner-compatible top-level entry point, and emit its counted assertion format. Verification: reproduce failed compile, then execute the real authenticated-empty/tampered/truncated/extra-byte native scenarios, followed by isolated suite and TypeScript.
+## Task 0717 — native file-count refusal (2026-10-26, L1)
+
+Implement the existing 0670/0717 contract: only HTTP 403 with typed error object_budget_exceeded is permanent. Preserve staged ciphertext and queue identity, set that asset at the automatic retry limit immediately, and pause the run. Existing manual Back up now resets retry-exhausted rows after the user frees capacity. Use the JS path's existing authored copy, not a raw server response. Ordinary auth/network/storage failures retain their current retry behavior. No billing subscription poll is added because subscription byte quota does not measure the object budget.
+
+## PR 207 review: file-limit pause (2026-10-26)
+A typed file-limit pause stops new batch/asset admissions while existing staged work remains intact. Keep a dedicated lock-protected reason across progress/status refreshes; clear it on an explicit retry or account purge. Verification: scheduling and native status regressions fail first, then isolated suite and TypeScript.
+
+Validation also carries the active-export directory-alias repair from mobile PR 203 (e6215eb): the native recovery test fails without it on this host. Graphify update in PR 203 refused to replace its larger existing graph; generated partial output was removed.
+
+## Tasks 1962 / 0717 — session lifetime hardening (2026-10-26, L1, local security hold)
+
+Existing account-boundary contracts: a SecureStore read crossing a session generation returns no token; explicit vault lock and provider disposal clear the app-wide native key cache independently of remaining handle references. Expose the existing native clear primitive through the bridge, without deleting the persisted key. Biometric lock keeps its existing warm-vault contract. Android native implementation is L3-owned; its older bridge safely omits the optional method. No crypto format change. Keep this commit local for coordinated security release and L9 review.
+
+Rebase onto current main (task 2234) reconciled one semantic conflict: `api-client-session.test.ts` ("stale token read resolving after setToken does not overwrite cached token") pinned the older, weaker contract — the stale caller still received the signed-out/superseded token. The hardened `getToken` returns `null` there, so that one expectation now asserts `toBeNull()`; the cache assertions are unchanged. The cached-token guard for a clear is `api-token-clear-race.test.ts`; the native-cache guard is `crypto-context.key-ownership.test.ts`. `crypto-context.reset-recovery.test.ts` only needed the new `clearCachedMasterKey` export in its crypto mock (without it the file fails to link: "Export named 'clearCachedMasterKey' not found"), and `software-vault-gate(-device).test.ts` — added to main after the held commit — needed the same no-op stub. Mechanical mock adaptation only; no behaviour change in those three files.
+
+Release window (task 2234): the iOS build number source moved from EAS remote versioning to `local` (`eas.json` `appVersionSource: local`, `production.autoIncrement: false`), with the number that actually ships set where this prebuilt tree reads it: `CFBundleVersion` 248 in `ios/Beebeeb/Info.plist` (`app.json` `ios.buildNumber: 248` mirrors it and is ignored by EAS while `ios/` is committed). Uploads no longer go through `eas submit`; the IPA is uploaded directly to App Store Connect with `xcrun altool --upload-app` and the existing App Store Connect API key. Reason: build 247 was already consumed by an accidental `eas submit`, and the binary should not transit Expo's servers. Consequence: the build number must be bumped by hand for every future release.
+## Task 2233 — Android first device report (L3, 2026-10-26)
+
+Guus's ruling: preserve iOS visuals and behavior; use Android device copy, app-owned menus and measured layout. Execute 5, 3/4, 7, 2, 6, 1. Owner: Codex L3 solo, branch fs/l3-android/device-r1, worktree /Users/guuslangelaar/code/bb-worktrees/fs-l3-android-2233. Verification per item: red-first regression, isolated runner, TypeScript; emulator screenshots for 2/3/4/7; generated ZIP reproduction and Photos before/after measurements. OnePlus confirmation remains the final device rung.
+
+Item 5: route preview decrypt, edited-copy name and camera-roll deletion copy through the existing device-copy module. Its iOS return values are identical. Audited src and native modules: remaining iPhone literals describe source-device guides, fixtures/comments, or iOS-only native/File Provider/thumbnail-repair paths; Android-accessible backup-insights/startup copy is already platform-gated. No iOS native strings or WebView assets changed. RED: 1 pass/1 fail (preview decrypt wiring), evidence ~/code/bb-gate-logs/2233/5-red.log.
+Item 5 validation: isolated: 2989 pass, 0 fail across 288 files; bunx tsc --noEmit exit 0. Logs: ~/code/bb-gate-logs/2233/5-{red,isolated,tsc}.log. Native iOS-only copy audit preserves those paths unchanged.
+
+Items 3/4 design before code: react-native-bottom-tabs Android RCTTabView.kt adds layoutHolder(weight=1) and bottomNavigation as VERTICAL siblings and reports layoutHolder.height to JS. The screen's coordinate origin already ends ABOVE the measured bar (including its system inset); adding that height again lifts both controls a second time. Android therefore reserves only the existing 12pt content clearance inside that scene. iOS keeps measured native height + 12 unchanged. This is the same full-window clearance after accounting for the Android container's reserved bar, without a guessed iOS/Android height or double-counting safe area. Scope is the shared inset helper used by both requested controls.
+Items 3/4 share one implementation commit because both already consume the same inset helper. RED corrected fixture: 1 pass/1 fail; GREEN 2/0; full isolated 2991 pass/0 fail across 289 files; TypeScript exit 0. Emulator screenshots remain pending; no device result claimed. Logs: ~/code/bb-gate-logs/2233/34-*.log.
+
+Item 7 design before code: Android preview overflow uses the existing BBActionSheet (theme tokens, destructive rows, Android back dismissal) for the existing preview action array. iOS keeps its current PreviewOptionsPopover and action dispatch. No native gray/blue Alert menu on Android. Shared filename and action handlers stay authoritative.
+Item 7 also roots Android Modal gestures inside GestureHandlerRootView; the iOS root remains View. Initial RED 0 pass/2 fail; gesture RED 2 pass/1 fail; full isolated: 2994 pass/0 fail across 290 files; TypeScript exit 0. Screenshot rung open: emulator 30.3.5 and 37.2.12 both exit 132 before ADB registration, including software/no-accel attempt. Logs ~/code/bb-gate-logs/2233/7-*.log and emulator{,-software}.log. No keystore accessed; no app authentication attempted.
+
+Item 2 design before code: preserve the full-height Android list behind the absolute floating header, but put the measured header height in SCROLL CONTENT padding, not on the viewport. Add it to getItemLayout offsets so pinch/restoration lands correctly; reserve the measured bottom overlay. Keep the existing canvas ScrollEdgeBlur gradient mounted on Android, including rest, rather than relying on iOS native scroll callbacks/blur behavior. iOS native grid and its scroll-gated blur remain unchanged. Android uses the existing tint fade, not an unsupported native blur claim.
+Item 2 verification: RED 0 pass/2 fail; the existing 1689 iOS-only source-shape guard also failed until it was refined to evaluate all four platform/scroll-state combinations, preserving both iOS outcomes. Final isolated: 2996 pass, 0 fail across 291 files; TypeScript exit 0; diff check exit 0. Screenshot rung remains open because emulator startup exits 132. Logs ~/code/bb-gate-logs/2233/2-*.log.
+
+Item 6 remains open: generated local DEFLATE/UTF-8 ZIP (486 bytes, 3 files) plus existing ZIP fixture (2 files) parse/extract with 0 errors under Bun. This is host evidence only, not Android reproduction. Emulator current/installed versions exit 132 before ADB registration, so diagnosis/fix is not claimed. No ZIP source change. Fixture/logs: ~/code/bb-gate-logs/2233/{2233-android.zip,6-host-probe.log}. Detailed handoff in docs/qa/2233-android-device-feedback.md.
+Item 6 checkpoint validation (no ZIP code change): isolated 2996 pass/0 fail across 291 files; TypeScript exit 0. This does not close ZIP reproduction. Logs ~/code/bb-gate-logs/2233/6-{isolated,tsc}.log.
+
+Item 1 remains open: the emulator cannot boot, so no JS FPS or time-to-first-thumbnail baseline/after measurement exists. Source inspection identifies investigation targets, not proven causes: Android FlatList viewport IDs are deferred until scrolling settles (0559), so arriving rows may remain disabled during a fling; both screen prefetch and tile hooks use the legacy JS thumbnail path; photo metadata updates rebuild grouping and row props. The native iOS grid is separate. No unmeasured virtualization/decode changes are shipped. Complete item 6 reproduction first, then profile these paths on the emulator before changing Android-only behavior. Screenshot/reproduction/performance rungs and the OnePlus final rung remain open.
+Final item 7 review preserves the web fallback Alert as well: only Android joins the existing iOS options dispatch. Executable handler regression checks Android, iOS and web; removing Android from the condition is RED 2 pass/1 fail, restored GREEN 3/0. Graphify update attempted: 787/787 files extracted, but it refused to replace 23908 graph nodes with the partial 7186-node graph; existing graph preserved (exit 1). Full log: ~/code/bb-gate-logs/2233/graphify-update.log.
+Item 1 checkpoint/final branch verification: isolated: 2996 pass, 0 fail across 291 files; bunx tsc --noEmit exit 0; git diff --check exit 0. Logs ~/code/bb-gate-logs/2233/{1-isolated,1-tsc,final-isolated,final-tsc}.log. These counts validate the implemented code only; they do not replace missing emulator screenshots, ZIP reproduction or performance measurements.
+
+## 2233 round 2 — item 8 design ruling, before implementation
+
+Guus added item 8 on workspace main: all bottom-anchored controls share the
+Android inset rule, including Files selection, sheets, banners and toasts.
+Extend `glass/tab-bar-inset.ts` to own Android window safe-area clearance too.
+Tab scenes already exclude the measured native tab bar and system inset; their
+remaining inset is zero before the existing 12pt clearance. Modal/full-window
+surfaces still reserve the live bottom safe area, with that same clearance
+minimum. Backgrounds remain flush to the edge; inset interactive sheet content,
+not the sheet background. Keep keyboard lift separate. Pass each existing iOS
+expression through unchanged. Keep spacing between stacked controls unchanged.
+
+The guard inventories anchored screen controls, shared sheet primitives and
+inherited anchors. ToastOverlay is top-anchored (`top: insets.top + 8`), and
+ExportProgressBanner is in-flow; neither should be moved to the bottom. The
+UploadActivityCard inherits Files' helper-derived bottom prop. Sheet wrappers
+inherit BottomSheet's inset; document preview children inherit the parent chrome
+inset. Decorative fills, thumbnail badges and captions inside already-bounded
+content are not window/tab anchors. No unrelated settings or scroll padding
+redesign is intended.
+
+### 2233 item 1 measurement contract (before profiling)
+
+Measure the Android fallback grid with the existing local QA content account,
+three matched runs per version, unchanged file set, cache state and gestures.
+Use gfxinfo frame totals/jank and actual Image onLoad runtime timestamps from
+Photos focus for time-to-first-thumbnail. Add an Android-development-only
+Image onLoad trace; iOS gets no handler and release builds do no extra work.
+Only change performance behavior after a device baseline identifies the cause.
+
+Item 1 profiling finding and ruling, before repair: a warm-cache Android Photos
+run made 274 thumbnail-hook requests for 155 distinct IDs. Metadata decryption
+changes mimeType after initial rendering; the real-hook regression reproduces
+a second cache read and URI reset for a remote-only tile. RED: 3 pass / 1 fail,
+expected one cache read, observed two (`r3/1-metadata-red.log`). MIME is needed
+only to create a local-asset thumbnail, not to read/download a remote thumbnail.
+For Android remote-only entries, normalize the effect's MIME dependency to null;
+retain the existing dependency for local assets and every iOS call. Disabling a
+tile still clears its URI (locked tiles included), and file changes still reload.
+Do not tune FlatList batch/window values or change iOS rendering.
+
+Item 1 second measured experiment, before tuning: MIME-only repair produced
+TTF 871/1408/646 ms (median 871) and jank 73.23/79.92/83.00%; the stable baseline
+TTF was 548/760/872 ms (median 760), jank 80.33/92.62/87.50%. Loading is not
+consistently better. First cache hit precedes first Image load by 457/550 ms
+in two after runs; Android mounts 12 list rows (including offscreen tiles) and
+batches eight more at a time. Test an Android-only 8 initial rows / 4 per batch /
+3 viewport window, leaving 80ms batching and all iOS values unchanged. RED:
+1 pass / 2 fail (`r3/1-window-red.log`). Run the same three measurements; retain
+only if the combined result improves, and report residual emulator jank honestly.
+
+Window experiment rejected: three runs gave TTF 1000/1019/589 ms (median 1000),
+jank 78.60/75.71/56.92% (median 75.71%). Restore the original 12/8/5 grid settings;
+preserve the experiment patch/test/logs outside the repo under r3/. No window
+change will ship. The installed react-native-blurhash 2.1.3 native view defaults
+`decodeAsync=false` and calls its decoder synchronously from updateBlurhash;
+ThumbnailImage passes no override. Its official README recommends decodeAsync
+for stutters in large lists (https://github.com/mrousavy/react-native-blurhash#asynchronous-decoding).
+Before repair: real-component RED 2 pass / 1 fail, expected Android decodeAsync
+true, received undefined (`r3/1-blurhash-red.log`). Enable that existing prop only
+on Android; leave iOS undefined, preserve placeholder resolution/colors and
+keep the original virtualization settings. Re-run the same three measurements.
+
+Measurement correction (instrument audit): the early baseline used 181 cache
+files, while later experiments accumulated 193 then 203. Earlier before/after
+comparisons above remain visible but are provisional and must not be used as
+the final evidence. Repeat both versions against one 203-file warm-cache
+snapshot. Force-stop only the app before each run; remove only cache additions
+created after the snapshot and assert every retained thumbnail's SHA256 matches.
+The baseline keeps the identical Image onLoad trace but neither performance
+repair. The final version restores both repairs and the original list settings.
+Record per-run cache content digests, 247 media rows, gestures and gfxinfo counts.
+
+Async-decoder experiment rejected: fixed-cache medians were 704 -> 1190ms TTF,
+77.54 -> 97.52% jank and 133 -> 500ms p95. Host load was 53.96-68.16 during the
+after window, and cached-index reading stalled 8741ms in one run. Contention is
+a possible confound, not a proven explanation or permission to discard bad data.
+Remove the async prop/test from the shipping diff; preserve the rejected source,
+test, bundle receipt and raw measurements in r3. Retain only the real-hook-proven
+remote MIME reload repair and Android-dev timing trace. Measure that final source
+against the same 203-file cache; performance closure requires a quiet host or
+OnePlus run. No decoder/window tuning ships on this inconclusive evidence.
+
+Final-source fixed-cache result: three runs per version, 247 rows and the same
+203 SHA256-verified cache entries. Observed medians TTF 704 -> 608ms, jank
+77.54 -> 73.36%, p95 133 -> 105ms; aggregate janky/total 592/780 -> 610/861.
+After host load averages 20.76/21.06/17.78 remain uncontrolled, so these are
+observations, not causal improvement or OnePlus proof. Remote MIME reload repair
+ships with its red-first hook guard; quiet-host/OnePlus performance closure stays
+open. Final measurements and rejected candidates are preserved under r3/.
+
+## Task 2233 Round 2 (Guus, 2026-10-26)
+
+User ruling: implement items 9–11 directly, preserve iOS visuals. Item 9 ports the existing iOS request-key bridge to Android using the same core operations and empty HKDF context (0651), with native private-buffer cleanup. Contract/plan/evidence: `docs/runbook/task-2233-r2.md`.
+
+Task 2233 item 10: use one installed-binary appVersion() helper for Settings, API provenance, device registration and backup manifests, with config fallback. Existing expo-application transitive dependency/native linkage is reused; no dependencies added. iOS layout/styles unchanged.
+
+Task 2233 item 11: Android BBActionSheet uses live window height minus top safe area, scrollable actions and header-only drag, retaining bottomAnchorInset. iOS retains its existing rows, geometry and whole-sheet pan. Contract/evidence: `docs/runbook/task-2233-r2.md`.
+
+Task 2245 (2026-10-27, Guus report + lead review): the Settings root rows that carry the badge reason are a new surface the design artefact does not draw. Reason text and the "!" marker use `ink2`, not `amberDeep`: `amberDeep` is 3.25:1 on the light grouped cell (#ffffff) and fails WCAG AA 4.5:1; `ink2` is 7.25:1 light / 9.37:1 dark. The warning meaning is carried by the copy ("N items need attention" / "Storage N% full") and the marker, both from existing tokens. No new colour was introduced.
+
+## Task 2237c C3 (2026-10-28)
+
+The reviewed mobile plan adds a folder-link panel where neither `design/hifi/` nor `design/ios26-canvas/` has a folder panel. It uses the existing routed BottomSheet, theme colours and chip patterns, with the contract's owner/member/link copy. The flag-off snapshot bundle block is preserved byte for byte from `10393e3`. Light/dark iOS and Android keyboard screenshots remain open: COMMON.md forbids simulator/device/Maestro execution in this lane; the lead's release rung owns that evidence. C1 native constructors and C2 tree/resolver interfaces are marked mocks in unit tests until merged; no JS cryptography substitutes for them.

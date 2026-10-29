@@ -1,0 +1,39 @@
+# Task 1919, by COUNTRY since task 2050 — Settings > Data residency is
+# API-driven: "Europe" (the default, any of our European data centers), live
+# countries, coming-soon countries, and the off-by-default "Only store in
+# <country>" switch.
+# Precondition: signed in and unlocked against a LOCAL API that runs server
+# task 2050: GET /api/v1/storage-regions lists europe, de, fi (live) and nl
+# (coming soon). Pass -e EVIDENCE_DIR=/abs/path (see 1428-unlock-screen.yaml).
+# Starts from the running app (no launchApp) so a Metro target set with
+# `simctl launch ... --initialUrl` is kept.
+appId: io.beebeeb.app
+---
+- tapOn: "Settings"
+- scrollUntilVisible:
+    element: "Data residency"
+    direction: DOWN
+    timeout: 30000
+- scrollUntilVisible:
+    element: "Netherlands, coming soon"
+    direction: DOWN
+    timeout: 10000
+- assertVisible: "Europe, Any of our European data centers.*"
+- assertVisible: "OR CHOOSE A COUNTRY"
+- assertVisible: "Germany.*"
+- assertVisible: "Finland.*"
+- assertVisible: "Netherlands, coming soon"
+# No city, anywhere on the screen.
+- assertNotVisible: ".*(Falkenstein|Helsinki|Nuremberg|Ede).*"
+# A coming-soon row is not selectable: tapping it must not move the checkmark.
+- tapOn: "Netherlands, coming soon"
+- assertVisible: "Europe, Any of our European data centers.*selected"
+# Pin to Germany: the strict switch appears, off by default.
+- tapOn: "Germany"
+- assertVisible: "Only store in Germany"
+- assertVisible: "Off by default. If Germany cannot take a new file, the upload stops instead of going to another EU country."
+- takeScreenshot: "${EVIDENCE_DIR}/2050-data-residency-germany"
+# Back to Europe: the strict switch is gone.
+- tapOn: "Europe, Any of our European data centers.*"
+- assertNotVisible: "Only store in Germany"
+- takeScreenshot: "${EVIDENCE_DIR}/2050-data-residency-choice"

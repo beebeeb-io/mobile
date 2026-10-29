@@ -60,6 +60,14 @@ export const colors = {
   black: '#000000',
 } as const;
 
+/**
+ * Text/icon colour ON an amber fill, in BOTH themes (task 1591). Amber is the
+ * same in light and dark, so the ink on it must not flip with the theme:
+ * `c.ink` in the dark theme is near-white (#e8e6e3), which on amber is
+ * ~1.6:1 — unreadable. This is the light theme's ink (#2a2520), ~9:1 on amber.
+ */
+export const onAmber = '#2a2520';
+
 export type Colors = {
   paper: string;
   paper2: string;

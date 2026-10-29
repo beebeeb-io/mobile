@@ -10,6 +10,8 @@
  */
 
 import BeebeebCryptoModule, { isNativeAvailable as nativeFlag } from './BeebeebCryptoModule'
+// Task 1746: onboarding (password policy, breach check, signup ceremony) over UniFFI.
+export * from './BeebeebOnboarding'
 import { requireOptionalNativeModule } from 'expo-modules-core'
 
 // ─── Thumbnail worker pool types (declared early for use in module type below) ─
@@ -47,6 +49,8 @@ const BeebeebThumbnailsModule = requireOptionalNativeModule<{
   clearQueueOnSignOut(): Promise<void>
 }>('ThumbnailService')
 import type {
+  SharedKeyEntry,
+  FolderLinkMint,
   ConstellationFrame,
   ConstellationSessionInit,
   EncryptedData,
@@ -94,6 +98,21 @@ export interface PlaintextStorageAuditRow {
 }
 
 /**
+ * Task 2237c L7d: the "a shared-folder custody set was stored here" marker, in no-backup storage the cache
+ * clear and the sign-out sweep never touch (iOS Application Support excluded from backup; Android
+ * noBackupFilesDir). Both throw when this build lacks the native function: the custody memory fails closed.
+ */
+export async function custodyMarkerExists(): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.custodyMarkerExists !== 'function') throw new Error('The custody marker is not available in this build')
+  return (await BeebeebCryptoModule.custodyMarkerExists()) as boolean
+}
+
+export async function writeCustodyMarker(): Promise<void> {
+  if (typeof BeebeebCryptoModule.writeCustodyMarker !== 'function') throw new Error('The custody marker is not available in this build')
+  await BeebeebCryptoModule.writeCustodyMarker()
+}
+
+/**
  * Apply exclude-from-backup + file protection to every registered path.
  * Idempotent and cheap (~15 stat calls). No-op off iOS.
  */
@@ -119,6 +138,12 @@ export async function auditPlaintextStorage(): Promise<PlaintextStorageAuditRow[
 export interface PlaintextStoragePurgeResult {
   removed: number
   failed: number
+  /**
+   * Task 1667 round 2 (iOS): 1 when the camera-roll backup manifest could not
+   * be emptied in place. The file was KEPT (the JS handle is still open on
+   * it); the caller closes that handle and calls `finishBackupManifestPurge`.
+   */
+  backupManifestResetFailed?: number
 }
 
 /**
@@ -128,15 +153,48 @@ export interface PlaintextStoragePurgeResult {
  * must not leave one user's decrypted thumbnails/names/caches on disk for
  * whoever signs in next on the same device (the exact gap 0300's own audit
  * registry exists to close). Never throws; a purge failure must not block
- * sign-out. No-op off iOS.
+ * sign-out.
+ *
+ * PLATFORM CONTRACT (task 1683d, ora-2 ruling): this drives the NATIVE
+ * registry purge, which is iOS-only work — on Android it reports
+ * `{removed: 0, failed: 0}` **by design**: `allowBackup="false"` keeps the
+ * whole internal subtree out of backups (there is no protection-class to
+ * apply), and the JS sweep (`account-cleanup.ts` → `purgeCachesPlaintext` +
+ * `clearPersistedOfflineState`) IS the Android purge surface. The two
+ * platforms' counts compose additively in `purgeAllPlaintextCaches`.
  */
-export async function purgePlaintextStorage(): Promise<PlaintextStoragePurgeResult> {
+/**
+ * Task 1667 round 9 (Codex P1 "Delete retained marks during permanent account
+ * deletion"): what the purge is for. `'sign-out'` keeps the outgoing account's
+ * not-yet-marked camera-roll uploads as pending marks for its next sign-in on
+ * this device; `'account-deleted'` keeps nothing of the deleted account and
+ * deletes its pending marks (native `ManifestPurgeMode`).
+ */
+export type StoragePurgeMode = 'sign-out' | 'account-deleted'
+
+export interface PlaintextStoragePurgeOptions {
+  mode?: StoragePurgeMode
+  /** Accounts deleted permanently (added to the native engine's outgoing account). */
+  deletedAccountIds?: string[]
+}
+
+/**
+ * Task 1667 round 11 (review finding 4): a native purge that REJECTS
+ * propagates. This wrapper used to turn any rejection into
+ * `{removed: 0, failed: 0}`, so `account-cleanup.ts`'s failed path (a throwing
+ * native purge counts as `failed: 1`, round 7) never ran in production and a
+ * sign-out whose registry sweep and manifest reset never ran reported a clean
+ * purge. Only a native module WITHOUT the function (Android, see the platform
+ * contract above) answers `{removed: 0, failed: 0}`.
+ */
+export async function purgePlaintextStorage(
+  options: PlaintextStoragePurgeOptions = {},
+): Promise<PlaintextStoragePurgeResult> {
   if (typeof BeebeebCryptoModule.purgePlaintextStorage !== 'function') return { removed: 0, failed: 0 }
-  try {
-    return (await BeebeebCryptoModule.purgePlaintextStorage()) as PlaintextStoragePurgeResult
-  } catch {
-    return { removed: 0, failed: 0 }
-  }
+  return (await BeebeebCryptoModule.purgePlaintextStorage(
+    options.mode ?? 'sign-out',
+    options.deletedAccountIds ?? [],
+  )) as PlaintextStoragePurgeResult
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -573,6 +631,31 @@ export async function handleEncryptChunk(
 }
 
 /**
+ * Read a name that was encrypted under a file key the app already holds but did
+ * NOT derive from its own master key — a received share's key, unwrapped from
+ * the sender's wrap (task 2263). Delegates to core's
+ * `FileKeyHandle::decrypt_name_metadata`: the name subkey first, then the legacy
+ * raw key, a plaintext legacy name read as itself. The same reader web uses for
+ * the shared-with-me list.
+ *
+ * Throws on a wrong key or a build without the binding; callers show the honest
+ * "Can't show this name" state instead of a placeholder or ciphertext.
+ */
+export async function decryptNameWithKey(
+  fileKey: Uint8Array,
+  nameEncrypted: string,
+): Promise<{ name: string | null; mimeType: string | null }> {
+  if (typeof BeebeebCryptoModule.decryptNameWithKey !== 'function') {
+    throw new Error('decryptNameWithKey is not available in this native build')
+  }
+  const result = await BeebeebCryptoModule.decryptNameWithKey(fileKey, nameEncrypted)
+  return {
+    name: typeof result?.name === 'string' ? result.name : null,
+    mimeType: typeof result?.mimeType === 'string' ? result.mimeType : null,
+  }
+}
+
+/**
  * Decrypt a file chunk using the master key handle.
  */
 export async function handleDecryptChunk(
@@ -687,6 +770,12 @@ export async function handleComputeRecoveryCheck(handleId: number): Promise<Uint
   return coerceBytes(await BeebeebCryptoModule.handleComputeRecoveryCheck(handleId))
 }
 
+/** Clear the app-wide key cache independently of handle reference counts. */
+export async function clearCachedMasterKey(): Promise<void> {
+  if (typeof BeebeebCryptoModule.clearCachedMasterKey !== 'function') return
+  return BeebeebCryptoModule.clearCachedMasterKey()
+}
+
 /**
  * Release a master key handle from native memory. Call this when
  * locking the vault to ensure key material is freed.
@@ -694,6 +783,34 @@ export async function handleComputeRecoveryCheck(handleId: number): Promise<Uint
 export async function releaseHandle(handleId: number): Promise<void> {
   if (typeof BeebeebCryptoModule.releaseHandle !== 'function') return
   return BeebeebCryptoModule.releaseHandle(handleId)
+}
+
+/**
+ * Task 1594 round 4 (F4): confirm that `handleId` — already loaded via
+ * `loadKeyFromKeychainAsHandle`/`createMasterKeyHandle` — is safe to use for
+ * this account. Populates the native, app-wide `BeebeebCryptoBridge` cache
+ * that `NativeBackupEngine` (a background task can run at any time),
+ * `NativeEncryptedBackupUploader`, and `ThumbnailServiceModule` all read
+ * DIRECTLY, bypassing this JS handle entirely — the two `AsyncFunction`s that
+ * load a handle deliberately no longer populate that cache themselves.
+ * Call this ONLY once `crypto-context.tsx`'s own ownership verdict has
+ * accepted the key for the signed-in account — never speculatively at load
+ * time, or those native readers could use a key the verdict is still in the
+ * middle of rejecting. A build with no native implementation (or a mocked
+ * test environment) no-ops to `true`, matching every other optional bridge
+ * call in this file.
+ *
+ * Task 1599 followup 3: `ownerId` is the SAME account id the caller's own
+ * ownership verdict just accepted this handle for (`null` for a
+ * session-less signup with nothing to verify against yet). Native records
+ * it alongside the cached handle so a reader with no ownership context of
+ * its own (`NativeBackupEngine`'s background-task cache adoption) can
+ * refuse to adopt a handle whose recorded owner doesn't match its own
+ * `currentAccountId`, instead of trusting "a handle is cached" as proof.
+ */
+export async function confirmMasterKeyHandle(handleId: number, ownerId: string | null): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.confirmMasterKeyHandle !== 'function') return true
+  return BeebeebCryptoModule.confirmMasterKeyHandle(handleId, ownerId)
 }
 
 // ─── Keychain ────────────────────────────────────────────────────────────────
@@ -778,6 +895,27 @@ export async function mirrorSessionToAppGroup(
 export async function mirrorBackupClientSession(sessionId: string | null): Promise<boolean> {
   if (typeof BeebeebCryptoModule.mirrorBackupClientSession !== 'function') return false
   return BeebeebCryptoModule.mirrorBackupClientSession(sessionId)
+}
+
+/**
+ * Task 1594 round 2 (F3/F6). Mirror the vault key's proven owner into the
+ * SHARED keychain so the File Provider / Share Extension can refuse to use a
+ * key that has not been proven to belong to the currently signed-in account.
+ * Called only from `src/lib/key-ownership.ts` (`writeKeyOwner`/`clearKeyOwner`).
+ */
+export async function mirrorKeyOwner(userId: string | null): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.mirrorKeyOwner !== 'function') return false
+  return BeebeebCryptoModule.mirrorKeyOwner(userId)
+}
+
+/**
+ * Task 1594 round 2 (F3/F6). Mirror who is CURRENTLY signed in into the
+ * SHARED keychain, alongside `mirrorKeyOwner`'s value. Called only from
+ * `src/lib/key-ownership.ts` (`mirrorSignedInUserId`).
+ */
+export async function mirrorSessionUserId(userId: string | null): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.mirrorSessionUserId !== 'function') return false
+  return BeebeebCryptoModule.mirrorSessionUserId(userId)
 }
 
 /**
@@ -1030,6 +1168,8 @@ export interface PreviewLoadProgressEvent {
   chunksCompleted?: number
   chunksTotal?: number
   error?: string
+  /** Task 1683j — the event belongs to a streaming session (buffered-% UI). */
+  streaming?: boolean
 }
 
 /**
@@ -1068,7 +1208,14 @@ export async function uploadEncryptedFileNative(
  * JS passes only an opaque master-key handle and receives the output URI.
  */
 export async function downloadAndDecryptFileNative(
-  handleId: number,
+  /**
+   * Task 1683h — nullable: null means the native module resolves the master
+   * key itself (awaiting its internal key-loaded latch). A stale native
+   * build that still declares a non-null Int will fail the argument
+   * conversion, which the caller treats as not-available → the 1683g gated
+   * fallback still protects legacy builds.
+   */
+  handleId: number | null,
   apiUrl: string,
   token: string,
   fileId: string,
@@ -1138,6 +1285,224 @@ export async function downloadAndDecryptFileNative(
   }
 }
 
+export type StreamVideoTerminalStatus =
+  | { stage: 'complete'; event?: PreviewLoadProgressEvent | null }
+  | { stage: 'error'; event?: PreviewLoadProgressEvent | null; error: string }
+  | { stage: 'cancelled'; event?: PreviewLoadProgressEvent | null }
+
+export interface StreamVideoNativeResult {
+  /** The loopback URI the player reads (the streaming engine's range server). */
+  streamUri: string
+  /** Where the final plaintext lands (the preview-cache copy) on completion. */
+  outputUri: string
+  outputPath: string
+  plaintextSize: number
+  chunkCount: number
+  streamId: string
+  /** JS-generated request id used by progress polling and legacy cancellation. */
+  requestId: string
+  /** Cancels the native stream pump/range server. Idempotent. */
+  cancel: () => Promise<void>
+  /** Resolves when the native stream reaches complete/error/teardown or is cancelled. */
+  terminal: Promise<void>
+  /** Non-rejecting terminal outcome; consumers use this to avoid joining failed loopback routes. */
+  terminalStatus: Promise<StreamVideoTerminalStatus>
+}
+
+/** Progress-poll cadence — matches downloadAndDecryptFileNative's 200 ms. */
+const POLL_INTERVAL_MS = 200
+
+/**
+ * True when this native build carries the 1683j streaming engine (Android
+ * today; the iOS port is recorded in the task file as future work).
+ */
+export function isStreamVideoNativeAvailable(): boolean {
+  return typeof BeebeebCryptoModule.streamVideoNative === 'function'
+}
+
+/**
+ * Task 1683j — chunked streaming video playback: native fetches the vault's
+ * per-chunk AEAD frames, decrypts ahead of the playhead (tail-first, so the
+ * MP4 moov parse is unblocked), and serves the decrypted output to ExoPlayer
+ * over a loopback range server. The promise resolves once the head is
+ * PLAYABLE (chunk 0 + the last chunk decrypted) with the stream URI; the
+ * pump keeps filling in the background and the final plaintext lands at
+ * `outputPath` (the preview-cache copy) on completion.
+ *
+ * Progress: the same `getPreviewLoadProgress(requestId)` snapshots as the
+ * whole-file path — the streaming session's `decrypting` events carry
+ * `streaming: true`, which the UI maps to "Streaming · N% buffered". The
+ * poll deliberately OUTLIVES the promise: the session keeps decrypting after
+ * playback started, and the poll ends only when the snapshot hits a terminal
+ * stage, VANISHES (the session's teardown clears the registry — the reliable
+ * completion signal after a long playback), or the caller aborts.
+ *
+ * Cancel: iOS builds may expose `cancelVideoStreamNative(streamId)` for the
+ * stream server. Older Android builds hook into the existing
+ * `cancelDownloadAndDecryptFileNative(requestId)` surface, so JS keeps both.
+ */
+export async function streamVideoNative(
+  handleId: number | null,
+  apiUrl: string,
+  token: string,
+  fileId: string,
+  outputUri: string,
+  sizeBytes: number | null,
+  chunkCount: number | null,
+  options: { onProgress?: (event: PreviewLoadProgressEvent) => void; signal?: AbortSignal } = {},
+): Promise<StreamVideoNativeResult> {
+  if (typeof BeebeebCryptoModule.streamVideoNative !== 'function') {
+    throw new Error('streamVideoNative is not available in this native build')
+  }
+
+  const requestId = `stream-${fileId}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  let streamId: string | null = null
+  let terminalResolve!: () => void
+  let terminalStatusResolve!: (status: StreamVideoTerminalStatus) => void
+  const terminal = new Promise<void>((resolve) => { terminalResolve = resolve })
+  const terminalStatus = new Promise<StreamVideoTerminalStatus>((resolve) => { terminalStatusResolve = resolve })
+  let lastTerminalEvent: PreviewLoadProgressEvent | null = null
+  const readSnapshot = (): PreviewLoadProgressEvent | null => {
+    const ev = BeebeebCryptoModule.getPreviewLoadProgress?.(requestId)
+    return ev && ev.requestId === requestId ? (ev as PreviewLoadProgressEvent) : null
+  }
+  const cancelNativeOnly = async () => {
+    if (streamId && typeof BeebeebCryptoModule.cancelVideoStreamNative === 'function') {
+      await BeebeebCryptoModule.cancelVideoStreamNative(streamId).catch(() => {})
+      return
+    }
+    if (typeof BeebeebCryptoModule.cancelDownloadAndDecryptFileNative === 'function') {
+      await BeebeebCryptoModule.cancelDownloadAndDecryptFileNative(requestId).catch(() => {})
+    }
+  }
+
+  // Long-lived progress pump (see doc comment): stops on a terminal stage,
+  // on the snapshot vanishing (session teardown), on abort, or at a 2 h
+  // safety cap.
+  let lastKey = ''
+  let lastSeenStage: string | null = null
+  let pollFinished = false
+  let terminalFinished = false
+  let cancelTerminalPending = false
+  let poll: ReturnType<typeof setInterval> | null = null
+  const stopPoll = () => {
+    if (poll) {
+      clearInterval(poll)
+      poll = null
+    }
+  }
+  const statusFromEvent = (event: PreviewLoadProgressEvent | null): StreamVideoTerminalStatus => {
+    if (event?.stage === 'error') {
+      return { stage: 'error', event, error: event.error || 'Video stream failed.' }
+    }
+    return { stage: 'complete', event }
+  }
+  const finishTerminal = (synthetic?: PreviewLoadProgressEvent, status?: StreamVideoTerminalStatus) => {
+    if (terminalFinished) return
+    terminalFinished = true
+    pollFinished = true
+    stopPoll()
+    options.signal?.removeEventListener('abort', abortListener)
+    if (synthetic) {
+      lastTerminalEvent = synthetic
+      options.onProgress?.(synthetic)
+    }
+    terminalStatusResolve(status ?? statusFromEvent(lastTerminalEvent))
+    terminalResolve()
+  }
+  const stopPollingForCancel = () => {
+    if (pollFinished) return
+    pollFinished = true
+    stopPoll()
+    options.signal?.removeEventListener('abort', abortListener)
+  }
+  const cancelAndFinishTerminal = async () => {
+    if (terminalFinished) return
+    cancelTerminalPending = true
+    stopPollingForCancel()
+    await cancelNativeOnly()
+    finishTerminal(undefined, { stage: 'cancelled', event: lastTerminalEvent })
+  }
+  const forward = (ev: PreviewLoadProgressEvent) => {
+    const k = ev.stage + ':' + (ev.chunksCompleted ?? ev.bytesDownloaded ?? '')
+    if (k !== lastKey) {
+      lastKey = k
+      options.onProgress?.(ev)
+    }
+  }
+  poll = setInterval(() => {
+    if (pollFinished) return
+    const ev = readSnapshot()
+    if (!ev) {
+      // Snapshot gone: the session's terminal cleanup cleared the registry.
+      // Surface a synthetic completion (unless we saw an error) so the UI's
+      // buffered badge retires, then stop.
+      if (lastSeenStage && lastSeenStage !== 'error') {
+        finishTerminal({ requestId, fileId, stage: 'complete' })
+      }
+      return
+    }
+    lastSeenStage = ev.stage
+    forward(ev)
+    if (ev.stage === 'complete' || ev.stage === 'error') {
+      lastTerminalEvent = ev
+      finishTerminal()
+    }
+  }, POLL_INTERVAL_MS)
+
+  const abortListener = () => {
+    void cancelAndFinishTerminal()
+  }
+  if (options.signal?.aborted) {
+    abortListener()
+    throw abortError()
+  }
+  options.signal?.addEventListener('abort', abortListener, { once: true })
+
+  try {
+    const result = (await BeebeebCryptoModule.streamVideoNative({
+      requestId,
+      handleId,
+      apiUrl,
+      token,
+      fileId,
+      outputUri,
+      sizeBytes: sizeBytes ?? null,
+      chunkCount: chunkCount ?? null,
+    })) as StreamVideoNativeResult
+    streamId = result.streamId
+    return {
+      ...result,
+      requestId,
+      cancel: cancelAndFinishTerminal,
+      terminal,
+      terminalStatus,
+    }
+  } catch (error) {
+    if (options.signal?.aborted) {
+      throw abortError()
+    }
+    throw error
+  } finally {
+    // The native call settled: forward the last snapshot (a pre-playable
+    // failure's error event, if any), and stop the poll ONLY on failure —
+    // a resolved stream keeps pumping after playback started, so the poll
+    // stays alive until its own terminal rule fires.
+    const finalEv = readSnapshot()
+    let finalStatus: StreamVideoTerminalStatus | undefined
+    if (finalEv) {
+      options.onProgress?.(finalEv)
+      if (finalEv.stage === 'complete' || finalEv.stage === 'error') {
+        lastTerminalEvent = finalEv
+        finalStatus = statusFromEvent(finalEv)
+      }
+    }
+    if (!cancelTerminalPending && !(finalEv && finalEv.stage === 'decrypting' && finalEv.streaming === true)) {
+      finishTerminal(undefined, finalStatus)
+    }
+  }
+}
+
 // ─── Backup management ──────────────────────────────────────────────────────
 
 export interface NativeBackupProgress {
@@ -1152,6 +1517,68 @@ export interface NativeBackupProgress {
   state?: string
   reason?: string
   lastBackupAt: string | null
+  /**
+   * Task 1599 followup 2 — a STICKY signal, distinct from `reason` above
+   * (which is recomputed fresh from live counters on every poll): set once
+   * the native engine confirms a 409 `account_mismatch` on an authenticated
+   * upload mutation (the session no longer matches the account the loaded
+   * master key is bound to) and cleared only by a fresh, JS-confirmed
+   * sign-in. `null`/undefined when nothing stopped the engine for this
+   * reason.
+   */
+  accountMismatchReason?: string | null
+  /**
+   * Task 1599 followups round 3 (P1) — a monotonic counter, incremented
+   * every time native sets a NEW `accountMismatchReason` (never reset). JS
+   * uses this to tell "this reason was raised during MY session" apart from
+   * "this reason is a leftover from before I started polling" — see
+   * `backup-context.tsx`'s `reduceAccountMismatchPoll` for the sign-in
+   * lockout loop this guards against. `undefined` on a build predating this
+   * field; treated as `0`.
+   */
+  accountMismatchGeneration?: number
+  /**
+   * Task 1599 followups round 3 (P2) — set when `NativeBackupEngine.start()`
+   * refuses to even attempt loading the master key because its OWN local
+   * ownership check (cached-handle owner, or the shared keychain "proven
+   * vault key owner" mirror) does not confirm the signed-in account. Unlike
+   * `accountMismatchReason` above (server-confirmed, via a 409), this never
+   * involves a network round-trip — purely local. The honest message to
+   * show; `null`/undefined when nothing is refusing to start for this
+   * reason.
+   */
+  ownerUnconfirmedReason?: string | null
+  /**
+   * Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0) — set when the
+   * server confirmed (on a request the native engine itself sent) that
+   * this account cannot store data right now for a BILLING reason: a
+   * never-paid mandated trial cancelled before its first charge, a lapsed
+   * trial/plan, no plan at all, or the 25 GB trial cap. Unlike
+   * `accountMismatchReason` above (the SESSION doesn't match the account —
+   * ends it) this IS the right account, so it never ends the JS session;
+   * like `ownerUnconfirmedReason` it is purely informational. Cleared by
+   * native itself on the next successful `start()` call (native's own
+   * `accountRefusalStopReason` doc comment). The honest message to show;
+   * `null`/undefined when nothing is refusing to upload for this reason.
+   */
+  accountRefusalReason?: string | null
+  /**
+   * Task 1667 round 6 — set when the native engine refused to start because
+   * it could not open (or empty) the camera-roll backup manifest; it retries
+   * on its own (2, 4, 8, 16, then every 30 s) and clears this on the first
+   * open that works, on stop and on sign-out. The honest message to show;
+   * `null`/undefined otherwise.
+   */
+  manifestUnavailableReason?: string | null
+  /**
+   * Task 1667 round 12 — set while camera-roll uploads are paused on the
+   * server check: the server cannot say which photos this device already
+   * backed up (no `backed_up`, task 2036), the check failed, or the device id
+   * is not available yet. Native retries on its own and clears it on the next
+   * check that answers, on stop and on sign-out. The honest message to show;
+   * `null`/undefined otherwise.
+   */
+  serverCheckPausedReason?: string | null
 }
 
 export type NativeBackupDiagnostics = Record<string, unknown>
@@ -1227,6 +1654,79 @@ export async function getPhotoBackupIncludeVideos(): Promise<boolean> {
 export async function setPhotoBackupIncludeVideos(includeVideos: boolean): Promise<boolean> {
   if (typeof BeebeebCryptoModule.setPhotoBackupIncludeVideos !== 'function') return false
   return BeebeebCryptoModule.setPhotoBackupIncludeVideos(includeVideos)
+}
+
+/**
+ * Task 1667: hand the canonical device id (`getDeviceId()`) to the native
+ * engine, which sends it as `X-Beebeeb-Device-Id` when it records completed
+ * uploads in the server's per-device photo-backup map and when it rebuilds an
+ * empty manifest from that map. Call before `enablePhotoBackup`. Resolves
+ * false on a native build without it.
+ */
+export async function setBackupDeviceId(
+  deviceId: string,
+  options: { persisted: boolean } = { persisted: false },
+): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.setBackupDeviceId !== 'function') return false
+  // Task 1667 round 13 (review item 1): native replaces an existing,
+  // DIFFERENT id only when this says the id is durable (read from, or
+  // persisted to, secure storage). Resolves native's verdict: false when it
+  // refused (it logs why) or on a build without the function.
+  const accepted = await BeebeebCryptoModule.setBackupDeviceId(deviceId, options.persisted)
+  return accepted !== false
+}
+
+/**
+ * Task 1667 round 2: second half of a sign-out whose native in-place reset of
+ * the backup manifest failed (`purgePlaintextStorage()` reported
+ * `backupManifestResetFailed`). Call only after the JS expo-sqlite handle on
+ * the manifest is closed; `allowUnlink` = that close succeeded. Resolves
+ * `{ ok: 0, unlinked: 0 }` on a native build without it. Round 6: `reopened`
+ * 1 = the native engine's handle is open again on the resulting file.
+ */
+export async function finishBackupManifestPurge(
+  allowUnlink: boolean,
+): Promise<{ ok: number; unlinked: number; reopened?: number }> {
+  if (typeof BeebeebCryptoModule.finishBackupManifestPurge !== 'function') return { ok: 0, unlinked: 0 }
+  return (await BeebeebCryptoModule.finishBackupManifestPurge(allowUnlink)) as {
+    ok: number
+    unlinked: number
+    reopened?: number
+  }
+}
+
+/**
+ * Task 1667 round 10: the native gate before EVERY JS (expo-sqlite) open of
+ * the backup manifest (`BackupDatabase.openAndMigrate`). `priorHandlesClosed`
+ * = JS holds no connection on the file right now. `ok` 1: JS may open (no
+ * sign-out reset is pending; one still pending was applied natively first).
+ * `ok` 0: JS must not open now; `reason` is the native `OpenFailure`.
+ * Resolves `{ ok: 1, reason: 'no_native_manifest' }` on a native build
+ * without it: no native engine owns the file there (Android), so no native
+ * reset can be pending on it.
+ */
+export async function admitBackupManifestJsOpen(
+  priorHandlesClosed: boolean,
+): Promise<{ ok: number; reason: string | null }> {
+  if (typeof BeebeebCryptoModule.admitBackupManifestJsOpen !== 'function') {
+    return { ok: 1, reason: 'no_native_manifest' }
+  }
+  const r = (await BeebeebCryptoModule.admitBackupManifestJsOpen(priorHandlesClosed)) as {
+    ok: number
+    reason?: string | null
+  }
+  return { ok: r.ok, reason: r.reason ?? null }
+}
+
+/**
+ * Task 1667 round 2: mark every completed camera-roll upload the server's
+ * per-device map does not know yet, while the session still works. Call from
+ * sign-out BEFORE the session is revoked. Bounded natively (~8 s); what is
+ * left is kept for that account's next sign-in on this device.
+ */
+export async function flushBackupServerMarksForSignOut(): Promise<{ candidates: number; marked: number }> {
+  if (typeof BeebeebCryptoModule.flushBackupServerMarksForSignOut !== 'function') return { candidates: 0, marked: 0 }
+  return (await BeebeebCryptoModule.flushBackupServerMarksForSignOut()) as { candidates: number; marked: number }
 }
 
 /**
@@ -1401,6 +1901,54 @@ export const decryptContiguousToFile:
   typeof BeebeebCryptoModule.decryptContiguousToFile === 'function'
     ? (fileKey, body, chunkSize, outputPath) =>
         BeebeebCryptoModule.decryptContiguousToFile(fileKey, body, chunkSize, outputPath) as Promise<number>
+    : undefined
+
+/**
+ * Stream-decrypt a LOCAL offline ciphertext file to a plaintext output file
+ * without ever buffering the whole blob in the JS heap (task 1683d — the
+ * offline open path's whole-file base64 read/write was the 1683 OOM class at
+ * >100 MB). Kotlin reads the encrypted file from disk with the 1683b
+ * chunk-window loop, decrypts chunk-wise and renames a `.tmp` output into
+ * place; progress/cancel ride the preview-download surface
+ * (`getPreviewLoadProgress` / `cancelDownloadAndDecryptFileNative`).
+ *
+ * Module-load-time conditional export: `undefined` when the native build
+ * predates the function — callers fall through to the legacy JS path.
+ */
+export const decryptLocalFileNative:
+  | ((params: {
+      fileKey: Uint8Array
+      inputUri: string
+      outputUri: string
+      chunkSizeBytes: number
+      chunkCount: number
+      originalSize: number
+      requestId: string
+      fileId?: string
+      signal?: AbortSignal
+    }) => Promise<{ outputPath: string; outputUri: string; plaintextSize: number; chunksDecrypted: number }>)
+  | undefined =
+  typeof BeebeebCryptoModule.decryptLocalFileNative === 'function'
+    ? async (params) => {
+        // Signal → the existing preview-download cancel surface (the Kotlin
+        // side stores the decrypt under the same requestId registry).
+        const abortListener = () => {
+          if (typeof BeebeebCryptoModule.cancelDownloadAndDecryptFileNative === 'function') {
+            void BeebeebCryptoModule.cancelDownloadAndDecryptFileNative(params.requestId).catch(() => {})
+          }
+        }
+        params.signal?.addEventListener('abort', abortListener, { once: true })
+        try {
+          return (await BeebeebCryptoModule.decryptLocalFileNative(params)) as {
+            outputPath: string
+            outputUri: string
+            plaintextSize: number
+            chunksDecrypted: number
+          }
+        } finally {
+          params.signal?.removeEventListener('abort', abortListener)
+        }
+      }
     : undefined
 
 /** Returns a debug-only native backup diagnostic snapshot. */
@@ -1773,3 +2321,59 @@ function uploadAbortError(): Error {
   error.name = 'AbortError'
   return error
 }
+
+// Keep this list complete: older native builds must never partially enable sharing.
+const sharedKeyNativeNames = [
+  'sharedFolderOpenOwnerKey', 'sharedFolderGenerate', 'sharedFolderRelease', 'sharedFileKeysLoad',
+  'sharedFileKeyOpenOwnerWrap', 'sharedFileKeyIsLoaded', 'sharedWrapChildKeys', 'sharedAdoptWrap',
+  'sharedFolderEncryptName', 'sharedFolderDecryptName', 'folderLinkMint', 'folderLinkRecoverKc', 'sharedKeysClear',
+] as const
+
+export function isSharedKeysNativeReady(): boolean {
+  return nativeFlag && sharedKeyNativeNames.every(name => typeof BeebeebCryptoModule[name] === 'function')
+}
+export async function sharedFolderOpenOwnerKey(masterHandleId: number, folderId: string, ownerWrapped: Uint8Array): Promise<number> {
+  return BeebeebCryptoModule.sharedFolderOpenOwnerKey(masterHandleId, folderId, ownerWrapped)
+}
+export async function sharedFolderGenerate(masterHandleId: number, folderId: string): Promise<{ handleId: number; ownerWrapped: Uint8Array }> {
+  const result = await BeebeebCryptoModule.sharedFolderGenerate(masterHandleId, folderId)
+  return { handleId: result.handleId, ownerWrapped: coerceBytes(result.ownerWrapped) }
+}
+export async function sharedFolderRelease(folderHandleId: number): Promise<void> {
+  await BeebeebCryptoModule.sharedFolderRelease(folderHandleId)
+}
+export async function sharedFileKeysLoad(masterHandleId: number, folderHandleId: number, entries: SharedKeyEntry[]): Promise<{ loaded: string[]; failed: string[] }> {
+  return BeebeebCryptoModule.sharedFileKeysLoad(masterHandleId, folderHandleId,
+    entries.map(entry => ({ fileId: entry.fileId, kind: entry.kind, wrapped: Array.from(entry.wrapped) })))
+}
+export async function sharedFileKeyOpenOwnerWrap(masterHandleId: number, fileId: string, ownerWrapped: Uint8Array): Promise<boolean> {
+  return BeebeebCryptoModule.sharedFileKeyOpenOwnerWrap(masterHandleId, fileId, ownerWrapped)
+}
+export function sharedFileKeyIsLoaded(fileId: string): boolean {
+  return BeebeebCryptoModule.sharedFileKeyIsLoaded(fileId)
+}
+export async function sharedWrapChildKeys(masterHandleId: number, folderHandleId: number, fileIds: string[], kind: 1 | 2 = 1): Promise<SharedKeyEntry[]> {
+  const rows = await BeebeebCryptoModule.sharedWrapChildKeys(masterHandleId, folderHandleId, fileIds, kind)
+  return rows.map((row: { fileId: string; wrapped: Uint8Array | string; kind: 1 | 2 }) => ({ fileId: row.fileId, kind: row.kind, wrapped: coerceBytes(row.wrapped) }))
+}
+export async function sharedAdoptWrap(masterHandleId: number, fileId: string): Promise<Uint8Array> {
+  return coerceBytes(await BeebeebCryptoModule.sharedAdoptWrap(masterHandleId, fileId))
+}
+export async function sharedFolderEncryptName(folderHandleId: number, text: string): Promise<string> {
+  return BeebeebCryptoModule.sharedFolderEncryptName(folderHandleId, text)
+}
+export async function sharedFolderDecryptName(folderHandleId: number, envelope: string): Promise<string | null> {
+  return BeebeebCryptoModule.sharedFolderDecryptName(folderHandleId, envelope)
+}
+/** L6: callers allocate the canonical share UUID before minting these wraps. */
+export async function folderLinkMint(masterHandleId: number, folderHandleId: number, token: string, passphrase: string | null, shareId: string): Promise<FolderLinkMint> {
+  if (!shareId) throw new Error('A share id is required for owner recovery')
+  const result = await BeebeebCryptoModule.folderLinkMint(masterHandleId, folderHandleId, token, passphrase, shareId)
+  return { kc: result.kc, wrappedFolderKey: coerceBytes(result.wrappedFolderKey),
+    ownerWrappedKey: coerceBytes(result.ownerWrappedKey), ownerWrappedToken: coerceBytes(result.ownerWrappedToken) }
+}
+export async function folderLinkRecoverKc(masterHandleId: number, folderHandleId: number, ownerWrappedKey: Uint8Array, shareId: string): Promise<string | null> {
+  if (!shareId) throw new Error('A share id is required for owner recovery')
+  return BeebeebCryptoModule.folderLinkRecoverKc(masterHandleId, folderHandleId, ownerWrappedKey, shareId)
+}
+export async function sharedKeysClear(): Promise<void> { await BeebeebCryptoModule.sharedKeysClear() }

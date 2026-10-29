@@ -1,13 +1,19 @@
 import Foundation
 
-// File-scope reference to the UniFFI free function to avoid name collisions.
-fileprivate let _decryptName: (Data, String, String) throws -> String = decryptName(masterKey:fileId:nameEncrypted:)
-
 /// Fetches top-level folders from the Beebeeb API for the folder picker.
 ///
-/// With BeebeebCore.xcframework linked, folder names are decrypted using the
-/// master key from the shared keychain. Falls back to "Folder 1", "Folder 2"
-/// if the key is unavailable or decryption fails.
+/// Folder names are decrypted via the SAME core path the main app
+/// (`src/lib/api.ts` + its crypto layer) and the File Provider extension
+/// (`targets/file-provider/CryptoBridge.swift`'s `decryptNameWithMime`) use:
+/// `MasterKeyHandle.decryptNameWithMime(fileId:nameEncrypted:)` — the
+/// per-handle UniFFI method, not the raw-`Data` free function. Task 1671
+/// (Issue 2a): `ShareViewController` used to construct this fetcher WITHOUT
+/// ever passing its loaded key, so `masterKey` was always `nil` and every
+/// folder fell back to "Folder N" — a hard project rule violation ("all
+/// crypto in core Rust, never per-client") was never actually at risk here;
+/// the bug was simpler and dumber: the key just never made it into this
+/// class. Falls back to "Folder N" only when decryption genuinely fails for
+/// that one row (never as the default state).
 final class FolderFetcher {
 
     struct Folder {
@@ -35,9 +41,14 @@ final class FolderFetcher {
 
     private let apiUrl: String
     private let sessionToken: String
-    private let masterKey: Data?
+    /// Key-hygiene (matches `ShareUploader`'s own doc comment): the opaque
+    /// handle, never raw key bytes. `nil` only when the caller genuinely has
+    /// no key yet — `ShareViewController.performSetup()` already refuses the
+    /// whole share before reaching the folder fetch in that case, so in
+    /// practice this is always set.
+    private let masterKey: MasterKeyHandle?
 
-    init(sessionToken: String, apiUrl: String, masterKey: Data? = nil) {
+    init(sessionToken: String, apiUrl: String, masterKey: MasterKeyHandle? = nil) {
         self.sessionToken = sessionToken
         self.apiUrl = apiUrl
         self.masterKey = masterKey
@@ -91,11 +102,19 @@ final class FolderFetcher {
 
             // Attempt to decrypt the folder name if master key is available
             var displayName = "Folder \(index)"
-            if let mk = masterKey, !nameEncrypted.isEmpty {
+            if !nameEncrypted.isEmpty && !nameEncrypted.hasPrefix("{") {
+                // Not an encrypted envelope: same passthrough as the File
+                // Provider's `CryptoBridge.decryptNameWithMime`.
+                displayName = nameEncrypted
+            } else if let mk = masterKey, !nameEncrypted.isEmpty {
                 do {
-                    displayName = try _decryptName(mk, id, nameEncrypted)
+                    displayName = try mk.decryptNameWithMime(fileId: id, nameEncrypted: nameEncrypted).name
                 } catch {
-                    // Decryption failed — use fallback name
+                    // Decryption failed — use fallback name. Not expected in
+                    // practice (see the class doc comment): this now only
+                    // fires for a genuinely malformed/foreign-key row, not as
+                    // the default state for every folder.
+                    NSLog("[Beebeeb] FolderFetcher: decrypt name failed for folder \(id): \(error)")
                 }
             }
 

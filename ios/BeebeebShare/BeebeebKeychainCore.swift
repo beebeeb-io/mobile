@@ -10,7 +10,7 @@ import Security
 ///     writes (store/delete/access-control/string-storage). Uses
 ///     `BeebeebKeychainCore` for shared constants and read helpers.
 ///   - `targets/file-provider/BeebeebKeychainCore.swift` — symlink to this
-///     file. File Provider extension reads with `mode: .extensionOnly`.
+///     file. File Provider extension reads with `mode: .fileProviderOnly`.
 ///   - `targets/share-extension/BeebeebKeychainCore.swift` — symlink to this
 ///     file. Share Extension reads with `mode: .extensionThenPrimary`.
 ///
@@ -33,6 +33,12 @@ enum BeebeebKeychainCore {
         case writeFailed(OSStatus)
         case decryptFailed
         case seKeyNotFound
+        /// Task 1722 (G3): the Files-only key could not be used. `step` names
+        /// the failing call (`se_key_lookup`, `wrapped_blob_lookup`, `unwrap`);
+        /// `domain` + `code` are its Security `OSStatus` or the unwrap
+        /// CFError's domain and code. Safe to log by construction: no key
+        /// bytes, labels, names or user data.
+        case fileProviderKeyUnavailable(step: String, domain: String, code: Int)
     }
 
     /// Typed outcome for a primary-key biometric/passcode evaluation or the
@@ -103,8 +109,11 @@ enum BeebeebKeychainCore {
         /// — Files.app and the share sheet can't surface a clean prompt.
         case primaryOnly
         /// Try the extension SE key (`.devicePasscode`, no biometric prompt)
-        /// only. File Provider uses this exclusively.
+        /// only. Kept for existing background consumers.
         case extensionOnly
+        /// Files runs without an authentication UI. Its separate wrapping
+        /// key requires an unlocked, passcode-equipped device, not a prompt.
+        case fileProviderOnly
         /// Try the extension SE key first; fall back to the primary key if
         /// the extension key is missing. Share Extension uses this so a user
         /// who has never run a backup (no extension key yet) can still
@@ -118,6 +127,18 @@ enum BeebeebKeychainCore {
     static let seKeyTagExt = "io.beebeeb.sekey.ext".data(using: .utf8)!
     static let wrappedKeyService = "io.beebeeb.masterkey"
     static let wrappedKeyServiceExt = "io.beebeeb.masterkey.ext"
+    /// The Files key (task 1722) and its wrapped blob. v2 lives ONLY in
+    /// `filesAccessGroup` (task 1722 round 4, Guus 2026-10-15, Q3: "Yes, own
+    /// keychain group"), which only the app and the File Provider extension
+    /// are entitled to: the Share extension and the widget cannot find it.
+    static let seKeyTagFiles = "io.beebeeb.sekey.files.v2".data(using: .utf8)!
+    static let wrappedKeyServiceFiles = "io.beebeeb.masterkey.files.v2"
+    /// v1 (round-3 builds, never in a TestFlight build) lived in the shared
+    /// `accessGroup`, which the Share extension also has. The app deletes
+    /// these on upgrade (`KeychainManager.syncFileProviderWrappedKey`) and on
+    /// every Files key delete; nothing reads them.
+    static let legacySeKeyTagFilesV1 = "io.beebeeb.sekey.files.v1".data(using: .utf8)!
+    static let legacyWrappedKeyServiceFilesV1 = "io.beebeeb.masterkey.files.v1"
     static let eciesAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 
     /// Fully-qualified keychain access group. Team ID prefix is hardcoded
@@ -127,6 +148,13 @@ enum BeebeebKeychainCore {
     /// Keep all four in sync if the team ID ever changes (task 0428 fixed
     /// the original runtime-probe bug that returned `""` on fresh install).
     static let accessGroup: String? = "R8352WDJJR.io.beebeeb.shared"
+
+    /// Task 1722 round 4 (Q3): the Files key's own keychain access group.
+    /// Entitled to the app (`app.json`, after the shared group so that stays
+    /// the default for adds) and to the File Provider extension
+    /// (`plugins/file-provider/withFileProvider.js`), never to the Share
+    /// extension or the widget. Same team prefix as `accessGroup`.
+    static let filesAccessGroup = "R8352WDJJR.io.beebeeb.files"
 
     // MARK: - Public read API
 
@@ -159,6 +187,11 @@ enum BeebeebKeychainCore {
         authContext: AnyObject?,
         decryptError: inout Unmanaged<CFError>?
     ) -> Data? {
+        if mode == .fileProviderOnly {
+            // Callers that need the reason use `loadMasterKeyThrowing`, which
+            // carries it in `LoadError.fileProviderKeyUnavailable`.
+            return try? loadFileProviderMasterKey(label: label)
+        }
         // Extension SE key path (.devicePasscode, no Face ID prompt)
         if mode != .primaryOnly,
            let extKey = findSEKey(tag: seKeyTagExt),
@@ -193,6 +226,9 @@ enum BeebeebKeychainCore {
     /// up to system frameworks. Distinguishes "no SE key at all" from
     /// "blob missing" so Files.app can show a coherent message.
     static func loadMasterKeyThrowing(label: String, mode: LoadMode) throws -> Data {
+        if mode == .fileProviderOnly {
+            return try loadFileProviderMasterKey(label: label)
+        }
         if let key = loadMasterKey(label: label, mode: mode) {
             return key
         }
@@ -206,7 +242,37 @@ enum BeebeebKeychainCore {
             throw extKeyMissing ? LoadError.seKeyNotFound : LoadError.notFound
         case .extensionThenPrimary:
             throw (extKeyMissing && primaryKeyMissing) ? LoadError.seKeyNotFound : LoadError.notFound
+        case .fileProviderOnly:
+            throw LoadError.notFound
         }
+    }
+
+    /// The File Provider's key load (task 1722 G3). Files runs without an
+    /// authentication UI, so it only ever uses its own wrapping key
+    /// (`seKeyTagFiles` + `wrappedKeyServiceFiles`) and never falls back to the
+    /// primary or shared extension keys. A failure names the step and its
+    /// status (`LoadError.fileProviderKeyUnavailable`) instead of collapsing
+    /// to "not found", so the extension can log why Files cannot decrypt.
+    ///
+    /// Task 1722 round 4 (Q3): both lookups name `filesAccessGroup` and have
+    /// no fallback without a group (a query without one searches every group
+    /// the process has, the shared one included). A Files key anywhere else,
+    /// the round-3 v1 key in the shared group included, is never used.
+    static func loadFileProviderMasterKey(label: String) throws -> Data {
+        let (key, keyStatus) = findSEKeyReportingStatus(tag: seKeyTagFiles, inAccessGroup: filesAccessGroup)
+        guard let key else {
+            throw LoadError.fileProviderKeyUnavailable(step: "se_key_lookup", domain: "OSStatus", code: Int(keyStatus))
+        }
+        let (wrapped, blobStatus) = fetchWrappedBlobReportingStatus(service: wrappedKeyServiceFiles, label: label, inAccessGroup: filesAccessGroup)
+        guard let wrapped else {
+            throw LoadError.fileProviderKeyUnavailable(step: "wrapped_blob_lookup", domain: "OSStatus", code: Int(blobStatus))
+        }
+        var unwrapError: Unmanaged<CFError>?
+        guard let plain = SecKeyCreateDecryptedData(key, eciesAlgorithm, wrapped as CFData, &unwrapError) else {
+            let reason = unwrapError.map { $0.takeRetainedValue() as Error as NSError }
+            throw LoadError.fileProviderKeyUnavailable(step: "unwrap", domain: reason?.domain ?? "none", code: reason?.code ?? 0)
+        }
+        return plain as Data
     }
 
     // MARK: - Lookup helpers (internal so KeychainManager can reuse on the write path)
@@ -220,6 +286,12 @@ enum BeebeebKeychainCore {
     /// `kSecUseAuthenticationContext` (task 0882). The main app passes the
     /// context it evaluated once; extensions pass `nil`.
     static func findSEKey(tag: Data, authContext: AnyObject? = nil) -> SecKey? {
+        findSEKeyReportingStatus(tag: tag, authContext: authContext).key
+    }
+
+    /// `findSEKey` plus the lookup's Security status (task 1722 G3): the
+    /// first status that is not "item not found", else the last one tried.
+    static func findSEKeyReportingStatus(tag: Data, authContext: AnyObject? = nil) -> (key: SecKey?, status: OSStatus) {
         var query: [CFString: Any] = [
             kSecClass: kSecClassKey,
             kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
@@ -233,17 +305,36 @@ enum BeebeebKeychainCore {
         var result: CFTypeRef?
         var status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecSuccess, let obj = result {
-            return unsafeBitCast(obj, to: SecKey.self)
+            return (unsafeBitCast(obj, to: SecKey.self), status)
         }
+        let groupStatus = status
         if accessGroup != nil {
             var legacy = query
             legacy.removeValue(forKey: kSecAttrAccessGroup)
             status = SecItemCopyMatching(legacy as CFDictionary, &result)
             if status == errSecSuccess, let obj = result {
-                return unsafeBitCast(obj, to: SecKey.self)
+                return (unsafeBitCast(obj, to: SecKey.self), status)
             }
         }
-        return nil
+        return (nil, groupStatus != errSecItemNotFound ? groupStatus : status)
+    }
+
+    /// Task 1722 round 4 (Q3): an SE key looked up in `group` only, never
+    /// without a group. A process without the group gets
+    /// errSecMissingEntitlement back, not a key from some other group.
+    static func findSEKeyReportingStatus(tag: Data, inAccessGroup group: String) -> (key: SecKey?, status: OSStatus) {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassKey,
+            kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrApplicationTag: tag,
+            kSecAttrTokenID: kSecAttrTokenIDSecureEnclave,
+            kSecAttrAccessGroup: group,
+            kSecReturnRef: true,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let obj = result else { return (nil, status) }
+        return (unsafeBitCast(obj, to: SecKey.self), status)
     }
 
     // MARK: - Generic string storage (App-Group-shared)
@@ -262,6 +353,58 @@ enum BeebeebKeychainCore {
 
     static let stringStorageService = "io.beebeeb.string-storage"
     static let appGroupSuiteName = "group.io.beebeeb.shared"
+
+    // Task 0447's session token + API base URL, stored through the generic
+    // string API above. Written by the main app only
+    // (`BeebeebCryptoModule.swift` `mirrorSessionToAppGroup`); read here by
+    // every target that links this file (Share Extension, File Provider).
+    // Task 1671: the Share Extension used to read these under DIFFERENT,
+    // never-written literals (`beebeeb_session_token` / `beebeeb_api_url`)
+    // straight from App Group UserDefaults — a dead read left behind when
+    // 0447 moved storage here. Both the writer and every reader must
+    // reference these two constants, never a re-typed literal, so the two
+    // sides can't drift apart again (see
+    // `src/lib/share-extension-session-keys.test.ts`).
+    static let sessionTokenKey = "io.beebeeb.sessionToken"
+    static let apiBaseUrlKey = "io.beebeeb.apiBaseUrl"
+
+    // Task 1594 round 2 (F3/F6): the master key's proven owner + the
+    // currently signed-in user, both stored through the generic string API
+    // above — i.e. the SAME access group + `AfterFirstUnlockThisDeviceOnly`
+    // accessibility as the master key itself (F6: the round-1 owner record
+    // lived only in the app's own default keychain via `expo-secure-store`,
+    // which the File Provider and Share Extension processes cannot read —
+    // that is why those extensions had no ownership check to run at all,
+    // F3). Written by the main app only (`BeebeebCryptoModule.swift`
+    // `mirrorKeyOwner` / `mirrorSessionUserId`); read here by every target
+    // that links this file. `masterKeyOwnerKey` mirrors
+    // `key-ownership.ts`'s `MASTER_KEY_OWNER_LABEL`'s VALUE (the account's
+    // user id), never the SecureStore label itself. `sessionUserIdKey` is
+    // cleared the instant the mirrored session token changes
+    // (`mirrorSessionToAppGroup`), so an extension can never read a STALE
+    // signed-in-user value that happens to still match an outgoing owner
+    // record.
+    static let masterKeyOwnerKey = "io.beebeeb.master-key-owner"
+    static let sessionUserIdKey = "io.beebeeb.session-user-id"
+
+    // Task 1722 (G6): the "show in Files" consent, in App Group
+    // UserDefaults, written by the main app only (`mountFileProviderAccess`
+    // sets both; every sign-out purge and every Files toggle-off clears
+    // them). Declared here, once, so the keychain writer can tie the Files
+    // key's existence to the same flags `BeebeebCryptoModule` aliases,
+    // instead of re-typing the strings (the task 1671 drift lesson).
+    static let fileProviderEnabledKey = "io.beebeeb.fileProvider.enabled"
+    static let fileProviderTrustedMountKey = "io.beebeeb.fileProvider.trustedMountEnabled"
+
+    /// True while the user has Beebeeb mounted in Files: the trusted-mount
+    /// flag is on and `enabled` is on (absent counts as on). Same rule as
+    /// `fileProviderPrivacyState`'s `showInFiles` in BeebeebCryptoModule.
+    static func fileProviderMountConsented(
+        defaults: UserDefaults? = UserDefaults(suiteName: appGroupSuiteName)
+    ) -> Bool {
+        guard let defaults, defaults.bool(forKey: fileProviderTrustedMountKey) else { return false }
+        return defaults.object(forKey: fileProviderEnabledKey) == nil || defaults.bool(forKey: fileProviderEnabledKey)
+    }
 
     /// Persist `value` under `key` in the shared Keychain. Replaces any
     /// existing value at the same key. Also clears any legacy App Group
@@ -350,6 +493,11 @@ enum BeebeebKeychainCore {
     /// Tries access-group-scoped lookup first, then falls back to
     /// no-access-group for the same legacy reason as `findSEKey`.
     static func fetchWrappedBlob(service: String, label: String) -> Data? {
+        fetchWrappedBlobReportingStatus(service: service, label: label).blob
+    }
+
+    /// `fetchWrappedBlob` plus the lookup's Security status (task 1722 G3).
+    static func fetchWrappedBlobReportingStatus(service: String, label: String) -> (blob: Data?, status: OSStatus) {
         var query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
@@ -365,7 +513,24 @@ enum BeebeebKeychainCore {
             query.removeValue(forKey: kSecAttrAccessGroup)
             status = SecItemCopyMatching(query as CFDictionary, &result)
         }
-        guard status == errSecSuccess else { return nil }
-        return result as? Data
+        guard status == errSecSuccess else { return (nil, status) }
+        return (result as? Data, status)
+    }
+
+    /// Task 1722 round 4 (Q3): a wrapped blob looked up in `group` only, never
+    /// without a group (see `findSEKeyReportingStatus(tag:inAccessGroup:)`).
+    static func fetchWrappedBlobReportingStatus(service: String, label: String, inAccessGroup group: String) -> (blob: Data?, status: OSStatus) {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: label,
+            kSecAttrAccessGroup: group,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess else { return (nil, status) }
+        return (result as? Data, status)
     }
 }

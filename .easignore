@@ -87,3 +87,5 @@ e2e/
 !assets/icon.png
 !assets/adaptive-icon.png
 !ios/Beebeeb/Images.xcassets/AppIcon.appiconset/*.png
+# Android release splash resources must ship with EAS Build archives.
+!android/app/src/main/res/drawable-*/splashscreen_logo.png

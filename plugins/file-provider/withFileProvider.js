@@ -1,11 +1,41 @@
 const { withXcodeProject, withEntitlementsPlist, withInfoPlist } = require('@expo/config-plugins');
 const path = require('path');
 const fs = require('fs');
+const { normalizeUniffiGroup } = require('../lib/extension-target');
 
 const EXTENSION_NAME = 'BeebeebFileProvider';
 const EXTENSION_BUNDLE_ID = 'io.beebeeb.app.file-provider';
 const APP_GROUP = 'group.io.beebeeb.shared';
 const TEAM_ID = 'R8352WDJJR';
+// Task 1722 round 4 (Guus 2026-10-15, Q3 "Yes, own keychain group"): the
+// no-prompt Files key lives in its own keychain access group, entitled ONLY
+// to the main app and this extension. The Share extension
+// (withShareExtension.js) and the widget (withWidget.js) never get it.
+// Keep `io.beebeeb.shared` FIRST: it stays the default group for keychain
+// adds that name no group. `BeebeebKeychainCore.filesAccessGroup` is the
+// resolved value ("R8352WDJJR.io.beebeeb.files").
+const SHARED_KEYCHAIN_GROUP = '$(AppIdentifierPrefix)io.beebeeb.shared';
+const FILES_KEYCHAIN_GROUP = '$(AppIdentifierPrefix)io.beebeeb.files';
+const APP_KEYCHAIN_ACCESS_GROUPS = [SHARED_KEYCHAIN_GROUP, FILES_KEYCHAIN_GROUP];
+const EXTENSION_KEYCHAIN_ACCESS_GROUPS = [SHARED_KEYCHAIN_GROUP, FILES_KEYCHAIN_GROUP];
+
+/** The extension's entitlements file, as `expo prebuild` writes it. */
+function extensionEntitlementsPlist() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>${APP_GROUP}</string>
+  </array>
+  <key>keychain-access-groups</key>
+  <array>
+${EXTENSION_KEYCHAIN_ACCESS_GROUPS.map((group) => `    <string>${group}</string>`).join('\n')}
+  </array>
+</dict>
+</plist>`;
+}
 // Canonical File Provider extension sources live in `targets/file-provider/`
 // (task 0561 Fork A1). This list MUST match the BeebeebFileProvider sources
 // wired in ios/Beebeeb.xcodeproj/project.pbxproj. The principal class is
@@ -23,6 +53,15 @@ const SOURCE_FILES = [
   'BeebeebKeychainCore.swift',
   'Constants.swift',
   'SyncEngine.swift',
+  // Task 1594 round 5 (Codex P1, project.pbxproj:809): rounds 3/4 added both
+  // of these files to the BeebeebFileProvider target by hand-editing the
+  // committed project.pbxproj directly, but never added them here — so an
+  // `expo prebuild --clean` (which rebuilds this target's whole Sources
+  // phase from SOURCE_FILES alone, see `ensureExtensionWiring` below) would
+  // have silently dropped both, breaking the next build with "cannot find
+  // type 'CachedHandleIdentity'/'AccountMismatchDetection' in scope."
+  'CachedHandleIdentity.swift',
+  'AccountMismatchDetection.swift',
 ];
 // PlaintextStorageProtection.swift (pre-mortem 12 / task 0300) and
 // RuntimeTrace.swift (diagnostics, task 8170a56) live outside
@@ -525,7 +564,7 @@ function withFileProvider(config) {
     ]);
     config.modResults['keychain-access-groups'] = unique([
       ...(config.modResults['keychain-access-groups'] || []),
-      '$(AppIdentifierPrefix)io.beebeeb.shared',
+      ...APP_KEYCHAIN_ACCESS_GROUPS,
     ]);
     return config;
   });
@@ -586,23 +625,11 @@ function withFileProvider(config) {
     fs.writeFileSync(path.join(extDir, 'Info.plist'), infoPlist);
 
     // Create entitlements for the extension
-    const entitlements = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>com.apple.security.application-groups</key>
-  <array>
-    <string>${APP_GROUP}</string>
-  </array>
-  <key>keychain-access-groups</key>
-  <array>
-    <string>$(AppIdentifierPrefix)io.beebeeb.shared</string>
-  </array>
-</dict>
-</plist>`;
-    fs.writeFileSync(path.join(extDir, `${EXTENSION_NAME}.entitlements`), entitlements);
+    fs.writeFileSync(path.join(extDir, `${EXTENSION_NAME}.entitlements`), extensionEntitlementsPlist());
 
+    normalizeUniffiGroup(project);
     ensureExtensionWiring(project);
+    normalizeUniffiGroup(project);
     console.log(`[FileProvider] Wired '${EXTENSION_NAME}' target and refreshed ${extDir}`);
 
     return config;
@@ -610,5 +637,15 @@ function withFileProvider(config) {
 
   return config;
 }
+
+// Task 1594 round 5: exported (as a property on the plugin function, which
+// does not change how Expo consumes the default export) so
+// `src/lib/file-provider-plugin-sources.test.ts` can diff this list against
+// the real files in targets/file-provider/ without re-implementing it.
+withFileProvider.SOURCE_FILES = SOURCE_FILES;
+// Task 1722 round 4: exported for src/lib/file-provider-key-access-group.test.ts,
+// which checks the committed ios/ entitlements against what prebuild writes.
+withFileProvider.APP_KEYCHAIN_ACCESS_GROUPS = APP_KEYCHAIN_ACCESS_GROUPS;
+withFileProvider.extensionEntitlementsPlist = extensionEntitlementsPlist;
 
 module.exports = withFileProvider;

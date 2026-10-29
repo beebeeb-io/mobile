@@ -89,7 +89,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     const unsubscribe = client.subscribe((event) => {
       if (event.type === 'status' && event.status) {
         setStatus(event.status);
-      } else if (event.type === 'snapshot') {
+      } else if (event.type === 'snapshot' || event.type === 'ready') {
+        setError(null);
         setReady(true);
         setLoading(false);
         setTreeVersion((n) => n + 1);

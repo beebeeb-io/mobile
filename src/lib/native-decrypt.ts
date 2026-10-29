@@ -1,3 +1,9 @@
+import { retrySharedDecrypt, getSharedKeyResolver, sharedFileKeyIsLoaded } from './shared-folder-keys';
+import { isForeignSharedFile } from './shared-folder-tree';
+import { accountEpoch, StaleAccountError } from './account-epoch';
+import { SharedKeyUpdateRequiredError, SharedKeyCannotOpenError } from './preview-load-error';
+import { CustodyUnavailableError } from './shared-folder-custody';
+export { SharedKeyUpdateRequiredError, SharedKeyCannotOpenError } from './preview-load-error';
 /**
  * Native decryption wrapper for preview.
  *
@@ -6,7 +12,7 @@
  * temp file. Returns the local file path for native renderers to consume.
  *
  * Caches by fileId — if the decrypted temp file already exists and is
- * non-empty, returns immediately without re-downloading.
+ * size-matching (including a known empty note), returns without re-downloading.
  *
  * When `decryptChunksToFile` becomes available in the native module (Task 1),
  * this can be swapped to pass encrypted chunks directly to Rust for file I/O.
@@ -15,9 +21,13 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import {
+  decryptLocalFileNative,
   downloadAndDecryptFileNative,
   isNativeAvailable,
   type PreviewLoadProgressEvent,
+  streamVideoNative,
+  type StreamVideoNativeResult,
+  type StreamVideoTerminalStatus,
 } from '../../modules/beebeeb-crypto';
 import {
   CHUNK_SIZE,
@@ -30,6 +40,10 @@ import {
   isDecryptToFileReady,
 } from './decrypt-to-file';
 import {
+  isStreamableVideoExtension,
+  isLoopbackStreamUri,
+} from './video-stream';
+import {
   ApiError,
   getApiUrl,
   getDownloadUrl,
@@ -37,7 +51,10 @@ import {
 } from './api';
 import { rateLimitedFetch } from './rate-limited-fetch';
 import { recordRuntimeTrace } from './runtime-trace';
+import { createInFlightShare } from './inflight-share';
+import { PLAINTEXT_DRAIN_TIMEOUT_MS, plaintextGate, withPlaintextLease, gatedPlaintextWrite, type PlaintextLease } from './plaintext-gate';
 import { offlineManager, offlineFilePath } from './offline-manager';
+import { PARTIAL_DECRYPT_MESSAGE } from './preview-load-error';
 import NetInfo from '@react-native-community/netinfo';
 
 const PREVIEW_CACHE_DIR = `${FileSystem.cacheDirectory}preview/`;
@@ -46,9 +63,37 @@ const MAX_PREVIEW_CACHE_BYTES = 512 * 1024 * 1024;
 const PREVIEW_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 export interface PreviewDecryptOptions {
+  /** Request uploads supply their sealed random content key, not a master-derived key. */
+  useProvidedFileKey?: boolean;
   onProgress?: (event: PreviewLoadProgressEvent) => void;
   onOfflineFallback?: (event: { fileId: string; reason: string }) => void;
   signal?: AbortSignal;
+  /**
+   * Task 1593 — where the returned plaintext came from:
+   * - `cache`     an existing decrypted copy was reused;
+   * - `joined`    another caller was already decrypting this exact file +
+   *               extension and this call shared its result;
+   * - `decrypted` THIS call downloaded + decrypted it (the caller that owns
+   *               the fresh copy — "Prove it" deletes it after its 512-byte
+   *               read in that case only).
+   */
+  /**
+   * Task 1683j — the streaming session's progress events keep flowing AFTER
+   * this function resolves (the pump decrypts while the video plays). The
+   * shared-listener broadcaster above is torn down when the caller returns
+   * (`sharedListeners.delete(outputPath)`), so the stream wrapper needs the
+   * CALLER's own handler to keep receiving post-resolve events — the
+   * "Streaming · N% buffered" badge rides this sticky channel.
+   */
+  onStickyProgress?: (event: PreviewLoadProgressEvent) => void;
+  onSource?: (source: PreviewDecryptSource) => void;
+}
+
+export type PreviewDecryptSource = 'cache' | 'joined' | 'decrypted';
+
+/** `Library/Caches/preview/<fileId>.<ext>` — the preview cache key. */
+export function previewCachePath(fileId: string, extension: string): string {
+  return `${PREVIEW_CACHE_DIR}${fileId}.${extension.replace(/^\./, '')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +177,9 @@ async function prunePreviewCache(keepPath?: string): Promise<void> {
   try {
     const names = await FileSystem.readDirectoryAsync(PREVIEW_CACHE_DIR);
     const entries = await Promise.all(
-      names.map(async (name) => {
+      names.filter(name => !name.startsWith('.')).map(async (name) => {
+        // UUID hidden resources belong to native writers, whose cancel/error
+        // paths clean them. Evicting one here can corrupt an active stream.
         const uri = `${PREVIEW_CACHE_DIR}${name}`;
         const info = await FileSystem.getInfoAsync(uri);
         if (!info.exists) return null;
@@ -145,29 +192,25 @@ async function prunePreviewCache(keepPath?: string): Promise<void> {
     );
 
     const now = Date.now();
-    let totalBytes = 0;
-    let kept = 0;
     const sorted = entries
       .filter((entry): entry is { uri: string; sizeBytes: number; modifiedAt: number } => entry != null)
       .sort((a, b) => b.modifiedAt - a.modifiedAt);
-
-    await Promise.all(
-      sorted.map(async (entry) => {
-        if (entry.uri === keepPath) {
-          totalBytes += entry.sizeBytes;
-          kept += 1;
-          return;
-        }
-
-        const expired = now - entry.modifiedAt >= PREVIEW_CACHE_TTL_MS;
+    // Reserve protected copies first, regardless of stat timestamp ties. Never
+    // evict a viewer's leased source or the file the current writer just made.
+    const protectedEntry = (uri: string) => uri === keepPath || (previewLeases.get(uri) ?? 0) > 0;
+    let totalBytes = sorted.filter(e => protectedEntry(e.uri)).reduce((sum, e) => sum + e.sizeBytes, 0);
+    let kept = sorted.filter(e => protectedEntry(e.uri)).length;
+    for (const entry of sorted) {
+      if (protectedEntry(entry.uri)) continue;
+      const expired = now - entry.modifiedAt >= PREVIEW_CACHE_TTL_MS;
+      if (expired || kept >= MAX_PREVIEW_CACHE_ITEMS || totalBytes + entry.sizeBytes > MAX_PREVIEW_CACHE_BYTES) {
+        previewLeases.delete(entry.uri);
+        await FileSystem.deleteAsync(entry.uri, { idempotent: true }).catch(() => {});
+      } else {
         totalBytes += entry.sizeBytes;
         kept += 1;
-
-        if (expired || kept > MAX_PREVIEW_CACHE_ITEMS || totalBytes > MAX_PREVIEW_CACHE_BYTES) {
-          await FileSystem.deleteAsync(entry.uri, { idempotent: true }).catch(() => {});
-        }
-      }),
-    );
+      }
+    }
   } catch {
     // Best-effort cleanup only.
   }
@@ -200,7 +243,315 @@ export async function decryptToTempFile(
   masterKeyHandleId?: number | null,
   options: PreviewDecryptOptions = {},
 ): Promise<string> {
+  throwIfAborted(options.signal);
+  const outputPath = previewCachePath(fileId, extension);
+  // Task 1593 — one in-flight decrypt per output path. See inflight-share.ts:
+  // a second caller joins the first instead of racing it into the same file
+  // (or returning its half-written file as a "cache hit"), and the shared job
+  // is aborted only once EVERY caller's signal has aborted.
+  let listeners = sharedListeners.get(outputPath);
+  if (!listeners) {
+    listeners = new Set();
+    sharedListeners.set(outputPath, listeners);
+  }
+  const listener: SharedListener = {
+    onProgress: options.onProgress,
+    onOfflineFallback: options.onOfflineFallback,
+  };
+  listeners.add(listener);
+  // Task 1593 round 2 (P2-F) — one lease per caller that asked for this path.
+  // `releasePreviewCopy` only deletes the file when no other caller holds one.
+  retainPreviewLease(outputPath);
+  let leased = true;
+  try {
+    const { value, joined } = await previewDecrypts.run(
+      outputPath,
+      async (signal) => {
+        let cacheHit = false;
+        const path = await decryptToTempFileUnshared(
+          fileId,
+          fileKey,
+          extension,
+          sizeBytes,
+          chunkCount,
+          masterKeyHandleId,
+          {
+            signal,
+            useProvidedFileKey: options.useProvidedFileKey,
+            onProgress: (event) => {
+              sharedListeners.get(outputPath)?.forEach((l) => l.onProgress?.(event));
+            },
+            // Task 1683j — the streaming wrapper outlives this job (the pump
+            // decrypts while the video plays); post-resolve events must reach
+            // the caller DIRECTLY — the broadcaster above is deleted when
+            // this job returns. Harmlessly double-delivers pre-resolve.
+            onStickyProgress: options.onProgress,
+            onOfflineFallback: (event) => {
+              sharedListeners.get(outputPath)?.forEach((l) => l.onOfflineFallback?.(event));
+            },
+            onSource: (source) => {
+              cacheHit = source === 'cache';
+            },
+          },
+        );
+        // Task 1593 round 2 (P2-C) — every caller walked away (or the
+        // sign-out purge aborted the job) while the decrypt was finishing:
+        // the late `signal.aborted` checks inside the unshared path have a
+        // window after them (prunePreviewCache), and nobody will ever receive
+        // this path to delete it. A file this job decrypted is removed here;
+        // a cache hit is the preview's copy and stays.
+        if (signal.aborted) {
+          if (!cacheHit) {
+            await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+          }
+          throw abortError();
+        }
+        return { path, cacheHit };
+      },
+      options.signal,
+    );
+    options.onSource?.(joined ? 'joined' : value.cacheHit ? 'cache' : 'decrypted');
+    leased = false;
+    return value.path;
+  } catch (error) {
+    if (leased) dropLease(outputPath);
+    throw error;
+  } finally {
+    listeners.delete(listener);
+    if (listeners.size === 0 && sharedListeners.get(outputPath) === listeners) {
+      sharedListeners.delete(outputPath);
+    }
+  }
+}
+
+/** Retain a completed upload in the existing bounded, sign-out-purged preview cache.
+ * Share the output-path writer with downloads so no caller observes a partial copy.
+ * Call only after upload completion; never replace a copy a viewer is using.
+ */
+export async function cacheUploadedPreview(
+  fileId: string,
+  extension: string,
+  sourceUri: string,
+  plaintextSize: number | null | undefined,
+): Promise<boolean> {
+  if (!plaintextSize || plaintextSize > MAX_PREVIEW_CACHE_BYTES) return false;
+  const outputPath = previewCachePath(fileId, extension);
+  if ((previewLeases.get(outputPath) ?? 0) > 0) return false;
+  const { joined } = await previewDecrypts.run(outputPath, async (signal) => {
+    throwIfAborted(signal);
+    const info = await FileSystem.getInfoAsync(sourceUri);
+    if (!info.exists || info.size !== plaintextSize) throw new Error(PARTIAL_DECRYPT_MESSAGE);
+    await ensureCacheDir();
+    await gatedPlaintextWrite('uploaded preview copy', outputPath, FileSystem, () =>
+      FileSystem.copyAsync({ from: sourceUri, to: outputPath }),
+    );
+    throwIfAborted(signal);
+    await prunePreviewCache(outputPath);
+    recordRuntimeTrace('preview.upload_source.cached', { fileId, sizeBytes: plaintextSize });
+    return { path: outputPath, cacheHit: true };
+  }).catch((error) => {
+    if (error instanceof Error && error.message === PARTIAL_DECRYPT_MESSAGE) return { joined: false, value: null };
+    throw error;
+  });
+  const cached = await FileSystem.getInfoAsync(outputPath);
+  return !joined && cached.exists && cached.size === plaintextSize;
+}
+
+interface SharedListener {
+  onProgress?: PreviewDecryptOptions['onProgress'];
+  onOfflineFallback?: PreviewDecryptOptions['onOfflineFallback'];
+}
+
+// Task 1593 round 3 (#141 Codex P1) — every preview decrypt holds a lease from
+// the plaintext gate: a sign-out purge aborts them all, waits for them to
+// settle, and while it runs (and until the next session) new ones are REFUSED
+// rather than queued behind the aborted job.
+const previewDecrypts = createInFlightShare<{ path: string; cacheHit: boolean }>({
+  gate: plaintextGate,
+  label: 'preview decrypt',
+});
+/** Per cache path: callers that asked for it since the file was last removed. */
+const previewLeases = new Map<string, number>();
+
+type ActivePreviewStreamState = 'pending' | 'success' | 'error' | 'cancelled';
+
+interface ActivePreviewStreamTerminal {
+  state: ActivePreviewStreamState;
+  error: Error | null;
+}
+
+interface ActivePreviewStream {
+  fileId: string;
+  extension: string;
+  outputPath: string;
+  streamUri: string;
+  writerLease: PlaintextLease | null;
+  native: StreamVideoNativeResult;
+  terminal: boolean;
+  terminalState: ActivePreviewStreamState;
+  terminalError: Error | null;
+  terminalOutcome: Promise<ActivePreviewStreamTerminal>;
+  resolveTerminalOutcome: (outcome: ActivePreviewStreamTerminal) => void;
+  cleanupPromise: Promise<void> | null;
+  closed: boolean;
+}
+
+const activePreviewStreams = new Map<string, ActivePreviewStream>();
+
+function isActivePreviewStream(entry: ActivePreviewStream | undefined): entry is ActivePreviewStream {
+  return !!entry && !entry.closed;
+}
+
+function streamTerminalError(status: StreamVideoTerminalStatus | undefined): Error | null {
+  if (status?.stage === 'cancelled') return abortError();
+  if (status?.stage !== 'error') return null;
+  return new Error(status.error || 'Video stream failed.');
+}
+
+function releaseActivePreviewWriter(entry: ActivePreviewStream): void {
+  entry.writerLease?.release();
+  entry.writerLease = null;
+}
+
+function settleActivePreviewStream(entry: ActivePreviewStream, status?: StreamVideoTerminalStatus): void {
+  if (entry.closed || entry.terminal) return;
+  entry.terminal = true;
+  const error = streamTerminalError(status);
+  if (error) {
+    entry.terminalState = status?.stage === 'cancelled' ? 'cancelled' : 'error';
+    entry.terminalError = error;
+    releaseActivePreviewWriter(entry);
+    entry.cleanupPromise = (async () => {
+      await FileSystem.deleteAsync(entry.outputPath, { idempotent: true }).catch(() => {});
+      if (activePreviewStreams.get(entry.outputPath) === entry) {
+        activePreviewStreams.delete(entry.outputPath);
+      }
+      entry.closed = true;
+    })();
+    entry.resolveTerminalOutcome({ state: 'error', error });
+    return;
+  }
+  entry.terminalState = 'success';
+  entry.terminalError = null;
+  releaseActivePreviewWriter(entry);
+  entry.resolveTerminalOutcome({ state: 'success', error: null });
+}
+
+async function ensureFailedActivePreviewStreamEvicted(path: string): Promise<void> {
+  const entry = activePreviewStreams.get(path);
+  if (!isActivePreviewStream(entry) || (entry.terminalState !== 'error' && entry.terminalState !== 'cancelled')) return;
+  if (entry.cleanupPromise) await entry.cleanupPromise.catch(() => {});
+  if (activePreviewStreams.get(path) === entry) {
+    activePreviewStreams.delete(path);
+  }
+}
+
+async function closeActivePreviewStream(entry: ActivePreviewStream, deleteOutput: boolean): Promise<void> {
+  if (entry.closed) return;
+  entry.closed = true;
+  if (activePreviewStreams.get(entry.outputPath) === entry) {
+    activePreviewStreams.delete(entry.outputPath);
+  }
+  releaseActivePreviewWriter(entry);
+  entry.resolveTerminalOutcome({ state: entry.terminalState, error: entry.terminalError });
+  if (deleteOutput) {
+    await FileSystem.deleteAsync(entry.outputPath, { idempotent: true }).catch(() => {});
+  }
+}
+
+async function cancelActivePreviewStream(entry: ActivePreviewStream, deleteOutput: boolean): Promise<void> {
+  if (entry.closed) return;
+  await entry.native.cancel?.().catch(() => {});
+  await closeActivePreviewStream(entry, deleteOutput);
+}
+
+async function cancelActivePreviewStreamForPath(path: string, deleteOutput: boolean): Promise<boolean> {
+  const entry = activePreviewStreams.get(path);
+  if (!isActivePreviewStream(entry)) return false;
+  await cancelActivePreviewStream(entry, deleteOutput);
+  return true;
+}
+
+async function abortActivePreviewStreams(): Promise<void> {
+  const entries = Array.from(activePreviewStreams.values()).filter(isActivePreviewStream);
+  await Promise.allSettled(entries.map((entry) => cancelActivePreviewStream(entry, true)));
+}
+
+function retainPreviewLease(path: string): void {
+  previewLeases.set(path, (previewLeases.get(path) ?? 0) + 1);
+}
+
+function dropLease(path: string): number {
+  const left = (previewLeases.get(path) ?? 0) - 1;
+  if (left > 0) previewLeases.set(path, left);
+  else previewLeases.delete(path);
+  return Math.max(left, 0);
+}
+
+/**
+ * Task 1593 round 2 (P2-F) — give back ONE caller's lease on the preview-cache
+ * copy of (fileId, extension) and delete the file only if no other caller
+ * holds one. "Prove it" used to delete a copy it had decrypted itself even
+ * when the preview had joined that decrypt (or cache-hit it right after) and
+ * was rendering from it. Returns true when the file was deleted.
+ */
+export async function releasePreviewCopy(fileId: string, extension: string): Promise<boolean> {
+  const path = previewCachePath(fileId, extension);
+  if (dropLease(path) > 0) return false;
+  if (await cancelActivePreviewStreamForPath(path, true)) return true;
+  await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
+  return true;
+}
+
+
+/**
+ * Return a verified local plaintext file for video export/share flows.
+ *
+ * Streaming previews first return a loopback URI so playback can start before
+ * the background decrypt finishes. Exporters cannot hand that capability URL to
+ * the system share sheet: they must wait for the native pump to finish and use
+ * the promoted preview-cache file. This helper acquires an independent preview
+ * lease for the caller; the caller must release it with `releasePreviewCopy` in
+ * its export/share finally block.
+ */
+export async function materializeVideoPreviewForExport(fileId: string, extension: string): Promise<string> {
+  const path = previewCachePath(fileId, extension);
+  retainPreviewLease(path);
+  let leased = true;
+  try {
+    const active = activePreviewStreams.get(path);
+    if (isActivePreviewStream(active)) {
+      const outcome = await active.terminalOutcome;
+      if (outcome.state === 'error' || outcome.state === 'cancelled') {
+        throw outcome.error ?? new Error('Video stream failed.');
+      }
+    }
+
+    const info = await FileSystem.getInfoAsync(path);
+    if (!info.exists || !info.size || info.size <= 0) {
+      throw new Error('Video preview is not ready for export.');
+    }
+    leased = false;
+    return path;
+  } catch (error) {
+    if (leased) dropLease(path);
+    throw error;
+  }
+}
+
+const sharedListeners = new Map<string, Set<SharedListener>>();
+
+async function decryptToTempFileUnshared(
+  fileId: string,
+  fileKey: Uint8Array | (() => Promise<Uint8Array>) | null,
+  extension: string,
+  sizeBytes: number | null | undefined,
+  chunkCount: number | null | undefined,
+  masterKeyHandleId: number | null | undefined,
+  options: PreviewDecryptOptions,
+): Promise<string> {
   if (!isNativeAvailable) {
+    if (isForeignSharedFile(fileId, accountEpoch().accountId)) throw new SharedKeyUpdateRequiredError();
     recordRuntimeTrace('preview.decrypt.native_unavailable', { fileId });
     throw new Error('Preview requires a dev client build with native crypto.');
   }
@@ -212,6 +563,22 @@ export async function decryptToTempFile(
 
   const ext = extension.replace(/^\./, '');
   const outputPath = `${PREVIEW_CACHE_DIR}${fileId}.${ext}`;
+  await ensureFailedActivePreviewStreamEvicted(outputPath);
+  const activeStream = activePreviewStreams.get(outputPath);
+  if (isActivePreviewStream(activeStream)) {
+    throwIfAborted(options.signal);
+    recordRuntimeTrace('preview.decrypt.stream.join_active', {
+      fileId,
+      extension: ext,
+    });
+    options.onProgress?.({
+      requestId: activeStream.native.requestId,
+      fileId,
+      stage: 'decrypting',
+      streaming: true,
+    });
+    return activeStream.streamUri;
+  }
   recordRuntimeTrace('preview.decrypt.start', {
     fileId,
     extension: ext,
@@ -221,18 +588,38 @@ export async function decryptToTempFile(
     hasFileKeyProvider: fileKey != null,
   });
 
-  // Check cache — return immediately if a non-empty file exists
+  // Check cache — but do not blindly trust it (task 1687d): a mid-write
+  // crash (process kill, battery death during a decrypt) can leave a
+  // TRUNCATED plaintext at outputPath, and the next open would otherwise
+  // serve that prefix as a cache hit and render the decodable part with no
+  // error — the "halve file" report. When the expected plaintext size is
+  // known, a mismatched cache entry is rejected: scrubbed here, then the
+  // normal cache-miss path below re-decrypts fresh.
   const cached = await FileSystem.getInfoAsync(outputPath);
-  if (cached.exists && cached.size && cached.size > 0) {
-    throwIfAborted(options.signal);
-    recordRuntimeTrace('preview.decrypt.cache_hit', {
-      fileId,
-      extension: ext,
-      cachedSize: cached.size,
-      elapsedMs: Date.now() - startedAt,
-    });
-    options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
-    return outputPath;
+  const expectedSize = typeof sizeBytes === 'number' && Number.isSafeInteger(sizeBytes) && sizeBytes >= 0 ? sizeBytes : null;
+  if (cached.exists && typeof cached.size === 'number' && (cached.size > 0 || expectedSize != null)) {
+    if (expectedSize != null && cached.size !== expectedSize) {
+      recordRuntimeTrace('preview.decrypt.cache_size_mismatch', {
+        fileId,
+        extension: ext,
+        cachedSize: cached.size,
+        expectedSize,
+        elapsedMs: Date.now() - startedAt,
+      });
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+    } else {
+      throwIfAborted(options.signal);
+      recordRuntimeTrace('preview.decrypt.cache_hit', {
+        fileId,
+        extension: ext,
+        cachedSize: cached.size,
+        expectedSize,
+        elapsedMs: Date.now() - startedAt,
+      });
+      options.onSource?.('cache');
+      options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
+      return outputPath;
+    }
   }
   recordRuntimeTrace('preview.decrypt.cache_miss', {
     fileId,
@@ -287,24 +674,205 @@ export async function decryptToTempFile(
   }
   throwIfAborted(options.signal);
 
-  if (masterKeyHandleId != null) {
+  // Task 1683h: null handleId no longer routes around the native path — the
+  // module resolves the master key itself (awaiting its internal key-loaded
+  // latch, completed by the keychain auto-unlock). This is the direct fix for
+  // the relaunch-tap race (a preview tapped ~1.5 s after launch used to fall
+  // to the JS-fetch fallback with a null handle and buffer the whole body in
+  // the Java heap). The 1683g fail-closed gate below remains only for legacy
+  // native builds, where a null handle fails argument conversion → treated
+  // as not-available → gated fallback.
+  // A null handle also means “resolve the loaded master key” on Android.
+  // Request uploads must explicitly bypass that derivation and use their C.
+  if (isNativeAvailable && !options.useProvidedFileKey) {
+    const shared = getSharedKeyResolver();
+    if (shared && isForeignSharedFile(fileId, accountEpoch().accountId)) {
+      const outcome = (await shared.ensureLoaded([fileId])).get(fileId);
+      if (outcome === 'stale') throw new StaleAccountError('shared preview');
+      if (outcome === 'update_required') throw new SharedKeyUpdateRequiredError();
+      if (outcome === 'custody_unavailable') throw new CustodyUnavailableError();
+      if (outcome !== 'loaded') throw new SharedKeyCannotOpenError(await shared.originLabel(fileId));
+    }
     try {
       recordRuntimeTrace('preview.decrypt.native.request', {
         fileId,
         extension: ext,
+        handleResolvedNatively: masterKeyHandleId == null,
       });
-      const result = await downloadAndDecryptFileNative(
-        masterKeyHandleId,
+
+      // ── Task 1683j — videos STREAM (decrypt-as-the-player-reads) ─────────
+      //
+      // ROUTING CALL (Guus asked for streaming; small-file carve-out left to
+      // my judgment): ALL videos route through the streaming engine when the
+      // native build carries it — no size heuristic. A 2 MB video's extra
+      // hop (loopback range server) costs milliseconds and keeps ONE code
+      // path; a size threshold would misfire on exactly the mid-size videos
+      // the heuristic was guessing about. The whole-file path below remains
+      // the FALLBACK (any pre-playable stream failure falls through to it)
+      // and still serves every non-video type.
+      //
+      // GATED ON A REAL MASTER-KEY HANDLE: the engine derives the file key
+      // from the master key natively; a null handle means either the
+      // relaunch race (1683h — the module would resolve the RIGHT key itself,
+      // fine) or a file-REQUEST upload (the content key C is NOT derivable
+      // from the master key — streaming would decrypt garbage and the
+      // fallback whole-file path would too). Request uploads pass a null
+      // handle deliberately — keep them off the stream path.
+      if (isStreamableVideoExtension(ext) && masterKeyHandleId != null) {
+        let streamLease: PlaintextLease | null = null;
+        let streamAbortController: AbortController | null = null;
+        let forwardAbort: (() => void) | null = null;
+        try {
+          streamLease = plaintextGate.acquire('preview video stream');
+          streamAbortController = new AbortController();
+          forwardAbort = () => streamAbortController?.abort();
+          if (options.signal?.aborted || streamLease.signal.aborted) streamAbortController.abort();
+          options.signal?.addEventListener('abort', forwardAbort, { once: true });
+          streamLease.signal.addEventListener('abort', forwardAbort, { once: true });
+          recordRuntimeTrace('preview.decrypt.stream.request', {
+            fileId,
+            extension: ext,
+            sizeBytes: sizeBytes ?? null,
+            chunkCount: chunkCount ?? null,
+          });
+          const started = await streamVideoNative(
+            masterKeyHandleId,
+            getApiUrl(),
+            token,
+            fileId,
+            outputPath,
+            sizeBytes ?? null,
+            chunkCount ?? null,
+            {
+              onProgress: (event) => {
+                options.onProgress?.(event);
+                // Task 1683j — the sticky channel keeps the badge alive past
+                // resolve (the shared-listener broadcaster dies with this
+                // job's return; the pump runs on).
+                options.onStickyProgress?.(event);
+              },
+              signal: streamAbortController.signal,
+            },
+          );
+          if (streamAbortController.signal.aborted) {
+            await started.cancel?.().catch(() => {});
+            await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+            recordRuntimeTrace('preview.decrypt.stream.aborted_after_result', { fileId });
+            throw abortError();
+          }
+          await prunePreviewCache(outputPath);
+          if (streamAbortController.signal.aborted) {
+            await started.cancel?.().catch(() => {});
+            await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+            recordRuntimeTrace('preview.decrypt.stream.aborted_after_prune', { fileId });
+            throw abortError();
+          }
+          let resolveTerminalOutcome!: (outcome: ActivePreviewStreamTerminal) => void;
+          const terminalOutcome = new Promise<ActivePreviewStreamTerminal>((resolve) => {
+            resolveTerminalOutcome = resolve;
+          });
+          const activeEntry: ActivePreviewStream = {
+            fileId,
+            extension: ext,
+            outputPath,
+            streamUri: started.streamUri,
+            writerLease: streamLease,
+            native: started,
+            terminal: false,
+            terminalState: 'pending',
+            terminalError: null,
+            terminalOutcome,
+            resolveTerminalOutcome,
+            cleanupPromise: null,
+            closed: false,
+          };
+          if (forwardAbort) {
+            options.signal?.removeEventListener('abort', forwardAbort);
+            streamLease.signal.removeEventListener('abort', forwardAbort);
+          }
+          activePreviewStreams.set(outputPath, activeEntry);
+          if (streamAbortController.signal.aborted) {
+            await cancelActivePreviewStream(activeEntry, true);
+            recordRuntimeTrace('preview.decrypt.stream.aborted_after_register', { fileId });
+            throw abortError();
+          }
+          const terminalStatus = started.terminalStatus
+            ?? started.terminal?.then(() => ({ stage: 'complete' as const }))
+            ?? Promise.resolve({ stage: 'complete' as const });
+          terminalStatus
+            .then((status) => settleActivePreviewStream(activeEntry, status))
+            .catch(() => settleActivePreviewStream(activeEntry, { stage: 'error', error: 'Video stream failed.' }));
+          streamLease.signal.addEventListener(
+            'abort',
+            () => { void cancelActivePreviewStream(activeEntry, true); },
+            { once: true },
+          );
+          streamLease = null;
+          recordRuntimeTrace('preview.decrypt.stream.playable', {
+            fileId,
+            extension: ext,
+            plaintextSize: started.plaintextSize,
+            chunkCount: started.chunkCount,
+            elapsedMs: Date.now() - startedAt,
+          });
+          return started.streamUri;
+        } catch (error) {
+          // Never leave a partial plaintext behind (same contract as below).
+          streamAbortController?.abort();
+          streamLease?.release();
+          await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+          const aborted = options.signal?.aborted === true ||
+            (error instanceof Error && error.name === 'AbortError');
+          if (aborted) {
+            throw error;
+          }
+          recordRuntimeTrace('preview.decrypt.stream.failed_fallback', {
+            fileId,
+            extension: ext,
+            elapsedMs: Date.now() - startedAt,
+            ...errorTraceFields(error),
+          });
+          // Fall through to the whole-file native path (the 1683b pipeline).
+        } finally {
+          if (streamLease && forwardAbort) {
+            options.signal?.removeEventListener('abort', forwardAbort);
+            streamLease.signal.removeEventListener('abort', forwardAbort);
+          }
+        }
+      }
+
+      const result = await retrySharedDecrypt(fileId, () => downloadAndDecryptFileNative(
+        masterKeyHandleId ?? null,
         getApiUrl(),
         token,
         fileId,
         outputPath,
         { onProgress: options.onProgress, signal: options.signal },
-      );
+      ));
       if (options.signal?.aborted) {
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
         recordRuntimeTrace('preview.decrypt.native.aborted_after_result', { fileId });
         throw abortError();
+      }
+      // Task 1687d — a decrypt that produced FEWER plaintext bytes than the
+      // file's own metadata is a truncated result (crash mid-write inside
+      // the native writer), not a success. Serving it would render the
+      // decodable prefix of a half file with no explanation. Reject: the
+      // catch below scrubs outputPath, and the honest error tells the user
+      // what happened instead of leaving them with a silent "halve file".
+      if (
+        expectedSize != null &&
+        typeof result.plaintextSize === 'number' &&
+        result.plaintextSize !== expectedSize
+      ) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        recordRuntimeTrace('preview.decrypt.native.size_mismatch', {
+          fileId,
+          extension: ext,
+          plaintextSize: result.plaintextSize,
+          expectedSize,
+        });
+        throw new Error(PARTIAL_DECRYPT_MESSAGE);
       }
       await prunePreviewCache(outputPath);
       recordRuntimeTrace('preview.decrypt.native.success', {
@@ -316,6 +884,11 @@ export async function decryptToTempFile(
       });
       return result.outputUri || outputPath;
     } catch (error) {
+      // Task 1593 — never leave a partial plaintext behind: a cancelled or
+      // failed decrypt may have written part of outputPath, which the next
+      // open would otherwise serve as a (corrupt) cache hit. Safe: the
+      // in-flight share guarantees no other decrypt owns this path now.
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
       const message = error instanceof Error ? error.message : String(error);
       if (!message.includes('downloadAndDecryptFileNative is not available')) {
         recordRuntimeTrace('preview.decrypt.native.failed', {
@@ -324,8 +897,12 @@ export async function decryptToTempFile(
           elapsedMs: Date.now() - startedAt,
           ...errorTraceFields(error),
         });
+        if (!(error instanceof StaleAccountError) && (sharedFileKeyIsLoaded(fileId) || isForeignSharedFile(fileId, accountEpoch().accountId))) {
+          throw new SharedKeyCannotOpenError(await shared?.originLabel(fileId) ?? null);
+        }
         throw error;
       }
+      if (sharedFileKeyIsLoaded(fileId)) throw new SharedKeyUpdateRequiredError();
       recordRuntimeTrace('preview.decrypt.native.not_available_fallback', { fileId });
     }
   }
@@ -345,6 +922,27 @@ export async function decryptToTempFile(
   // Fallback for older native builds: download the full encrypted blob through
   // JS, decrypt through the chunk bridge, and write base64. New iOS builds
   // should use the native handle path above.
+  //
+  // Task 1683g — this path buffers the WHOLE body in the Java heap (expo fetch
+  // → arrayBuffer): Guus's 800 MB video OOMed the 384 MB largeHeap dead
+  // (2026-10-02, three crashes: 19:29/20:08/20:11 — the last two on relaunch
+  // taps that raced the keychain auto-unlock, landing here with a null handle
+  // + a fileKey getter). Refuse beyond the bound — recoverable error, not a
+  // crash; a retry after the unlock takes the native streaming path.
+  const FALLBACK_MAX_BYTES = 100 * 1024 * 1024;
+  // FAIL-CLOSED (task 1683g, second crash): an UNKNOWN size must refuse too —
+  // Guus's retry OOMed with a null sizeBytes AND a chunked response (no
+  // Content-Length), skipping both known-size checks. This path buffers the
+  // whole body in the Java heap; without a known bound it is unsafe, period.
+  // (The real fix — the native layer resolving the key itself so this fallback
+  // never runs on new builds — is task 1683h.)
+  if (sizeBytes == null || sizeBytes > FALLBACK_MAX_BYTES) {
+    recordRuntimeTrace('preview.decrypt.js_download.refused_too_large', {
+      fileId,
+      sizeBytes,
+    });
+    throw new Error('This file is too large to open right now. Please wait a moment and try again.');
+  }
   let res: Response;
   try {
     recordRuntimeTrace('preview.decrypt.js_download.request', { fileId });
@@ -380,6 +978,17 @@ export async function decryptToTempFile(
   }
 
   const contentLength = responseHeaderInt(res.headers, 'Content-Length');
+  // Task 1683g belt-and-braces: fail-closed here too — an unknown
+  // Content-Length (chunked/streamed response) must refuse: the body would be
+  // buffered whole in the Java heap. (The real fix is 1683h — the native layer
+  // resolving the key itself so this fallback never runs on new builds.)
+  if (contentLength == null || contentLength > FALLBACK_MAX_BYTES) {
+    recordRuntimeTrace('preview.decrypt.js_download.refused_too_large', {
+      fileId,
+      sizeBytes: contentLength,
+    });
+    throw new Error('This file is too large to open right now. Please wait a moment and try again.');
+  }
   options.onProgress?.({
     requestId: '',
     fileId,
@@ -397,7 +1006,7 @@ export async function decryptToTempFile(
   // Resolve plaintext size
   const headerOriginalSize = responseHeaderInt(res.headers, 'X-Original-Size');
   const effectiveSize = headerOriginalSize ?? sizeBytes ?? encBytes.length - 28;
-  if (effectiveSize <= 0) {
+  if (!Number.isSafeInteger(effectiveSize) || effectiveSize < 0) {
     throw new Error('Could not determine plaintext size for decryption.');
   }
 
@@ -468,11 +1077,11 @@ export async function decryptToTempFile(
         chunksCompleted: effectiveChunkCount,
         chunksTotal: effectiveChunkCount,
       });
-      if (written <= 0) {
-        // Rust returned zero bytes — treat as a decrypt failure, clean up so
-        // the cache layer doesn't pick up a corrupt empty file later.
+      if (written !== effectiveSize) {
+        // Zero is valid only for an authenticated empty frame. A size mismatch
+        // still rejects a truncated decrypt instead of publishing it.
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
-        throw new Error('Native batched decrypt returned zero bytes.');
+        throw new Error('Native batched decrypt size mismatch.');
       }
       await prunePreviewCache(outputPath);
       recordRuntimeTrace('preview.decrypt.fast_path.success', {
@@ -593,17 +1202,50 @@ export async function decryptLocalFileToTempFile(
   chunkSize?: number | null,
   options: PreviewDecryptOptions = {},
 ): Promise<string> {
+  // Task 1593 round 3 — a plaintext writer: hold a gate lease; a purge closing
+  // the gate aborts this exactly like a cancelled caller (every write below is
+  // followed by an abort check that deletes the output).
+  return withPlaintextLease('offline decrypt', (lease) => {
+    const controller = new AbortController();
+    const forward = () => controller.abort();
+    if (options.signal?.aborted || lease.signal.aborted) controller.abort();
+    options.signal?.addEventListener('abort', forward, { once: true });
+    lease.signal.addEventListener('abort', forward, { once: true });
+    return decryptLocalFileLeased(
+      fileId, fileKey, extension, localEncryptedUri, sizeBytes, chunkCount, chunkSize,
+      { ...options, signal: controller.signal },
+    ).finally(() => {
+      options.signal?.removeEventListener('abort', forward);
+      lease.signal.removeEventListener('abort', forward);
+    });
+  });
+}
+
+async function decryptLocalFileLeased(
+  fileId: string,
+  fileKey: Uint8Array | (() => Promise<Uint8Array>) | null,
+  extension: string,
+  localEncryptedUri: string,
+  sizeBytes: number | null | undefined,
+  chunkCount: number | null | undefined,
+  chunkSize: number | null | undefined,
+  options: PreviewDecryptOptions,
+): Promise<string> {
   await ensureCacheDir();
   throwIfAborted(options.signal);
 
   const ext = extension.replace(/^\./, '');
   const outputPath = `${PREVIEW_CACHE_DIR}${fileId}.${ext}`;
 
-  // Reuse a previously-decrypted plaintext copy when present.
+  // Apply the same size contract to an offline cache, including empty versions.
   const cached = await FileSystem.getInfoAsync(outputPath);
-  if (cached.exists && cached.size && cached.size > 0) {
-    options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
-    return outputPath;
+  const expectedSize = typeof sizeBytes === 'number' && Number.isSafeInteger(sizeBytes) && sizeBytes >= 0 ? sizeBytes : null;
+  if (cached.exists && typeof cached.size === 'number' && (cached.size > 0 || expectedSize != null)) {
+    if (expectedSize == null || cached.size === expectedSize) {
+      options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
+      return outputPath;
+    }
+    await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
   }
 
   if (!fileKey) {
@@ -612,22 +1254,20 @@ export async function decryptLocalFileToTempFile(
   const resolvedFileKey = typeof fileKey === 'function' ? await fileKey() : fileKey;
   throwIfAborted(options.signal);
 
-  // Read the local ENCRYPTED bytes (same blob the server stores).
+  // Framing resolved from the file's SIZE (never a whole-file read): the
+  // offline blob is the exact server chunk stream, so size math + the
+  // manifest meta captured at download time decide the windows — the same
+  // math the legacy path below runs over the in-memory bytes.
   const info = await FileSystem.getInfoAsync(localEncryptedUri);
   if (!info.exists || !(info.size && info.size > 0)) {
     throw new Error('Offline copy is missing.');
   }
-  const b64 = await FileSystem.readAsStringAsync(localEncryptedUri, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
-  const encBytes = base64ToUint8Array(b64);
-  throwIfAborted(options.signal);
-
-  const effectiveSize = sizeBytes ?? encBytes.length - 28;
-  if (effectiveSize <= 0) {
+  const encryptedSize = info.size;
+  const effectiveSize = sizeBytes ?? encryptedSize - 28;
+  if (!Number.isSafeInteger(effectiveSize) || effectiveSize < 0) {
     throw new Error('Could not determine plaintext size for the offline file.');
   }
-  const inferred = inferChunkCountFromEncryptedSize(encBytes.length, effectiveSize);
+  const inferred = inferChunkCountFromEncryptedSize(encryptedSize, effectiveSize);
   const effectiveChunkCount = chunkCount ?? inferred ?? 1;
   // The exact upload chunk size is required to slice a multi-chunk body. It is
   // captured from the download headers (offlineManager.getMeta); fall back to
@@ -637,10 +1277,72 @@ export async function decryptLocalFileToTempFile(
   recordRuntimeTrace('offline.decrypt.start', {
     fileId,
     extension: ext,
-    encryptedBytes: encBytes.length,
+    encryptedBytes: encryptedSize,
     effectiveSize,
     effectiveChunkCount,
     effectiveChunkSize,
+  });
+
+  // Native path (task 1683d): stream the local ciphertext through Kotlin's
+  // chunk-window loop — no whole-file base64 buffer in the JS heap (the 1683
+  // OOM class at offline sizes). Errors are real decrypt/IO failures and
+  // propagate (mirrors the fast-path contract below): a truncated or corrupt
+  // blob fails identically in the JS fallback, which at these sizes OOMs
+  // instead of succeeding.
+  if (typeof decryptLocalFileNative === 'function') {
+    const requestId = `offline-${fileId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    try {
+      options.onProgress?.({
+        requestId,
+        fileId,
+        stage: 'decrypting',
+        chunksCompleted: 0,
+        chunksTotal: effectiveChunkCount,
+      });
+      const result = await decryptLocalFileNative({
+        fileKey: resolvedFileKey,
+        inputUri: localEncryptedUri,
+        outputUri: outputPath,
+        chunkSizeBytes: effectiveChunkSize,
+        chunkCount: effectiveChunkCount,
+        originalSize: effectiveSize,
+        requestId,
+        fileId,
+        signal: options.signal,
+      });
+      if (options.signal?.aborted) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        throw abortError();
+      }
+      if (result.plaintextSize !== effectiveSize) {
+        await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+        throw new Error('Native offline decrypt size mismatch.');
+      }
+      await prunePreviewCache(outputPath);
+      options.onProgress?.({ requestId, fileId, stage: 'complete' });
+      recordRuntimeTrace('offline.decrypt.native.success', {
+        fileId,
+        plaintextSize: result.plaintextSize,
+        chunksDecrypted: result.chunksDecrypted,
+      });
+      return outputPath;
+    } catch (err) {
+      await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
+      recordRuntimeTrace('offline.decrypt.native.failed', { fileId, ...errorTraceFields(err) });
+      throw err;
+    }
+  }
+
+  // Read the local ENCRYPTED bytes (same blob the server stores).
+  const b64 = await FileSystem.readAsStringAsync(localEncryptedUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const encBytes = base64ToUint8Array(b64);
+  throwIfAborted(options.signal);
+
+  recordRuntimeTrace('offline.decrypt.legacy_whole_file', {
+    fileId,
+    encryptedBytes: encBytes.length,
   });
 
   // Fast path: hand the contiguous body to Rust to slice + decrypt + write.
@@ -658,9 +1360,9 @@ export async function decryptLocalFileToTempFile(
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
         throw abortError();
       }
-      if (written <= 0) {
+      if (written !== effectiveSize) {
         await FileSystem.deleteAsync(outputPath, { idempotent: true }).catch(() => {});
-        throw new Error('Native batched decrypt returned zero bytes.');
+        throw new Error('Native batched decrypt size mismatch.');
       }
       await prunePreviewCache(outputPath);
       options.onProgress?.({ requestId: '', fileId, stage: 'complete' });
@@ -718,15 +1420,44 @@ export async function decryptToString(
   });
 }
 
+
 /**
- * Clear all cached preview files. Call on sign-out or when freeing space.
+ * Clear all cached preview files — every decrypted plaintext copy under
+ * `Library/Caches/preview/`.
+ *
+ * Task 1593 (P1): this had ZERO callers, and the native sign-out purge
+ * (`purgePlaintextStorage`) deliberately skips `Library/Caches/`, so up to
+ * 512 MiB / 24 files of decrypted previews survived sign-out. It is now part
+ * of `purgeAllPlaintextCaches()` (sign-out, account deletion) and runs on a
+ * launch / session end with nobody signed in (App.tsx).
+ *
+ * Order: delete the directory, abort every decrypt still in flight and wait
+ * for them to settle — an in-flight download would otherwise finish AFTER the
+ * purge and write a fresh plaintext file — then delete again to catch
+ * anything written in between. Never throws.
+ *
+ * Round 3 (#141 Codex P1): this runs INSIDE `plaintextGate.purge()` (see
+ * account-cleanup.ts), which has already closed the gate — so no replacement
+ * decrypt can be queued behind an aborted one — and drained every job's lease
+ * (bounded by PLAINTEXT_DRAIN_TIMEOUT_MS, not the old fixed 3 s). A job still
+ * running past that bound finds its lease invalid and deletes its own output.
  */
 export async function clearPreviewCache(): Promise<void> {
-  try {
-    await FileSystem.deleteAsync(PREVIEW_CACHE_DIR, { idempotent: true });
-  } catch {
-    // Best-effort cleanup
-  }
+  const remove = () => FileSystem.deleteAsync(PREVIEW_CACHE_DIR, { idempotent: true }).catch(() => {});
+  previewLeases.clear();
+  await remove();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.allSettled([
+      previewDecrypts.abortAll(),
+      abortActivePreviewStreams(),
+    ]).then(() => undefined),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, PLAINTEXT_DRAIN_TIMEOUT_MS);
+    }),
+  ]).catch(() => {});
+  if (timer) clearTimeout(timer);
+  await remove();
 }
 
 /**
@@ -747,7 +1478,10 @@ export async function clearPreviewCache(): Promise<void> {
 export async function invalidatePreviewCache(fileId: string, extension: string): Promise<void> {
   try {
     const ext = extension.replace(/^\./, '');
-    await FileSystem.deleteAsync(`${PREVIEW_CACHE_DIR}${fileId}.${ext}`, { idempotent: true });
+    const path = `${PREVIEW_CACHE_DIR}${fileId}.${ext}`;
+    previewLeases.delete(path);
+    await cancelActivePreviewStreamForPath(path, true);
+    await FileSystem.deleteAsync(path, { idempotent: true });
   } catch {
     // Best-effort — a failed delete just means the next open re-decrypts
     // into a fresh temp file's normal cache-miss path instead of reusing this one.

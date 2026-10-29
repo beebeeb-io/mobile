@@ -68,3 +68,42 @@ export function twoFactorSetupBackAction(
   if (shouldBlockTwoFactorSetupBack(step, false, verifying)) return 'none';
   return step === 1 ? 'leave' : 'previous-step';
 }
+
+// ── Task 1610: which mode the screen opens in, and where step-1 Back lands ──
+//
+// Bug: SettingsScreen's "Two-Factor Authentication" row always navigated
+// here, and the screen always called `setupTotp()` — no code, no
+// X-Confirm-Token — on mount. The server correctly requires step-up once
+// 2FA is already on (`routes/totp.rs` `setup_step_up_validated_if_required`),
+// so an already-enrolled account hit a raw 403 `confirmation_required` the
+// instant it opened the option. `initialTwoFactorSetupMode` is the fix: the
+// screen decides its OPENING mode from the account's already-known
+// `totp_enabled` (from `useAuth()`, sourced from `/auth/me`) instead of
+// always starting the fresh-enrollment wizard.
+
+/** What TwoFactorSetupScreen shows first. */
+export type TwoFactorSetupMode = 'on' | 'wizard';
+
+/**
+ * `totp_enabled: true` → open on the On state (Turn off / Set up again),
+ * never call `setupTotp()` bare. `false` (or not yet known — `/auth/me`
+ * always includes the field, but a defensive `undefined` reads the same as
+ * off) → open directly in the fresh-enrollment wizard, unchanged from
+ * before this task.
+ */
+export function initialTwoFactorSetupMode(totpEnabled: boolean | undefined): TwoFactorSetupMode {
+  return totpEnabled ? 'on' : 'wizard';
+}
+
+/**
+ * Where the wizard's step-1 Back button lands. A FRESH entry (2FA was off)
+ * leaves the screen, exactly as before this task. A wizard reached via
+ * "Set up again" (`cameFromReauth`) instead returns to the On state: the
+ * account's PREVIOUS secret is still the live one server-side — `setup2fa`'s
+ * new secret is not activated until `enable` succeeds (server `routes/totp.rs`,
+ * the `enabled = FALSE` branch of its upsert) — so backing out here loses
+ * nothing and must not be treated as abandoning an active 2FA setup.
+ */
+export function wizardStep1BackTarget(cameFromReauth: boolean): 'leave' | 'on' {
+  return cameFromReauth ? 'on' : 'leave';
+}

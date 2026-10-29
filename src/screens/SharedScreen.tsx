@@ -19,13 +19,26 @@ import { GlassSegment, SCROLL_EDGE, ScrollEdgeBlur, useTabBarBottomInset } from 
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
 import { useCrypto } from '../lib/crypto-context';
-import { unwrapForOwnerWithHandle } from '../../modules/beebeeb-crypto';
+import {
+  decryptChunk,
+  decryptNameWithKey,
+  deriveShareKey,
+  handleDeriveX25519Private,
+  unwrapForOwnerWithHandle,
+  x25519SharedSecret,
+} from '../../modules/beebeeb-crypto';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
+import {
+  decryptIncomingShareName,
+  displayIncomingInviteName,
+  type DecryptedInviteName,
+} from '../lib/incoming-share-name';
 import { guessMimeType } from '../lib/media';
 import { getIncomingInvites, getSentInvites, listMyShares, friendlyError } from '../lib/api';
 import type { ShareInvite, MyShareLink } from '../lib/api';
 import { formatBytes } from '../lib/format';
 import FileRequestsScreen from './FileRequestsScreen';
+import { useSharedFoldersFlag } from '../lib/use-shared-folders-flag';
 import type { RootStackParamList } from '../App';
 
 // Public links resolve against the web app origin (cross-client by design).
@@ -293,6 +306,7 @@ export default function SharedScreen() {
   // of reserving its own flow height.
   const tabBarBottomInset = useTabBarBottomInset();
   const navigation = useNavigation<Nav>();
+  const sharedFoldersFlag = useSharedFoldersFlag();
   const { showToast } = useToast();
   // Tier 1: Shares vs File Requests. Tier 2 (under Shares): direction.
   const [topTab, setTopTab] = useState<TopTab>('shares');
@@ -324,6 +338,11 @@ export default function SharedScreen() {
   const [linksError, setLinksError] = useState<string | null>(null);
   const [decryptedLinkNames, setDecryptedLinkNames] = useState<Record<string, string>>({});
   const [decryptedLinkMimes, setDecryptedLinkMimes] = useState<Record<string, string | null>>({});
+  // Task 2263 — incoming shares' names, keyed by invite id. `null` = the name
+  // did not open under the sender's wrapped key (honest failure state).
+  const [decryptedInviteNames, setDecryptedInviteNames] = useState<
+    Record<string, DecryptedInviteName | null>
+  >({});
 
   // ------------------------------------------------------------------
   // Fetch functions
@@ -432,6 +451,36 @@ export default function SharedScreen() {
     });
   }, [links, isUnlocked, decryptMetadata]);
 
+  // Task 2263 — decrypt each incoming share's name with the file key unwrapped
+  // from the sender's wrap: the same path web's shared-with-me list uses
+  // (X25519 shared secret → HKDF share key → wrapped file key → core's
+  // file-key name reader). Every step is a native/core call.
+  useEffect(() => {
+    if (!isUnlocked || incoming.length === 0) {
+      if (!isUnlocked) setDecryptedInviteNames({});
+      return;
+    }
+    let cancelled = false;
+    const incomingCrypto = {
+      deriveX25519Private: () => handleDeriveX25519Private(getMasterKeyHandleId()),
+      x25519SharedSecret,
+      deriveShareKey,
+      decryptChunk,
+      decryptNameWithKey,
+    };
+    Promise.all(
+      incoming.map(async (invite) => {
+        const decrypted = await decryptIncomingShareName(invite, incomingCrypto);
+        return [invite.id, decrypted] as const;
+      }),
+    ).then((entries) => {
+      if (!cancelled) setDecryptedInviteNames(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [incoming, isUnlocked, getMasterKeyHandleId]);
+
   // ------------------------------------------------------------------
   // Render helpers
   // ------------------------------------------------------------------
@@ -517,19 +566,24 @@ export default function SharedScreen() {
     const peer = direction === 'incoming'
       ? `From ${item.sender_email ?? 'unknown'}`
       : `To ${item.recipient_email}`;
+    // Incoming shares carry a name sealed under the sender's file key (2263);
+    // outbound rows keep the raw/fallback display.
+    const name = direction === 'incoming'
+      ? displayIncomingInviteName(item, decryptedInviteNames[item.id])
+      : displayInviteName(item);
     return (
       <TouchableOpacity
         activeOpacity={tappable ? 0.6 : 1}
         onPress={tappable ? () => openInvitePreview(item) : undefined}
         accessibilityRole="button"
-        accessibilityLabel={`Shared file ${displayInviteName(item)} ${peer}`}
+        accessibilityLabel={`Shared file ${name} ${peer}`}
         style={[styles.row, { borderBottomColor: c.line }]}
       >
         <View style={[styles.fileIcon, { backgroundColor: inviteMimeColor(item) }]}>
           <Ionicons name={fileTypeIconForInvite(item)} size={16} color="#FFFFFF" />
         </View>
         <View style={styles.rowInfo}>
-          <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{displayInviteName(item)}</Text>
+          <Text style={[styles.rowName, { color: c.ink }]} numberOfLines={1}>{name}</Text>
           <Text style={[styles.rowMeta, { color: c.ink3 }]} numberOfLines={1}>
             {[peer, formatDate(item.created_at), expiryLabel(item.expires_at)]
               .filter(Boolean)
@@ -811,6 +865,9 @@ export default function SharedScreen() {
           })}
         </View>
       )}
+      {sharedFoldersFlag.enabled && topTab === 'shares' && <TouchableOpacity testID="shared-folder-activity-entry" accessibilityRole="button" onPress={() => navigation.navigate('SharedFolderActivity')} style={{ paddingHorizontal: spacing.lg, paddingVertical: 12 }}>
+        <Text style={{ color: c.ink, fontSize: 14, fontWeight: '600' }}>Folder activity</Text>
+      </TouchableOpacity>}
       </View>{/* end header area */}
 
       {/* Content */}

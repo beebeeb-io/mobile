@@ -10,7 +10,12 @@
 // That failure — not a passing-but-wrong assertion — is the RED this test
 // was written against. See the task Notes for the pasted failure.
 import { describe, expect, test } from 'bun:test';
-import { shouldBlockTwoFactorSetupBack, twoFactorSetupBackAction } from './two-factor-setup-gate';
+import {
+  shouldBlockTwoFactorSetupBack,
+  twoFactorSetupBackAction,
+  initialTwoFactorSetupMode,
+  wizardStep1BackTarget,
+} from './two-factor-setup-gate';
 
 describe('shouldBlockTwoFactorSetupBack', () => {
   test('step 1 (viewing the secret, nothing committed) may leave freely', () => {
@@ -72,5 +77,35 @@ describe('twoFactorSetupBackAction (the visible Back button)', () => {
 
   test('step 3 (one-time backup codes) has no Back — Done is the only way out', () => {
     expect(twoFactorSetupBackAction(3)).toBe('none');
+  });
+});
+
+// Task 1610 — the bug: SettingsScreen always routed into this screen, and
+// the screen always called `setupTotp()` with no code/token on mount. Once
+// an account already has 2FA on, the server correctly 403s that
+// (`confirmation_required` — server behavior verified correct, not
+// loosened), so opening the settings option on an enrolled account showed a
+// raw "This action requires password confirmation" error every time.
+describe('initialTwoFactorSetupMode (the fix: read status before choosing what to open)', () => {
+  test('2FA already on → opens on the On state, never the bare-setup wizard', () => {
+    expect(initialTwoFactorSetupMode(true)).toBe('on');
+  });
+
+  test('2FA off → opens directly in the fresh-enrollment wizard, unchanged', () => {
+    expect(initialTwoFactorSetupMode(false)).toBe('wizard');
+  });
+
+  test('status not yet known (defensive — /auth/me always includes it) reads the same as off', () => {
+    expect(initialTwoFactorSetupMode(undefined)).toBe('wizard');
+  });
+});
+
+describe('wizardStep1BackTarget', () => {
+  test('a fresh entry (2FA was off) leaves the screen, same as before this task', () => {
+    expect(wizardStep1BackTarget(false)).toBe('leave');
+  });
+
+  test('a "set up again" entry returns to the On state instead of leaving — the previous secret is still live', () => {
+    expect(wizardStep1BackTarget(true)).toBe('on');
   });
 });

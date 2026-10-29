@@ -14,8 +14,10 @@
  */
 
 import { encryptChunk, decryptChunk } from '../../modules/beebeeb-crypto'
-import { getApiUrl, getToken } from './api'
+import { getApiUrl, getToken, captureRequestAuthSnapshot, endSessionForAccountMismatch } from './api'
 import { rateLimitedFetch } from './rate-limited-fetch'
+import { withServerBusyRetry } from './server-busy-retry'
+import { expectedUserHeaders } from './expected-user'
 
 export interface SearchIndexEntry {
   name: string
@@ -126,27 +128,67 @@ export async function fetchIndex(indexKey: Uint8Array): Promise<SearchIndex | nu
   return decryptIndex(blob, indexKey)
 }
 
+/**
+ * Task 1870 r2 (Codex P1): the index is one last-write-wins blob. Each
+ * `saveIndex` call takes the next generation synchronously at call time; a
+ * `server_busy` retry is only allowed while its call is still the latest.
+ * Otherwise an older snapshot, retried after a newer one was already stored,
+ * would go out without the newer save's ETag and overwrite it. A superseded
+ * save stops retrying and resolves `null` quietly — the newer save carries
+ * the newer state.
+ */
+let latestSaveGeneration = 0
+
 export async function saveIndex(
   index: SearchIndex,
   indexKey: Uint8Array,
   etag?: string,
 ): Promise<string | null> {
-  const token = await getToken()
-  if (!token) return null
+  const generation = ++latestSaveGeneration
+  const isLatestSave = () => generation === latestSaveGeneration
+  // Task 1594 round 3 (Codex T6): snapshot the session at this call's own
+  // start, mirroring the upload paths — see `endSessionForAccountMismatch`.
+  const authSnapshot = await captureRequestAuthSnapshot()
+  if (!authSnapshot.token) return null
 
   const encrypted = await encryptIndex(index, indexKey)
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${authSnapshot.token}`,
     'Content-Type': 'application/octet-stream',
+    // Task 1594 fix 4 — a mutation: name the unlocked key's owner (server 1554).
+    ...expectedUserHeaders(),
   }
   if (etag) headers['If-Match'] = etag
 
-  const res = await rateLimitedFetch(`${getApiUrl()}/api/v1/index`, {
-    method: 'PUT',
-    headers,
-    body: encrypted as unknown as BodyInit,
-  })
-  if (!res.ok) return null
+  // Task 1870: PUT /index buffers its whole body, so a full server-side upload
+  // budget answers 429 server_busy — wait Retry-After and re-send (<= 3 times).
+  // A non-OK final answer still collapses to `null` below, as before.
+  const res = await withServerBusyRetry(() =>
+    rateLimitedFetch(`${getApiUrl()}/api/v1/index`, {
+      method: 'PUT',
+      headers,
+      body: encrypted as unknown as BodyInit,
+    }),
+    undefined,
+    isLatestSave,
+  )
+  if (!res.ok) {
+    // Superseded while busy: not an error, the newer save owns the state.
+    if (res.status === 429 && !isLatestSave()) return null
+    // Task 1594 round 3 (Codex T6): this PUT can now receive a 409
+    // `account_mismatch` (the same header `request()` and the upload paths
+    // send). Route it through the same guarded session-teardown instead of
+    // collapsing it to `null` like every other non-OK response — a key/
+    // session mismatch here must not leave the user silently signed in with
+    // index persistence quietly broken.
+    if (res.status === 409) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      if (body.error === 'account_mismatch') {
+        await endSessionForAccountMismatch(authSnapshot)
+      }
+    }
+    return null
+  }
   return res.headers.get('ETag')
 }
 

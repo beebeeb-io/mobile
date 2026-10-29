@@ -1,6 +1,7 @@
 PODS:
   - BeebeebCrypto (1.0.0):
     - ExpoModulesCore
+    - ExpoSQLite
     - SDWebImage/Core
     - SDWebImageWebPCoder
   - EASClient (57.0.2):
@@ -187,6 +188,8 @@ PODS:
     - ReactNativeDependencies
     - Yoga
   - ExpoAsset (57.0.15):
+    - ExpoModulesCore
+  - ExpoAudio (57.0.5):
     - ExpoModulesCore
   - ExpoBlur (57.0.2):
     - ExpoModulesCore
@@ -2547,6 +2550,7 @@ DEPENDENCIES:
   - expo-dev-menu (from `../node_modules/expo-dev-menu`)
   - expo-dev-menu-interface (from `../node_modules/expo-dev-menu-interface/ios`)
   - ExpoAsset (from `../node_modules/expo-asset/ios`)
+  - ExpoAudio (from `../node_modules/expo-audio/ios`)
   - ExpoBlur (from `../node_modules/expo-blur/ios`)
   - ExpoCalendar (from `../node_modules/expo-calendar/ios`)
   - ExpoCamera (from `../node_modules/expo-camera/ios/ExpoCamera.podspec`)
@@ -2703,6 +2707,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/expo-dev-menu-interface/ios"
   ExpoAsset:
     :path: "../node_modules/expo-asset/ios"
+  ExpoAudio:
+    :path: "../node_modules/expo-audio/ios"
   ExpoBlur:
     :path: "../node_modules/expo-blur/ios"
   ExpoCalendar:
@@ -2948,7 +2954,7 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
 SPEC CHECKSUMS:
-  BeebeebCrypto: c8111f567dd47d0b211a444d46b3eb299189b0cb
+  BeebeebCrypto: f986a3c66fa7793cb8e12aae3b51ab18d19bfcfb
   EASClient: 19dbd341708f694a526bdfe9e541fa54a7b8650b
   EXApplication: bbd517d50878ca1d121fb3843392beb210181e28
   EXConstants: 736b7f1ed7235956785cb81e0ce37ab6a4f33fb4
@@ -2960,6 +2966,7 @@ SPEC CHECKSUMS:
   expo-dev-menu: d2f0a5c130f290466028fd1579a5b1f3bf441313
   expo-dev-menu-interface: 7a59e803916fbfd1b96c75ff91ea8dddac7e722f
   ExpoAsset: ff225ee16cea2409800b20fe4945a7c720a24cee
+  ExpoAudio: edc9230b788be6f65238a53907d5c176b57a7ce0
   ExpoBlur: 69e67b4fbfed6f7325377af2aefa8aa4f00cd2af
   ExpoCalendar: 0bb9b2fbafb10dcfbfeb53649058397807f00f4f
   ExpoCamera: 00a098da25adbc6013f051b5db47279cb10a716c
@@ -2979,7 +2986,7 @@ SPEC CHECKSUMS:
   ExpoLocalAuthentication: 96989637e567a10cdeabe61e5c6026d30c0dc53f
   ExpoLogBox: 80957303325cd4439137765c90a87d7f22aaf2ff
   ExpoMediaLibrary: 344f5b528a71f34794e9d7396e32589531df146e
-  ExpoModulesCore: f9c0d3e96baf021a4406e2bbf550398499baa2eb
+  ExpoModulesCore: 3873d4e4f0f1c421968751b5ca7db2f7810a1007
   ExpoModulesJSI: 1529d4289b9a3647d8901a27b41f1af173598b45
   ExpoModulesWorklets: 57a11e6ae984c2680e7967b785ded96199caed8c
   ExpoNotifications: dd1288ca85d320ea163105e5efdf0a1cc05760f8

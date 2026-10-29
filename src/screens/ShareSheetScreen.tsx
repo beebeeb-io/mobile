@@ -1,10 +1,7 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
   Platform,
-  Pressable,
-  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -13,20 +10,25 @@ import {
   View,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import type { RouteProp } from '@react-navigation/native';
 import type { RootStackParamList } from '../App';
-import { radii, spacing, shadows } from '../theme';
-import { modalScrim } from '../components/glass';
+import { radii, spacing } from '../theme';
+import { BottomSheet, BottomSheetScrollView } from '../components/sheet/BottomSheet';
 import { useTheme } from '../lib/theme-context';
 import { useToast } from '../lib/toast-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
-import { ApiError, approveInvite, createInvite, createShare, friendlyError, resolveSharingContact } from '../lib/api';
-import type { Share as ShareLink } from '../lib/api';
+import { ApiError, approveInvite, createBundleShare, createInvite, createShare, friendlyError, getWebAppUrl, listAllFiles, resolveSharingContact } from '../lib/api';
+import type { CreateBundleShareItem, FileEntry, Share as ShareLink } from '../lib/api';
+import { FOLDER_BUNDLE_MAX_ITEMS, collectFolderBundle } from '../lib/folder-bundle';
+import type { FolderBundleScan } from '../lib/folder-bundle';
 import { useCrypto } from '../lib/crypto-context';
 import { formatBytes as formatSize } from '../lib/format';
+import { formatDateTime } from '../lib/date-format';
+import { FolderSharePanel } from '../components/folder-share/FolderSharePanel';
+import { useSharedFoldersFlag } from '../lib/use-shared-folders-flag';
+import { buildFullShareLink } from '../lib/share-full-link';
 import {
   deriveShareKey,
   encryptChunk,
@@ -160,8 +162,10 @@ const OPENS_OPTIONS: OpensOption[] = [
   { label: 'Unlimited', value: null },
 ];
 
-// App URL for building share links locally (double-encrypted mode)
-const APP_URL = 'https://app.beebeeb.io';
+// Task 1690: the share link base is the web app origin for this build —
+// `EXPO_PUBLIC_APP_URL` / `extra.appUrl` when set, derived from the API URL
+// otherwise (api.ts getWebAppUrl(), the same source LoginScreen and
+// NeedsPlanScreen use). No hardcoded constant here anymore.
 
 // ---------------------------------------------------------------------------
 // Screen
@@ -170,11 +174,14 @@ const APP_URL = 'https://app.beebeeb.io';
 export default function ShareSheetScreen() {
   const navigation = useNavigation();
   const route = useRoute<ShareRoute>();
-  const insets = useSafeAreaInsets();
   const { colors: c, resolved } = useTheme();
-  const { fileId, fileName, mimeType, sizeBytes } = route.params;
-  const { getFileKeyBytes, deriveX25519PrivateFromHandle, getMasterKeyHandleId, isUnlocked } = useCrypto();
+  const { fileId, fileName, mimeType, sizeBytes, isFolder } = route.params;
+  const { getFileKeyBytes, decryptNames, deriveX25519PrivateFromHandle, getMasterKeyHandleId, isUnlocked } = useCrypto();
   useKeyboardLayoutAnimation();
+  const sharing = useSharedFoldersFlag();
+  const [folderSharingUnavailable, setFolderSharingUnavailable] = useState(false);
+  const folderSharingEnabled = sharing.enabled && !folderSharingUnavailable;
+  const fallbackToBundle = useCallback(() => setFolderSharingUnavailable(true), []);
 
   const [expiry, setExpiry] = useState<ExpiryOption>(EXPIRY_OPTIONS[1]);
   const [opens, setOpens] = useState<OpensOption>(OPENS_OPTIONS[0]);
@@ -187,42 +194,39 @@ export default function ShareSheetScreen() {
   // For double-encrypted shares, we build the URL locally and store it here.
   // For standard shares, we use share.url from the server.
   const [localShareUrl, setLocalShareUrl] = useState<string | null>(null);
-  // The URL without the #key= fragment, and the raw key — shown side-by-side
-  // so the recipient gets two distinct things to send through separate
-  // channels (maximum security).
-  const [shareUrlBase, setShareUrlBase] = useState<string | null>(null);
-  const [shareKey, setShareKey] = useState<string | null>(null);
-  const [copied, setCopied] = useState<'full' | 'link' | 'key' | null>(null);
+  // Task 1690: sharing yields ONE full link (URL + #key= fragment). The old
+  // split presentation (bare URL state + raw key state, "send separately"
+  // badge) is gone.
+  const [copied, setCopied] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  // Task 2238 — a FOLDER link is a SNAPSHOT BUNDLE of the files below it
+  // (folder-bundle.ts). Scanned as soon as the sheet opens so the copy can
+  // state the real count and the cap is known before anything is minted.
+  const [folderScan, setFolderScan] = useState<FolderBundleScan | null>(null);
+  const [folderScanError, setFolderScanError] = useState<string | null>(null);
+  // Bumped by the note's Retry control; re-runs the folder walk.
+  const [folderScanAttempt, setFolderScanAttempt] = useState(0);
   const { showToast } = useToast();
 
   const badge = makeFileTypeBadge(mimeType, c);
 
   const styles = useMemo(() => StyleSheet.create({
-    root: { flex: 1, backgroundColor: 'transparent', justifyContent: 'flex-end' },
-    backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: modalScrim(resolved) },
-    // 1315 — the canvas floats the share sheet rather than pinning it flush to
-    // the bottom: all four corners at GLASS_RADII.sheet (38), inset from the
-    // screen edges. Kept opaque — this is a CONTENT surface (link settings,
-    // expiry), and the redesign's rule is that glass is the control layer only.
-    sheet: {
-      backgroundColor: c.paper,
-      borderRadius: 38,
-      marginHorizontal: 10,
-      paddingHorizontal: spacing.lg,
-      paddingTop: 12,
-      maxHeight: '90%',
-      ...shadows.lg,
-    },
-    handle: { width: 36, height: 4, borderRadius: 2, backgroundColor: c.line2, alignSelf: 'center', marginBottom: 14 },
+    // 1586 — the sheet itself is the shared BottomSheet: full width, bottom
+    // attached, top corners at GLASS_RADII.sheet, the home-indicator inset
+    // inside it, draggable by the handle (+ the file row) between half /
+    // default / large. Was (1315): inset 10pt, all four corners 38, content
+    // height capped at 90 %. Guus, build 221: "Only the share sheet is not
+    // full width". Kept opaque — a CONTENT surface (link settings, expiry);
+    // glass is the control layer only.
+    body: { paddingHorizontal: spacing.lg },
     fileRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
     fileIcon: { width: 36, height: 36, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center' },
     fileIconText: { color: '#FFFFFF', fontSize: 9, fontWeight: '700', letterSpacing: 0.4 },
     fileInfo: { flex: 1, minWidth: 0 },
     fileName: { fontSize: 14, fontWeight: '600', color: c.ink },
     fileMeta: { fontSize: 11, color: c.ink3, marginTop: 2 },
-    scroll: { maxHeight: 480 },
-    scrollContent: { paddingBottom: 8 },
+    scroll: { flex: 1 },
+    scrollContent: { paddingBottom: 24 },
     sectionLabel: { fontSize: 11, fontWeight: '600', color: c.ink3, textTransform: 'uppercase', letterSpacing: 0.6, marginTop: 8, marginBottom: 8 },
     chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
     chip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: radii.round, backgroundColor: c.paper2, borderWidth: 1, borderColor: c.line },
@@ -243,6 +247,10 @@ export default function ShareSheetScreen() {
     toggleSub: { fontSize: 11, color: c.ink3, marginTop: 3, lineHeight: 16 },
     zkBadge: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: c.amberBg, borderWidth: 1, borderColor: c.amber, borderRadius: radii.sm, paddingHorizontal: 6, paddingVertical: 2, alignSelf: 'flex-start', marginTop: 4 },
     zkBadgeText: { fontSize: 9, fontWeight: '700', color: c.amberDeep, letterSpacing: 0.5 },
+    snapshotNote: { borderWidth: 1, borderColor: c.line, borderRadius: radii.md, backgroundColor: c.paper2, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 12 },
+    snapshotNoteText: { fontSize: 12, color: c.ink2, lineHeight: 18 },
+    retryButton: { alignSelf: 'flex-start', marginTop: 8, paddingHorizontal: 12, paddingVertical: 6, borderRadius: radii.sm, borderWidth: 1, borderColor: c.line, backgroundColor: c.paper },
+    retryButtonText: { fontSize: 12, fontWeight: '600', color: c.ink },
     errorBanner: { backgroundColor: resolved === 'dark' ? '#2d1515' : '#fef2f2', borderWidth: 1, borderColor: resolved === 'dark' ? '#5c2828' : '#fecaca', borderRadius: radii.md, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, marginTop: spacing.lg },
     errorText: { fontSize: 12, color: c.red, lineHeight: 17 },
     createButton: { height: 46, backgroundColor: c.amber, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center', marginTop: spacing.xl },
@@ -255,16 +263,10 @@ export default function ShareSheetScreen() {
     urlBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.paper2, borderWidth: 1, borderColor: c.line, borderRadius: radii.md, paddingLeft: 12, paddingRight: 6, paddingVertical: 6, gap: 8 },
     urlText: { flex: 1, fontSize: 12, color: c.ink, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
     fieldLabel: { fontSize: 11, fontWeight: '600', color: c.ink2, marginBottom: 6, marginTop: 10 },
-    keyLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6, marginTop: 10 },
-    keyBadge: { backgroundColor: c.amberBg, borderWidth: 1, borderColor: c.amber, borderRadius: radii.sm, paddingHorizontal: 6, paddingVertical: 2 },
-    keyBadgeText: { fontSize: 9, fontWeight: '700', color: c.amberDeep, letterSpacing: 0.5 },
-    keyBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.amberBg, borderWidth: 1, borderColor: c.amber, borderRadius: radii.md, paddingLeft: 12, paddingRight: 6, paddingVertical: 6, gap: 8 },
-    keyText: { flex: 1, fontSize: 12, color: c.amberDeep, fontWeight: '600', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
     copyButton: { paddingHorizontal: 12, paddingVertical: 7, backgroundColor: c.ink, borderRadius: radii.sm },
     copyButtonText: { fontSize: 12, fontWeight: '600', color: c.amber },
     successDetails: { marginTop: 10, gap: 4 },
     successHint: { fontSize: 12, color: c.ink3 },
-    successHintEm: { fontWeight: '700', color: c.ink },
     buttonRow: { flexDirection: 'row', gap: 10, marginTop: spacing.xl },
     shareButton: { flex: 1, height: 44, backgroundColor: c.amber, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center' },
     shareButtonText: { fontSize: 14, fontWeight: '700', color: c.ink },
@@ -272,9 +274,54 @@ export default function ShareSheetScreen() {
     doneButtonText: { fontSize: 14, fontWeight: '600', color: c.ink3 },
   }), [c, resolved]);
 
+  // 1586 — closing animates the sheet down first; the route pops once it is
+  // off screen (`onDismissed`). The route itself has no animation (App.tsx).
+  const [open, setOpen] = useState(true);
   const handleClose = useCallback(() => {
+    setOpen(false);
+  }, []);
+  const handleDismissed = useCallback(() => {
     navigation.goBack();
   }, [navigation]);
+
+  // Task 2238 — walk the folder's subtree (non-trashed files only) so the sheet
+  // can state the real snapshot count and refuse an empty / over-cap folder
+  // before it mints anything. Mirrors web's share dialog.
+  const folderFiles = isFolder ? folderScan?.files ?? [] : [];
+  /** Minting is refused while the folder is unread, empty or over the cap. */
+  const folderBlocked = !!isFolder && (folderScan === null || folderFiles.length === 0 || folderScan.overCap);
+
+  useEffect(() => {
+    if (!isFolder || !isUnlocked || (sharing.loading || folderSharingEnabled) && !folderSharingUnavailable) return;
+    let cancelled = false;
+    setFolderScan(null);
+    setFolderScanError(null);
+    void (async () => {
+      try {
+        const scan = await collectFolderBundle(
+          fileId,
+          {
+            listChildren: (folderId) => listAllFiles(folderId, { trashed: false }) as Promise<FileEntry[]>,
+            decryptName: async (node) => {
+              if (!node.name_encrypted) return null;
+              try {
+                const [row] = await decryptNames([{ fileId: node.id, nameEncrypted: node.name_encrypted }]);
+                return row && typeof row.name === 'string' ? row.name : null;
+              } catch {
+                return null;
+              }
+            },
+          },
+        );
+        if (!cancelled) setFolderScan(scan);
+      } catch (e) {
+        if (!cancelled) setFolderScanError(friendlyError(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isFolder, isUnlocked, fileId, decryptNames, folderScanAttempt, sharing.loading, folderSharingEnabled, folderSharingUnavailable]);
 
   const handleCreate = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -285,6 +332,87 @@ export default function ShareSheetScreen() {
     try {
       if (!isUnlocked) {
         setError('Vault is locked. Unlock it to create a share.');
+        return;
+      }
+
+      // ── Folder snapshot bundle (task 2238) ────────────────────────────────
+      // A folder link is ONE bundle over every file in the subtree as it is
+      // now — never a `file` share on the folder row (the guest page would die
+      // on `400 cannot download a folder`). Items show their plain file names
+      // (bundles are flat; duplicates are allowed) and the link keeps today's
+      // `#key=`-only format.
+      if (isFolder) {
+        const scan = folderScan;
+        if (!scan) {
+          setError('Still counting the files in this folder. Try again in a moment.');
+          return;
+        }
+        if (scan.files.length === 0) {
+          setError('Nothing to share yet');
+          return;
+        }
+        if (scan.overCap) {
+          setError(`A link covers up to ${FOLDER_BUNDLE_MAX_ITEMS} files. Share fewer files.`);
+          return;
+        }
+
+        const clientKey = await generateRandomBytes(32);
+        let items: CreateBundleShareItem[] = [];
+        let keyForUrl: string;
+        let ownerWrappedKey: string;
+        try {
+          for (const f of scan.files) {
+            const itemKey = await getFileKeyBytes(f.fileId);
+            try {
+              const wrapped = await wrapFileKeyForShare(clientKey, itemKey);
+              items.push({
+                file_id: f.fileId,
+                position: f.position,
+                wrapped_file_key: toBase64(wrapped),
+              });
+            } finally {
+              itemKey.fill(0);
+            }
+          }
+          ownerWrappedKey = await ownerWrapToBase64(getMasterKeyHandleId(), clientKey);
+          keyForUrl = toBase64url(clientKey);
+        } finally {
+          clientKey.fill(0);
+        }
+
+        const mintToken = async (): Promise<
+          { token: string; owner_wrapped_token: string }
+        > => {
+          const token = toBase64url(await generateRandomBytes(20));
+          return { token, owner_wrapped_token: await ownerWrapToBase64(getMasterKeyHandleId(), asciiBytes(token)) };
+        };
+        let tokenFields = await mintToken();
+        const buildBundleOpts = async () => ({
+          items,
+          expires_in_hours: expiry.hours ?? undefined,
+          max_opens: opens.value ?? undefined,
+          passphrase: passphrase.trim() || undefined,
+          token: tokenFields.token,
+          owner_wrapped_key: ownerWrappedKey,
+          owner_wrapped_token: tokenFields.owner_wrapped_token,
+        });
+
+        let result: ShareLink;
+        try {
+          result = await createBundleShare(await buildBundleOpts());
+        } catch (e) {
+          // 409 = client-token collision (≈ never at 20 random bytes) → re-mint once.
+          if (e instanceof ApiError && e.status === 409) {
+            tokenFields = await mintToken();
+            result = await createBundleShare(await buildBundleOpts());
+          } else {
+            throw e;
+          }
+        }
+
+        setShare(result);
+        setLocalShareUrl(buildFullShareLink(getWebAppUrl(), result.token, keyForUrl));
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         return;
       }
 
@@ -364,11 +492,9 @@ export default function ShareSheetScreen() {
 
       // Build the share URL locally so the fragment is always the client-side
       // decryption material. result.token echoes our client-supplied token (or
-      // the server-generated one for standard shares).
-      const shareBase = `${APP_URL}/s/${result.token}`;
-      setLocalShareUrl(`${shareBase}#key=${encodeURIComponent(keyForUrl)}`);
-      setShareUrlBase(shareBase);
-      setShareKey(keyForUrl);
+      // the server-generated one for standard shares). Task 1690: ONE full
+      // link — the fragment is part of the same string.
+      setLocalShareUrl(buildFullShareLink(getWebAppUrl(), result.token, keyForUrl));
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err) {
@@ -377,7 +503,7 @@ export default function ShareSheetScreen() {
     } finally {
       setCreating(false);
     }
-  }, [fileId, expiry, opens, passphrase, isUnlocked, getFileKeyBytes, getMasterKeyHandleId]);
+  }, [fileId, expiry, opens, passphrase, isUnlocked, isFolder, folderScan, getFileKeyBytes, getMasterKeyHandleId]);
 
   const handleCreateInvite = useCallback(async () => {
     const raw = recipient.trim();
@@ -436,21 +562,18 @@ export default function ShareSheetScreen() {
   const displayUrl = localShareUrl ?? share?.url ?? '';
 
   const handleCopy = useCallback(
-    async (text: string, target: 'full' | 'link' | 'key', toastLabel: string) => {
+    async (text: string) => {
       if (!text) return;
       await Clipboard.setStringAsync(text);
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      setCopied(target);
-      showToast({ type: 'success', message: `${toastLabel} copied to clipboard` });
-      setTimeout(() => setCopied(null), 2000);
-      // Auto-clear clipboard after 60s for sensitive payloads (full link
-      // contains #key=, key is the raw decryption key). The bare URL is not
-      // sensitive on its own.
-      if (target === 'full' || target === 'key') {
-        setTimeout(() => {
-          Clipboard.setStringAsync('').catch(() => {});
-        }, 60_000);
-      }
+      setCopied(true);
+      showToast({ type: 'success', message: 'Full link copied to clipboard' });
+      setTimeout(() => setCopied(false), 2000);
+      // Auto-clear clipboard after 60s: the full link carries the #key=
+      // decryption key.
+      setTimeout(() => {
+        Clipboard.setStringAsync('').catch(() => {});
+      }, 60_000);
     },
     [showToast],
   );
@@ -465,33 +588,51 @@ export default function ShareSheetScreen() {
     }
   }, [displayUrl]);
 
+  const fileRow = (
+    <View style={styles.fileRow}>
+      <View style={[styles.fileIcon, { backgroundColor: badge.color }]}>
+        <Text style={styles.fileIconText}>{badge.label}</Text>
+      </View>
+      <View style={styles.fileInfo}>
+        <Text style={styles.fileName} numberOfLines={1}>{fileName}</Text>
+        <Text style={styles.fileMeta}>
+          {sizeBytes != null ? `${formatSize(sizeBytes)} · ` : ''}encrypted
+        </Text>
+      </View>
+    </View>
+  );
+
+  if (isFolder && (sharing.loading || folderSharingEnabled)) {
+    return <BottomSheet visible={open} onRequestClose={handleClose} onDismissed={handleDismissed} detents={['half', 'default', 'large']} avoidKeyboard contentStyle={styles.body} handleAccessibilityLabel="Share sheet" testID="share-sheet">
+      {sharing.loading ? <Text style={{ color: c.ink2, paddingVertical: 24 }}>Checking sharing options...</Text> : <FolderSharePanel folderId={fileId} folderName={fileName} onClose={handleClose} onUnavailable={fallbackToBundle} />}
+    </BottomSheet>;
+  }
+
   return (
-    <KeyboardAvoidingView
-      style={styles.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    <BottomSheet
+      visible={open}
+      onRequestClose={handleClose}
+      onDismissed={handleDismissed}
+      detents={['half', 'default', 'large']}
+      initialDetent="default"
+      header={fileRow}
+      avoidKeyboard
+      contentStyle={styles.body}
+      handleAccessibilityLabel="Share sheet"
+      scrimAccessibilityLabel="Close share sheet"
+      testID="share-sheet"
+      scrimTestID="share-sheet-backdrop"
     >
-      {/* Backdrop */}
-      <Pressable style={styles.backdrop} onPress={handleClose} />
-
-      {/* Sheet */}
-      <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 16 }]}>
-        <View style={styles.handle} />
-
-        {/* File row */}
-        <View style={styles.fileRow}>
-          <View style={[styles.fileIcon, { backgroundColor: badge.color }]}>
-            <Text style={styles.fileIconText}>{badge.label}</Text>
-          </View>
-          <View style={styles.fileInfo}>
-            <Text style={styles.fileName} numberOfLines={1}>{fileName}</Text>
-            <Text style={styles.fileMeta}>
-              {sizeBytes != null ? `${formatSize(sizeBytes)} · ` : ''}encrypted
-            </Text>
-          </View>
-        </View>
-
+      <BottomSheetScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        testID="share-sheet-scroll"
+      >
         {share ? (
-          /* ---- Share created — show URL + key as two distinct items ---- */
+          /* ---- Share created — ONE full link (task 1690): the URL with the
+             decryption key embedded as a #key= fragment ---- */
           <View style={styles.successCard}>
             <View style={styles.successHeaderRow}>
               <Text style={styles.successTitle}>End-to-end encrypted share</Text>
@@ -502,55 +643,31 @@ export default function ShareSheetScreen() {
               )}
             </View>
 
-            {/* Step 1 — the link (safe to send through most channels) */}
+            {/* Task 1690: the share is ONE full link — the old split view
+                (bare "Share link" box + separate key box with its
+                send-separately badge) was removed so every produced/copyable
+                share string is the whole link. */}
             <Text style={styles.fieldLabel}>Share link</Text>
             <View style={styles.urlBox}>
               <Text style={styles.urlText} numberOfLines={1} selectable>
-                {shareUrlBase ?? displayUrl}
+                {displayUrl}
               </Text>
               <TouchableOpacity
                 style={styles.copyButton}
-                onPress={() => handleCopy(shareUrlBase ?? displayUrl, 'link', 'Link')}
+                onPress={() => handleCopy(displayUrl)}
                 activeOpacity={0.8}
               >
-                <Text style={styles.copyButtonText}>{copied === 'link' ? 'Copied' : 'Copy'}</Text>
+                <Text style={styles.copyButtonText}>{copied ? 'Copied' : 'Copy'}</Text>
               </TouchableOpacity>
             </View>
 
-            {/* Step 2 — the decryption key (must travel via a different channel) */}
-            {shareKey && (
-              <>
-                <View style={styles.keyLabelRow}>
-                  <Text style={styles.fieldLabel}>Decryption key</Text>
-                  <View style={styles.keyBadge}>
-                    <Text style={styles.keyBadgeText}>SEND SEPARATELY</Text>
-                  </View>
-                </View>
-                <View style={styles.keyBox}>
-                  <Text style={styles.keyText} numberOfLines={1} selectable>
-                    {shareKey}
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.copyButton}
-                    onPress={() => handleCopy(shareKey, 'key', 'Key')}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.copyButtonText}>{copied === 'key' ? 'Copied' : 'Copy'}</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-
             <View style={styles.successDetails}>
               <Text style={styles.successHint}>
-                End-to-end encrypted — Beebeeb cannot decrypt this share. Send the link and the key through separate channels for maximum security.
-              </Text>
-              <Text style={styles.successHint}>
-                The recipient needs <Text style={styles.successHintEm}>both</Text> the link and the key to open the file.
+                End-to-end encrypted — Beebeeb cannot decrypt this share. The decryption key is embedded in the link and never reaches our servers.
               </Text>
               {share.expires_at && (
                 <Text style={styles.successHint}>
-                  Expires {new Date(share.expires_at).toLocaleString()}
+                  Expires {formatDateTime(share.expires_at)}
                 </Text>
               )}
               {share.max_opens != null && (
@@ -600,12 +717,47 @@ export default function ShareSheetScreen() {
           </View>
         ) : (
           /* ---- Configure share settings ---- */
-          <ScrollView
-            style={styles.scroll}
-            contentContainerStyle={styles.scrollContent}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
+          <View>
+            {/* Task 2238 — a folder link is a snapshot of the files below it:
+                flat, immutable, capped. Same sentence as web. */}
+            {isFolder && (
+              <View style={styles.snapshotNote} accessibilityRole="text" testID="folder-snapshot-note">
+                <Text style={styles.snapshotNoteText}>
+                  {!isUnlocked
+                    ? 'Unlock Beebeeb to share this folder.'
+                    : folderScanError
+                      ? `Could not read this folder: ${folderScanError}`
+                      : folderScan === null
+                        ? 'Counting the files in this folder…'
+                        : folderScan.files.length === 0
+                          ? 'Nothing to share yet'
+                          : folderScan.overCap
+                            ? `This folder has more than ${FOLDER_BUNDLE_MAX_ITEMS} files. A link covers up to ${FOLDER_BUNDLE_MAX_ITEMS}; share fewer files.`
+                            : `Shares the ${folderScan.files.length} files in this folder and its subfolders as they are now. Files added later won't appear.`}
+                </Text>
+                {/* Task 2238 review — the rows we had to leave out, said plainly
+                    instead of silently publishing an item nobody can decrypt. */}
+                {!!isUnlocked && folderScan && folderScan.requestUploads > 0 && !folderScan.overCap && (
+                  <Text style={styles.snapshotNoteText} testID="folder-request-uploads-note">
+                    {folderScan.requestUploads === 1
+                      ? "1 file received through a file request isn't included; share it from the web app."
+                      : `${folderScan.requestUploads} files received through a file request aren't included; share them from the web app.`}
+                  </Text>
+                )}
+                {!!isUnlocked && folderScanError && (
+                  <TouchableOpacity
+                    style={styles.retryButton}
+                    onPress={() => setFolderScanAttempt((n) => n + 1)}
+                    activeOpacity={0.8}
+                    accessibilityRole="button"
+                    testID="folder-scan-retry"
+                  >
+                    <Text style={styles.retryButtonText}>Retry</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+            {isFolder ? null : (
             <View style={styles.modeRow} accessibilityRole="tablist">
               <TouchableOpacity
                 style={[styles.modeButton, mode === 'link' && styles.modeButtonActive]}
@@ -636,8 +788,9 @@ export default function ShareSheetScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
+            )}
 
-            {mode === 'link' ? (
+            {mode === 'link' || isFolder ? (
               <>
                 {/* Expiry */}
                 <Text style={styles.sectionLabel}>Expires</Text>
@@ -702,7 +855,7 @@ export default function ShareSheetScreen() {
                   <View style={styles.toggleInfo}>
                     <Text style={styles.toggleLabel}>End-to-end encrypted</Text>
                     <Text style={styles.toggleSub}>
-                      Beebeeb cannot decrypt this share. The recipient needs both the link and the key — send them through separate channels.
+                      Beebeeb cannot decrypt this share. The decryption key is embedded in the link and never reaches our servers.
                     </Text>
                     <View style={styles.zkBadge}>
                       <Text style={styles.zkBadgeText}>ACTIVE</Text>
@@ -738,28 +891,28 @@ export default function ShareSheetScreen() {
             )}
 
             <TouchableOpacity
-              style={[styles.createButton, creating && styles.buttonDisabled]}
+              style={[styles.createButton, (creating || folderBlocked) && styles.buttonDisabled]}
               onPress={mode === 'link' ? handleCreate : handleCreateInvite}
               activeOpacity={0.8}
-              disabled={creating}
+              disabled={creating || folderBlocked}
             >
               {creating ? (
                 <ActivityIndicator color={c.ink} size="small" />
               ) : (
                 <Text style={styles.createButtonText}>
-                  {mode === 'link' ? 'Create encrypted link' : 'Send invite'}
+                  {mode === 'link' || isFolder ? 'Create encrypted link' : 'Send invite'}
                 </Text>
               )}
             </TouchableOpacity>
 
             <Text style={styles.fineprint}>
-              {mode === 'link'
-                ? 'End-to-end encrypted — Beebeeb cannot decrypt. The recipient needs both the link and the key.'
+              {mode === 'link' || isFolder
+                ? 'End-to-end encrypted — Beebeeb cannot decrypt this share.'
                 : 'Email invites appear as pending until the recipient can accept them.'}
             </Text>
-          </ScrollView>
+          </View>
         )}
-      </View>
-    </KeyboardAvoidingView>
+      </BottomSheetScrollView>
+    </BottomSheet>
   );
 }

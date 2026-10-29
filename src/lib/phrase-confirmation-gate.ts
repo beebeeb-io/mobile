@@ -30,25 +30,20 @@ export interface PhraseGateInput {
   isAuthenticated: boolean;
   /** App.tsx's `phraseVerified` state, computed from `PHRASE_VERIFIED_KEY` at startup. */
   phraseVerified: boolean;
-  /**
-   * True only during the SAME JS session that just called `skipOnboarding()`
-   * (signup) — the actual phrase words are still held in memory
-   * (`pendingRecoveryPhrase`). This is the ONLY condition under which
-   * OnboardingScreen can legitimately show the real words; it is always
-   * `false` after a genuine process relaunch (the in-memory state resets).
-   */
-  hasInMemoryPendingPhrase: boolean;
 }
 
 /**
  * True when the app should route to the blocking `PhraseNotConfirmed`
- * screen instead of the vault (Tabs). This is deliberately DISJOINT from
- * the live-signup path (`hasInMemoryPendingPhrase`): that path still shows
- * the real words via the existing OnboardingScreen redirect. This gate only
- * fires when the words are genuinely gone — a cold relaunch mid-onboarding.
+ * screen instead of the vault (Tabs).
+ *
+ * Task 1037: the app no longer creates accounts (sign-up is web-only), so
+ * the live in-app signup path that used to show the words in memory
+ * (`hasInMemoryPendingPhrase`, OnboardingScreen) is gone. A `'pending'`
+ * marker can now only come from an account created in-app by an older
+ * build, and this gate still catches it.
  */
 export function shouldRouteToPhraseGate(input: PhraseGateInput): boolean {
-  return input.isAuthenticated && !input.phraseVerified && !input.hasInMemoryPendingPhrase;
+  return input.isAuthenticated && !input.phraseVerified;
 }
 
 /**

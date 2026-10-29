@@ -386,7 +386,7 @@ function UploadCardDemo({ scheme }: { scheme: GlassScheme }) {
     fileName: 'Quarterly-Report-2026.pdf',
     stage: 2,
     percent: Math.round((bytesUploaded / TOTAL_BYTES) * 100),
-    city: 'Falkenstein',
+    place: 'Germany',
     region: 'eu-de',
     bytesUploaded,
     bytesTotal: TOTAL_BYTES,
@@ -396,7 +396,7 @@ function UploadCardDemo({ scheme }: { scheme: GlassScheme }) {
     fileName: 'Quarterly-Report-2026.pdf',
     stage: 'done',
     percent: 100,
-    city: 'Falkenstein',
+    place: 'Germany',
     region: 'eu-de',
   };
 
@@ -823,8 +823,9 @@ const styles = StyleSheet.create({
 
   sheetBody: { padding: 20, gap: 8 },
   variantLabel: { marginBottom: 6, marginLeft: 4 },
-  // Geometry lifted from ShareSheetScreen.tsx as shipped: radius 38, inset 10,
-  // shadows.lg. Only the fill differs between this and the GlassSheet below.
+  // Material A/B swatch: radius 38, inset 10, shadows.lg (the Share sheet's
+  // pre-1586 geometry). Only the fill differs between this and the GlassSheet
+  // below. The shipped sheets are full width since 1586 (BottomSheet.tsx).
   opaqueSheet: {
     borderRadius: GLASS_RADII.sheet,
     marginHorizontal: 10,

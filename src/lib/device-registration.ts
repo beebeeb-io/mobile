@@ -1,3 +1,4 @@
+import { appVersion } from './app-version';
 /**
  * Device registration — registers this mobile device with the Beebeeb
  * clients API on every successful login/startup.
@@ -56,7 +57,7 @@ export async function registerDevice(): Promise<string | null> {
       (Platform.OS === 'ios' ? 'iPhone' : 'Android');
 
     const platform = Platform.OS === 'ios' ? 'ios' : 'android';
-    const bbVersion = Constants.expoConfig?.version ?? '1.0.0';
+    const bbVersion = appVersion().version;
 
     // Try to get the Expo push token for the push_token field.
     // We import lazily because expo-notifications may not be available.
@@ -68,7 +69,11 @@ export async function registerDevice(): Promise<string | null> {
       const projectId =
         Constants.expoConfig?.extra?.eas?.projectId ??
         (Constants as { easConfig?: { projectId?: string } }).easConfig?.projectId;
-      if (projectId && Device.isDevice) {
+      // Android push registration runs after this device is registered
+      // (App.tsx). It owns opt-out, channel creation and permission requests,
+      // then links the token to this server device ID. Asking here bypasses
+      // those steps and can precede Android 13's required channel setup.
+      if (Platform.OS !== 'android' && projectId && Device.isDevice) {
         const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
         pushToken = tokenData.data;
       }

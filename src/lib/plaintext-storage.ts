@@ -11,6 +11,40 @@
  * `PROTECTED_LEAF_NAMES` and `REVIEWED_NATIVE_SOURCES` are consumed by
  * `plaintext-storage.test.ts`, which fails when a new backed-up write path is
  * added to the source without a registry entry.
+ *
+ * ── Android rule-equivalent (ora-2 ruling, 2026-10-02 — task 1683d) ──────────
+ *
+ * The iOS registry/harden layer has NO Kotlin analogue, by ruling: the Android
+ * rule is STRUCTURAL, and the sign-out purge is real + observable at the JS
+ * layer instead. Every protection iOS's registry buys is already an Android
+ * default here:
+ *
+ * 1. INTERNAL-ONLY STORAGE — every Kotlin writer stays inside
+ *    `context.filesDir` / `context.cacheDir` / MODE_PRIVATE SharedPreferences
+ *    (enforced by the f4780bf guard: `plaintext-storage.test.ts` walks the
+ *    Kotlin sources for external-storage / world-readable escapes). expo's
+ *    `documentDirectory` IS `context.filesDir` (AppDirectoriesService.kt), so
+ *    every registered leaf's writer is TS.
+ * 2. `allowBackup="false"` + pinned backup-rule attributes
+ *    (`android/dataExtractionRules`/`fullBackupContent` — pinned by the
+ *    manifest guard test) keep the whole filesDir subtree out of device
+ *    backups and D2D transfers; FBE at-rest encryption is device-wide.
+ * 3. PURGE = JS — `account-cleanup.ts`'s sweep deletes every registered
+ *    caches-registry leaf, the offline dir, the offline SecureStore manifest,
+ *    the identifier map, and calls `purgePlaintextStorage()` (which is
+ *    iOS-only work; on Android it reports {removed:0} BY DESIGN — the JS
+ *    sweep is the Android purge surface). No second process or content
+ *    provider exists on Android that could write plaintext outside this.
+ * 4. No `notePlaintextPathCreated()` on Android (iOS-gated below): there is
+ *    no native harden step to notify.
+ *
+ * REVISIT TRIGGERS (the four events that void this ruling — re-add a Kotlin
+ * registry analogue when any becomes true):
+ *   (a) a Kotlin writer outside the reviewed roots (the f4780bf guard goes red);
+ *   (b) a second process or content provider ships (share intent handling
+ *       moves to an :outofprocess target, a FileProvider, widget process…);
+ *   (c) expo moves `persistentFilesDirectory` off `context.filesDir`;
+ *   (d) backup/D2D transfer is re-enabled for this app (allowBackup flips).
  */
 import { Platform } from 'react-native';
 
@@ -35,6 +69,13 @@ export const PROTECTED_LEAF_NAMES = [
   'widget-data.json',
   'pinned',
   'temp',
+  // Task 1593 round 11 — the File Provider cache DB's own dedicated
+  // directory (see PlaintextStorageProtection.swift's registry() doc
+  // comment: protecting this directory is what actually protects its
+  // SQLite sidecars, via iOS's protection-class + backup-exclusion
+  // inheritance for files created inside it).
+  'file-provider-db',
+  'file-provider-cache.sqlite',
 ] as const;
 
 /**
@@ -49,9 +90,11 @@ export const PROTECTED_LEAF_NAMES = [
 export const REVIEWED_NATIVE_SOURCES = [
   'BeebeebCryptoBridge.swift',
   'BeebeebCryptoModule.swift',
+  // Task 2237c L7d: a one-byte custody marker in Application Support (excluded from backup). Not plaintext,
+  // and deliberately not a registry entry: the sign-out purge must not delete it.
+  'CustodyMarker.swift',
   'NativeBackupEngine.swift',
   'PendingSharesAccess.swift',
-  'PhotoBackupManager.swift',
   'PhotoKitResolver.swift',
   'PlaintextStorageProtection.swift',
   'ThumbnailQueueDB.swift',

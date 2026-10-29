@@ -1,0 +1,79 @@
+apply plugin: 'com.android.library'
+
+buildscript {
+  repositories {
+    mavenCentral()
+    google()
+  }
+  // task 1683b: the sync `Function` DSL (getPreviewLoadProgress) reaches
+  // pika's `isIntrospectable<T>()` via expo-modules-core's `toReturnType()` —
+  // a compiler-plugin-replaced call. Without the plugin applied to THIS
+  // module the call throws UnsupportedOperationException at module
+  // registration (`definition()`), killing every AsyncFunction too. The
+  // `expo-module-gradle-plugin` applies pika for every Expo module; this
+  // module predates that plugin, so apply it directly. Version matches
+  // expo-modules-core 57.0.18's own pika-api 0.3.2.
+  dependencies {
+    classpath "io.github.lukmccall.pika:pika-gradle:0.3.2"
+  }
+}
+
+apply plugin: 'io.github.lukmccall.pika'
+
+group = 'expo.modules.beebeebcrypto'
+version = '0.1.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useDefaultAndroidSdkVersions()
+
+android {
+  namespace "expo.modules.beebeebcrypto"
+
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+    testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    consumerProguardFiles "consumer-rules.pro"
+
+    // Keep this module (and its androidTest APK) aligned with the app's ABI
+    // set — the repo ships Rust .so files for these two ABIs only, and the
+    // androidTest APK otherwise packages all four ABIs of its RN deps (~126 MB).
+    ndk {
+      abiFilters 'arm64-v8a', 'x86_64'
+    }
+  }
+}
+
+dependencies {
+  // UniFFI Kotlin bindings runtime — the @aar is mandatory (the plain jar has
+  // no native dispatch library). >= 5.17.0 is required for 16 KB page sizes.
+  implementation "net.java.dev.jna:jna:5.19.1@aar"
+
+  // task 1683b — streaming preview download (downloadAndDecryptFileNative).
+  // Version matches the RN 0.86.3 catalog pin (libs.versions.toml okhttp = 4.9.2)
+  // so no new version enters the dependency graph.
+  implementation "com.squareup.okhttp3:okhttp:4.9.2"
+
+  // Generated bindings use androidx @RequiresApi annotations (UniFFI `android = true`)
+  // and kotlinx-coroutines for async functions.
+  implementation "androidx.annotation:annotation:1.9.1"
+  implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2"
+
+  // BiometricPrompt for the per-use vault key (stable line; the 1.4 alphas are
+  // avoided on a security-critical path). Note: 1.1.0 has a known
+  // CryptoObject crash on API < 30 (android/security/identity ref) — revisit
+  // when the Android floor is decided (README says Android 12+).
+  implementation "androidx.biometric:biometric:1.1.0"
+
+  // Device-side KAT gate (Task 6 / task 1683)
+  androidTestImplementation "androidx.test:runner:1.6.2"
+  androidTestImplementation "androidx.test.ext:junit:1.2.1"
+  androidTestImplementation "junit:junit:4.13.2"
+
+  // task 1683b — JVM-side module-surface probe (fast definition() bisect loop;
+  // registration touches no Android framework APIs).
+  testImplementation "junit:junit:4.13.2"
+}

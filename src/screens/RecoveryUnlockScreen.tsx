@@ -20,6 +20,8 @@ import { usePreventScreenCapture } from 'expo-screen-capture';
 import { fonts, radii, spacing } from '../theme';
 import { useAuth } from '../lib/auth';
 import { useCrypto } from '../lib/crypto-context';
+import { OWNERSHIP_UNREACHABLE_MESSAGE, PHRASE_WRONG_ACCOUNT_MESSAGE } from '../lib/key-ownership';
+import { VAULT_LOCKED_LANDING_SUBTITLE, VAULT_LOCKED_TITLE } from '../lib/vault-locked-copy';
 import { useTheme } from '../lib/theme-context';
 import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 import {
@@ -155,10 +157,14 @@ export default function RecoveryUnlockScreen() {
       // after this particular race times out).
       await withTimeout(unlockOperationRef.current, UNLOCK_TIMEOUT_MS, 'Unlock timed out');
     } catch (err) {
+      const message = err instanceof Error ? err.message : '';
       setError(
         err instanceof UnlockTimeoutError
           ? 'Unlock is taking too long. Close and reopen the app, then try again.'
-          : 'That recovery phrase did not unlock this vault. Check the words and order.',
+          // Task 1594: the phrase was checked against THIS account — say so.
+          : message === PHRASE_WRONG_ACCOUNT_MESSAGE || message === OWNERSHIP_UNREACHABLE_MESSAGE
+            ? message
+            : 'That recovery phrase did not unlock this vault. Check the words and order.',
       );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
@@ -188,10 +194,11 @@ export default function RecoveryUnlockScreen() {
           <BBWordmark size={22} style={{ marginTop: 12 }} />
         </View>
 
-        <Text style={styles.heading}>Unlock your vault</Text>
-        <Text style={styles.subheading}>
-          This device does not have your vault key yet. Enter your 12-word recovery phrase to decrypt your files here.
-        </Text>
+        {/* Task 1704 slice 3: canonical "Vault locked" landing language
+            (1684/1693 ruling) — copy lives in lib/vault-locked-copy.ts and is
+            pinned by lib/vault-locked-copy.test.ts. */}
+        <Text style={styles.heading}>{VAULT_LOCKED_TITLE}</Text>
+        <Text style={styles.subheading}>{VAULT_LOCKED_LANDING_SUBTITLE}</Text>
 
         {error && (
           <View style={styles.errorBanner}>

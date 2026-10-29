@@ -27,6 +27,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import * as Sharing from 'expo-sharing';
 import * as Haptics from 'expo-haptics';
 import { useNavigation } from '@react-navigation/native';
@@ -232,11 +233,17 @@ export function ConstellationScannerScreen() {
         // transfer_key before saving.
         const bytes = new Uint8Array(buf);
         const fileName = savedFileName ?? `beebeeb-transfer-${bytesToHex(randomBytes(4))}.enc`;
-        const localUri = `${FileSystem.cacheDirectory}${fileName}`;
+        // Task 1593 — a registered caches dir (lib/caches-plaintext-registry.ts).
+        const transferDir = `${FileSystem.cacheDirectory}beebeeb-transfer/`;
+        await FileSystem.makeDirectoryAsync(transferDir, { intermediates: true }).catch(() => {});
+        const localUri = `${transferDir}${fileName}`;
         const base64 = bytesToBase64(bytes);
-        await FileSystem.writeAsStringAsync(localUri, base64, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
+        // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+        await gatedPlaintextWrite('transfer receive', localUri, FileSystem, () =>
+          FileSystem.writeAsStringAsync(localUri, base64, {
+            encoding: FileSystem.EncodingType.Base64,
+          }),
+        );
 
         if (cancelled) return;
         setSavedUri(localUri);

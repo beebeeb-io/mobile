@@ -60,7 +60,7 @@ mock.module('expo-file-system/legacy', () => ({
 }));
 mock.module('../../modules/beebeeb-crypto', () => ({}));
 
-const { seedWelcomeMarkdown, ensureUnlockedAndSeed, WELCOME_FILENAME } = await import('./welcome-seed');
+const { seedWelcomeMarkdown, ensureUnlockedAndSeed, WELCOME_FILENAME, WELCOME_MARKDOWN } = await import('./welcome-seed');
 
 const FOLDER = { id: 'f1', is_folder: true };
 const FILE = { id: 'd1', is_folder: false };
@@ -229,5 +229,12 @@ describe('ensureUnlockedAndSeed — CryptoProvider remount race (1444)', () => {
     } finally {
       infoSpy.mockRestore();
     }
+  });
+});
+
+describe('welcome.md copy: storage location (Guus, 2026-09-29)', () => {
+  test('says Europe, not a single city. More EU locations are coming.', () => {
+    expect(WELCOME_MARKDOWN).toContain('Stored and made in Europe.');
+    expect(WELCOME_MARKDOWN).not.toMatch(/Falkenstein|Germany/);
   });
 });

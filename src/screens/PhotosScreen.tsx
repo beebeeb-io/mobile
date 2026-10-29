@@ -1,3 +1,4 @@
+import { thumbnailKeyFor } from '../lib/thumbnail';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../App';
@@ -15,6 +16,8 @@ import {
   View,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from '../lib/plaintext-gate';
+import { photosNoun } from '../lib/device-copy';
 import {
   PinchGestureHandler,
   State,
@@ -31,9 +34,22 @@ import { NativePhotosGridView, type NativePhotoGridItem } from '../../modules/be
 import { radii, spacing } from '../theme';
 import { useTheme } from '../lib/theme-context';
 import { GlassCircle, GlassSurface, SCROLL_EDGE, ScrollEdgeBlur, glassMaterial, useTabBarBottomInset } from '../components/glass';
-import { ApiError, getAllImages, getFileIndex, friendlyError, trashFiles } from '../lib/api';
+import { friendlyError, trashFiles } from '../lib/api';
+import { getPhotoCandidates } from '../lib/photo-index-source';
+import { isStaleAccountError } from '../lib/account-epoch';
 import type { FileEntry } from '../lib/api';
 import { guessMimeType } from '../lib/media';
+// Task 1687c — the row-level Photos-tab media classification lives in
+// src/lib/photo-candidates.ts (unit-tested): an upload row that is already
+// a media candidate (`is_media`, decodable mime, or a thumbnail) appears in
+// the grid and pager the moment the row exists — `is_uploading` no longer
+// hides it. Folders and non-media rows stay out.
+import {
+  isVisibleMediaFile,
+  mediaMimeType,
+  photoCandidatesFromIndex,
+} from '../lib/photo-candidates';
+import { getPhotoPermission, photoPermissionGranted } from '../lib/photo-permissions';
 import { useBackup } from '../lib/backup-context';
 import { useCrypto } from '../lib/crypto-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
@@ -59,12 +75,14 @@ import { decryptToTempFile } from '../lib/native-decrypt';
 import { prunePhotoCacheForRemoteFiles } from '../lib/photo-cache';
 import { onFilesDeleted } from '../lib/delete-cascade';
 import { removeFromFileProviderCache } from '../lib/file-provider-mount';
-import { loadCachedFileIndex, saveCachedFileIndex, type CachedFileIndex } from '../lib/file-index-cache';
+import { loadCachedFileIndex } from '../lib/file-index-cache';
 import { getRemoteCreatedAtMap, getRemoteToLocalMap, markRemoteDeleted } from '../services/BackupDatabase';
+import { backupWriteTicket } from '../lib/backup-write-ticket';
 import { encryptedMetadataPayloadToBytes } from '../lib/encrypted-metadata';
 import { mapInBatches } from '../lib/async-batch';
 import { perfMark } from '../lib/perf-mark';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
+import { formatDate } from '../lib/date-format';
 import {
   columnsForPinchScale,
   DEFAULT_PHOTO_GRID_COLUMNS,
@@ -77,83 +95,11 @@ import {
 import {
   getExcludedPhotoFolderIds,
   filterByExcludedFolders,
-  filterByExcludedFoldersDirect,
 } from '../lib/photo-library-prefs';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-type MediaEntry = FileEntry & {
-  category?: string | null;
-  file_category?: string | null;
-  media_type?: string | null;
-  name?: string | null;
-  file_name?: string | null;
-  mime?: string | null;
-};
-
-function stringField(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
-function mediaCategory(entry: MediaEntry): string {
-  return (
-    stringField(entry.category) ??
-    stringField(entry.file_category) ??
-    stringField(entry.media_type) ??
-    ''
-  ).toLowerCase();
-}
-
-function filenameCandidates(entry: MediaEntry): string[] {
-  return [
-    stringField(entry.name),
-    stringField(entry.file_name),
-    stringField(entry.name_encrypted),
-  ].filter((value): value is string => !!value && !value.startsWith('{'));
-}
-
-function mediaMimeType(entry: FileEntry): string | null {
-  const mediaEntry = entry as MediaEntry;
-  const mime = (entry.mime_type ?? mediaEntry.mime ?? '').toLowerCase();
-  if (mime.startsWith('image/')) return entry.mime_type ?? mediaEntry.mime ?? 'image/jpeg';
-  if (mime.startsWith('video/')) return entry.mime_type ?? mediaEntry.mime ?? 'video/mp4';
-
-  const category = mediaCategory(mediaEntry);
-  if (category === 'image' || category === 'photo') return 'image/jpeg';
-  if (category === 'video') return 'video/mp4';
-
-  for (const name of filenameCandidates(mediaEntry)) {
-    const guessed = guessMimeType(name);
-    if (guessed?.startsWith('image/')) return guessed;
-    if (guessed?.startsWith('video/')) return guessed;
-  }
-
-  return entry.is_media ? 'image/jpeg' : null;
-}
-
-function isMediaFile(entry: FileEntry): boolean {
-  return mediaMimeType(entry) !== null;
-}
-
-function isEncryptedThumbnailCandidate(entry: FileEntry): boolean {
-  return !!entry.has_thumbnail && typeof entry.name_encrypted === 'string' && entry.name_encrypted.startsWith('{');
-}
-
-function isVisibleMediaFile(entry: FileEntry, decryptedMimeTypes: Record<string, string>): boolean {
-  const decryptedMime = decryptedMimeTypes[entry.id]?.toLowerCase();
-  if (decryptedMime) return decryptedMime.startsWith('image/') || decryptedMime.startsWith('video/');
-  return isMediaFile(entry) || isEncryptedThumbnailCandidate(entry);
-}
-
-function photoCandidatesFromIndex(files: FileEntry[]): FileEntry[] {
-  return files.filter((entry) => (
-    !entry.is_folder &&
-    !entry.is_uploading &&
-    (isMediaFile(entry) || isEncryptedThumbnailCandidate(entry))
-  ));
-}
 
 /**
  * Parse the decrypted metadata plaintext. The server may store the filename as
@@ -180,48 +126,13 @@ function parseDecryptedPhotoMetadata(plaintext: string): DecryptedPhotoMetadata 
 }
 
 function preparePhotoEntries(entries: FileEntry[]): FileEntry[] {
+  // Task 1687c — `is_uploading` no longer hides a media row here either:
+  // this sorts the output of photoCandidatesFromIndex for the grid/pager,
+  // and dropping uploading rows here would undo the candidate fix (a fresh
+  // photo would vanish again before this sort ran). Folders stay excluded.
   return entries
-    .filter((entry) => !entry.is_folder && !entry.is_uploading)
+    .filter((entry) => !entry.is_folder)
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-}
-
-async function getPhotoCandidates(
-  cachedIndex?: CachedFileIndex | null,
-  excludedFolderIds?: Set<string>,
-): Promise<FileEntry[]> {
-  const excluded = excludedFolderIds ?? new Set<string>();
-  try {
-    const existingIndex = cachedIndex ?? await loadCachedFileIndex();
-    const index = await getFileIndex(existingIndex?.hash);
-    if (!index.changed && existingIndex) {
-      // Pass the FULL index (folder rows included) so exclusion is transitive.
-      return filterByExcludedFolders(
-        existingIndex.files,
-        photoCandidatesFromIndex(existingIndex.files),
-        excluded,
-      );
-    }
-    if (index.files) {
-      await saveCachedFileIndex(index.hash, index.files);
-      return filterByExcludedFolders(
-        index.files,
-        photoCandidatesFromIndex(index.files),
-        excluded,
-      );
-    }
-  } catch (err) {
-    // Older API builds do not have /files/index yet. Because /files/{id}
-    // also exists, those builds may treat "index" as a UUID and return 400
-    // instead of 404. Fall back to the media endpoint in all unsupported-route
-    // cases, but keep auth/network/server errors visible.
-    if (!(err instanceof ApiError) || (err.status !== 400 && err.status !== 404 && err.status !== 405)) {
-      throw err;
-    }
-  }
-
-  // Legacy /files/media path has no folder tree — degrade to direct-parent
-  // exclusion (transitive exclusion only matters on the index path above).
-  return filterByExcludedFoldersDirect(await getAllImages(), excluded);
 }
 
 /**
@@ -732,11 +643,17 @@ function DevicePhotosBanner() {
     let cancelled = false;
     (async () => {
       try {
-        const { status } = await MediaLibrary.requestPermissionsAsync();
-        if (status !== 'granted') {
-          if (!cancelled) setPermissionDenied(true);
+        // Task 1688 — GET only, never a request from a mount/focus: under
+        // iOS LIMITED access, `requestPermissionsAsync` re-presents the
+        // system "Select More Photos" sheet on EVERY relaunch (the reported
+        // re-prompt loop). A limited library counts as granted — the counts
+        // below already see exactly the assets the user selected.
+        const permission = await getPhotoPermission(MediaLibrary);
+        if (!cancelled && !photoPermissionGranted(permission)) {
+          setPermissionDenied(true);
           return;
         }
+        if (!cancelled) setPermissionDenied(false);
         const [photoAssets, videoAssets] = await Promise.all([
           MediaLibrary.getAssetsAsync({
             mediaType: MediaLibrary.MediaType.photo,
@@ -892,7 +809,7 @@ function AutoBackupBanner() {
         </Text>
         {lastBackupAt && (
           <Text style={[styles.bannerHint, { color: material.labelMuted }]}>
-            {new Date(lastBackupAt).toLocaleDateString()}
+            {formatDate(lastBackupAt)}
           </Text>
         )}
       </GlassSurface>
@@ -1091,7 +1008,11 @@ export default function PhotosScreen() {
     return () => { cancelled = true; };
   }, [activePhotoIds, photos, photosById, isUnlocked, decryptMetadata]);
 
-  const fetchPhotos = useCallback(async (isRefresh = false) => {
+  // Task 1959: `force` asks the server even inside the file-index loader's
+  // revalidation window (pull-to-refresh; a bulk action that found rows
+  // already gone). A plain focus does not: it reuses the request in flight or
+  // the cache the sync client keeps current (src/lib/file-index-loader.ts).
+  const fetchPhotos = useCallback(async (isRefresh = false, force = isRefresh) => {
     const hasVisiblePhotos = photosCountRef.current > 0;
     recordRuntimeTrace('photos.fetch.request', {
       refresh: isRefresh,
@@ -1131,7 +1052,7 @@ export default function PhotosScreen() {
         }
       }
 
-      const allImages = await getPhotoCandidates(cachedIndex, excludedFolderIds);
+      const allImages = await getPhotoCandidates(cachedIndex, excludedFolderIds, { force });
       setPhotosFolderId(null);
       // Server usually returns image/media rows sorted newest first, but defend
       // against future changes by re-applying both invariants here.
@@ -1187,6 +1108,12 @@ export default function PhotosScreen() {
         .catch(() => {});
     } catch (err) {
       endPerf({ error: true });
+      // Task 1959 round 2: the account changed while the index loaded. The
+      // result belonged to the signed-out account; show nothing, no error.
+      if (isStaleAccountError(err)) {
+        recordRuntimeTrace('photos.fetch.stale_account', { renderedCachedIndex });
+        return;
+      }
       recordRuntimeTrace('photos.fetch.failed', {
         renderedCachedIndex,
         error: err instanceof Error ? err.message : String(err),
@@ -1431,6 +1358,9 @@ export default function PhotosScreen() {
           chunk_count: p.chunk_count,
           version_number: p.version_number,
           storage_pool_id: p.storage_pool_id ?? null,
+          is_request_upload: !!p.file_request_id || !!p.wrapped_content_key,
+          has_thumbnail: p.has_thumbnail,
+          thumbnail_bytes: p.thumbnail_bytes,
           thumbnail_uri: thumbnailUris[p.id] ?? null,
           local_asset_id: photoKitAssetMap.get(p.id) ?? null,
         })),
@@ -1450,6 +1380,7 @@ export default function PhotosScreen() {
         // 0883 — let Preview auto self-repair a missing thumbnail for this owner
         // photo/video from the downloaded plaintext (undefined ⇒ skip).
         hasThumbnail: entry.has_thumbnail,
+        thumbnailBytes: entry.thumbnail_bytes,
       });
     },
     [navigation, decryptedMimeTypes, decryptedNames, flatPhotos, performanceStorageProfile, photoKitAssetMap, thumbnailUris],
@@ -1489,7 +1420,7 @@ export default function PhotosScreen() {
     if (selectedPhotos.length === 0 || bulkAction) return;
     Alert.alert(
       'Delete from Beebeeb?',
-      `Delete ${selectedPhotos.length} selected ${selectedPhotos.length === 1 ? 'photo' : 'photos'} from your Beebeeb vault? This will not delete anything from iPhone Photos.`,
+      `Delete ${selectedPhotos.length} selected ${selectedPhotos.length === 1 ? 'photo' : 'photos'} from your Beebeeb vault? This will not delete anything from ${photosNoun()}.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -1498,6 +1429,9 @@ export default function PhotosScreen() {
           onPress: async () => {
             setBulkAction('delete');
             setBulkStatus('Deleting from Beebeeb...');
+            // Task 1667 round 8: the backup manifest update below runs only
+            // if no sign-out or storage purge happened since this delete began.
+            const writeTicket = backupWriteTicket();
             try {
               const selectedIds = selectedPhotos.map((photo) => photo.id);
               const result = await trashFiles(selectedIds);
@@ -1505,7 +1439,7 @@ export default function PhotosScreen() {
               await Promise.all(selectedPhotos.map(async (photo) => {
                 if (!deletedIds.has(photo.id)) return;
                 const localAssetId = localAssetMap.get(photo.id);
-                if (localAssetId) await markRemoteDeleted(localAssetId);
+                if (localAssetId) await markRemoteDeleted(localAssetId, writeTicket);
               }));
 
               setPhotos((prev) => prev.filter((photo) => !deletedIds.has(photo.id)));
@@ -1529,7 +1463,7 @@ export default function PhotosScreen() {
                   'Some photos were not moved',
                   'Beebeeb refreshed the photo list because a few selected items were already gone or unavailable.',
                 );
-                void fetchPhotos();
+                void fetchPhotos(false, true);
               }
             } catch (err) {
               Alert.alert('Delete failed', friendlyError(err));
@@ -1610,9 +1544,12 @@ export default function PhotosScreen() {
       setBulkStatus('Opening share sheet...');
       const zipBase64 = await zip.generateAsync({ type: 'base64', compression: 'STORE' });
       const zipUri = `${cacheDir}beebeeb-photos-${Date.now()}.zip`;
-      await FileSystem.writeAsStringAsync(zipUri, zipBase64, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+      await gatedPlaintextWrite('photos share zip', zipUri, FileSystem, () =>
+        FileSystem.writeAsStringAsync(zipUri, zipBase64, {
+          encoding: FileSystem.EncodingType.Base64,
+        }),
+      );
       await Sharing.shareAsync(zipUri, {
         mimeType: 'application/zip',
         dialogTitle: 'Share Beebeeb photos',
@@ -1774,7 +1711,7 @@ export default function PhotosScreen() {
         const fetched: Record<string, string> = {};
         const stats = await prefetchDecryptedThumbnails(
           toFetch,
-          getFileKeyBytes,
+          id => thumbnailKeyFor(id, getMasterKeyHandleId, getFileKeyBytes),
           {
             signal: controller.signal,
             onLoaded: (fileId, uri) => {
@@ -2118,8 +2055,8 @@ export default function PhotosScreen() {
     if (!item) {
       return { length: cellSize + GRID_GAP, offset: 0, index };
     }
-    return { length: item.length, offset: item.offset, index };
-  }, [cellSize, listItems]);
+    return { length: item.length, offset: item.offset + (Platform.OS === 'android' ? headerHeight : 0), index };
+  }, [cellSize, headerHeight, listItems]);
 
   const handleViewableItemsChanged = useRef((info: { viewableItems: Array<{ index: number | null }> }) => {
     if (isPinchingRef.current) return;
@@ -2181,6 +2118,22 @@ export default function PhotosScreen() {
       profile: performanceStorageProfile,
     });
     const visibleIds = new Set(nativeIds);
+    // Task 1689 — scroll-state derivation for the native grid (iOS), which
+    // has no scroll event of its own (it defers every bridge dispatch to
+    // rest positions — see NativePhotosGridView.scrollViewDidScroll). The
+    // topmost photo in display order leaving the visible set means the grid
+    // is scrolled away from the top; it re-entering means back at rest.
+    // Same ref-guard shape as handleGridScroll so the state only flips on
+    // an actual change. Empty ids (or an empty grid) keep the last state —
+    // there is nothing under the header to make legible either way.
+    const topPhotoId = flatPhotos[0]?.id;
+    if (topPhotoId) {
+      const nextIsScrolled = !visibleIds.has(topPhotoId);
+      if (nextIsScrolled !== isScrolledRef.current) {
+        isScrolledRef.current = nextIsScrolled;
+        setIsScrolled(nextIsScrolled);
+      }
+    }
     const thumbnailIds = collectThumbnailIdsForProfile(
       flatPhotos,
       visibleIds,
@@ -2235,16 +2188,31 @@ export default function PhotosScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.paper }]}>
-      {/* 1322 — the grid bleeds edge-to-edge, so the blur is ALWAYS on rather
-          than gated on scroll the way Drive's is. Two reasons. Photos is
-          permanently full-bleed — there is no resting state where content
-          genuinely starts below the header, so a gate would only ever be
-          wrong. And `isScrolled` cannot drive it here: `handleGridScroll` is
-          wired to the FlatList, which is the non-iOS fallback, so on the
-          platform we ship `isScrolled` has been permanently false since the
-          native grid landed — the hairline border it used to gate was dead
-          too. Without the blur the title is unreadable over bright photos. */}
-      <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} />
+      {/* Android (2233) keeps the title tint gradient mounted at rest.
+          iOS retains 1322/1689 below: the scroll-edge blur is gated on
+          `isScrolled` exactly like every sibling screen (Files 4545,
+          Settings 1826, Trash 386, Shared 737, Storage 403,
+          BackupInsights 629), because in light mode the 0.30-alpha light
+          tint renders as a visible "plain-band fade" over the grid's paper
+          background when nothing is scrolled — with `contentInsetTop` the
+          first row starts BELOW the header at rest, so the strip has
+          nothing to make legible. 1322's two original reasons for always
+          mounting it: (1) full-bleed content — still true WHILE scrolled
+          (the grid then runs under the header and the blur is doing real
+          work), and (2) `isScrolled` was permanently false on the shipping
+          platform because the native grid never reported scroll — solved
+          here by deriving scroll state from the native grid's own
+          `onVisiblePhotoIdsChange` events (the native grid deliberately
+          defers ALL bridge work to rest positions, so the blur switches
+          when the grid settles, not mid-drag): the topmost photo leaving
+          the visible set means scrolled; it re-entering means back at
+          rest. The FlatList fallback keeps its true `onScroll` derivation
+          (`handleGridScroll`). Trade-off recorded honestly: during the
+          drag itself (before the grid settles) the header rides over
+          unblurred content for the duration of the gesture — the same
+          deferred-side-effect trade the native grid already makes for
+          thumbnail prefetch. */}
+      {Platform.OS === 'android' || isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
       <View
         style={[styles.floatingHeader, { paddingTop: insets.top }]}
         onLayout={(e) => {
@@ -2336,9 +2304,16 @@ export default function PhotosScreen() {
                     onRefresh={handleRefresh}
                     tintColor={c.amber}
                     colors={[c.amber]}
+                    progressViewOffset={Platform.OS === 'android' ? headerHeight : undefined}
                   />
                 }
-                contentContainerStyle={listItems.length === 0 ? styles.emptyList : undefined}
+                contentContainerStyle={[
+                  listItems.length === 0 ? styles.emptyList : undefined,
+                  Platform.OS === 'android' ? {
+                    paddingTop: headerHeight,
+                    paddingBottom: tabBarBottomInset + bottomOverlayHeight,
+                  } : undefined,
+                ]}
                 ListFooterComponent={<View style={{ height: LIST_FOOTER_HEIGHT }} />}
                 onScroll={handleGridScroll}
                 onScrollBeginDrag={handleScrollBeginDrag}
@@ -2558,7 +2533,14 @@ const styles = StyleSheet.create({
   // Auto-backup banner — floats above the native tab bar (task 1429: was a
   // flat, full-width, opaque strip; now a `GlassSurface radius="card"` card
   // with side insets, matching UploadActivityCard's floating-card shape).
-  bannerWrap: { marginHorizontal: 14, marginBottom: 6 },
+  // Guus 2026-10-02 (Photos tab): the banner sat ~18pt off the bar —
+  // bottomOverlay already anchors at `useTabBarBottomInset()`, whose 12pt
+  // CONTENT_CLEARANCE is the one shared gap to the bar (the same anchor
+  // FilesScreen's action bar uses), and the old `marginBottom: 6` stacked a
+  // second gap on top, so the card read as detached. Dropped: the bar-side
+  // inset is now the only spacing. `bottomOverlayHeight` re-measures via
+  // onLayout, so the grid's `contentInsetBottom` follows on its own.
+  bannerWrap: { marginHorizontal: 14 },
   banner: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
   bannerWithProgress: { flexDirection: 'column', alignItems: 'stretch', paddingHorizontal: 16, paddingVertical: 12, gap: 8 },
   bannerHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },

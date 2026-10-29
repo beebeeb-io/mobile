@@ -18,6 +18,18 @@
  */
 
 import * as SQLite from 'expo-sqlite';
+import { isCurrentAccountEpoch } from '../lib/account-epoch';
+import {
+  admitsBackupWrite,
+  advanceBackupPurgeGeneration,
+  type BackupWriteTicket,
+} from '../lib/backup-write-ticket';
+import { registerStoragePurgeParticipant, type StoragePurgeHold } from '../lib/storage-purge-participants';
+import {
+  BackupManifestNotReadyError,
+  PENDING_RESET_DEFERRED,
+  backupManifestJsOpenGate,
+} from '../lib/backup-manifest-js-open-gate';
 
 export type BackupAssetType = 'photo' | 'video' | 'contact' | 'calendar';
 export type BackupAssetStatus =
@@ -69,17 +81,301 @@ let localMissingMigrationLastRunAt = 0;
 let localMissingMigrationInFlight: Promise<void> | null = null;
 const LOCAL_MISSING_MIGRATION_MIN_INTERVAL_MS = 60_000;
 
-async function getDb(): Promise<SQLite.SQLiteDatabase> {
-  if (!dbPromise) dbPromise = openAndMigrate();
+// Task 1667: set while the sign-out storage purge runs. No call reaches the
+// handle while it is set (see `trackedDb`).
+let purgeBarrier: Promise<void> | null = null;
+
+// Task 1667 round 4 (Codex P1 "Serialize overlapping database purge holds"):
+// holds are reference-counted. ONE barrier exists while any hold is
+// installed; it is cleared and released exactly once, when the last hold
+// resumes, in whatever order they resume. (Round 2-3 kept a per-hold barrier
+// and restored the "previous" one on resume: two overlapping purges released
+// first-in-first-out left the first, already-resolved barrier installed, and
+// every later call spun on it forever.)
+let purgeHolds = 0;
+let releasePurgeBarrier: (() => void) | null = null;
+
+// Task 1667 round 2 (Codex P1 "Treat a busy WAL checkpoint as a failed
+// reset"): calls currently running on the handle. A read already started when
+// the purge begins would otherwise keep an old WAL snapshot open while the
+// native side empties the manifest; the hold waits for this to reach 0.
+let inFlight = 0;
+let idleWaiters: Array<() => void> = [];
+
+// Task 1667 round 7 (Codex P1 "Retain the database handle when closing
+// fails", mobile#182 at dc531405): every connection this module opened whose
+// close has not been CONFIRMED. A handle whose `closeAsync()` rejected may
+// still be open (expo-sqlite marks it closed before `sqlite3_close` reports
+// back, and a busy close leaves the SQLite connection open), so it stays
+// here, `closeHandleForStoragePurge` retries it on every call, and that
+// returns false while any of them remains: the native recovery must never
+// unlink the file under a handle we lost track of. Before, the failed handle
+// was dropped with `dbPromise`; the next purge closed only the NEW handle,
+// reported "all closed", and the file was unlinked under the old one.
+const unclosedHandles = new Set<SQLite.SQLiteDatabase>();
+const CLOSE_ATTEMPTS = 3;
+const CLOSE_RETRY_DELAY_MS = 50;
+
+/** Closes `db`, retrying; true only when a `closeAsync()` resolved. */
+async function closeWithRetry(db: SQLite.SQLiteDatabase): Promise<boolean> {
+  for (let attempt = 1; attempt <= CLOSE_ATTEMPTS; attempt += 1) {
+    try {
+      await db.closeAsync();
+      return true;
+    } catch {
+      // A rejection is never "closed": expo-sqlite rejects a retry of a
+      // handle it already marked closed even when SQLite kept it open.
+      if (attempt < CLOSE_ATTEMPTS) await new Promise((r) => setTimeout(r, CLOSE_RETRY_DELAY_MS));
+    }
+  }
+  return false;
+}
+
+/** Test seam: connections whose close has not been confirmed. */
+export function unclosedHandleCount(): number {
+  return unclosedHandles.size;
+}
+
+function callStarted(): void {
+  inFlight += 1;
+}
+
+function callFinished(): void {
+  inFlight -= 1;
+  if (inFlight === 0) {
+    const waiters = idleWaiters;
+    idleWaiters = [];
+    for (const w of waiters) w();
+  }
+}
+
+function whenIdle(): Promise<void> {
+  return inFlight === 0 ? Promise.resolve() : new Promise((resolve) => { idleWaiters.push(resolve); });
+}
+
+/**
+ * Task 1667 round 10: starts an open and installs it as the handle (callers
+ * also assign the result, which keeps TypeScript's narrowing). An open
+ * the native gate refused opened NOTHING; it is dropped so the next call asks
+ * the gate again (any other failure keeps the rejected handle, as before).
+ */
+function startOpen(): Promise<SQLite.SQLiteDatabase> {
+  const opening = openAndMigrate();
+  dbPromise = opening;
+  opening.catch((err) => {
+    if (err instanceof BackupManifestNotReadyError && dbPromise === opening) dbPromise = null;
+  });
+  return opening;
+}
+
+/** The real handle: opened lazily, never while a purge holds the module. */
+async function openHandle(): Promise<SQLite.SQLiteDatabase> {
+  while (purgeBarrier) await purgeBarrier;
+  if (!dbPromise) dbPromise = startOpen();
   return dbPromise;
 }
+
+/**
+ * Runs one call on the CURRENT handle, counted in `inFlight`.
+ *
+ * Why the hold cannot miss a call: the barrier is checked and the handle
+ * promise read with no await in between. A call that passed the check before
+ * `suspendForStoragePurge` set the barrier is already waiting on that same
+ * promise (or on one already resolved: every public function resolves
+ * `getDb()` first), so its continuation runs before the hold's and it is
+ * counted before the hold reads `inFlight`. A call that comes later waits on
+ * the barrier. `closeHandleForStoragePurge` only runs under the barrier, so
+ * no call is ever handed a closed handle.
+ */
+async function onHandle<T>(call: (db: SQLite.SQLiteDatabase) => Promise<T>): Promise<T> {
+  while (purgeBarrier) await purgeBarrier;
+  if (!dbPromise) dbPromise = startOpen();
+  const handle = dbPromise;
+  const db = await handle;
+  callStarted();
+  try {
+    return await call(db);
+  } finally {
+    callFinished();
+  }
+}
+
+/**
+ * What every function in this module uses instead of the raw handle: the four
+ * methods it calls, each routed through `onHandle`. Not a Proxy on purpose:
+ * `await getDb()` would treat a Proxy's `then` as a thenable.
+ */
+const trackedDb = {
+  execAsync: (source: string) => onHandle((db) => db.execAsync(source)),
+  runAsync: (source: string, ...params: SQLite.SQLiteBindParams[]) =>
+    onHandle((db) => (db.runAsync as (s: string, ...p: unknown[]) => Promise<SQLite.SQLiteRunResult>)(source, ...params)),
+  getFirstAsync: <T>(source: string, ...params: SQLite.SQLiteBindParams[]) =>
+    onHandle((db) => (db.getFirstAsync as (s: string, ...p: unknown[]) => Promise<T | null>)(source, ...params)),
+  getAllAsync: <T>(source: string, ...params: SQLite.SQLiteBindParams[]) =>
+    onHandle((db) => (db.getAllAsync as (s: string, ...p: unknown[]) => Promise<T[]>)(source, ...params)),
+};
+
+// Typed as the real handle so the call sites stay unchanged; only the four
+// methods above exist on it (native-backup-manifest-wiring.test.ts checks
+// this module calls nothing else on `db`).
+const trackedHandle = trackedDb as unknown as SQLite.SQLiteDatabase;
+
+async function getDb(): Promise<SQLite.SQLiteDatabase> {
+  await openHandle();
+  return trackedHandle;
+}
+
+// Task 1667 round 8 (Codex P1 "Fence late photo scans before resetting the
+// manifest"): every WRITE in this module runs behind the caller's
+// `BackupWriteTicket` (backup-write-ticket.ts), taken when the caller's work
+// started. A ticket from before a sign-out, a sign-in or a storage purge is
+// dead, and its writes are dropped (counted in `droppedWrites`).
+const droppedWrites: string[] = [];
+const FENCED_RUN: SQLite.SQLiteRunResult = { changes: 0, lastInsertRowId: 0 };
+
+/** Test seam: the writers whose statements the fence dropped, in order. */
+export function droppedBackupWrites(): readonly string[] {
+  return droppedWrites;
+}
+
+/**
+ * `onHandle` for a write. The ticket is checked AFTER the purge barrier and
+ * the handle await, in the same synchronous step that counts the call and
+ * starts the statement: a purge hold installed while this call waited has
+ * already advanced the purge generation (the hold does it first), so the
+ * check fails; a call that passed the check is counted before any later hold
+ * reads `inFlight`, so the hold waits for it and the reset removes its rows.
+ */
+async function onHandleFenced<T>(
+  ticket: BackupWriteTicket,
+  writer: string,
+  call: (db: SQLite.SQLiteDatabase) => Promise<T>,
+  dropped: T,
+): Promise<T> {
+  while (purgeBarrier) await purgeBarrier;
+  if (!dbPromise) dbPromise = startOpen();
+  const db = await dbPromise;
+  if (!admitsBackupWrite(ticket)) {
+    droppedWrites.push(writer);
+    return dropped;
+  }
+  callStarted();
+  try {
+    return await call(db);
+  } finally {
+    callFinished();
+  }
+}
+
+/** The write handle for one writer: `execAsync` / `runAsync` behind `ticket`. */
+async function getWriteDb(ticket: BackupWriteTicket, writer: string): Promise<SQLite.SQLiteDatabase> {
+  await openHandle();
+  const fenced = {
+    execAsync: (source: string) => onHandleFenced(ticket, writer, (db) => db.execAsync(source), undefined),
+    runAsync: (source: string, ...params: SQLite.SQLiteBindParams[]) =>
+      onHandleFenced(
+        ticket,
+        writer,
+        (db) => (db.runAsync as (s: string, ...p: unknown[]) => Promise<SQLite.SQLiteRunResult>)(source, ...params),
+        FENCED_RUN,
+      ),
+  };
+  return fenced as unknown as SQLite.SQLiteDatabase;
+}
+
+/**
+ * Task 1667 — hold this module's database work for the duration of the
+ * sign-out storage purge. The native side empties the manifest IN PLACE
+ * through its own handle (`NativeBackupEngine.prepareForStoragePurge`), so
+ * this module's handle stays valid and sees the emptied file afterwards.
+ *
+ * The handle is NOT closed by the hold. expo-sqlite compiles its own copy of
+ * SQLite (node_modules/expo-sqlite/ios/sqlite3.c); the engine links the
+ * system one. Two SQLite copies in one process cannot see each other's
+ * connections, so a close on this side concluded it was the last connection
+ * and deleted `-wal`/`-shm` under the engine's open handle (simulator rung,
+ * task 1667: lsof showed the engine's WAL/SHM fds on deleted inodes right
+ * after sign-out).
+ *
+ * Round 2: the hold also waits for every call already running (an open read
+ * would keep an old WAL snapshot alive under the native checkpoint), and
+ * `closeHandle` closes the handle in the one case the native side asks for it
+ * — its reset failed and its own handle is already closed — so it can replace
+ * the file without this module keeping a deleted inode open. The next call
+ * after `resume` opens a fresh handle.
+ *
+ * Round 4: holds may overlap (two sign-outs, or a sign-out and the
+ * signed-out-surface purge); they are reference-counted, so the module is
+ * released exactly once, after the last `resume`.
+ */
+export async function suspendForStoragePurge(): Promise<StoragePurgeHold> {
+  // Round 8: first, synchronously: every write ticket taken before this hold
+  // is dead (the reset it guards empties the manifest).
+  advanceBackupPurgeGeneration();
+  if (purgeHolds === 0) {
+    purgeBarrier = new Promise<void>((resolve) => { releasePurgeBarrier = resolve; });
+  }
+  purgeHolds += 1;
+  let resumed = false;
+  // Idempotent: a second resume of the same hold never releases another one.
+  const resume = () => {
+    if (resumed) return;
+    resumed = true;
+    purgeHolds -= 1;
+    if (purgeHolds === 0) {
+      const release = releasePurgeBarrier;
+      purgeBarrier = null;
+      releasePurgeBarrier = null;
+      release?.();
+    }
+  };
+  const open = dbPromise;
+  if (open) {
+    // Let a migration already running finish before the reset; never close.
+    await open.catch(() => undefined);
+  }
+  await whenIdle();
+  return { resume, closeHandle: closeHandleForStoragePurge };
+}
+
+/**
+ * Round 7: true only when EVERY connection this module ever opened is
+ * confirmed closed — the current one and any whose earlier close failed.
+ * A connection whose close fails stays tracked (and is retried at the next
+ * call); the module itself reopens a fresh handle after `resume`, so backup
+ * work goes on, but no purge can be told "closed" again in this process
+ * until the old connection's close succeeds.
+ */
+async function closeHandleForStoragePurge(): Promise<boolean> {
+  await whenIdle();
+  const open = dbPromise;
+  dbPromise = null;
+  if (open) {
+    // A rejected open closed (or tracked) its own connection in openAndMigrate.
+    const db = await open.catch(() => null);
+    if (db) unclosedHandles.add(db);
+  }
+  let allClosed = true;
+  for (const db of [...unclosedHandles]) {
+    if (await closeWithRetry(db)) unclosedHandles.delete(db);
+    else allClosed = false;
+  }
+  return allClosed;
+}
+
+/** Test seam: true while any purge hold is installed (calls would wait). */
+export function isStoragePurgeHoldActive(): boolean {
+  return purgeBarrier !== null;
+}
+
+registerStoragePurgeParticipant(suspendForStoragePurge);
 
 async function migrateLocalMissingRows(db: SQLite.SQLiteDatabase): Promise<void> {
   await db.execAsync(`
     UPDATE backup_assets
        SET status = 'local_missing',
            retry_count = 0,
-           error_message = 'Photo removed from this iPhone before backup completed'
+           error_message = 'Photo removed from this phone before backup completed'
      WHERE status != 'uploaded'
        AND (
          error_message LIKE '%Photo asset not found%'
@@ -103,10 +399,66 @@ async function migrateLocalMissingRowsIfNeeded(db: SQLite.SQLiteDatabase): Promi
   await localMissingMigrationInFlight;
 }
 
+/**
+ * Task 1667 round 10 (review findings 5 + 7): asks the native gate before
+ * EVERY open (backup-manifest-js-open-gate.ts). The native side applies a
+ * sign-out reset still pending first, so this module never opens a file that
+ * still holds the previous account's rows (after `finishBackupManifestPurge`
+ * answered `ok: 0`, the lazy reopen used to serve them to the next account).
+ * No gate registered, or a refusal: nothing is opened
+ * (`BackupManifestNotReadyError`), and the next call asks again.
+ *
+ * `priorHandlesClosed` tells native whether a connection of ours may still be
+ * open (a close that failed, `unclosedHandles`): while one may be, native
+ * neither applies the reset (its WAL checkpoint) nor closes anything. When
+ * that is the only obstacle (`pending_reset_deferred`), the leftover
+ * connections are closed here and the gate asked once more. Safe outside the
+ * purge hold: with a reset pending the engine has no connection in use on the
+ * file (its handle is closed), and nothing writes it until the gate admits.
+ */
+async function admitJsOpen(): Promise<void> {
+  const gate = backupManifestJsOpenGate();
+  if (!gate) throw new BackupManifestNotReadyError('no_gate');
+  let verdict = await gate(unclosedHandles.size === 0);
+  if (verdict.ok !== 1 && verdict.reason === PENDING_RESET_DEFERRED && unclosedHandles.size > 0) {
+    for (const leftover of [...unclosedHandles]) {
+      if (await closeWithRetry(leftover)) unclosedHandles.delete(leftover);
+    }
+    verdict = await gate(unclosedHandles.size === 0);
+  }
+  if (verdict.ok !== 1) throw new BackupManifestNotReadyError(verdict.reason ?? 'refused');
+}
+
 async function openAndMigrate(): Promise<SQLite.SQLiteDatabase> {
+  await admitJsOpen();
   const db = await SQLite.openDatabaseAsync(DB_NAME);
-  // Foreign keys + WAL for better concurrency under the upload runner.
+  try {
+    return await migrate(db);
+  } catch (err) {
+    // Round 7 sweep: a migration that throws used to drop a connection that
+    // IS open (the open itself succeeded): `dbPromise` rejected, and the
+    // purge's close read "no handle" and reported it closed. Close it here;
+    // if that fails too, it stays tracked like any other unclosed handle.
+    unclosedHandles.add(db);
+    if (await closeWithRetry(db)) unclosedHandles.delete(db);
+    throw err;
+  }
+}
+
+/**
+ * Task 2033: the native engine's manifest connection runs on this same SQLite
+ * copy (expo-sqlite's, `modules/beebeeb-crypto/ios/ManifestSQLite`), so a write
+ * that meets the engine's write transaction gets SQLITE_BUSY ("database is
+ * locked") instead of interleaving with it as the two copies did. Wait for it
+ * instead. Same value as the engine's `BackupManifestHandle.busyTimeoutMs`.
+ */
+export const MANIFEST_BUSY_TIMEOUT_MS = 2000;
+
+async function migrate(db: SQLite.SQLiteDatabase): Promise<SQLite.SQLiteDatabase> {
+  // Foreign keys + WAL for better concurrency under the upload runner. The
+  // busy timeout comes first so it covers every statement after it.
   await db.execAsync(`
+    PRAGMA busy_timeout = ${MANIFEST_BUSY_TIMEOUT_MS};
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS backup_assets (
@@ -306,17 +658,18 @@ export async function getUploadedBytes(
 
 export async function markFailed(
   localAssetId: string,
-  error?: string,
+  error: string | undefined,
+  ticket: BackupWriteTicket,
 ): Promise<void> {
-  const db = await getDb();
+  const db = await getWriteDb(ticket, 'markFailed');
   await db.runAsync(
     `UPDATE backup_assets SET status = 'failed', error_message = ?, retry_count = COALESCE(retry_count, 0) + 1, last_attempt_at = ? WHERE local_asset_id = ?`,
     [error ?? null, Date.now(), localAssetId],
   );
 }
 
-export async function markUploading(localAssetId: string): Promise<void> {
-  const db = await getDb();
+export async function markUploading(localAssetId: string, ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'markUploading');
   await db.runAsync(
     `UPDATE backup_assets SET status = 'uploading', last_attempt_at = ? WHERE local_asset_id = ?`,
     [Date.now(), localAssetId],
@@ -344,8 +697,8 @@ export async function getPendingUploads(
  * 'pending_reupload' so they get retried. This handles the case where the
  * app was killed mid-upload or the upload timed out silently.
  */
-export async function recoverStuckUploads(): Promise<number> {
-  const db = await getDb();
+export async function recoverStuckUploads(ticket: BackupWriteTicket): Promise<number> {
+  const db = await getWriteDb(ticket, 'recoverStuckUploads');
   const fiveMinAgo = Date.now() - 5 * 60 * 1000;
   const result = await db.runAsync(
     `UPDATE backup_assets SET status = 'pending_reupload'
@@ -435,8 +788,9 @@ export async function upsertPendingUpload(
   assetType: BackupAssetType,
   sizeBytes: number,
   creationAt: number,
+  ticket: BackupWriteTicket,
 ): Promise<void> {
-  const db = await getDb();
+  const db = await getWriteDb(ticket, 'upsertPendingUpload');
   const now = Date.now();
   await db.runAsync(
     `INSERT INTO backup_assets (local_asset_id, status, asset_type, file_size, created_at, queued_at, content_hash, selected_for_backup)
@@ -454,32 +808,33 @@ export async function upsertPendingUpload(
 export async function markUploadComplete(
   localId: string,
   fileId: string,
+  ticket: BackupWriteTicket,
 ): Promise<void> {
-  const db = await getDb();
+  const db = await getWriteDb(ticket, 'markUploadComplete');
   await db.runAsync(
     `UPDATE backup_assets SET status = 'uploaded', remote_file_id = ?, uploaded_at = ?, error_message = NULL, retry_count = 0 WHERE local_asset_id = ?`,
     [fileId, new Date().toISOString(), localId],
   );
 }
 
-export async function markPendingDelete(localId: string): Promise<void> {
-  const db = await getDb();
+export async function markPendingDelete(localId: string, ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'markPendingDelete');
   await db.runAsync(
     `UPDATE backup_assets SET status = 'pending_delete', queued_at = ? WHERE local_asset_id = ? AND status = 'uploaded'`,
     [Date.now(), localId],
   );
 }
 
-export async function markOrphaned(localId: string): Promise<void> {
-  const db = await getDb();
+export async function markOrphaned(localId: string, ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'markOrphaned');
   await db.runAsync(
     `UPDATE backup_assets SET status = 'orphaned' WHERE local_asset_id = ? AND status = 'uploaded'`,
     [localId],
   );
 }
 
-export async function markRemoteDeleted(localId: string): Promise<void> {
-  const db = await getDb();
+export async function markRemoteDeleted(localId: string, ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'markRemoteDeleted');
   await db.runAsync(
     `UPDATE backup_assets
         SET status = 'remote_deleted',
@@ -492,16 +847,16 @@ export async function markRemoteDeleted(localId: string): Promise<void> {
   );
 }
 
-export async function removePendingDelete(localId: string): Promise<void> {
-  const db = await getDb();
+export async function removePendingDelete(localId: string, ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'removePendingDelete');
   await db.runAsync(
     `DELETE FROM backup_assets WHERE local_asset_id = ? AND status = 'pending_delete'`,
     [localId],
   );
 }
 
-export async function retryAllFailed(): Promise<number> {
-  const db = await getDb();
+export async function retryAllFailed(ticket: BackupWriteTicket): Promise<number> {
+  const db = await getWriteDb(ticket, 'retryAllFailed');
   await migrateLocalMissingRows(db);
   const result = await db.runAsync(
     `UPDATE backup_assets
@@ -514,8 +869,8 @@ export async function retryAllFailed(): Promise<number> {
   return result.changes;
 }
 
-export async function clearAllData(): Promise<void> {
-  const db = await getDb();
+export async function clearAllData(ticket: BackupWriteTicket): Promise<void> {
+  const db = await getWriteDb(ticket, 'clearAllData');
   await db.runAsync(`DELETE FROM backup_assets`);
 }
 
@@ -553,8 +908,19 @@ export async function getAllUploadedRemoteIds(): Promise<Set<string>> {
  *  rows reset (the "Backups root deleted" case). Conservative — re-queue, never
  *  delete — so re-upload is automatic and nothing is lost if /files/index was
  *  briefly wrong. Returns rows changed. */
-export async function resetUploadedState(remoteFileIds?: string[]): Promise<number> {
-  const db = await getDb();
+export async function resetUploadedState(
+  remoteFileIds: string[] | undefined,
+  epoch: BackupWriteTicket,
+): Promise<number> {
+  // Task 1959 round 3: `epoch` is REQUIRED — the account epoch the caller (the
+  // backup reconcile) decided these re-queues under. The decision compares
+  // that account's server ids against this manifest; once the account signed
+  // out, no further UPDATE may run (checked after every await below).
+  // Round 8: and each UPDATE runs behind the ticket, checked in the same
+  // step that starts it (`getWriteDb`), so a sign-out or purge that lands
+  // between the check below and the statement drops it too.
+  const db = await getWriteDb(epoch, 'resetUploadedState');
+  if (!isCurrentAccountEpoch(epoch)) return 0;
   const SET_CLAUSE =
     `SET status = 'pending_upload', remote_file_id = NULL, uploaded_at = NULL, ` +
     `error_message = NULL, retry_count = 0, queued_at = NULL`;
@@ -570,6 +936,7 @@ export async function resetUploadedState(remoteFileIds?: string[]): Promise<numb
   for (let i = 0; i < remoteFileIds.length; i += SQL_IN_CHUNK) {
     const batch = remoteFileIds.slice(i, i + SQL_IN_CHUNK);
     if (batch.length === 0) continue;
+    if (!isCurrentAccountEpoch(epoch)) break;
     const placeholders = batch.map(() => '?').join(',');
     const result = await db.runAsync(
       `UPDATE backup_assets ${SET_CLAUSE}
@@ -585,8 +952,11 @@ export async function resetUploadedState(remoteFileIds?: string[]): Promise<numb
  *  'remote_deleted', ids cleared). Unlike resetUploadedState these are NOT
  *  re-queued — for the EXPLICIT delete-cascade (0818) where the user deleted the
  *  file on purpose, so it must not silently re-upload. Returns rows changed. */
-export async function markRemoteDeletedByFileIds(remoteFileIds: string[]): Promise<number> {
-  const db = await getDb();
+export async function markRemoteDeletedByFileIds(
+  remoteFileIds: string[],
+  ticket: BackupWriteTicket,
+): Promise<number> {
+  const db = await getWriteDb(ticket, 'markRemoteDeletedByFileIds');
   let changed = 0;
   for (let i = 0; i < remoteFileIds.length; i += SQL_IN_CHUNK) {
     const batch = remoteFileIds.slice(i, i + SQL_IN_CHUNK);
@@ -602,6 +972,34 @@ export async function markRemoteDeletedByFileIds(remoteFileIds: string[]): Promi
     changed += result.changes;
   }
   return changed;
+}
+
+/**
+ * Task 1959 round 4 — `is_media` for backup uploads, by REMOTE file id: true
+ * for photo and video assets (the backup engines upload those with
+ * `is_media: true`, NativeBackupEngine.swift `mediaFlag`), false for contacts
+ * and calendars. Ids this table does not hold are absent from the result.
+ * Read-only. Used by upload-classification.ts to classify rows the sync
+ * write-through added to the index cache without a server check.
+ */
+export async function getBackupMediaFlags(remoteFileIds: string[]): Promise<Map<string, boolean>> {
+  const out = new Map<string, boolean>();
+  if (remoteFileIds.length === 0) return out;
+  const db = await getDb();
+  for (let i = 0; i < remoteFileIds.length; i += SQL_IN_CHUNK) {
+    const batch = remoteFileIds.slice(i, i + SQL_IN_CHUNK);
+    if (batch.length === 0) continue;
+    const placeholders = batch.map(() => '?').join(',');
+    const rows = await db.getAllAsync<{ remote_file_id: string; asset_type: string }>(
+      `SELECT remote_file_id, asset_type FROM backup_assets
+        WHERE remote_file_id IN (${placeholders})`,
+      batch,
+    );
+    for (const row of rows) {
+      out.set(row.remote_file_id, row.asset_type === 'photo' || row.asset_type === 'video');
+    }
+  }
+  return out;
 }
 
 /**
@@ -674,10 +1072,11 @@ export interface VerificationRecord {
 export async function recordVerification(
   remoteFileId: string,
   success: boolean,
-  errorMessage?: string,
-  fileSize?: number,
+  errorMessage: string | undefined,
+  fileSize: number | undefined,
+  ticket: BackupWriteTicket,
 ): Promise<void> {
-  const db = await getDb();
+  const db = await getWriteDb(ticket, 'recordVerification');
   await db.runAsync(
     `INSERT INTO backup_verification (remote_file_id, success, error_message, file_size)
      VALUES (?, ?, ?, ?)`,

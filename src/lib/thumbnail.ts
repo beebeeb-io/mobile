@@ -1,3 +1,7 @@
+import * as SharedNativeCrypto from '../../modules/beebeeb-crypto';
+import { sharedFileKeyIsLoaded, getSharedKeyResolver } from './shared-folder-keys';
+import { isForeignSharedFile } from './shared-folder-tree';
+import { accountEpoch } from './account-epoch';
 /**
  * Thumbnail generation for all media uploads: images, videos, and RAW photos.
  *
@@ -25,6 +29,7 @@ import {
   generateAndUploadPhotoLibraryThumbnailNative,
 } from '../../modules/beebeeb-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
+import { gatedPlaintextWrite } from './plaintext-gate';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import { EncodingType } from 'expo-file-system/legacy';
 import {
@@ -299,24 +304,19 @@ export async function generateAndUploadThumbnail(
     const thumb = await generateThumbnailForMedia(sourceUri, mimeType, variant);
     if (!thumb) return false;
 
-    // Task 0552: encode a blurhash from the same source URI for the medium
-    // variant. Best-effort — null when the native binding isn't loaded.
-    // We intentionally do NOT block thumbnail upload on this; if encoding
-    // fails the placeholder gradient simply doesn't appear.
-    let blurhash: string | null = null;
-    if (variant === 'medium' && !isVideoMime(mimeType)) {
-      blurhash = await encodeBlurhashFromUri(sourceUri).catch(() => null);
+    // Persist both sizes: a freshly uploaded photo can render locally while
+    // the server thumbnail upload finishes. Blurhash reads this small WebP,
+    // never the full-resolution source (especially costly for camera RAW).
+    let previewPath: string | null = null;
+    try {
+      previewPath = await cacheThumbnail(fileId, thumb, variant);
+      if (variant === 'medium') thumbCache.set(fileId, previewPath);
+    } catch {
+      // Persist failure does not block the encrypted server thumbnail.
     }
-
-    // Cache the plaintext thumbnail in persistent storage for instant display
-    if (variant === 'medium') {
-      const b64 = bytesToBase64(thumb);
-      try {
-        const persistedPath = await cacheThumbnailBase64(fileId, b64, variant);
-        thumbCache.set(fileId, persistedPath);
-      } catch {
-        // Persist failed — still upload the thumbnail to server
-      }
+    let blurhash: string | null = null;
+    if (previewPath && variant === 'medium' && !isVideoMime(mimeType)) {
+      blurhash = await encodeBlurhashFromUri(previewPath).catch(() => null);
     }
 
     const fileKey = await getFileKeyBytes(fileId);
@@ -417,6 +417,19 @@ function responseHeaderInt(headers: Headers, key: string): number | null {
 }
 
 /**
+ * Task 1683i — hard ceiling for the legacy whole-source thumbnail repair.
+ * `ensureThumbnailForImage` used to download the ENTIRE encrypted media file,
+ * decrypt it fully and base64-write it just to produce a thumbnail; at the
+ * repair worker's old concurrency this filled the 384 MB largeHeap and OOM-killed
+ * the app on the Photos tab (three okio/expo-fetch whole-body accumulations in
+ * the crash stacks). Sources above this ceiling are never downloaded for a
+ * thumbnail — the tile shows the icon/placeholder instead, and the bounded
+ * server-thumbnail flow (`fetchDecryptedThumbnailUri`) keeps serving whatever
+ * the server already has.
+ */
+export const MAX_THUMBNAIL_REPAIR_SOURCE_BYTES = 10 * 1024 * 1024;
+
+/**
  * Best-effort repair for media files that predate thumbnail generation.
  * Only call this for visible/recent items: it downloads the full encrypted
  * file, decrypts it locally, creates the normal encrypted thumbnail, uploads
@@ -436,6 +449,12 @@ export async function ensureThumbnailForImage(
     throw new Error('thumbnail.ts iOS path replaced by BeebeebThumbnails — caller should use useThumbnail()');
   }
   if (!isThumbnailable(mimeType)) return false;
+  // Task 1683i — no-whole-file contract: videos are never downloaded client-side
+  // for a thumbnail (the tile shows the placeholder; a server thumbnail, when
+  // one exists, is served by the bounded fetchDecryptedThumbnailUri flow), and
+  // oversized sources are refused before any network I/O.
+  if (isVideoMime(mimeType)) return false;
+  if (sizeBytes != null && sizeBytes > MAX_THUMBNAIL_REPAIR_SOURCE_BYTES) return false;
   const pending = repairInflight.get(fileId);
   if (pending) return pending;
 
@@ -444,6 +463,20 @@ export async function ensureThumbnailForImage(
     let sourceUri: string | null = null;
     try {
       const res = await downloadFile(fileId);
+      // Task 1683i — gate at the wire BEFORE buffering the body: when the
+      // metadata size is unknown, the response headers still bound it. A body
+      // over the ceiling is dropped unread (the old code arrayBuffer()'d the
+      // whole response first — the Java-heap filler behind the OOM).
+      const wireSize = responseHeaderInt(res.headers, 'X-Original-Size')
+        ?? responseHeaderInt(res.headers, 'Content-Length');
+      if (wireSize != null && wireSize > MAX_THUMBNAIL_REPAIR_SOURCE_BYTES) {
+        try {
+          await res.body?.cancel();
+        } catch {
+          // body cancel is best-effort; the response is dropped either way
+        }
+        return false;
+      }
       const encryptedBytes = new Uint8Array(await res.arrayBuffer());
       const effectiveSize =
         responseHeaderInt(res.headers, 'X-Original-Size') ?? sizeBytes ?? encryptedBytes.length - 28;
@@ -474,9 +507,13 @@ export async function ensureThumbnailForImage(
                   : 'jpg';
       const safeName = (fileName ?? fileId).replace(/[^a-zA-Z0-9._()-]/g, '_').slice(0, 64);
       sourceUri = `${FileSystem.cacheDirectory}thumb_source_${fileId}_${safeName || 'media'}.${ext}`;
-      await FileSystem.writeAsStringAsync(sourceUri, bytesToBase64(plaintext), {
-        encoding: EncodingType.Base64,
-      });
+      // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
+      const thumbSourceUri = sourceUri;
+      await gatedPlaintextWrite('thumbnail repair source', thumbSourceUri, FileSystem, () =>
+        FileSystem.writeAsStringAsync(thumbSourceUri, bytesToBase64(plaintext), {
+          encoding: EncodingType.Base64,
+        }),
+      );
 
       const thumb = await generateThumbnailForMedia(sourceUri, mimeType);
       if (!thumb) return false;
@@ -565,7 +602,9 @@ async function cachedThumbnailUri(fileId: string): Promise<string | null> {
         await FileSystem.makeDirectoryAsync(PERSISTENT_THUMB_DIR, { intermediates: true });
         const destPath = thumbPath(fileId);
         if (destPath) {
-          await FileSystem.copyAsync({ from: legacy, to: destPath });
+          await gatedPlaintextWrite('legacy thumbnail migration', destPath, FileSystem, () =>
+            FileSystem.copyAsync({ from: legacy, to: destPath }),
+          );
           thumbCache.set(fileId, destPath);
           // Clean up old volatile copy
           await FileSystem.deleteAsync(legacy, { idempotent: true }).catch(() => {});
@@ -619,6 +658,7 @@ export async function pruneThumbnailCache(maxItems = MAX_THUMB_CACHE_ITEMS): Pro
       const names = await FileSystem.readDirectoryAsync(FileSystem.cacheDirectory);
       const legacyThumbs = names.filter((name) => /^thumb_[^/]+\.(webp|jpg)$/.test(name));
       for (const name of legacyThumbs) {
+        // caches-registry: example=thumb_legacy.jpg
         const uri = `${FileSystem.cacheDirectory}${name}`;
         await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
       }
@@ -637,12 +677,20 @@ export async function pruneThumbnailCache(maxItems = MAX_THUMB_CACHE_ITEMS): Pro
  * Thumbnails are stored in persistent documentDirectory so they survive
  * iOS cache purges and app restarts.
  */
+export type ThumbnailDecrypt = (nonce: Uint8Array, ciphertext: Uint8Array) => Promise<Uint8Array>;
+export async function thumbnailKeyFor(fileId: string, handle: () => number, derive: (id: string) => Promise<Uint8Array>): Promise<Uint8Array | ThumbnailDecrypt> {
+  if (isForeignSharedFile(fileId, accountEpoch().accountId)) {
+    const result = await getSharedKeyResolver()?.ensureLoaded([fileId]);
+    if (result?.get(fileId) !== 'loaded') throw new Error('Shared thumbnail key unavailable');
+  }
+  return sharedFileKeyIsLoaded(fileId) ? (nonce, ciphertext) => SharedNativeCrypto.handleDecryptChunk(handle(), fileId, nonce, ciphertext) : derive(fileId);
+}
 export async function fetchDecryptedThumbnailUri(
   fileId: string,
-  fileKey: Uint8Array,
+  fileKey: Uint8Array | ThumbnailDecrypt,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  if (Platform.OS === 'ios') {
+  if (Platform.OS === 'ios' && typeof fileKey !== 'function') {
     throw new Error('thumbnail.ts iOS path replaced by BeebeebThumbnails — caller should use useThumbnail()');
   }
   if (signal?.aborted) return null;
@@ -699,13 +747,16 @@ export async function fetchDecryptedThumbnailUri(
       if (encryptedBytes.length < 13) return null;
       const nonce = encryptedBytes.slice(0, 12);
       const ciphertext = encryptedBytes.slice(12);
-      plainBytes = await decryptChunk(fileKey, nonce, ciphertext);
+      plainBytes = await (typeof fileKey === 'function' ? fileKey(nonce, ciphertext) : decryptChunk(fileKey, nonce, ciphertext));
     }
 
     // Write decrypted thumbnail to persistent storage so it survives app restarts.
     if (getLocalIdentifier(fileId)) return null;
-    const b64 = bytesToBase64(plainBytes);
-    const persistedPath = await cacheThumbnailBase64(fileId, b64);
+    // A decrypt callback is how shared-file thumbnails arrive, and it is allowed on iOS; cacheThumbnailBase64 throws on
+    // every platform but Android, so the callback path uses the platform-neutral writer.
+    const persistedPath = typeof fileKey === 'function'
+      ? await cacheThumbnail(fileId, plainBytes)
+      : await cacheThumbnailBase64(fileId, bytesToBase64(plainBytes));
     thumbCache.set(fileId, persistedPath);
     return persistedPath;
   })();
@@ -734,7 +785,7 @@ export async function fetchDecryptedThumbnailUri(
  */
 export async function fetchDecryptedLargeThumbnailUri(
   fileId: string,
-  fileKey: Uint8Array,
+  fileKey: Uint8Array | ThumbnailDecrypt,
   signal?: AbortSignal,
 ): Promise<string | null> {
   if (signal?.aborted) return null;
@@ -756,7 +807,7 @@ export async function fetchDecryptedLargeThumbnailUri(
 
     const nonce = encryptedBytes.slice(0, 12);
     const ciphertext = encryptedBytes.slice(12);
-    const plainBytes = await decryptChunk(fileKey, nonce, ciphertext);
+    const plainBytes = await (typeof fileKey === 'function' ? fileKey(nonce, ciphertext) : decryptChunk(fileKey, nonce, ciphertext));
     return cacheThumbnail(fileId, plainBytes, 'large');
   } catch {
     return null;
@@ -779,7 +830,7 @@ export interface PrefetchOptions {
  */
 export async function prefetchDecryptedThumbnails(
   fileIds: string[],
-  getFileKeyBytes: (fileId: string) => Promise<Uint8Array>,
+  getFileKeyBytes: (fileId: string) => Promise<Uint8Array | ThumbnailDecrypt>,
   options?: PrefetchOptions,
 ): Promise<ThumbnailPrefetchStats> {
   const unique = Array.from(new Set(fileIds)).slice(0, MAX_THUMB_CACHE_ITEMS);

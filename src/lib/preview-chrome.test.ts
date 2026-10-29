@@ -7,6 +7,7 @@ import {
   formatPdfPageCounter,
   formatShareStatus,
   nextBarsVisible,
+  pagerTapAction,
   resolveFolderLabel,
   shouldToggleBarsOnTap,
 } from './preview-chrome'
@@ -108,5 +109,38 @@ describe('formatPdfPageCounter', () => {
 
   test('an unknown total (0, not loaded yet) returns null', () => {
     expect(formatPdfPageCounter(1, 0)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 1687a — which action a tap on a locked pager page takes. The vault
+// lock (useCrypto().isUnlocked === false) and the per-file Face ID gate are
+// DIFFERENT locks and must never collapse into one affordance: the file
+// lock owns the "tap to authenticate" prompt, the vault lock only gets a
+// reliable chrome-toggle surface (no auth step — task 1684 owns the unlock
+// flow). Mutation evidence in task 1687 Notes: with the vaultLocked branch
+// removed (pre-fix shape, where vault-locked pages had NO tap affordance
+// beyond the pager's 10 pt / 500 ms raw detector) the vault cases fail.
+// ---------------------------------------------------------------------------
+describe('pagerTapAction (task 1687a)', () => {
+  const base = { fileLocked: false, vaultLocked: false, contentOwned: false }
+
+  test('a file-locked page taps to authenticate — the lock affordance is hittable', () => {
+    expect(pagerTapAction({ ...base, fileLocked: true })).toBe('unlock-file')
+    // File lock wins even when the vault is also locked: one prompt, the
+    // file-level one the user can act on here.
+    expect(pagerTapAction({ ...base, fileLocked: true, vaultLocked: true })).toBe('unlock-file')
+  })
+
+  test('a VAULT-locked (not file-locked) page taps to toggle chrome', () => {
+    expect(pagerTapAction({ ...base, vaultLocked: true })).toBe('toggle-chrome')
+  })
+
+  test('a page with interactive content yields the tap to it', () => {
+    expect(pagerTapAction({ ...base, contentOwned: true })).toBeNull()
+  })
+
+  test('a plain unlocked page (loading/thumbnail) toggles chrome', () => {
+    expect(pagerTapAction(base)).toBe('toggle-chrome')
   })
 })

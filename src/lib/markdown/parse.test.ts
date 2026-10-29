@@ -4,7 +4,7 @@
 // nodes (`./types.ts`). No react-native dependency at all (pure `marked` +
 // this module), so no `mock.module` boilerplate is needed here.
 import { describe, expect, test } from 'bun:test'
-import { parseMarkdown } from './parse'
+import { isSafeMarkdownHref, parseMarkdown } from './parse'
 import type { MdBlock } from './types'
 
 describe('parseMarkdown — headings, paragraphs, bold/italic', () => {
@@ -171,5 +171,36 @@ describe('parseMarkdown — out-of-scope tokens are dropped, not mis-rendered', 
     // No 'html'-kind node anywhere in the tree, and the real paragraph survives.
     expect(blocks.some((b) => (b as { kind: string }).kind === 'html')).toBe(false)
     expect(blocks.some((b) => b.kind === 'paragraph')).toBe(true)
+  })
+})
+
+describe('parseMarkdown — link scheme allowlist (1753-P3-03)', () => {
+  const linkCount = (blocks: MdBlock[]) => JSON.stringify(blocks).match(/"kind":"link"/g)?.length ?? 0
+  test.each([
+    'beebeeb://settings', 'tel:+31612345678', 'sms:+31612345678', 'mailto:a@b.nl',
+    'javascript:alert(1)', 'data:text/html,x', 'vault://abc', 'whatsapp://send?text=x',
+  ])('%s is rendered as plain text, not a link', (href) => {
+    const blocks = parseMarkdown(`[Open](${href})`)
+    expect(linkCount(blocks)).toBe(0)
+    expect(JSON.stringify(blocks)).toContain('Open')
+  })
+  test('http and https (any case) stay links', () => {
+    expect(linkCount(parseMarkdown('[a](http://x.io) [b](HTTPS://x.io)'))).toBe(2)
+  })
+  test('suppressed link keeps inline formatting of its label (Codex P2)', () => {
+    const blocks = parseMarkdown('[**Support** `x`](mailto:a@b.nl)')
+    expect(linkCount(blocks)).toBe(0)
+    const json = JSON.stringify(blocks)
+    expect(json).toContain('"kind":"bold"')
+    expect(json).toContain('"kind":"code"')
+    // flattened into the paragraph's inline array, not nested under a link
+    expect(blocks[0]).toMatchObject({ kind: 'paragraph' })
+    const kids = (blocks[0] as { inline: { kind: string }[] }).inline
+    expect(kids.map((k) => k.kind)).toEqual(['bold', 'text', 'code'])
+  })
+  test('isSafeMarkdownHref', () => {
+    expect(isSafeMarkdownHref('https://x.io')).toBe(true)
+    expect(isSafeMarkdownHref('beebeeb://x')).toBe(false)
+    expect(isSafeMarkdownHref('')).toBe(false)
   })
 })

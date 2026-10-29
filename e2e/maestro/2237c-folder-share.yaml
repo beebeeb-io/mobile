@@ -1,0 +1,66 @@
+appId: io.beebeeb.app
+# Local-only fixture: an unlocked owner, shared_folders_v1 enabled, and a folder
+# whose id is supplied as FOLDER_ID. Never run against production.
+# Invoke with EVIDENCE_DIR, FOLDER_ID, and APPEARANCE=light|dark|android-keyboard.
+---
+- tapOn:
+    id: "file-row-actions-${FOLDER_ID}"
+- tapOn:
+    id: "sheet-action-share"
+- assertVisible:
+    id: "folder-share-panel"
+- assertVisible: "You (owner)"
+- tapOn:
+    id: "folder-link-label"
+- inputText: "2237c view"
+- tapOn:
+    id: "folder-link-level-view"
+- tapOn:
+    id: "folder-link-create"
+- extendedWaitUntil:
+    visible: "2237c view"
+    timeout: 30000
+- tapOn:
+    id: "folder-link-label"
+- eraseText
+- inputText: "2237c add"
+- tapOn:
+    id: "folder-link-level-add"
+- tapOn:
+    id: "folder-link-create"
+- extendedWaitUntil:
+    visible: "2237c add"
+    timeout: 30000
+- tapOn:
+    id: "folder-link-label"
+- eraseText
+- inputText: "2237c edit"
+- tapOn:
+    id: "folder-link-level-edit"
+- tapOn:
+    id: "folder-link-passphrase"
+- inputText: "2237c-local-fixture-only"
+- takeScreenshot: "${EVIDENCE_DIR}/folder-share-${APPEARANCE}"
+- hideKeyboard
+- tapOn:
+    id: "folder-link-create"
+- extendedWaitUntil:
+    visible: "Passphrase protected"
+    timeout: 120000
+# Dynamic server ids: select the first link's actions by the shipped testID.
+- tapOn:
+    id: "folder-link-pause-.*"
+    index: 0
+- assertVisible: "Paused"
+- tapOn:
+    id: "folder-link-pause-.*"
+    index: 0
+- tapOn:
+    id: "folder-link-revoke-.*"
+    index: 0
+- assertVisible: "Revoke link?"
+- assertVisible: "Stops the link now. Someone who already saved the folder key could still decrypt files they downloaded."
+- tapOn:
+    id: "folder-link-revoke-confirm-.*"
+    index: 0
+- assertNotVisible: "Revoke link?"

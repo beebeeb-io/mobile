@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { appVersion } from '../lib/app-version';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
   ActivityIndicator,
   Alert,
+  BackHandler,
   Linking,
   Platform,
   RefreshControl,
@@ -10,8 +12,10 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
@@ -19,7 +23,7 @@ import * as SecureStore from 'expo-secure-store';
 let LocalAuthentication: any = { hasHardwareAsync: async () => false, authenticateAsync: async () => ({ success: false }), isEnrolledAsync: async () => false };
 let StoreReview: any = { requestReview: async () => {} };
 let Notifications: any = { getPermissionsAsync: async () => ({ status: 'undetermined' }), requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
-let MediaLibrary: any = { requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
+let MediaLibrary: any = { getPermissionsAsync: async () => ({ status: 'undetermined' }), requestPermissionsAsync: async () => ({ status: 'undetermined' }) };
 let Contacts: any = {
   getPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
   requestPermissionsAsync: async () => ({ status: 'undetermined', granted: false }),
@@ -31,7 +35,6 @@ let Calendar: any = {
   getCalendarPermissions: async () => ({ status: 'undetermined', granted: false }),
   requestCalendarPermissions: async () => ({ status: 'undetermined', granted: false }),
 };
-let Constants: any = { expoConfig: null };
 
 try { LocalAuthentication = require('expo-local-authentication'); } catch {}
 try { StoreReview = require('expo-store-review'); } catch {}
@@ -39,7 +42,6 @@ try { Notifications = require('expo-notifications'); } catch {}
 try { MediaLibrary = require('expo-media-library'); } catch {}
 try { Contacts = require('expo-contacts'); } catch {}
 try { Calendar = require('expo-calendar'); } catch {}
-try { Constants = require('expo-constants'); } catch {}
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -53,8 +55,9 @@ import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { ensureCalendarPermission } from '../lib/calendar-permissions';
+import { ensurePhotoPermission } from '../lib/photo-permissions';
 import { formatBytes } from '../lib/format';
-import { PLAN_MANAGEMENT_NOTE } from '../lib/billing-copy';
+import { shouldCompleteSettingsBackSwipe } from '../lib/settings-back-swipe';
 import {
   DEFAULT_BACKUP_NOTIFICATION_SETTINGS,
   type BackupNotificationSettings,
@@ -65,24 +68,31 @@ import {
 } from '../lib/backup-notification-settings';
 import { writeWidgetData } from '../utils/widgetData';
 import {
-  getStorageUsage,
   getPreference,
-  setPreference,
   getSubscription,
   getRegion,
   getNotificationPreferences,
   setNotificationPreferences,
   getApiEnvironment,
-  type StorageUsage,
   type Subscription,
   type Region,
   type MobileNotificationPreferences,
 } from '../lib/api';
-import { billingStatusView } from '../lib/billing-status';
+import { accountChip } from '../lib/plan-chip';
+import { useAccountState } from '../lib/account-state-context';
 import {
   loadRegionsData,
   selectRegion,
-  DEFAULT_REGION_ROWS,
+  setStrict,
+  allowOthers,
+  strictRefusalNote,
+  type StrictRefusal,
+  strictSwitchOnPlatform,
+  strictNoticeFor,
+  REGION_COMING_SOON,
+  REGION_COUNTRY_HEADER,
+  REGION_NOTE,
+  REGION_UNAVAILABLE_NOTE,
   type RegionRow,
 } from '../lib/regions';
 import {
@@ -108,10 +118,15 @@ import {
 import type { RootStackParamList } from '../App';
 import { NativeSwitch } from '../components/NativeSwitch';
 import DevicesSection from '../components/settings/DevicesSection';
+import { SETTINGS_CATEGORIES, SettingsCategory, SettingsCategoryList, type SettingsCategoryId } from '../components/settings/SettingsCategories';
+import { useSettingsAttention } from '../lib/settings-attention-context';
+import SettingsDiagnostics from '../components/settings/SettingsDiagnostics';
 import { markUnlocked } from '../lib/lock-state';
-import { mountTrustedFileProvider, populateFileProviderCache, removeTrustedFileProvider } from '../lib/file-provider-mount';
+import { populateFileProviderCache, registerTrustedFileProviderDomain, resetTrustedFileProviderDomain } from '../lib/file-provider-mount';
+import { setFilesMountedByUser } from '../lib/files-mount-default';
 import { NOTIFICATIONS_OPT_OUT_KEY, registerForPushNotifications, unregisterPushToken } from '../lib/push-notifications';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
+import { DEFAULT_NOTIFICATION_PREFERENCES } from '../lib/notification-prefs';
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
@@ -158,7 +173,6 @@ function withTimeout<T>(promise: Promise<T>, fallback: T, timeoutMs: number): Pr
   });
 }
 
-type RegionMode = 'preference' | 'force';
 type C = Colors;
 
 interface NativePermissionResponse {
@@ -196,20 +210,6 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-function planLabel(name: string): string {
-  // Server is migrating personal -> basic and data_hoarder -> business; the
-  // legacy keys are aliased to the new labels for the duration of the rename.
-  const map: Record<string, string> = {
-    free: 'Free',
-    basic: 'Basic',
-    personal: 'Basic',
-    pro: 'Pro',
-    business: 'Business',
-    data_hoarder: 'Business',
-    team: 'Team',
-  };
-  return map[name.toLowerCase()] ?? name;
-}
 
 function permissionGranted(permission: NativePermissionResponse | null | undefined): boolean {
   return permission?.granted === true || permission?.status === 'granted';
@@ -253,6 +253,7 @@ const layout = StyleSheet.create({
   regionRadio: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
   regionRadioDot: { width: 8, height: 8, borderRadius: 4 },
   regionInfo: { flex: 1 },
+  regionCountryHeader: { paddingTop: 12, paddingBottom: 6, paddingHorizontal: 12 },
   footer: { alignItems: 'center', paddingVertical: 16, gap: 2 },
 });
 
@@ -343,7 +344,7 @@ function SettingsRow({
             </Text>
           </View>
         )}
-        {value != null && <Text style={{ fontSize: 13, color: c.ink3 }}>{value}</Text>}
+        {value != null && <Text style={{ fontSize: 13, color: c.ink3, fontFamily: label === 'Version' ? fonts.mono : fonts.sans }}>{value}</Text>}
         {showChevron && !danger && <Text style={{ fontSize: 18, color: c.ink4, marginLeft: 2 }}>{'›'}</Text>}
       </View>
     </TouchableOpacity>
@@ -662,17 +663,75 @@ export default function SettingsScreen() {
     backupProgress,
     lastBackupAt,
     triggerBackupNow,
+    backupBlockedReason,
+    accountMismatchReason,
+    ownerUnconfirmedReason,
+    accountRefusalReason,
+    manifestUnavailableReason,
+    serverCheckPausedReason,
   } = useBackup();
+  // Task 2245 (P1): same object the Settings tab badge reads.
+  const settingsAttention = useSettingsAttention();
   const { showToast } = useToast();
   const isOnline = useNetworkStatus();
   const apiEnvironment = getApiEnvironment();
+  const [activeCategory, setActiveCategory] = useState<SettingsCategoryId | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  const { width: windowWidth } = useWindowDimensions();
+
+  const selectCategory = useCallback((id: SettingsCategoryId | null) => {
+    setActiveCategory(id);
+    setIsScrolled(false);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, []);
+
+  // 2235 — sub-screens are local state, not routes, so iOS has no native
+  // interactive pop to offer. Interpret a left-edge pan as "back" ourselves.
+  // iOS only: Android keeps the hardware back handler below, web the
+  // breadcrumb. Disabled at the category list, where there is nothing to pop.
+  const backSwipeEnabled = Platform.OS === 'ios' && activeCategory !== null;
+  // RNGH's pan event payload has no `x0` in ~2.32's types, so the start
+  // position is captured on begin (window-relative, matching screen coords).
+  const backSwipeStartX = useRef(0);
+  const backSwipeGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(backSwipeEnabled)
+        // Let vertical scrolling win; only horizontal intent starts the pan.
+        .activeOffsetX(10)
+        .failOffsetY([-12, 12])
+        .onBegin((e) => {
+          backSwipeStartX.current = e.absoluteX;
+        })
+        .onEnd((e) => {
+          const completed = shouldCompleteSettingsBackSwipe({
+            startX: backSwipeStartX.current,
+            translationX: e.translationX,
+            velocityX: e.velocityX,
+            screenWidth: windowWidth,
+          });
+          if (completed) selectCategory(null);
+        }),
+    [backSwipeEnabled, selectCategory, windowWidth],
+  );
+
+  useFocusEffect(useCallback(() => {
+    if (activeCategory === null) return;
+    const back = BackHandler.addEventListener('hardwareBackPress', () => {
+      selectCategory(null);
+      return true;
+    });
+    return () => back.remove();
+  }, [activeCategory, selectCategory]));
   // "Paused — waiting for Wi-Fi" only kicks in when the user explicitly opted
   // to gate uploads on Wi-Fi *and* we're offline (or on cellular, once the
   // hook differentiates). useNetworkStatus currently reports a binary
   // online/offline; treat offline as paused for now.
   const backupPaused = wifiOnly && !isOnline;
 
-  const [usage, setUsage] = useState<StorageUsage | null>(null);
+  // Task 2245 (P1): the SAME storage snapshot the tab badge reads. The
+  // provider owns the fetch; this screen never keeps a second copy.
+  const usage = settingsAttention.usage;
   const [loadingUsage, setLoadingUsage] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   // Track which storage thresholds we've already alerted on this session, so
@@ -694,11 +753,7 @@ export default function SettingsScreen() {
   // Notifications
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [notifPrefs, setNotifPrefs] = useState<MobileNotificationPreferences>({
-    file_updated: true,
-    share_received: true,
-    storage_warning: true,
-    new_device_login: true,
-    backup_complete: false,
+    ...DEFAULT_NOTIFICATION_PREFERENCES,
   });
   const [notifPrefsLoading, setNotifPrefsLoading] = useState(false);
   const [backupNotifPrefs, setBackupNotifPrefs] = useState<BackupNotificationSettings>(
@@ -709,16 +764,27 @@ export default function SettingsScreen() {
   // Account
   const [displayName, setDisplayNameState] = useState<string>('');
   const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const { document: accountDocument } = useAccountState();
   const [serverRegion, setServerRegion] = useState<Region | null>(null);
 
   // Data residency preference
-  const [storageRegion, setStorageRegion] = useState<string>('europe');
-  const [storageRegionMode, setStorageRegionMode] = useState<RegionMode>('preference');
+  /** Row id shown as selected (null = none: unknown, or the saved country
+   *  is not available right now). */
+  const [storageRegion, setStorageRegion] = useState<string | null>(null);
   const [savingRegion, setSavingRegion] = useState(false);
-  /** Region rows derived from `/api/v1/regions` + `/me/region` (task 1422),
-   *  merged with the honest "Coming soon" rows for planned regions (1413). */
-  const [regionRows, setRegionRows] = useState<readonly RegionRow[]>(DEFAULT_REGION_ROWS);
+  /** Rows come ONLY from `GET /api/v1/storage-regions` (task 1919, by country
+   *  since task 2050): Europe (default, any data center), the countries, and
+   *  coming-soon ones. There is no client-side list; empty until the first
+   *  answer arrives. */
+  const [regionRows, setRegionRows] = useState<readonly RegionRow[]>([]);
+  const [regionsLoaded, setRegionsLoaded] = useState(false);
   const [regionsRefreshFailed, setRegionsRefreshFailed] = useState(false);
+  const [regionPreferenceUnknown, setRegionPreferenceUnknown] = useState(false);
+  const [regionPreferredUnavailable, setRegionPreferredUnavailable] = useState(false);
+  const [regionSaveFailed, setRegionSaveFailed] = useState(false);
+  /** "Only store in <country>" (task 1952): on = a new file never goes to another country. */
+  const [regionStrict, setRegionStrict] = useState(false);
+  const [regionStrictRefusal, setRegionStrictRefusal] = useState<StrictRefusal | null>(null);
 
   // Backup per-category stats (sourced from BackupDatabase + .device.json manifest)
   const [photoStats, setPhotoStats] = useState<CategoryStats>(EMPTY_CATEGORY_STATS);
@@ -741,12 +807,20 @@ export default function SettingsScreen() {
   // Advanced backup section toggle
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
 
+  // Task 2245 (P1): storage attention is refreshed when Settings gains focus,
+  // not only on mount, so a reason the user just fixed disappears here.
+  useFocusEffect(
+    useCallback(() => {
+      settingsAttention.refresh();
+    }, [settingsAttention.refresh]),
+  );
+
   useFocusEffect(
     useCallback(() => {
       recordRuntimeTrace('settings.screen.focus', {
         sections: [
           'Account',
-          'Storage & plan',
+          'Storage',
           'Backup',
           'Devices',
           'Files',
@@ -844,8 +918,8 @@ export default function SettingsScreen() {
 
   const fetchUsage = useCallback(async () => {
     try {
-      const data = await getStorageUsage();
-      setUsage(data);
+      const data = await settingsAttention.refresh();
+      if (!data) return;
       void writeWidgetData({ storageUsed: data.used_bytes, storageTotal: data.plan_limit_bytes, recentFiles: [] });
 
       // Quota warning: toast once per session as the user crosses 75 / 90 / 100%.
@@ -858,19 +932,12 @@ export default function SettingsScreen() {
         if (tier > lastQuotaAlertRef.current) {
           lastQuotaAlertRef.current = tier;
           if (tier === 100) {
-            // Task 1540 findings 5, 8: the previous copy here named an
-            // in-app action that doesn't exist. Free space or manage the
-            // plan on the web (see PLAN_MANAGEMENT_NOTE) are the two things
-            // a user can actually do.
-            //
-            // Codex review on PR #108: naming plan management without
-            // saying where it happens still reads as an in-app action.
-            // PLAN_MANAGEMENT_NOTE spells out "on the web", same as
-            // FilesScreen's storage-full Alert and StorageScreen's
-            // disclaimer.
-            showToast({ type: 'error', message: `Storage full — uploads will fail until you free space. ${PLAN_MANAGEMENT_NOTE}` });
+            // Task 1540 findings 5, 8 + task 1821: freeing space is the one
+            // thing the app can do, so it is the only thing the toast says
+            // (no plan management hint, App Store 3.1.1 / 3.1.3).
+            showToast({ type: 'error', message: 'Storage full — uploads will fail until you free space.' });
           } else if (tier === 90) {
-            showToast({ type: 'error', message: `Storage 90% full — free up space. ${PLAN_MANAGEMENT_NOTE}` });
+            showToast({ type: 'error', message: 'Storage 90% full — free up space.' });
           } else if (tier === 75) {
             showToast({ type: 'info', message: 'Storage 75% full.' });
           }
@@ -881,7 +948,7 @@ export default function SettingsScreen() {
     } finally {
       setLoadingUsage(false);
     }
-  }, [showToast]);
+  }, [settingsAttention.refresh, showToast]);
 
   const loadBiometricPrefs = useCallback(async () => {
     try {
@@ -927,8 +994,8 @@ export default function SettingsScreen() {
           // remove-then-add reset to get it back; otherwise re-register.
           const repaired =
             state.registered === false
-              ? await BeebeebCrypto.resetFileProviderDomain()
-              : await BeebeebCrypto.registerFileProviderDomain();
+              ? await resetTrustedFileProviderDomain()
+              : await registerTrustedFileProviderDomain();
           mounted =
             repaired.registered &&
             repaired.cacheDatabaseReady !== false &&
@@ -957,28 +1024,17 @@ export default function SettingsScreen() {
   }, []);
 
   const loadStorageRegionPref = useCallback(async () => {
-    // Task 1422: rows always come from `/api/v1/regions` + `/me/region` (with
-    // the honest "Coming soon" rows merged in for planned regions, decision
-    // 1413) — never throws; a failed fetch degrades to the static rows.
+    // Task 1919: rows + preference come from the API (never throws). A failed
+    // fetch leaves the picker empty with an honest note; it never invents rows.
     const data = await loadRegionsData();
     setRegionRows(data.rows);
-    setRegionsRefreshFailed(data.refreshFailed);
-    if (data.preferredRegion) {
-      setStorageRegion(data.preferredRegion);
-      return;
-    }
-    if (!data.refreshFailed) return; // fetched fine, user just has no preference set yet
-
-    // Live fetch failed — fall back to any locally cached preference.
-    const raw = await getPreference('storage_region');
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as { pool_name?: string; mode?: RegionMode };
-      if (parsed.pool_name) setStorageRegion(parsed.pool_name);
-      if (parsed.mode === 'preference' || parsed.mode === 'force') setStorageRegionMode(parsed.mode);
-    } catch {
-      // Ignore malformed preference
-    }
+    setRegionsLoaded(true);
+    setRegionsRefreshFailed(data.failed);
+    setRegionPreferenceUnknown(data.preferenceLoadFailed);
+    setRegionPreferredUnavailable(data.preferredUnavailable);
+    setRegionStrict(data.strict);
+    setRegionStrictRefusal(data.strictRefusal);
+    setStorageRegion(data.selectedId);
   }, []);
 
   // Load deletion behavior preference
@@ -1330,14 +1386,19 @@ export default function SettingsScreen() {
     }
   }, []);
 
+  // Task 1722 round 4 (Guus 2026-10-15, Q1): Files is on by default for a signed-in account;
+  // this switch still turns it off, and that choice is kept for this account across sign-outs
+  // (src/lib/files-mount-default.ts), so the next sign-in does not switch it back on.
   const handleFileProviderMountToggle = useCallback(async (enabled: boolean) => {
     const previous = fileProviderMounted;
     setFileProviderMounted(enabled);
     setUpdatingFileProviderMount(true);
     try {
-      const result = enabled
-        ? await mountTrustedFileProvider({ vaultUnlocked: crypto.isUnlocked })
-        : await removeTrustedFileProvider();
+      const result = await setFilesMountedByUser({
+        userId: user?.user_id,
+        enabled,
+        vaultUnlocked: crypto.isUnlocked,
+      });
       // Don't claim "mounted in Files" unless iOS actually presents the
       // location: userVisibleRootError != null means it's registered but not
       // user-visible.
@@ -1349,7 +1410,7 @@ export default function SettingsScreen() {
       setFileProviderSupported(result.supported);
       setFileProviderMounted(mounted);
       if (mounted && crypto.isUnlocked) {
-        void populateFileProviderCache(crypto.decryptMetadata).catch(() => {});
+        void populateFileProviderCache(crypto.decryptMetadata, { recursive: false, decryptNames: crypto.decryptNames }).catch(() => {});
       }
       showToast({
         type: mounted || !enabled ? 'success' : 'info',
@@ -1365,7 +1426,7 @@ export default function SettingsScreen() {
     } finally {
       setUpdatingFileProviderMount(false);
     }
-  }, [crypto.decryptMetadata, crypto.isUnlocked, fileProviderMounted, showToast]);
+  }, [crypto.decryptMetadata, crypto.isUnlocked, fileProviderMounted, showToast, user?.user_id]);
 
   const handleNotificationsToggle = useCallback(async (enabled: boolean) => {
     if (enabled) {
@@ -1451,8 +1512,12 @@ export default function SettingsScreen() {
   const handleTogglePhotoBackup = useCallback(async () => {
     const enabling = !isPhotoBackupEnabled;
     if (enabling) {
-      const { status } = await MediaLibrary.requestPermissionsAsync();
-      if (status !== 'granted') {
+      // Task 1688 — get first: an already-granted library (full OR limited)
+      // must not be re-prompted by re-enabling the toggle; only a
+      // not-yet-granted one prompts, and only because the user just chose
+      // to enable backup (an explicit action).
+      const { granted } = await ensurePhotoPermission(MediaLibrary);
+      if (!granted) {
         Alert.alert(
           'Photo access needed',
           'Beebeeb needs access to your photo library to back up your camera roll. Open Settings and enable "Photos" access.',
@@ -1616,33 +1681,68 @@ export default function SettingsScreen() {
   }, []);
 
   const handleRegionChange = useCallback(async (row: RegionRow) => {
-    if (!row.available) return;
+    if (!row.available || savingRegion || row.id === storageRegion) return;
+    const previous = storageRegion;
+    const previousStrict = regionStrict;
+    setRegionSaveFailed(false);
     setStorageRegion(row.id);
     setSavingRegion(true);
     try {
-      await selectRegion(row);
-      await setPreference('storage_region', JSON.stringify({ pool_name: row.id, mode: storageRegionMode }));
+      // Strict is a promise about ONE country: it carries over to another
+      // country, and ends when the person goes back to Europe.
+      await selectRegion(row, regionStrict);
+      setRegionStrict(row.isCountry && regionStrict);
+      setRegionPreferredUnavailable(false);
+      setRegionStrictRefusal(null);
+      setRegionPreferenceUnknown(false);
     } catch {
-      await setPreference('storage_region', JSON.stringify({ pool_name: row.id, mode: storageRegionMode })).catch(() => {});
+      // The server did not store it: show what is actually stored.
+      setStorageRegion(previous);
+      setRegionStrict(previousStrict);
+      setRegionSaveFailed(true);
     } finally {
       setSavingRegion(false);
     }
-  }, [storageRegionMode]);
+  }, [savingRegion, storageRegion, regionStrict]);
 
-  const handleRegionModeChange = useCallback(async (mode: RegionMode) => {
-    setStorageRegionMode(mode);
+  /** Task 2053: turn "only store in" off for an unavailable country. */
+  const handleAllowOthers = useCallback(async (refusal: StrictRefusal) => {
+    if (savingRegion) return;
+    setRegionSaveFailed(false);
+    setSavingRegion(true);
     try {
-      await setPreference('storage_region', JSON.stringify({ pool_name: storageRegion, mode }));
+      await allowOthers(refusal);
+      setRegionStrict(false);
+      setRegionStrictRefusal(null);
+      setRegionPreferredUnavailable(refusal.listed);
+      if (!refusal.listed) setStorageRegion('europe');
     } catch {
-      // Best-effort
+      setRegionSaveFailed(true);
+    } finally {
+      setSavingRegion(false);
     }
-  }, [storageRegion]);
+  }, [savingRegion]);
+
+  const handleRegionStrictChange = useCallback(async (row: RegionRow, next: boolean) => {
+    if (savingRegion) return;
+    setRegionSaveFailed(false);
+    setRegionStrict(next);
+    setSavingRegion(true);
+    try {
+      await setStrict(row, next);
+    } catch {
+      setRegionStrict(!next);
+      setRegionSaveFailed(true);
+    } finally {
+      setSavingRegion(false);
+    }
+  }, [savingRegion]);
 
   // Task 1540 findings 3, 5, 9: this used to be a callback wiring an amber
   // primary-CTA button below to `navigation.navigate('Storage')` — but
   // StorageScreen has no purchase mechanism of any kind (task 1400, App
   // Review 3.1.1(a)), so the button was a dead end. Removed entirely rather
-  // than reworded: the "Storage & plan" row further down this screen already
+  // than reworded: the "Storage" row further down this screen already
   // navigates to the same place for a user who wants to see their plan.
 
   const handleReportBug = useCallback(() => {
@@ -1666,7 +1766,7 @@ export default function SettingsScreen() {
   }, []);
 
   const handleShowVersion = useCallback(() => {
-    const version = Constants.expoConfig?.version ?? '1.0.0';
+    const { version } = appVersion();
     Alert.alert(
       `Beebeeb v${version}`,
       '• End-to-end encrypted file storage\n• Camera roll backup\n• Dark mode support\n• File search and sort\n• Swipe actions\n• Biometric lock\n\nMade in Europe by Beebeeb.io',
@@ -1682,7 +1782,7 @@ export default function SettingsScreen() {
     } catch {
       // Fall through to fallback
     }
-    Alert.alert('Rate Beebeeb', 'Coming soon to the App Store.');
+    Alert.alert('Rate Beebeeb', 'Rating is not available on this device right now.');
   }, []);
 
   const handleSignOut = useCallback(() => {
@@ -1705,20 +1805,20 @@ export default function SettingsScreen() {
 
   const email = user?.email ?? '';
   const initials = userInitials(email);
-  const planNameRaw = subscription?.plan ?? usage?.plan_name ?? null;
-  const planName = planNameRaw ? planLabel(planNameRaw) : null;
-  // Task 1540 findings 1, 2, 4, 6: read subscription.status, not just the
-  // plan slug — a status='cancelling' or 'trialing' subscription must not
-  // say "Renews {date}" (see src/lib/billing-status.ts for the full server
-  // evidence). Shared with StorageScreen.tsx's CurrentPlanCard so the two
-  // can't drift apart again.
-  const billingView = billingStatusView(planNameRaw ? {
-    plan: planNameRaw,
-    status: subscription?.status ?? null,
-    current_period_end: subscription?.current_period_end ?? null,
-    trial_ends_at: subscription?.trial_ends_at ?? null,
-  } : null);
+  // Task 1601: the entitled plan, not the raw row — a cancelled paid
+  // subscription still carries its old `plan` slug with no entitlement
+  // behind it. `usage.plan_name` (separate `/files/usage` response) is only
+  // the fallback for when `/subscription` itself failed to load; it is not
+  // touched by this task's server-side fix, so it can still lag briefly in
+  // that one failure case.
+  // Task 1821: the chip reads the server's onboarding document (allowance / trialing /
+  // trial_ended / lapsed / active), so "BASIC TRIAL" for a trial, a stale "TRIAL" after it
+  // ended and "No plan plan" cannot happen. Without a document it falls back to the
+  // subscription row (billing-status.ts, which guards a stale `trialing`).
+  const chip = accountChip({ doc: accountDocument, subscription, fallbackPlanSlug: usage?.plan_name ?? null });
   const serverRegionLabel = serverRegion?.region ? regionDisplayName(serverRegion.region) : null;
+  const strictSwitch = strictSwitchOnPlatform(regionRows, storageRegion, Platform.OS);
+  const strictNotice = strictNoticeFor(regionRows, storageRegion, regionStrict, Platform.OS);
   const cameraBackupActive =
     ['preparing', 'encrypting', 'uploading'].includes(backupProgress.state) ||
     backupProgress.inProgress > 0;
@@ -1744,6 +1844,28 @@ export default function SettingsScreen() {
     (backupStatsLoading || calendarNativeStatus === null) &&
     !categoryStatsHasEvidence(displayCalendarStats);
   const cameraRollSummary = (() => {
+    // Task 1594: a stopped backup says why, before any progress line.
+    if (backupBlockedReason) return backupBlockedReason;
+    // Task 1599 followup 2: same precedent — a confirmed account_mismatch
+    // stopped the native engine; say so before any progress line, same as
+    // the vault-key-mismatch case above.
+    if (accountMismatchReason) return accountMismatchReason;
+    // Task 1599 followups round 3 (P2): same precedent — the native
+    // engine's OWN local ownership check refused to even attempt starting;
+    // say so before any progress line, same as the two cases above.
+    if (ownerUnconfirmedReason) return ownerUnconfirmedReason;
+    // Task 1605 (PR #155 review thread PRRT_kwDOSLX6T86nRLw0): same
+    // precedent again — the native engine paused itself after the server
+    // confirmed this account can't upload right now for a billing reason
+    // (never-paid trial cancelled, lapsed, no plan, or the 25 GB trial
+    // cap); say so before any progress line, same as the three cases above.
+    if (accountRefusalReason) return accountRefusalReason;
+    // Task 1667 round 6: native could not open its backup list and is
+    // retrying; say so instead of a progress line that is not moving.
+    if (manifestUnavailableReason) return manifestUnavailableReason;
+    // Task 1667 round 12: native holds uploads because the server check
+    // cannot answer; say so instead of a progress line that is not moving.
+    if (serverCheckPausedReason) return serverCheckPausedReason;
     if (backupPaused) {
       return `Paused · waiting for Wi-Fi${cameraTotalCount > 0 ? ` · ${cameraBackedUpCount.toLocaleString()} of ${cameraTotalCount.toLocaleString()} ${cameraItemLabel}` : ''}${cameraIssueSuffix}`;
     }
@@ -1756,7 +1878,7 @@ export default function SettingsScreen() {
     }
 
     if (cameraIssueCount > 0) {
-      return `${cameraIssueCount.toLocaleString()} item${cameraIssueCount === 1 ? '' : 's'} need attention · open Backup Insights`;
+      return `${cameraIssueCount.toLocaleString()} item${cameraIssueCount === 1 ? '' : 's'} need attention · open Backup status`;
     }
 
     if (cameraTotalCount > 0 || cameraBackedUpCount > 0) {
@@ -1769,7 +1891,7 @@ export default function SettingsScreen() {
 
     return 'Waiting for first scan';
   })();
-  const cameraRollSummaryColor = cameraIssueCount > 0 && !cameraBackupActive
+  const cameraRollSummaryColor = backupBlockedReason || accountMismatchReason || ownerUnconfirmedReason || accountRefusalReason || manifestUnavailableReason || serverCheckPausedReason || (cameraIssueCount > 0 && !cameraBackupActive)
     ? c.red
     : c.ink3;
   const cameraRollStatusDotColor = backupPaused
@@ -1799,7 +1921,8 @@ export default function SettingsScreen() {
   const surfaces = surfacesFor(resolved);
 
   return (
-    <View style={[layout.root, { backgroundColor: surfaces.groupedBg }]}>
+    <GestureDetector gesture={backSwipeGesture}>
+      <View style={[layout.root, { backgroundColor: surfaces.groupedBg }]}>
       {/* 1314 — content runs under the chrome; the title floats with a
           scroll-edge blur behind it, the same pattern Drive uses (1313). */}
       {isScrolled ? <ScrollEdgeBlur height={headerHeight || SCROLL_EDGE.chromeFallback} /> : null}
@@ -1810,15 +1933,30 @@ export default function SettingsScreen() {
           setHeaderHeight((prev) => (Math.abs(prev - h) > 1 ? h : prev));
         }}
       >
-        <Text style={[typeScale.largeTitle, {
-          color: c.ink,
-          paddingHorizontal: spacing.lg, paddingTop: insets.top + 6, paddingBottom: 10,
-        }]}>
-          Settings
-        </Text>
+        <View style={{ paddingTop: insets.top + 6 }}>
+          {activeCategory !== null ? (
+            <TouchableOpacity
+              onPress={() => selectCategory(null)}
+              testID="settings-back"
+              accessibilityRole="button"
+              accessibilityLabel="Back to Settings"
+              style={{ flexDirection: 'row', alignItems: 'center', minHeight: 44, paddingHorizontal: spacing.lg }}
+            >
+              <Ionicons name="chevron-back" size={20} color={c.ink} />
+              <Text style={[typeScale.body, { color: c.ink }]}>Settings</Text>
+            </TouchableOpacity>
+          ) : null}
+          <Text accessibilityRole="header" style={[typeScale.largeTitle, {
+            color: c.ink, paddingHorizontal: spacing.lg, paddingBottom: 10,
+          }]}>
+            {SETTINGS_CATEGORIES.find((category) => category.id === activeCategory)?.title ?? 'Settings'}
+          </Text>
+        </View>
       </View>
 
       <ScrollView
+        ref={scrollRef}
+        key={activeCategory ?? 'categories'}
         style={layout.scroll}
         contentContainerStyle={[layout.scrollContent, { paddingTop: headerHeight, paddingBottom: tabBarBottomInset }]}
         onScroll={(e) => setIsScrolled(e.nativeEvent.contentOffset.y > 0)}
@@ -1836,6 +1974,11 @@ export default function SettingsScreen() {
         }
       >
 
+        {activeCategory === null ? (
+          <SettingsCategoryList colors={c} backgroundColor={surfaces.groupedCell} onSelect={selectCategory} attention={settingsAttention} />
+        ) : null}
+
+        <SettingsCategory id="account" active={activeCategory}>
         {/* ---- Account ---- */}
         <View style={layout.section}>
           <SectionHeader title="Account" c={c} />
@@ -1866,7 +2009,7 @@ export default function SettingsScreen() {
               </View>
             </View>
 
-            {planName && (
+            {chip && (
               <>
                 <RowDivider c={c} />
                 <View style={layout.row}>
@@ -1879,7 +2022,7 @@ export default function SettingsScreen() {
                   <View style={{ flex: 1 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
-                        Subscription
+                        Account
                       </Text>
                       <View style={{
                         backgroundColor: c.amberBg,
@@ -1890,10 +2033,10 @@ export default function SettingsScreen() {
                         borderRadius: 4,
                       }}>
                         <Text style={{ fontSize: 10, fontWeight: '700' as const, color: c.amberDeep, letterSpacing: 0.3 }}>
-                          {planName.toUpperCase()}
+                          {chip.label.toUpperCase()}
                         </Text>
                       </View>
-                      {billingView.badgeKind && (
+                      {chip.badge && (
                         <View style={{
                           backgroundColor: c.amberBg,
                           borderColor: c.amber,
@@ -1903,14 +2046,14 @@ export default function SettingsScreen() {
                           borderRadius: 4,
                         }}>
                           <Text style={{ fontSize: 10, fontWeight: '700' as const, color: c.amberDeep, letterSpacing: 0.3 }}>
-                            {billingView.badgeKind === 'trial' ? 'TRIAL' : 'CANCELLING'}
+                            {chip.badge}
                           </Text>
                         </View>
                       )}
                     </View>
-                    {billingView.statusLine && (
+                    {chip.statusLine && (
                       <Text style={{ fontSize: 11, color: c.ink3, marginTop: 3 }}>
-                        {billingView.statusLine}
+                        {chip.statusLine}
                       </Text>
                     )}
                   </View>
@@ -1918,7 +2061,7 @@ export default function SettingsScreen() {
                       that lived here navigated to StorageScreen, which (task
                       1400, App Review 3.1.1(a)) has no purchase mechanism of
                       any kind — the button was a dead end. Removed, not
-                      reworded; the "Storage & plan" row below already reaches
+                      reworded; the "Storage" row below already reaches
                       the same screen for a user who wants to see their plan. */}
                 </View>
               </>
@@ -1926,9 +2069,9 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* ---- Storage & plan ---- */}
+        {/* ---- Storage ---- */}
         <View style={layout.section}>
-          <SectionHeader title="Storage & plan" c={c} />
+          <SectionHeader title="Storage" c={c} />
           <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
             {loadingUsage ? (
               <View style={layout.loadingRow}>
@@ -1940,7 +2083,7 @@ export default function SettingsScreen() {
                 activeOpacity={0.6}
                 onPress={() => navigation.navigate('Storage')}
                 accessibilityRole="button"
-                accessibilityLabel="Show storage details"
+                accessibilityLabel="Storage"
               >
                 <StorageBar
                   usedBytes={usage.used_bytes}
@@ -1958,6 +2101,102 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* ---- Sign out ---- */}
+        <View style={layout.section}>
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
+            <SettingsRow
+              label="Sign out"
+              icon="log-out-outline"
+              danger
+              showChevron={false}
+              onPress={handleSignOut}
+              c={c}
+            />
+          </View>
+        </View>
+
+        </SettingsCategory>
+
+        <SettingsCategory id="security" active={activeCategory}>
+        {/* ---- Security ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Security" c={c} />
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
+            {!loadingBiometric && biometricAvailable && (
+              <>
+                <ToggleRow
+                  label="Biometric lock"
+                  value={biometricEnabled}
+                  onValueChange={handleBiometricToggle}
+                  c={c}
+                />
+                {biometricEnabled && (
+                  <>
+                    <RowDivider c={c} />
+                    <SettingsRow
+                      label="Lock after"
+                      value={biometricDelayLabel(biometricDelayMs)}
+                      onPress={handleBiometricDelayPress}
+                      c={c}
+                    />
+                  </>
+                )}
+                <RowDivider c={c} />
+              </>
+            )}
+            <SettingsRow
+              label="Two-factor authentication"
+              // Task 1610: show the live status inline, straight from
+              // useAuth().user (already fetched — /auth/me always includes
+              // totp_enabled) rather than making the user open the screen to
+              // find out. TwoFactorSetupScreen itself reads the same field to
+              // decide whether to open on the On state or the fresh-enrollment
+              // wizard — this row's onPress never branches on it.
+              value={user?.totp_enabled ? 'On' : undefined}
+              icon="lock-closed-outline"
+              onPress={() => navigation.navigate('TwoFactorSetup')}
+              c={c}
+            />
+            <RowDivider c={c} />
+            <SettingsRow
+              label="Password and passkeys"
+              value="app.beebeeb.io"
+              icon="shield-checkmark-outline"
+              onPress={handleAccountSecurity}
+              c={c}
+            />
+          </View>
+          <SectionNote
+            text="Your recovery phrase is shown once during account setup and is not stored on this device. Use the copy you saved offline."
+            c={c}
+          />
+          <SectionNote
+            text="Manage your password on the web at app.beebeeb.io."
+            c={c}
+          />
+        </View>
+
+        {/* ---- Devices ---- */}
+        <View style={layout.section}>
+          <SectionHeader title="Devices" c={c} />
+          <View style={[layout.card, { backgroundColor: surfaces.groupedCell, marginBottom: 8 }]}>
+            <SettingsRow
+              label="Add a device"
+              icon="phone-portrait-outline"
+              onPress={() => navigation.navigate('DevicePairing')}
+              c={c}
+            />
+          </View>
+          <DevicesSection c={c} />
+          <SectionNote
+            text="Devices and their sync/backup sessions. Status updates every 30 seconds."
+            c={c}
+          />
+        </View>
+
+        </SettingsCategory>
+
+        <SettingsCategory id="backups" active={activeCategory}>
         {/* ---- Backup ---- */}
         <View style={layout.section}>
           <SectionHeader title="Backup" c={c} />
@@ -2039,7 +2278,7 @@ export default function SettingsScreen() {
               style={layout.row}
               activeOpacity={0.6}
               onPress={() => setAdvancedExpanded((prev) => !prev)}
-              accessibilityLabel={advancedExpanded ? 'Collapse advanced backup options' : 'Expand advanced backup options'}
+              accessibilityLabel={advancedExpanded ? 'Collapse backup options' : 'Expand backup options'}
               accessibilityRole="button"
             >
               <Ionicons
@@ -2049,14 +2288,14 @@ export default function SettingsScreen() {
                 style={{ marginRight: 8 }}
               />
               <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
-                Advanced
+                Backup options
               </Text>
             </TouchableOpacity>
             {advancedExpanded && (
               <>
                 <RowDivider c={c} />
                 <ToggleRow
-                  label="Photos and videos"
+                  label="Include videos"
                   subtitle="Back up videos in addition to photos. Videos can be large -- backed up over Wi-Fi only."
                   value={includeVideos}
                   onValueChange={handleIncludeVideosChange}
@@ -2084,7 +2323,7 @@ export default function SettingsScreen() {
                       />
                       <View style={{ flex: 1 }}>
                         <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
-                          Photo albums
+                          Photo albums to back up
                         </Text>
                         <Text style={{ fontSize: 11, color: c.ink3, marginTop: 2 }}>
                           {photoAlbumsLoading ? 'Loading albums...' : photoAlbumSelectionLabel}
@@ -2093,6 +2332,7 @@ export default function SettingsScreen() {
                     </TouchableOpacity>
                     {photoAlbumsExpanded && (
                       <View style={{ paddingHorizontal: 12, paddingBottom: 8, paddingLeft: 50 }}>
+                        <Text style={{ fontSize: 12, color: c.ink3, paddingVertical: 6 }}>Choose phone albums to upload. To change what appears in Photos, use Folders shown in Photos.</Text>
                         <TouchableOpacity
                           style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 }}
                           activeOpacity={0.6}
@@ -2148,7 +2388,7 @@ export default function SettingsScreen() {
                 />
                 <RowDivider c={c} />
                 <ToggleRow
-                  label="Background upload"
+                  label="Background uploads"
                   subtitle="Allow uploads in the background. May increase battery usage."
                   value={backgroundUpload}
                   onValueChange={handleBackgroundUploadChange}
@@ -2157,8 +2397,8 @@ export default function SettingsScreen() {
                 />
                 <RowDivider c={c} />
                 <ToggleRow
-                  label="Keep vault unlocked for backup"
-                  subtitle="Your encryption key stays securely on this device so backups continue in the background."
+                  label="Allow backup while locked"
+                  subtitle="Keep an encryption key available on this device for backup, even when the app is locked. Background work depends on your phone’s settings."
                   value={keepVaultUnlocked}
                   onValueChange={handleKeepVaultUnlockedChange}
                   indent
@@ -2177,7 +2417,7 @@ export default function SettingsScreen() {
                     <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'keep' ? c.amber : c.ink4 }]}>
                       {deletionBehavior === 'keep' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
                     </View>
-                    <Text style={{ fontSize: 13, color: c.ink }}>Keep in cloud</Text>
+                    <Text style={{ fontSize: 13, color: c.ink }}>Keep in Beebeeb</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4, marginTop: 4 }}
@@ -2194,7 +2434,7 @@ export default function SettingsScreen() {
             )}
             <RowDivider c={c} />
             <SettingsRow
-              label="Backup insights"
+              label="Backup status"
               onPress={() => navigation.navigate('BackupInsights')}
               c={c}
             />
@@ -2206,30 +2446,19 @@ export default function SettingsScreen() {
             />
             <RowDivider c={c} />
             <SettingsRow
-              label="Folders in Photos"
+              label="Folders shown in Photos"
               icon="images-outline"
               onPress={() => navigation.navigate('PhotoLibrarySettings')}
               c={c}
             />
-          </View>
-        </View>
-
-        {/* ---- Devices ---- */}
-        <View style={layout.section}>
-          <SectionHeader title="Devices" c={c} />
-          <View style={[layout.card, { backgroundColor: surfaces.groupedCell, marginBottom: 8 }]}>
+            <RowDivider c={c} />
             <SettingsRow
-              label="Add a device"
-              icon="phone-portrait-outline"
-              onPress={() => navigation.navigate('DevicePairing')}
+              label="Photo loading & quality"
+              icon="images-outline"
+              onPress={() => navigation.navigate('AdvancedSettings')}
               c={c}
             />
           </View>
-          <DevicesSection c={c} />
-          <SectionNote
-            text="Devices and their sync/backup sessions. Status updates every 30 seconds."
-            c={c}
-          />
         </View>
 
         {/* ---- Files ---- */}
@@ -2239,12 +2468,13 @@ export default function SettingsScreen() {
             {fileProviderSupported && (
               <>
                 <ToggleRow
-                  label="Mount Beebeeb in Files"
+                  label="Show Beebeeb in Files"
                   subtitle="Anyone who can unlock this iPhone can access the mounted Files location."
                   value={fileProviderMounted}
                   onValueChange={handleFileProviderMountToggle}
                   disabled={loadingFileProvider || updatingFileProviderMount}
                   c={c}
+                  testID="files-mount-toggle"
                 />
                 <RowDivider c={c} />
               </>
@@ -2258,6 +2488,9 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        </SettingsCategory>
+
+        <SettingsCategory id="notifications" active={activeCategory}>
         {/* ---- Notifications ---- */}
         <View style={layout.section}>
           <SectionHeader title="Notifications" c={c} />
@@ -2273,6 +2506,7 @@ export default function SettingsScreen() {
             {notificationsEnabled && (
               <>
                 <View style={{ height: 1, backgroundColor: c.line }} />
+                <View style={{ paddingHorizontal: 12, paddingTop: 12 }}><SectionHeader title="Account notifications" c={c} /></View>
                 <ToggleRow
                   label="File updates"
                   subtitle="When a file changes from another device"
@@ -2282,7 +2516,7 @@ export default function SettingsScreen() {
                   c={c}
                 />
                 <ToggleRow
-                  label="Share received"
+                  label="Shared with you"
                   subtitle="When someone shares a file with you"
                   value={notifPrefs.share_received}
                   onValueChange={(v) => void handleNotifPrefToggle('share_received', v)}
@@ -2291,7 +2525,7 @@ export default function SettingsScreen() {
                 />
                 <ToggleRow
                   label="Storage warnings"
-                  subtitle="When you reach 75%, 90% or 100% of your quota"
+                  subtitle="When your account is close to its storage limit"
                   value={notifPrefs.storage_warning}
                   onValueChange={(v) => void handleNotifPrefToggle('storage_warning', v)}
                   disabled={notifPrefsLoading}
@@ -2307,24 +2541,25 @@ export default function SettingsScreen() {
                 />
                 <ToggleRow
                   label="Backup complete"
-                  subtitle="When photo backup finishes"
+                  subtitle="Account alert when a backup finishes"
                   value={notifPrefs.backup_complete}
                   onValueChange={(v) => void handleNotifPrefToggle('backup_complete', v)}
                   disabled={notifPrefsLoading}
                   c={c}
                 />
                 <View style={{ height: 1, backgroundColor: c.line }} />
+                <View style={{ paddingHorizontal: 12, paddingTop: 12 }}><SectionHeader title="On this device" c={c} /></View>
                 <ToggleRow
-                  label="Photo backup summaries"
-                  subtitle="Example: Beebeeb backed up 12 new photos in the last 24 hours"
+                  label="Daily photo backup summary"
+                  subtitle="A daily summary when this device backs up new photos"
                   value={backupNotifPrefs.backupSummaries}
                   onValueChange={(v) => void handleBackupNotifPrefToggle('backupSummaries', v)}
                   disabled={backupNotifPrefsLoading}
                   c={c}
                 />
                 <ToggleRow
-                  label="No-change check-ins"
-                  subtitle="Example: Beebeeb checked your camera roll. Nothing new to back up."
+                  label="Weekly backup check-in"
+                  subtitle="Up to once a week when this device finds no new photos to back up"
                   value={backupNotifPrefs.noChangeCheckins}
                   onValueChange={(v) => void handleBackupNotifPrefToggle('noChangeCheckins', v)}
                   disabled={backupNotifPrefsLoading}
@@ -2343,6 +2578,9 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        </SettingsCategory>
+
+        <SettingsCategory id="appearance" active={activeCategory}>
         {/* ---- Appearance ---- */}
         <View style={layout.section}>
           <SectionHeader title="Appearance" c={c} />
@@ -2404,57 +2642,9 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* ---- Security ---- */}
-        <View style={layout.section}>
-          <SectionHeader title="Security" c={c} />
-          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
-            {!loadingBiometric && biometricAvailable && (
-              <>
-                <ToggleRow
-                  label="Face ID lock"
-                  value={biometricEnabled}
-                  onValueChange={handleBiometricToggle}
-                  c={c}
-                />
-                {biometricEnabled && (
-                  <>
-                    <RowDivider c={c} />
-                    <SettingsRow
-                      label="Lock after"
-                      value={biometricDelayLabel(biometricDelayMs)}
-                      onPress={handleBiometricDelayPress}
-                      c={c}
-                    />
-                  </>
-                )}
-                <RowDivider c={c} />
-              </>
-            )}
-            <SettingsRow
-              label="Two-Factor Authentication"
-              icon="lock-closed-outline"
-              onPress={() => navigation.navigate('TwoFactorSetup')}
-              c={c}
-            />
-            <RowDivider c={c} />
-            <SettingsRow
-              label="Manage account on the web"
-              value="app.beebeeb.io"
-              icon="shield-checkmark-outline"
-              onPress={handleAccountSecurity}
-              c={c}
-            />
-          </View>
-          <SectionNote
-            text="Your recovery phrase is shown once during account setup and is not stored on this device. Use the copy you saved offline."
-            c={c}
-          />
-          <SectionNote
-            text="Manage your password on the web at app.beebeeb.io."
-            c={c}
-          />
-        </View>
+        </SettingsCategory>
 
+        <SettingsCategory id="privacy" active={activeCategory}>
         {/* ---- Privacy & data ---- */}
         <View style={layout.section}>
           <SectionHeader title="Privacy & data" c={c} />
@@ -2468,26 +2658,45 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        </SettingsCategory>
+
+        <SettingsCategory id="storage" active={activeCategory}>
         {/* ---- Data residency ---- */}
         <View style={layout.section}>
-          <SectionHeader title="Data residency" c={c} />
+          <SectionHeader title="Storage location" c={c} />
           <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
-            {/* Rows derived from /api/v1/regions + /me/region (task 1422), merged
-                with the honest "Coming soon" rows for planned regions (1413). */}
-            {(() => {
-              const availableRowCount = regionRows.filter((r) => r.available).length;
-              return regionRows.map((row, i) => {
+            {/* Rows come from GET /api/v1/storage-regions (task 1919). */}
+            {regionRows.length === 0 && (
+              <View style={layout.row}>
+                <Text style={{ fontSize: 14, color: c.ink3 }}>
+                  {regionsLoaded ? 'Storage locations are not available right now.' : 'Loading storage locations...'}
+                </Text>
+              </View>
+            )}
+            {regionRows.map((row, i) => {
                 const isSelected = row.available && storageRegion === row.id;
-                const disabled = !row.available || savingRegion || availableRowCount <= 1;
+                const disabled = !row.available || savingRegion;
+                const firstCountry = row.isCountry && !regionRows.slice(0, i).some((r) => r.isCountry);
                 return (
                   <React.Fragment key={row.id}>
                     {i > 0 && <RowDivider c={c} />}
+                    {firstCountry && (
+                      <>
+                        <View style={layout.regionCountryHeader}>
+                          <Text style={{ fontSize: 11, color: c.ink3, fontWeight: '500' as const, textTransform: 'uppercase' as const, letterSpacing: 0.6 }}>
+                            {REGION_COUNTRY_HEADER}
+                          </Text>
+                        </View>
+                        <RowDivider c={c} />
+                      </>
+                    )}
                     <TouchableOpacity
                       style={layout.regionOption}
                       activeOpacity={row.available ? 0.6 : 1}
                       onPress={() => void handleRegionChange(row)}
                       disabled={disabled}
-                      accessibilityLabel={`${row.label}${!row.available ? ', coming soon' : isSelected ? ', selected' : ''}`}
+                      testID={`region-row-${row.id}`}
+                      accessibilityLabel={`${row.label}${row.subtitle ? `, ${row.subtitle}` : ''}${row.comingSoon ? ', coming soon' : isSelected ? ', selected' : ''}`}
                       accessibilityRole="radio"
                       accessibilityState={{ checked: isSelected, disabled: !row.available }}
                     >
@@ -2515,66 +2724,82 @@ export default function SettingsScreen() {
                             </Text>
                           )}
                         </View>
-                        <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
-                          {row.subtitle}
-                        </Text>
+                        {row.subtitle !== '' && (
+                          <Text style={{ fontSize: 11, color: c.ink3, marginTop: 1 }}>
+                            {row.subtitle}
+                          </Text>
+                        )}
                       </View>
                       {isSelected && (
                         <Ionicons name="checkmark" size={16} color={c.amber} />
                       )}
-                      {!row.available && (
+                      {row.comingSoon && (
                         <Text style={{
                           fontSize: 10, color: c.ink4, fontWeight: '500' as const,
                           paddingHorizontal: 6, paddingVertical: 2,
                           borderRadius: 4, borderWidth: 1, borderColor: c.line2,
                           overflow: 'hidden' as const,
                         }}>
-                          Soon
+                          {REGION_COMING_SOON}
                         </Text>
                       )}
                     </TouchableOpacity>
                   </React.Fragment>
                 );
-              });
-            })()}
-
-            {storageRegion !== 'europe' && (
-              <>
-                <RowDivider c={c} />
-                <View style={layout.row}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>Force region</Text>
-                    {storageRegionMode === 'force' && (
-                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 4 }}>
-                        <Ionicons name="warning" size={12} color={c.amberDeep} />
-                        <Text style={{ fontSize: 11, color: c.amberDeep }}>Capacity limited</Text>
-                      </View>
-                    )}
-                  </View>
-                  <NativeSwitch
-                    value={storageRegionMode === 'force'}
-                    onValueChange={(v) => handleRegionModeChange(v ? 'force' : 'preference')}
-                    colors={c}
-                  />
-                </View>
-              </>
-            )}
+              })}
           </View>
-          <SectionNote
-            text="New uploads go to your selected region. Existing files stay where they are. Need to migrate? Contact us."
-            c={c}
-          />
-          <SectionNote
-            text={storageRegionMode === 'force'
-              ? 'Force: uploads only go to your selected region. May fail when at capacity.'
-              : 'Preference: uploads go to your region when possible, overflow to others if needed.'}
-            c={c}
-          />
+          {strictSwitch && (
+            <View style={[layout.card, { backgroundColor: surfaces.groupedCell, marginTop: 10 }]}>
+              <ToggleRow
+                label={strictSwitch.label}
+                subtitle={strictSwitch.explanation}
+                value={regionStrict}
+                onValueChange={(next) => void handleRegionStrictChange(strictSwitch.row, next)}
+                disabled={savingRegion}
+                c={c}
+                testID="region-strict-switch"
+              />
+            </View>
+          )}
+          {regionStrictRefusal && (
+            <View style={[layout.card, { backgroundColor: surfaces.groupedCell, marginTop: 10 }]}>
+              <ToggleRow
+                label={`Only store in ${regionStrictRefusal.name === 'your chosen country' ? 'your chosen country' : regionStrictRefusal.name}`}
+                subtitle={strictRefusalNote(regionStrictRefusal)}
+                value
+                onValueChange={() => void handleAllowOthers(regionStrictRefusal)}
+                disabled={savingRegion}
+                c={c}
+                testID="region-strict-refusal-switch"
+              />
+            </View>
+          )}
+          {strictNotice && !regionStrictRefusal && (
+            <Text
+              testID="region-strict-notice"
+              style={{ fontSize: 12, color: c.ink3, marginTop: 10, paddingHorizontal: 4 }}
+            >
+              {strictNotice}
+            </Text>
+          )}
+          <SectionNote text={REGION_NOTE} c={c} />
+          {regionPreferredUnavailable && !regionStrictRefusal && (
+            <SectionNote text={REGION_UNAVAILABLE_NOTE} c={c} />
+          )}
+          {regionSaveFailed && (
+            <SectionNote text="Could not save your choice. Check your connection and try again." c={c} />
+          )}
+          {regionPreferenceUnknown && !regionsRefreshFailed && (
+            <SectionNote text="Could not load your current choice. Pick one to set it." c={c} />
+          )}
           {regionsRefreshFailed && (
-            <SectionNote text="Could not refresh regions. Showing the last known list." c={c} />
+            <SectionNote text="Could not load the list of storage locations. Check your connection and reopen Settings." c={c} />
           )}
         </View>
 
+        </SettingsCategory>
+
+        <SettingsCategory id="help" active={activeCategory}>
         {/* ---- Support ---- */}
         <View style={layout.section}>
           <SectionHeader title="Support" c={c} />
@@ -2594,19 +2819,13 @@ export default function SettingsScreen() {
             />
             <RowDivider c={c} />
             <SettingsRow
-              label="Siri & Shortcuts"
+              label="System settings"
               icon="mic-outline"
               onPress={() => { void Linking.openSettings(); }}
               c={c}
             />
-            <RowDivider c={c} />
-            <SettingsRow
-              label="Advanced"
-              icon="options-outline"
-              onPress={() => navigation.navigate('AdvancedSettings')}
-              c={c}
-            />
           </View>
+          {__DEV__ ? <SettingsDiagnostics /> : null}
         </View>
 
         {/* ---- About ---- */}
@@ -2616,11 +2835,12 @@ export default function SettingsScreen() {
             <SettingsRow
               label="Version"
               icon="information-circle-outline"
-              value={`${Constants.expoConfig?.version ?? '1.0.0'} (${Constants.expoConfig?.ios?.buildNumber ?? Constants.expoConfig?.android?.versionCode ?? '1'})`}
+              value={`${appVersion().version} (${appVersion().build})`}
               showChevron={false}
               onPress={handleShowVersion}
               c={c}
             />
+            {__DEV__ && <>
             <RowDivider c={c} />
             <SettingsRow
               label="API environment"
@@ -2629,6 +2849,7 @@ export default function SettingsScreen() {
               showChevron={false}
               c={c}
             />
+            </>}
             <RowDivider c={c} />
             <SettingsRow
               label="Operated by"
@@ -2667,27 +2888,13 @@ export default function SettingsScreen() {
             />
             <RowDivider c={c} />
             <SettingsRow
-              label="Rate on App Store"
+              label="Rate Beebeeb"
               icon="star-half-outline"
               onPress={handleRateApp}
               c={c}
             />
           </View>
-          <SectionNote text={`API target: ${apiEnvironment.baseUrl}`} c={c} />
-        </View>
-
-        {/* ---- Sign out ---- */}
-        <View style={layout.section}>
-          <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
-            <SettingsRow
-              label="Sign out"
-              icon="log-out-outline"
-              danger
-              showChevron={false}
-              onPress={handleSignOut}
-              c={c}
-            />
-          </View>
+          {__DEV__ ? <Text selectable style={{ fontFamily: fonts.mono, fontSize: 11, color: c.ink3, marginTop: 6 }}>{`API target: ${apiEnvironment.baseUrl}`}</Text> : null}
         </View>
 
         {/* Footer */}
@@ -2700,7 +2907,10 @@ export default function SettingsScreen() {
           )}
           <Text style={{ fontSize: 10, color: c.ink4 }}>Operated by Initlabs B.V., Wijchen, Netherlands.</Text>
         </View>
+        </SettingsCategory>
+
       </ScrollView>
-    </View>
+      </View>
+    </GestureDetector>
   );
 }

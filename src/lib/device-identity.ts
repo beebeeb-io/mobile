@@ -60,28 +60,45 @@ const LEGACY_BACKUP_DEVICE_ID_KEY = 'beebeeb_device_id';
 
 // ── Secure storage abstraction (SecureStore on native, localStorage on web) ──
 
+/**
+ * One read of a secure-storage key. Task 1667 round 13 (review item 1): a
+ * read that FAILED is not "no value". expo-secure-store answers `null` only
+ * for `errSecItemNotFound`; any other keychain status throws, most often
+ * `errSecInteractionNotAllowed` while the device is locked (the item is
+ * stored WHEN_UNLOCKED, expo's default). Before, both read as `null`, and
+ * `getDeviceId()` minted a fresh UUID over an id that existed but could not
+ * be read.
+ */
+type StorageRead = { ok: true; value: string | null } | { ok: false };
+
 const storage = {
-  async get(key: string): Promise<string | null> {
+  async get(key: string): Promise<StorageRead> {
     if (Platform.OS === 'web') {
-      return typeof window === 'undefined' ? null : window.localStorage.getItem(key);
+      return { ok: true, value: typeof window === 'undefined' ? null : window.localStorage.getItem(key) };
     }
     try {
-      return await SecureStore.getItemAsync(key);
+      return { ok: true, value: await SecureStore.getItemAsync(key) };
     } catch {
-      return null;
+      return { ok: false };
     }
   },
-  async set(key: string, value: string): Promise<void> {
+  /** True only when the write succeeded AND reading it back gives `value`. */
+  async setDurably(key: string, value: string): Promise<boolean> {
     if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined') window.localStorage.setItem(key, value);
-      return;
+      if (typeof window === 'undefined') return false;
+      window.localStorage.setItem(key, value);
+      return window.localStorage.getItem(key) === value;
     }
     try {
       await SecureStore.setItemAsync(key, value);
     } catch {
-      // SecureStore can fail on devices without a secure enclave — silently
-      // skip; getDeviceId still returns the in-memory value for this session.
+      // SecureStore can fail on devices without a secure enclave, or while
+      // the device is locked. The caller decides what an unpersisted id may
+      // be used for (never the native backup handoff).
+      return false;
     }
+    const back = await storage.get(key);
+    return back.ok && back.value === value;
   },
 };
 
@@ -102,13 +119,46 @@ function uuid(): string {
 
 // ── Canonical accessor ───────────────────────────────────────────────────────
 
-// Coalesce concurrent first-run callers so two awaits can't each mint a UUID.
-let _inFlight: Promise<string> | null = null;
+/**
+ * Task 1667 round 13 (review item 1): the keychain could not be READ (locked
+ * device, keychain error). The id may exist; nothing may be minted in its
+ * place. Every caller of `getDeviceId()` handles it (see the sweep in
+ * mobile#182 round 13): best-effort callers send no id, the native backup
+ * handoff sends nothing.
+ */
+export class DeviceIdUnavailableError extends Error {
+  constructor() {
+    super('device id unavailable: the secure storage read failed');
+    this.name = 'DeviceIdUnavailableError';
+  }
+}
 
-async function resolveCanonicalId(): Promise<string> {
+/** Where the id came from, and whether it is durably stored. */
+export interface DeviceIdResolution {
+  id: string;
+  /** `stored`: the canonical key; `adopted`: the legacy backup key (read, so
+   *  durable even when copying it to the canonical key failed); `minted`: a
+   *  fresh UUID (first run). */
+  source: 'stored' | 'adopted' | 'minted';
+  /** True when the id was read from secure storage or written there and read
+   *  back. A minted id whose write failed is false: it lives in memory only. */
+  persisted: boolean;
+}
+
+// Coalesce concurrent first-run callers so two awaits can't each mint a UUID.
+let _inFlight: Promise<DeviceIdResolution> | null = null;
+// A minted id whose write failed: reused (and its write retried) for the rest
+// of this session, so the session never sees two different ids.
+let _unpersistedMintedId: string | null = null;
+
+async function resolveCanonicalId(): Promise<DeviceIdResolution> {
   // 1. Already canonical → return as-is. This is the steady-state path.
   const existing = await storage.get(DEVICE_ID_KEY);
-  if (existing) return existing;
+  if (!existing.ok) throw new DeviceIdUnavailableError();
+  if (existing.value) {
+    _unpersistedMintedId = null;
+    return { id: existing.value, source: 'stored', persisted: true };
+  }
 
   // 2. No canonical id yet. Adopt an existing legacy id so server-side state
   //    that may already be keyed by it is preserved (re-upload-safe). The sync
@@ -116,16 +166,37 @@ async function resolveCanonicalId(): Promise<string> {
   //    carry-forward is the backup manifest id — on an install old enough to
   //    have one but no sync id, no PhotoKit dedup exists yet, so adopting it is
   //    inert but keeps the manifest's device_id stable across the upgrade.
+  //    Round 13: a failed legacy read is not "none" either.
   const legacyBackupId = await storage.get(LEGACY_BACKUP_DEVICE_ID_KEY);
-  if (legacyBackupId) {
-    await storage.set(DEVICE_ID_KEY, legacyBackupId);
-    return legacyBackupId;
+  if (!legacyBackupId.ok) throw new DeviceIdUnavailableError();
+  if (legacyBackupId.value) {
+    await storage.setDurably(DEVICE_ID_KEY, legacyBackupId.value);
+    // Durable either way: it was READ from the legacy key, which native
+    // also reads (BackupDeviceId.swift).
+    return { id: legacyBackupId.value, source: 'adopted', persisted: true };
   }
 
-  // 3. Fresh install — mint one canonical UUID.
-  const id = uuid();
-  await storage.set(DEVICE_ID_KEY, id);
-  return id;
+  // 3. Fresh install (both keys READ as absent) — mint one canonical UUID.
+  const id = _unpersistedMintedId ?? uuid();
+  const persisted = await storage.setDurably(DEVICE_ID_KEY, id);
+  _unpersistedMintedId = persisted ? null : id;
+  return { id, source: 'minted', persisted };
+}
+
+/**
+ * Task 1667 round 13 (review item 1): the canonical id with how it was
+ * obtained. Throws `DeviceIdUnavailableError` when secure storage could not
+ * be read; mints (and persists) a UUID only when both keys were read as
+ * absent.
+ */
+export async function resolveDeviceId(): Promise<DeviceIdResolution> {
+  if (_inFlight) return _inFlight;
+  _inFlight = resolveCanonicalId();
+  try {
+    return await _inFlight;
+  } finally {
+    _inFlight = null;
+  }
 }
 
 /**
@@ -135,13 +206,24 @@ async function resolveCanonicalId(): Promise<string> {
  *
  * Used by: the sync engine (CRDT op origin), the `X-Beebeeb-Device-Id` header
  * (PhotoKit dedup), the backup manifest `device_id`, and the push-token link.
+ *
+ * Round 13: rejects with `DeviceIdUnavailableError` when the keychain cannot
+ * be read (it never mints over an id it could not read).
  */
 export async function getDeviceId(): Promise<string> {
-  if (_inFlight) return _inFlight;
-  _inFlight = resolveCanonicalId();
+  return (await resolveDeviceId()).id;
+}
+
+/**
+ * Round 13 (review item 1): the id only when it is durable (read from secure
+ * storage, or minted and persisted). null when the read failed or a minted
+ * id could not be stored. The native backup handoff uses only this.
+ */
+export async function getDurableDeviceId(): Promise<string | null> {
   try {
-    return await _inFlight;
-  } finally {
-    _inFlight = null;
+    const r = await resolveDeviceId();
+    return r.persisted && r.id ? r.id : null;
+  } catch {
+    return null;
   }
 }

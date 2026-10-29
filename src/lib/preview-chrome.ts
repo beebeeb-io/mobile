@@ -31,6 +31,47 @@ export function nextBarsVisible(current: boolean, ctx: BarsTapContext): boolean 
   return !current;
 }
 
+// ---------------------------------------------------------------------------
+// Task 1687a — what a TAP on a swipe-pager page does in each locked state.
+// ---------------------------------------------------------------------------
+
+export type PagerTapAction =
+  /** The file-level (Face ID) lock owns this page: tap = authenticate. */
+  | 'unlock-file'
+  /** No file lock, but the VAULT is locked: tap toggles the top/bottom
+   * chrome. No auth step here — the vault unlock flow is task 1684's; this
+   * is hit-testing responsiveness only. */
+  | 'toggle-chrome'
+  /** Content owns taps (a mounted ZoomableImage, video's native controls):
+   * the page must not add a competing tap action. */
+  | null;
+
+export interface PagerTapContext {
+  /** This page's file is locked and not yet authenticated this session. */
+  fileLocked: boolean;
+  /** The vault itself is locked (`useCrypto().isUnlocked === false`) — a
+   * DIFFERENT lock from the per-file Face ID gate; the two must never be
+   * conflated into one affordance. */
+  vaultLocked: boolean;
+  /** Interactive content (ZoomableImage / VideoView) owns this page's taps. */
+  contentOwned: boolean;
+}
+
+/**
+ * Which action a tap on a pager page takes. The pre-1687a pager relied on a
+ * raw onTouchStart/onTouchEnd detector on the FlatList (10 pt / 500 ms
+ * window) for every page without interactive content — vault-locked pages
+ * among them — so an imprecise or slow tap landed nowhere ("sometimes
+ * doesn't respond to touch, no menu top or bottom, specifically when
+ * locked"). Locked and vault-locked pages now get a real full-page
+ * Pressable whose action this function selects.
+ */
+export function pagerTapAction(ctx: PagerTapContext): PagerTapAction {
+  if (ctx.fileLocked) return 'unlock-file';
+  if (ctx.vaultLocked) return 'toggle-chrome';
+  return ctx.contentOwned ? null : 'toggle-chrome';
+}
+
 export interface InfoSublineInput {
   kindLabel: string;
   sizeLabel: string | null;

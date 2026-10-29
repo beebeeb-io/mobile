@@ -66,10 +66,34 @@ let disableContactsBackupMock = mock(async () => {});
 let disableCalendarBackupMock = mock(async () => {});
 let teardownAllBackupMock = mock(async () => {});
 let clearSessionMock = mock(async () => {});
+// Task 1599 followups (round 2, item 4): applyNativeProgress (not exercised
+// by this file — it needs a React render harness this codebase doesn't
+// have, see the header note) calls these two on a NEW native
+// accountMismatchReason. Only shouldEndSessionForNativeAccountMismatch's
+// own pure logic is unit-tested below; these mocks exist purely so
+// importing backup-context.tsx (which now references both) doesn't throw
+// on an undefined import from the mocked './api' module.
+let captureRequestAuthSnapshotMock = mock(async () => ({ generation: 0, token: null }));
+let endSessionForAccountMismatchMock = mock(async () => {});
+
+// Task 1037: BackupProvider reads the account state; nothing here exercises it.
+mock.module('./account-state-context', () => ({
+  useAccountState: () => ({ ready: true, gate: { kind: 'ok' }, subscription: null, refresh: async () => ({ kind: 'ok' }) }),
+}));
+// Task 1605 review round 3: BackupProvider's module-scope import of
+// getSubscription needs a binding to resolve (the poll effect itself is not
+// exercised here — see this file's header note — but the import must not
+// throw). runAccountRefusalPollTick's own tests below inject their own
+// fetchSubscription directly, so this default is never actually called by
+// anything in this file.
+let getSubscriptionMock = mock(async () => null);
 
 mock.module('./api', () => ({
   clearMobileIosBackupClientSession: (...args: unknown[]) => clearSessionMock(...args),
   ensureMobileIosBackupClientSession: async () => 'session-1',
+  captureRequestAuthSnapshot: (...args: unknown[]) => captureRequestAuthSnapshotMock(...args),
+  endSessionForAccountMismatch: (...args: unknown[]) => endSessionForAccountMismatchMock(...args),
+  getSubscription: (...args: unknown[]) => getSubscriptionMock(...args),
 }));
 
 mock.module('../services/BackupService', () => ({
@@ -93,6 +117,8 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   mirrorBackupClientSession: async () => true,
   getPhotoBackupIncludeVideos: async () => true,
   setPhotoBackupIncludeVideos: async () => true,
+  // Task 1667 — backup-context calls this before enable/trigger.
+  setBackupDeviceId: async () => true,
 }));
 
 // backupPrefKey and stopBackupEngines don't depend on the module's
@@ -101,7 +127,18 @@ mock.module('../../modules/beebeeb-crypto', () => ({
 // scenario (see loadFresh) because sessionPresentAtLaunchPromise is captured
 // once, synchronously, the moment the module is first evaluated — exactly
 // mirroring how it behaves once per real app process.
-const { backupPrefKey, stopBackupEngines, canEnableNativeCameraBackup } = await import('./backup-context');
+const {
+  backupPrefKey,
+  stopBackupEngines,
+  canEnableNativeCameraBackup,
+  shouldEndSessionForNativeAccountMismatch,
+  isAccountMismatchGenerationCurrent,
+  reduceAccountMismatchPoll,
+  INITIAL_ACCOUNT_MISMATCH_POLL_STATE,
+  decideAccountRefusalResume,
+  runAccountRefusalPollTick,
+  syncBackupDeviceIdToNative,
+} = await import('./backup-context');
 
 const LEGACY_PHOTO_KEY = 'beebeeb_camera_backup';
 const OWNER_KEY = 'beebeeb_backup_pref_owner';
@@ -614,4 +651,361 @@ describe('warm-up retry (JS mirror of ContactsBackupManager/CalendarBackupManage
     // Now it retries once, every app mount/foreground, until it succeeds.
     expect(shouldRunOnEnable(false, false)).toBe(true);
   });
+});
+
+// Task 1599 followups (round 2, item 4): a native-confirmed
+// `account_mismatch` must end the JS session the same way `request()`'s own
+// 409 branch does (api.ts), so a user who just toggles backup back on
+// doesn't send the SAME stale session straight back into another 409. This
+// exercises the pure edge-trigger DECISION only — the actual
+// `endSessionForAccountMismatch`/`captureRequestAuthSnapshot` call happens
+// inside `applyNativeProgress`, a `useCallback` closure this codebase has no
+// render harness to exercise (see this file's own header note).
+describe('shouldEndSessionForNativeAccountMismatch (native account-mismatch -> JS session end, edge-triggered)', () => {
+  test('null -> a reason: true (the normal confirmed-mismatch case)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch(null, 'Backup stopped: this device is signed in to a different account. Sign in again to resume.')).toBe(true);
+  });
+
+  test('the SAME reason on a later poll: false (edge-triggered, not once-per-poll)', () => {
+    const reason = 'Backup stopped: this device is signed in to a different account. Sign in again to resume.';
+    expect(shouldEndSessionForNativeAccountMismatch(reason, reason)).toBe(false);
+  });
+
+  test('a DIFFERENT reason string than the previous one: true (a fresh mismatch event)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch('old reason', 'new reason')).toBe(true);
+  });
+
+  test('a reason clearing back to null: false (native resolved it — nothing to end here, bindAccount already handled the sign-in)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch('some reason', null)).toBe(false);
+  });
+
+  test('null -> null: false (steady state, nothing happening)', () => {
+    expect(shouldEndSessionForNativeAccountMismatch(null, null)).toBe(false);
+  });
+});
+
+// Task 1599 followups round 3 (P1 — sign-in lockout loop): a confirmed 409
+// sets native's sticky `accountMismatchStopReason`; JS ends that session on
+// it. The NEXT sign-in mounts a brand-new `BackupProvider`, whose progress
+// poll can fire BEFORE `confirmMasterKeyHandle` (unlock) clears the reason
+// — misreading the stale reason as fresh and ending the brand-new session
+// before the user finishes signing in, forever. These tests cover the
+// generation-based backstop (`isAccountMismatchGenerationCurrent`) and the
+// full per-mount reducer (`reduceAccountMismatchPoll`) `applyNativeProgress`
+// folds over — see this file's own header note for why these are unit-
+// tested as pure functions rather than through a React render harness.
+describe('isAccountMismatchGenerationCurrent (task 1599 followups round 3, P1)', () => {
+  test('no baseline established yet (null): never current, regardless of generation', () => {
+    expect(isAccountMismatchGenerationCurrent(null, 0)).toBe(false);
+    expect(isAccountMismatchGenerationCurrent(null, 5)).toBe(false);
+  });
+
+  test('generation strictly greater than the baseline: current', () => {
+    expect(isAccountMismatchGenerationCurrent(3, 4)).toBe(true);
+  });
+
+  test('generation equal to the baseline: NOT current (the reason that established the baseline, seen again)', () => {
+    expect(isAccountMismatchGenerationCurrent(3, 3)).toBe(false);
+  });
+
+  test('generation less than the baseline: NOT current (should never happen — native only increments — but must not be treated as current)', () => {
+    expect(isAccountMismatchGenerationCurrent(5, 3)).toBe(false);
+  });
+});
+
+describe('reduceAccountMismatchPoll (task 1599 followups round 3, P1 — sign-in lockout loop)', () => {
+  test('reason set BEFORE mount, new token, poll fires before unlock: session NOT ended', () => {
+    // First poll after a fresh BackupProvider mount observes a reason (and
+    // its generation) that was already active BEFORE this mount even
+    // started — exactly what happens when the previous session's confirmed
+    // mismatch is still sitting there because the sign-in that just
+    // happened hasn't reached `confirmMasterKeyHandle` (unlock) yet.
+    const staleReason = 'Backup stopped: this device is signed in to a different account. Sign in again to resume.';
+    const result = reduceAccountMismatchPoll(INITIAL_ACCOUNT_MISMATCH_POLL_STATE, {
+      reason: staleReason,
+      generation: 3,
+    });
+    expect(result.shouldEndSession).toBe(false);
+    // The baseline is now established at the stale generation — a REPEAT
+    // poll of the exact same stale state must also never end the session.
+    const repeat = reduceAccountMismatchPoll(result.state, { reason: staleReason, generation: 3 });
+    expect(repeat.shouldEndSession).toBe(false);
+  });
+
+  test('reason raised DURING the current session (after mount established its baseline): session ended', () => {
+    // Mount with nothing wrong yet — first poll establishes baseline 0, no reason.
+    const afterMount = reduceAccountMismatchPoll(INITIAL_ACCOUNT_MISMATCH_POLL_STATE, {
+      reason: null,
+      generation: 0,
+    });
+    expect(afterMount.shouldEndSession).toBe(false);
+    // A NEW confirmed mismatch happens during this session: native bumps
+    // the generation and sets a fresh reason.
+    const mismatchDuringSession = reduceAccountMismatchPoll(afterMount.state, {
+      reason: 'Backup stopped: this device is signed in to a different account. Sign in again to resume.',
+      generation: 1,
+    });
+    expect(mismatchDuringSession.shouldEndSession).toBe(true);
+  });
+
+  test('the FULL lockout-loop scenario: stale reason at mount is ignored, but a SUBSEQUENT genuinely-new mismatch in the same mount still ends the session', () => {
+    const staleReason = 'Backup stopped: this device is signed in to a different account. Sign in again to resume.';
+    // Poll 1 (before unlock): stale reason from the PRIOR session, generation 3.
+    const poll1 = reduceAccountMismatchPoll(INITIAL_ACCOUNT_MISMATCH_POLL_STATE, {
+      reason: staleReason,
+      generation: 3,
+    });
+    expect(poll1.shouldEndSession).toBe(false);
+    // Poll 2 (after unlock succeeds, native cleared the reason via
+    // `confirmMasterKeyHandle`/`mirrorSessionToAppGroup`): reason back to null.
+    const poll2 = reduceAccountMismatchPoll(poll1.state, { reason: null, generation: 3 });
+    expect(poll2.shouldEndSession).toBe(false);
+    // Poll 3: a GENUINELY NEW mismatch happens later in this same session —
+    // generation increments past the baseline this mount established.
+    const poll3 = reduceAccountMismatchPoll(poll2.state, { reason: staleReason, generation: 4 });
+    expect(poll3.shouldEndSession).toBe(true);
+  });
+
+  test('repeated polls of the SAME current-session reason only end the session once (edge-triggered)', () => {
+    const afterMount = reduceAccountMismatchPoll(INITIAL_ACCOUNT_MISMATCH_POLL_STATE, {
+      reason: null,
+      generation: 0,
+    });
+    const reason = 'Backup stopped: this device is signed in to a different account. Sign in again to resume.';
+    const first = reduceAccountMismatchPoll(afterMount.state, { reason, generation: 1 });
+    expect(first.shouldEndSession).toBe(true);
+    const second = reduceAccountMismatchPoll(first.state, { reason, generation: 1 });
+    expect(second.shouldEndSession).toBe(false);
+  });
+});
+
+// Task 1605 review round 3 (P1): the trial-cap-pause-never-resumes bug.
+// `decideAccountRefusalResume`/`runAccountRefusalPollTick` are the fix's
+// entire testable surface — see their doc comments in backup-context.tsx
+// for the full mechanism. No React render harness needed (this file's own
+// header note): both are plain functions the real `useEffect` calls as a
+// thin `setInterval`/`AppState` driver.
+const OK_SUB = { account_state: 'ok', uploads_blocked_at: null, access_until: null, data_deletion_at: null };
+const CAPPED_TRIAL_SUB = { ...OK_SUB, trial_storage_cap_bytes: 25_000_000_000, used_bytes: 25_000_000_000 };
+const CAPPED_TRIAL_UNDER_CAP_SUB = { ...OK_SUB, trial_storage_cap_bytes: 25_000_000_000, used_bytes: 1_000_000 };
+const PAID_SUB = { ...OK_SUB, trial_storage_cap_bytes: null, used_bytes: 200_000_000_000 };
+const CANCELLED_READ_ONLY_SUB = {
+  account_state: 'ok',
+  uploads_blocked_at: '2026-09-29T10:00:00Z',
+  access_until: '2026-10-13T10:00:00Z',
+  data_deletion_at: '2026-10-27T10:00:00Z',
+};
+const LAPSED_SUB = { account_state: 'lapsed', uploads_blocked_at: null, access_until: null, data_deletion_at: '2026-10-27T10:00:00Z' };
+
+describe('decideAccountRefusalResume (task 1605 review round 3, P1)', () => {
+  test('no subscription (fetch failed / never fetched): not unblocked', () => {
+    const result = decideAccountRefusalResume(null, true);
+    expect(result.unblocked).toBe(false);
+    expect(result.shouldResumeCameraBackup).toBe(false);
+  });
+
+  test('still at the 25 GB trial cap (used >= cap): NOT unblocked — the exact stuck-paused scenario', () => {
+    const result = decideAccountRefusalResume(CAPPED_TRIAL_SUB, true);
+    expect(result.unblocked).toBe(false);
+    expect(result.shouldResumeCameraBackup).toBe(false);
+  });
+
+  test('trial cap cleared by paying (trial_storage_cap_bytes now null): unblocked', () => {
+    const result = decideAccountRefusalResume(PAID_SUB, true);
+    expect(result.unblocked).toBe(true);
+    expect(result.shouldResumeCameraBackup).toBe(true);
+  });
+
+  test('still capped, but used dropped back under the cap (e.g. the user deleted files): unblocked', () => {
+    const result = decideAccountRefusalResume(CAPPED_TRIAL_UNDER_CAP_SUB, true);
+    expect(result.unblocked).toBe(true);
+  });
+
+  test('unblocked but camera-roll backup is NOT the enabled category: unblocked, but no resume asked for', () => {
+    const result = decideAccountRefusalResume(PAID_SUB, false);
+    expect(result.unblocked).toBe(true);
+    expect(result.shouldResumeCameraBackup).toBe(false);
+  });
+
+  test('a real gate-based refusal (trial cancelled before first charge, read-only): NOT unblocked', () => {
+    const result = decideAccountRefusalResume(CANCELLED_READ_ONLY_SUB, true);
+    expect(result.unblocked).toBe(false);
+  });
+
+  test('the trial resumed on the web (uploads_blocked_at cleared, account_state back to ok): unblocked', () => {
+    const result = decideAccountRefusalResume(OK_SUB, true);
+    expect(result.unblocked).toBe(true);
+  });
+
+  test('lapsed (trial ended, never resumed/paid): NOT unblocked', () => {
+    const result = decideAccountRefusalResume(LAPSED_SUB, true);
+    expect(result.unblocked).toBe(false);
+  });
+});
+
+describe('runAccountRefusalPollTick (task 1605 review round 3, P1)', () => {
+  test('still capped: no resume, polling continues', async () => {
+    const onUnblocked = mock(() => {});
+    const resumeCameraBackup = mock(async () => {});
+    const result = await runAccountRefusalPollTick({
+      fetchSubscription: async () => CAPPED_TRIAL_SUB,
+      getIsPhotoBackupEnabled: () => true,
+      onUnblocked,
+      resumeCameraBackup,
+    });
+    expect(result.resumed).toBe(false);
+    expect(result.shouldStopPolling).toBe(false);
+    expect(onUnblocked.mock.calls.length).toBe(0);
+    expect(resumeCameraBackup.mock.calls.length).toBe(0);
+  });
+
+  test('quota lifted: resume called exactly once, polling told to stop', async () => {
+    const onUnblocked = mock(() => {});
+    const resumeCameraBackup = mock(async () => {});
+    const result = await runAccountRefusalPollTick({
+      fetchSubscription: async () => PAID_SUB,
+      getIsPhotoBackupEnabled: () => true,
+      onUnblocked,
+      resumeCameraBackup,
+    });
+    expect(result.resumed).toBe(true);
+    expect(result.shouldStopPolling).toBe(true);
+    expect(onUnblocked.mock.calls.length).toBe(1);
+    expect(onUnblocked.mock.calls[0][0]).toEqual({ kind: 'ok' });
+    expect(resumeCameraBackup.mock.calls.length).toBe(1);
+  });
+
+  test('unblocked but photo backup is off: reports resumed (stop polling), but never calls resumeCameraBackup', async () => {
+    const resumeCameraBackup = mock(async () => {});
+    const result = await runAccountRefusalPollTick({
+      fetchSubscription: async () => PAID_SUB,
+      getIsPhotoBackupEnabled: () => false,
+      onUnblocked: () => {},
+      resumeCameraBackup,
+    });
+    expect(result.resumed).toBe(true);
+    expect(result.shouldStopPolling).toBe(true);
+    expect(resumeCameraBackup.mock.calls.length).toBe(0);
+  });
+
+  test('fetch throws (transient network failure): does not resume, does not stop polling', async () => {
+    const onUnblocked = mock(() => {});
+    const resumeCameraBackup = mock(async () => {});
+    const result = await runAccountRefusalPollTick({
+      fetchSubscription: async () => {
+        throw new Error('network down');
+      },
+      getIsPhotoBackupEnabled: () => true,
+      onUnblocked,
+      resumeCameraBackup,
+    });
+    expect(result.resumed).toBe(false);
+    expect(result.shouldStopPolling).toBe(false);
+    expect(onUnblocked.mock.calls.length).toBe(0);
+    expect(resumeCameraBackup.mock.calls.length).toBe(0);
+  });
+
+  test('the full episode as a sequence of ticks: resume fires on exactly the tick that clears, and a driver honoring shouldStopPolling never polls again after', async () => {
+    // Mirrors the real effect's own loop shape (see backup-context.tsx): a
+    // driver that stops issuing further ticks once shouldStopPolling comes
+    // back true. Three simulated ticks: still capped, still capped,
+    // quota lifted — with a FOURTH entry in the queue that would ALSO
+    // report unblocked, proving the driver genuinely stops (never reads it)
+    // rather than happening to run out of ticks on its own.
+    const queue = [CAPPED_TRIAL_SUB, CAPPED_TRIAL_SUB, PAID_SUB, PAID_SUB];
+    let fetchCount = 0;
+    const resumeCameraBackup = mock(async () => {});
+    const onUnblocked = mock(() => {});
+
+    // Bounded (not `while (!stopped)`) on purpose: a mutation that breaks
+    // `shouldStopPolling` must fail on the `stopped` assertion below rather
+    // than hang the test suite forever — once the queue is exhausted,
+    // fetchSubscription keeps resolving null (decideAccountRefusalResume(null, …)
+    // is always `unblocked: false`), so an unbounded loop under that
+    // mutation would never terminate on its own.
+    let stopped = false;
+    let ticksRun = 0;
+    const MAX_TICKS = 10;
+    while (!stopped && ticksRun < MAX_TICKS) {
+      ticksRun += 1;
+      const result = await runAccountRefusalPollTick({
+        fetchSubscription: async () => {
+          fetchCount += 1;
+          return queue[fetchCount - 1] ?? null;
+        },
+        getIsPhotoBackupEnabled: () => true,
+        onUnblocked,
+        resumeCameraBackup,
+      });
+      if (result.shouldStopPolling) stopped = true;
+    }
+
+    expect(stopped).toBe(true); // the loop stopped ITSELF — not just hit MAX_TICKS
+    expect(ticksRun).toBe(3); // capped, capped, then the clearing tick
+    expect(fetchCount).toBe(3); // the 4th queue entry is never fetched — polling truly stopped
+    expect(resumeCameraBackup.mock.calls.length).toBe(1); // resume called exactly once
+    expect(onUnblocked.mock.calls.length).toBe(1);
+  });
+});
+
+// Task 1667 — the native engine marks completed uploads in, and rebuilds an
+// empty manifest from, the server's per-device photo-backup map. Both are keyed
+// by X-Beebeeb-Device-Id, so native must get the CANONICAL device id.
+describe('syncBackupDeviceIdToNative (task 1667)', () => {
+  // Round 13 (review item 1): the deps are the resolution (with its
+  // durability) and the native setter, which now takes the durability flag.
+  test('hands the canonical device id to native, flagged durable', async () => {
+    const seen: Array<[string, boolean]> = [];
+    const ok = await syncBackupDeviceIdToNative({
+      resolveDeviceId: async () => ({ id: 'canonical-device-1', source: 'stored', persisted: true }),
+      setBackupDeviceId: async (id: string, o: { persisted: boolean }) => { seen.push([id, o.persisted]); return true; },
+    });
+    expect(ok).toBe(true);
+    expect(seen).toEqual([['canonical-device-1', true]]);
+  });
+
+  test('never throws and never sends an empty, unreadable or undurable id', async () => {
+    const seen: string[] = [];
+    const set = async (id: string) => { seen.push(id); return true; };
+    expect(await syncBackupDeviceIdToNative({ resolveDeviceId: async () => { throw new Error('keychain'); }, setBackupDeviceId: set })).toBe(false);
+    expect(await syncBackupDeviceIdToNative({ resolveDeviceId: async () => ({ id: '', source: 'stored', persisted: true }), setBackupDeviceId: set })).toBe(false);
+    expect(await syncBackupDeviceIdToNative({ resolveDeviceId: async () => ({ id: 'm', source: 'minted', persisted: false }), setBackupDeviceId: set })).toBe(false);
+    expect(await syncBackupDeviceIdToNative({
+      resolveDeviceId: async () => ({ id: 'd', source: 'stored', persisted: true }),
+      setBackupDeviceId: async () => { throw new Error('old native build'); },
+    })).toBe(false);
+    expect(seen).toEqual([]);
+  });
+});
+
+test('a refusal tick does not resume after its owner stops while fetching', async () => {
+  let resolve;
+  let current = true;
+  let resumed = 0;
+  const result = runAccountRefusalPollTick({
+    fetchSubscription: () => new Promise(r => { resolve = r; }),
+    isCurrent: () => current,
+    getIsPhotoBackupEnabled: () => true,
+    onUnblocked: () => { resumed++; },
+    resumeCameraBackup: async () => { resumed++; },
+  });
+  current = false;
+  resolve(PAID_SUB);
+  expect(await result).toEqual({resumed: false, shouldStopPolling: false});
+  expect(resumed).toBe(0);
+});
+
+test('contacts/calendar-only refusal resumes the enabled auxiliary backups', async () => {
+  let auxiliary = 0;
+  let camera = 0;
+  const result = await runAccountRefusalPollTick({
+    fetchSubscription: async () => PAID_SUB,
+    getIsPhotoBackupEnabled: () => false,
+    onUnblocked: () => {},
+    resumeCameraBackup: async () => { camera++; },
+    resumeOtherBackups: async () => { auxiliary++; },
+  });
+  expect(result.shouldStopPolling).toBe(true);
+  expect(camera).toBe(0);
+  expect(auxiliary).toBe(1);
 });

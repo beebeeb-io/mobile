@@ -1,11 +1,10 @@
+import { sharedFileKeyIsLoaded } from './shared-folder-keys';
 /**
  * Auto self-repair on download — task 0883.
  *
- * When an OWNER opens or saves a photo/video that has NO server thumbnail, the
- * download/decrypt step has just written the full plaintext to disk. Rather than
- * leaving that file permanently thumbnail-less (the legacy `ensureThumbnailForImage`
- * path throws on iOS), we reuse the already-on-disk plaintext to generate +
- * upload a thumbnail — a free self-repair that needs no second download.
+ * Once an OWNER opens or saves a full photo/video source, reuse its local
+ * plaintext to repair a missing or known degraded server thumbnail. This
+ * never fetches another original or changes the thumbnail-only preview path.
  *
  * Design contract (all guards live here, in one place):
  *  - OWNER-ONLY. Callers must only invoke this from owner decrypt sites
@@ -14,7 +13,7 @@
  *  - E2E preserved. The thumbnail is encrypted under the per-file key inside
  *    `generateAndUploadThumbnail`; this module never touches raw key bytes.
  *  - Fire-and-forget. Never throws, never blocks the user's open/save.
- *  - Idempotent + storm-safe. Only runs when `has_thumbnail === false`, dedups
+ *  - Idempotent + storm-safe. Only runs for missing or known sub-30-KiB thumbnails, dedups
  *    per fileId (succeeded set + in-flight map + timestamp backoff), and caps
  *    global concurrency so rapid preview-swiping can't fan out.
  *
@@ -31,8 +30,8 @@ import {
 import { getLocalIdentifier } from './local-identifier-map';
 
 // fileIds that have already succeeded this session — never re-attempt. The
-// server flips `has_thumbnail` on success, so once the list refreshes the
-// `has_thumbnail === false` guard would also catch these; this is belt-and-suspenders.
+// Do not infer success from encoded byte size: a simple image can remain small
+// even at full quality, so dedup independently of the refreshed metadata.
 const repaired = new Set<string>();
 // fileId → last attempt timestamp. Backoff window so a transient failure (or an
 // in-progress decrypt that re-enters) can't loop aggressively.
@@ -79,11 +78,12 @@ export interface SelfRepairArgs {
    */
   mimeType: string | null | undefined;
   /**
-   * Server truth from the file list (`FileItem.has_thumbnail`). Repair ONLY runs
-   * when this is explicitly `false`. `undefined`/`null` ⇒ unknown ⇒ skip (we do
-   * NOT probe the network — that is how storms start).
+   * Server truth from the file list. Missing thumbnails repair directly; existing
+   * ones require a known degraded byte count. Unknown presence skips repair.
    */
   hasServerThumbnail: boolean | null | undefined;
+  /** Encrypted server thumbnail bytes; unknown/invalid size never implies degraded. */
+  serverThumbnailBytes?: number | null;
   /**
    * True for file-request uploads (`file_request_id`/`wrapped_content_key`).
    * Those use the request content key, not `deriveFileKey`; a thumbnail
@@ -115,15 +115,21 @@ async function runSelfRepair(args: SelfRepairArgs): Promise<boolean> {
     localPlaintextUri,
     mimeType,
     hasServerThumbnail,
+    serverThumbnailBytes,
     isRequestUpload,
     getFileKeyBytes,
     onRepaired,
   } = args;
 
-  if (!fileId || !localPlaintextUri) return false;
-  // Guard 1 — primary idempotency: only repair when the server is known to lack
-  // a thumbnail. true/undefined/null all short-circuit.
-  if (hasServerThumbnail !== false) return false;
+  if (!fileId || !localPlaintextUri || sharedFileKeyIsLoaded(fileId)) return false;
+  // Task0554: repair a known degraded existing thumbnail from this local source.
+  // Unknown metadata never causes network probing or an original download.
+  const degraded = hasServerThumbnail === true
+    && typeof serverThumbnailBytes === 'number'
+    && Number.isFinite(serverThumbnailBytes)
+    && serverThumbnailBytes >= 0
+    && serverThumbnailBytes < 30 * 1024;
+  if (hasServerThumbnail !== false && !degraded) return false;
   // Guard 2 — only images/videos can have thumbnails.
   if (!isThumbnailable(mimeType)) return false;
   // Guard 3 — request-upload files use a different content key. Skip.

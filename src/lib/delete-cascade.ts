@@ -21,6 +21,8 @@ import { invalidateBackupFolderCacheIfDeleted } from '../services/BackupService'
 import { offlineManager } from './offline-manager';
 import { invalidateCachedThumbnails, invalidateNativeThumbnailCache } from './thumbnail-cache';
 import { pruneNameCache } from './name-cache';
+import { accountEpoch } from './account-epoch';
+import { backupWriteTicket } from './backup-write-ticket';
 
 export interface DeleteCascadeOptions {
   /** True when `ids` already includes a folder's expanded subtree. Advisory —
@@ -50,12 +52,18 @@ export async function onFilesDeleted(
 ): Promise<void> {
   const unique = [...new Set(ids)].filter(Boolean);
   if (unique.length === 0) return;
+  // Task 1959 round 3: the delete happened in the account signed in now; the
+  // name-cache prune below runs after several awaits and must not write once
+  // that account has signed out.
+  const epoch = accountEpoch();
+  // Task 1667 round 8: the backup manifest write below is fenced the same way.
+  const writeTicket = backupWriteTicket();
   const idSet = new Set(unique);
 
   // 1. Backup manifest — EXPLICIT delete: mark remote_deleted (NOT re-queued —
   //    the user deleted these, so they must not silently re-upload; contrast
   //    with the reconcile's re-queue when the server lost them unexpectedly).
-  await markRemoteDeletedByFileIds(unique).catch(() => {});
+  await markRemoteDeletedByFileIds(unique, writeTicket).catch(() => {});
 
   // 2. Offline-pinned copies — drop the on-disk copy + manifest entry. A pinned
   //    folder id is removed as a folder; everything else as a file.
@@ -73,7 +81,7 @@ export async function onFilesDeleted(
   await invalidateNativeThumbnailCache(unique).catch(() => {});
 
   // 4. Name cache (0807).
-  await pruneNameCache(unique).catch(() => {});
+  await pruneNameCache(unique, epoch).catch(() => {});
 
   // 5. Backup folder cache — if a backup folder (root/device/category) was
   //    deleted, drop the cache so the tree rebuilds.
