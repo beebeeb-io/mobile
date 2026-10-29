@@ -70,7 +70,12 @@ export const ThumbnailImage = React.memo(function ThumbnailImage({
   }, [failed, fileId, onUnavailable]);
 
   const handleImageError = useCallback(() => {
-    if (!retriedRef.current && uri && uri.startsWith('file://')) {
+    // N6 — the invalidate-and-retry path is ANDROID ONLY. On iOS a `file://`
+    // URI may be a PhotoKit render or a file the native ThumbnailService owns;
+    // deleting the JS cache files cannot clear that native in-memory cache, so
+    // the reload returns the same URI and the tile ends up unavailable. iOS
+    // keeps main's behaviour: report the tile unavailable.
+    if (Platform.OS === 'android' && !retriedRef.current && uri && uri.startsWith('file://')) {
       retriedRef.current = true;
       invalidateInMemoryThumbCache(fileId);
       void invalidateCachedThumbnail(fileId).finally(() => {
