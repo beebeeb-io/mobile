@@ -19,16 +19,17 @@ import CryptoKit
 /// minutes reasons, so this suite does NOT run in CI. See `CLAUDE.md` "Tests" section.
 ///
 /// ## Refreshing the vendored vector file
-/// `Vectors/core-vectors.v10.json` is a vendored COPY of `repos/core/test-vectors/vectors.json` — it
+/// `Vectors/core-vectors.v11.json` is a vendored COPY of `repos/core/test-vectors/vectors.json` — it
 /// has to be a copy (not a symlink out of the repo) so this xctest bundle can embed it as a Resource.
 /// To refresh after core bumps the vector file:
-/// 1. `cp ../core/test-vectors/vectors.json targets/native-tests/Vectors/core-vectors.v10.json`
+/// 1. `cp ../core/test-vectors/vectors.json targets/native-tests/Vectors/core-vectors.v11.json`
 ///    (run from the mobile repo root in the standard `<workspace>/repos/{core,mobile}` layout — NOT
 ///    from an isolated `git worktree`, which has no sibling `repos/core` checkout).
-/// 2. `shasum -a 256 targets/native-tests/Vectors/core-vectors.v10.json` and paste the new hex into
+/// 2. `shasum -a 256 targets/native-tests/Vectors/core-vectors.v11.json` and paste the new hex into
 ///    `expectedSha256Hex` below.
-/// 3. If core bumped `version`, update `expectedVersion` and `requiredVectorNames` here to match
-///    `vector_file_version_check` in `cross_platform_vectors.rs`.
+/// 3. If core bumped `version`, update `expectedVersion` and `expectedFamilyRowCounts` here to match
+///    `vector_file_version_check` in `cross_platform_vectors.rs`; `src/lib/1943-core-vectors-v11.guard.test.ts`
+///    pins the same bytes, version and row counts for the JS-side gate.
 /// 4. Re-run this target; `testVendoredVectorsShaPin` enforces the new pin, and every family test
 ///    re-validates against the refreshed data automatically (no other code change needed).
 final class CoreVectorsKATTests: XCTestCase {
@@ -38,50 +39,53 @@ final class CoreVectorsKATTests: XCTestCase {
     /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v11, core c08defc7).
     private static let expectedSha256Hex =
         "11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a"
-    // The v10 resource filename is retained; contents track the pinned core version.
     private static let expectedVersion = 11
-    private static let requiredVectorNames = [
-        "master_key_from_password",
-        "file_key_derivation",
-        "chunk_encrypt_decrypt",
-        "x25519_identity_keypair",
-        "x25519_share_key_exchange",
-        "recovery_check",
-        "envelope_serialization",
-        "recovery_phrase_roundtrip",
-        "metadata_encrypt_decrypt",
-        "file_request_seal_open",
-        "share_key_wrap",
-        "thumbnail_encrypt",
-        "chunk_v2_stream",
-        "chunk_v2_single_frame",
-        "metadata_v2_name",
-        "metadata_v2_name_filekey",
-        "metadata_v1_name_filekey",
-        "folder_key_id",
-        "shared_folder_index_key",
-        "combine_folder_link_key",
-        "key_wrap_v1",
-        "folder_link_passphrase",
-        "folder_link_passphrase_nfd",
-        "folder_custody_v1",
-        "link_owner_key_v1",
-        "link_owner_token_v1",
-        "folder_child_file_v1",
-        "folder_child_folder_v1",
-        "owner_wrapped_file_key",
-        "owner_wrapped_folder_key",
-        "folder_wrapped_file_key",
+    /// Every family core ships at this revision, with the number of rows it carries — 31 families,
+    /// 31 rows. Asserting the row count (not just presence) catches a truncated or half-refreshed
+    /// vendored file, which presence alone would wave through. `envelope_serialization` stays an
+    /// explicit skip (`testEnvelopeSerialization`), exactly as before.
+    private static let expectedFamilyRowCounts: [(family: String, rows: Int)] = [
+        ("master_key_from_password", 1),
+        ("file_key_derivation", 1),
+        ("chunk_encrypt_decrypt", 1),
+        ("x25519_identity_keypair", 1),
+        ("x25519_share_key_exchange", 1),
+        ("recovery_check", 1),
+        ("envelope_serialization", 1),
+        ("recovery_phrase_roundtrip", 1),
+        ("metadata_encrypt_decrypt", 1),
+        ("file_request_seal_open", 1),
+        ("share_key_wrap", 1),
+        ("thumbnail_encrypt", 1),
+        ("chunk_v2_stream", 1),
+        ("chunk_v2_single_frame", 1),
+        ("metadata_v2_name", 1),
+        ("metadata_v2_name_filekey", 1),
+        ("metadata_v1_name_filekey", 1),
+        ("folder_key_id", 1),
+        ("shared_folder_index_key", 1),
+        ("combine_folder_link_key", 1),
+        ("key_wrap_v1", 1),
+        ("folder_link_passphrase", 1),
+        ("folder_link_passphrase_nfd", 1),
+        ("folder_custody_v1", 1),
+        ("link_owner_key_v1", 1),
+        ("link_owner_token_v1", 1),
+        ("folder_child_file_v1", 1),
+        ("folder_child_folder_v1", 1),
+        ("owner_wrapped_file_key", 1),
+        ("owner_wrapped_folder_key", 1),
+        ("folder_wrapped_file_key", 1),
     ]
 
     // MARK: - Vector loading
 
     private static func bundledVectorsURL() throws -> URL {
         guard let url = Bundle(for: CoreVectorsKATTests.self)
-            .url(forResource: "core-vectors.v10", withExtension: "json") else {
+            .url(forResource: "core-vectors.v11", withExtension: "json") else {
             throw NSError(
                 domain: "CoreVectorsKATTests", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json missing from test bundle resources"]
+                userInfo: [NSLocalizedDescriptionKey: "core-vectors.v11.json missing from test bundle resources"]
             )
         }
         return url
@@ -95,7 +99,7 @@ final class CoreVectorsKATTests: XCTestCase {
         let data = try loadVectorsData()
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw NSError(domain: "CoreVectorsKATTests", code: 2,
-                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json did not decode to an object"])
+                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v11.json did not decode to an object"])
         }
         return root
     }
@@ -103,7 +107,7 @@ final class CoreVectorsKATTests: XCTestCase {
     private static func loadVectors() throws -> [[String: Any]] {
         guard let vectors = try loadRoot()["vectors"] as? [[String: Any]] else {
             throw NSError(domain: "CoreVectorsKATTests", code: 3,
-                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json 'vectors' is not an array"])
+                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v11.json 'vectors' is not an array"])
         }
         return vectors
     }
@@ -200,7 +204,7 @@ final class CoreVectorsKATTests: XCTestCase {
         let hex = digest.map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(
             hex, Self.expectedSha256Hex,
-            "vendored Vectors/core-vectors.v10.json drifted from the pinned sha256 — see this file's " +
+            "vendored Vectors/core-vectors.v11.json drifted from the pinned sha256 — see this file's " +
             "header for the refresh procedure before changing expectedSha256Hex"
         )
     }
@@ -218,19 +222,34 @@ final class CoreVectorsKATTests: XCTestCase {
         let bundledData = try Self.loadVectorsData()
         XCTAssertEqual(
             siblingData, bundledData,
-            "vendored Vectors/core-vectors.v10.json diverged from repos/core/test-vectors/vectors.json " +
+            "vendored Vectors/core-vectors.v11.json diverged from repos/core/test-vectors/vectors.json " +
             "— re-vendor the copy and re-pin the sha256 (see this file's header)"
         )
     }
 
-    func testVectorFileVersionAndRequiredNames() throws {
+    func testVectorFileVersionAndEveryFamilyRowCount() throws {
         let root = try Self.loadRoot()
         XCTAssertEqual(root["version"] as? Int, Self.expectedVersion, "vectors.json version mismatch")
         let vectors = try Self.loadVectors()
-        let names = Set(vectors.compactMap { $0["name"] as? String })
-        for name in Self.requiredVectorNames {
-            XCTAssertTrue(names.contains(name), "vectors.json is missing required vector '\(name)'")
+        var counts: [String: Int] = [:]
+        for vector in vectors {
+            guard let name = vector["name"] as? String else {
+                XCTFail("vectors.json carries a row with no name")
+                continue
+            }
+            counts[name, default: 0] += 1
         }
+        for (family, rows) in Self.expectedFamilyRowCounts {
+            XCTAssertEqual(counts[family], rows, "vectors.json family '\(family)' row count mismatch")
+            print("[CoreVectorsKAT] \(family): \(counts[family] ?? 0) row(s)")
+        }
+        XCTAssertEqual(
+            Set(counts.keys), Set(Self.expectedFamilyRowCounts.map(\.family)),
+            "vectors.json carries a family this KAT does not assert by name"
+        )
+        XCTAssertEqual(vectors.count, Self.expectedFamilyRowCounts.reduce(0) { $0 + $1.rows },
+                       "vectors.json total row count mismatch")
+        print("[CoreVectorsKAT] \(Self.expectedFamilyRowCounts.count) families, \(vectors.count) rows, version \(Self.expectedVersion)")
     }
 
     // MARK: - 1. master_key_from_password (Argon2id)

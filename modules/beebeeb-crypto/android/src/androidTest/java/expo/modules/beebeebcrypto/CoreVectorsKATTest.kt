@@ -43,11 +43,12 @@ import uniffi.beebeeb_uniffi.FileKeyHandle
  * the pinning decision in the design spec — UniFFI 0.31.1).
  *
  * ## Refreshing the vendored vector file
- * `src/androidTest/assets/core-vectors.v10.json` is a vendored COPY of
+ * `src/androidTest/assets/core-vectors.v11.json` is a vendored COPY of
  * `repos/core/test-vectors/vectors.json`. To refresh after core bumps it:
- * 1. `cp ../../../core/test-vectors/vectors.json modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v10.json`
+ * 1. `cp ../../../core/test-vectors/vectors.json modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v11.json`
  * 2. `sha256sum` the new copy and update [EXPECTED_SHA256] (see the task file).
- * 3. If core bumped the version, update [EXPECTED_VERSION] and [REQUIRED_VECTOR_NAMES].
+ * 3. If core bumped the version, update [EXPECTED_VERSION] and [EXPECTED_FAMILY_ROW_COUNTS].
+ *    `src/lib/1943-core-vectors-v11.guard.test.ts` pins the same bytes, version and row counts.
  *
  * ## Families not implemented (documented follow-ups, by design)
  * - `master_key_from_password`, `recovery_phrase_roundtrip`: Argon2id
@@ -66,49 +67,55 @@ class CoreVectorsKATTest {
         /** `sha256sum` of the vendored asset (v11, matching merged core c08defc7). */
         private const val EXPECTED_SHA256 =
             "11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a"
-        // The v10 asset filename is retained; contents track the pinned core version.
         private const val EXPECTED_VERSION = 11
-        private val REQUIRED_VECTOR_NAMES = listOf(
-            "master_key_from_password",
-            "file_key_derivation",
-            "chunk_encrypt_decrypt",
-            "x25519_identity_keypair",
-            "x25519_share_key_exchange",
-            "recovery_check",
-            "envelope_serialization",
-            "recovery_phrase_roundtrip",
-            "metadata_encrypt_decrypt",
-            "file_request_seal_open",
-            "share_key_wrap",
-            "thumbnail_encrypt",
-        "chunk_v2_stream",
-        "chunk_v2_single_frame",
-        "metadata_v2_name",
-        "metadata_v2_name_filekey",
-        "metadata_v1_name_filekey",
-        "folder_key_id",
-        "shared_folder_index_key",
-        "combine_folder_link_key",
-        "key_wrap_v1",
-        "folder_link_passphrase",
-        "folder_link_passphrase_nfd",
-        "folder_custody_v1",
-        "link_owner_key_v1",
-        "link_owner_token_v1",
-        "folder_child_file_v1",
-        "folder_child_folder_v1",
-        "owner_wrapped_file_key",
-        "owner_wrapped_folder_key",
-        "folder_wrapped_file_key",
+
+        /**
+         * Every family core ships at this revision with the number of rows it carries — 31 families,
+         * 31 rows. The row count is asserted, not just presence: a truncated or half-refreshed asset
+         * would otherwise pass. `envelope_serialization` is present here but is an explicit skip on
+         * both platforms (no UniFFI export), same as before.
+         */
+        private val EXPECTED_FAMILY_ROW_COUNTS = linkedMapOf(
+            "master_key_from_password" to 1,
+            "file_key_derivation" to 1,
+            "chunk_encrypt_decrypt" to 1,
+            "x25519_identity_keypair" to 1,
+            "x25519_share_key_exchange" to 1,
+            "recovery_check" to 1,
+            "envelope_serialization" to 1,
+            "recovery_phrase_roundtrip" to 1,
+            "metadata_encrypt_decrypt" to 1,
+            "file_request_seal_open" to 1,
+            "share_key_wrap" to 1,
+            "thumbnail_encrypt" to 1,
+            "chunk_v2_stream" to 1,
+            "chunk_v2_single_frame" to 1,
+            "metadata_v2_name" to 1,
+            "metadata_v2_name_filekey" to 1,
+            "metadata_v1_name_filekey" to 1,
+            "folder_key_id" to 1,
+            "shared_folder_index_key" to 1,
+            "combine_folder_link_key" to 1,
+            "key_wrap_v1" to 1,
+            "folder_link_passphrase" to 1,
+            "folder_link_passphrase_nfd" to 1,
+            "folder_custody_v1" to 1,
+            "link_owner_key_v1" to 1,
+            "link_owner_token_v1" to 1,
+            "folder_child_file_v1" to 1,
+            "folder_child_folder_v1" to 1,
+            "owner_wrapped_file_key" to 1,
+            "owner_wrapped_folder_key" to 1,
+            "folder_wrapped_file_key" to 1,
         )
 
         private fun loadRoot(): JSONObject {
             val assets = InstrumentationRegistry.getInstrumentation().context.assets
-            val bytes = assets.open("core-vectors.v10.json").readBytes()
+            val bytes = assets.open("core-vectors.v11.json").readBytes()
             val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
             val hex = digest.joinToString("") { "%02x".format(it) }
             assertEquals(
-                "vendored core-vectors.v10.json drifted from the pinned sha256 — see this file's header",
+                "vendored core-vectors.v11.json drifted from the pinned sha256 — see this file's header",
                 EXPECTED_SHA256,
                 hex,
             )
@@ -121,7 +128,7 @@ class CoreVectorsKATTest {
                 val v = vectors.getJSONObject(i)
                 if (v.optString("name") == name) return v
             }
-            throw AssertionError("vector '$name' not found in core-vectors.v10.json")
+            throw AssertionError("vector '$name' not found in core-vectors.v11.json")
         }
 
         private fun String.hexToBytes(): ByteArray {
@@ -149,14 +156,29 @@ class CoreVectorsKATTest {
     fun vectorsFileIntegrity() {
         val root = loadRoot() // includes the SHA-256 pin check
         assertEquals("vectors.json version mismatch", EXPECTED_VERSION, root.getInt("version"))
-        val names = mutableSetOf<String>()
+        val counts = mutableMapOf<String, Int>()
         val vectors = root.getJSONArray("vectors")
         for (i in 0 until vectors.length()) {
-            names.add(vectors.getJSONObject(i).getString("name"))
+            val name = vectors.getJSONObject(i).getString("name")
+            counts[name] = (counts[name] ?: 0) + 1
         }
-        for (name in REQUIRED_VECTOR_NAMES) {
-            assertTrue("vectors.json is missing required vector '$name'", names.contains(name))
+        for ((family, rows) in EXPECTED_FAMILY_ROW_COUNTS) {
+            assertEquals(
+                "vectors.json family '$family' row count mismatch",
+                rows,
+                counts[family] ?: 0,
+            )
         }
+        assertEquals(
+            "vectors.json carries a family this KAT does not assert by name",
+            EXPECTED_FAMILY_ROW_COUNTS.keys,
+            counts.keys,
+        )
+        assertEquals(
+            "vectors.json total row count mismatch",
+            EXPECTED_FAMILY_ROW_COUNTS.values.sum(),
+            vectors.length(),
+        )
     }
 
     // MARK: - 2. file_key_derivation (HKDF-SHA256)

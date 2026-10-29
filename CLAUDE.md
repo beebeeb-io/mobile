@@ -154,7 +154,7 @@ bun test            # WRONG: leaky shared registry, reports ~10 phantom failures
 ### Native crypto KAT — `scripts/kat-ios.sh` (task 1382) — LOCAL GATE, NOT CI
 
 Drives the vendored, sha256-pinned `repos/core/test-vectors/vectors.json` (vendored at
-`targets/native-tests/Vectors/core-vectors.v10.json`, and compiled from
+`targets/native-tests/Vectors/core-vectors.v11.json`, and compiled from
 `targets/native-tests/CoreVectorsKATTests.swift` — both outside `ios/`, task 1562) through the SAME
 production UniFFI bindings the app links; 11 of core's 12 vector families asserted
 (`envelope_serialization` = explicit `XCTSkip`, not a silent omission). Run `scripts/kat-ios.sh` by

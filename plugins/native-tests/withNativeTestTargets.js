@@ -40,7 +40,7 @@ const CORE_VECTORS_KAT_TESTS = {
     {
       name: 'Vectors',
       files: [
-        { path: '../targets/native-tests/Vectors/core-vectors.v4.json', name: 'core-vectors.v4.json', fileType: 'text.json' },
+        { path: '../targets/native-tests/Vectors/core-vectors.v11.json', name: 'core-vectors.v11.json', fileType: 'text.json' },
       ],
     },
   ],
@@ -53,7 +53,7 @@ const CORE_VECTORS_KAT_TESTS = {
     { path: 'Beebeeb/beebeeb_uniffi.swift', name: 'beebeeb_uniffi.swift' },
   ],
   resources: [
-    { path: '../targets/native-tests/Vectors/core-vectors.v4.json', name: 'core-vectors.v4.json' },
+    { path: '../targets/native-tests/Vectors/core-vectors.v11.json', name: 'core-vectors.v11.json' },
   ],
 };
 
