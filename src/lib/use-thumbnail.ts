@@ -241,17 +241,26 @@ export function useThumbnail(
         })
         .catch(fail);
     };
+    const startGuarded = () => {
+      try {
+        start();
+      } catch {
+        // MB-0002 — a synchronous throw from any reader becomes the
+        // "unavailable" state; nothing may escape the effect.
+        fail();
+      }
+    };
     const resolver = isForeignSharedFile(fileId, accountEpoch().accountId) && !sharedFileKeyIsLoaded(fileId) ? getSharedKeyResolver() : null;
     if (resolver) {
       void resolver.ensureLoaded([fileId])
         .then(result => {
           if (cancelled) return;
           if (result.get(fileId) !== 'loaded') { setState({ uri: null, source: null, failed: true }); return; }
-          start();
+          startGuarded();
         })
         .catch(fail);
     } else {
-      start();
+      startGuarded();
     }
     return () => { cancelled = true; controller.abort(); };
   }, [fileId, width, height, enabled, isUnlocked, thumbnailMimeType, hasThumbnail, reloadKey, getFileKeyBytes, decryptFileChunk]);

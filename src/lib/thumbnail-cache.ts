@@ -20,7 +20,6 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import { gatedPlaintextWrite } from './plaintext-gate';
-import { Platform } from 'react-native';
 
 import { notePlaintextPathCreated } from './plaintext-storage';
 import { THUMB_CACHE_DIR_NAME, type ThumbnailVariant } from './thumbnail-policy';
@@ -707,9 +706,10 @@ export function enqueueThumbnailLoad(
   signal?: AbortSignal,
   options: EnqueueThumbnailOptions = {},
 ): Promise<ThumbnailLoadResult> {
-  if (Platform.OS !== 'android') {
-    throw new Error('enqueueThumbnailLoad is Android-only — iOS uses BeebeebThumbnails native service');
-  }
+  // MB-0002 — the queue is pure JS, not Android-only. iOS shares it for files
+  // shared with you (their key lives in native memory, so the loader decrypts
+  // through the callback); iOS files of your own still go through the native
+  // ThumbnailService and never reach this queue. Android is unchanged.
   const prefetch = options.prefetch === true;
   if (signal?.aborted) return Promise.resolve(THUMBNAIL_LOAD_CANCELLED);
 
