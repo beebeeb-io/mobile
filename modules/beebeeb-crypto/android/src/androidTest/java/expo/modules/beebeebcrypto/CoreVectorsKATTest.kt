@@ -29,6 +29,7 @@ import uniffi.beebeeb_uniffi.x25519SharedSecret
 import java.security.MessageDigest
 import uniffi.beebeeb_uniffi.MasterKeyHandle
 import uniffi.beebeeb_uniffi.FileKeyHandle
+import uniffi.beebeeb_uniffi.ChunkDecryptorHandle
 
 /**
  * Android half of the core known-answer-vector gate (task 1683, mirroring the
