@@ -1,0 +1,43 @@
+Beebeeb is cloud storage that cannot read your files.
+
+Every file, photo and folder name is encrypted on your phone before it leaves it. We store data we cannot decrypt. That also means we cannot recover your files if you lose both your password and your recovery phrase. We tell you this up front because it is what real privacy costs.
+
+STORED IN EUROPE
+
+Your vault is stored in the EU. Beebeeb is made in Europe and runs under European law.
+
+WHAT YOU CAN DO
+
+Files
+- Upload, download, rename, move and delete files and folders
+- Select several files at once to share, move or trash them
+- Preview photos, videos, PDFs, text files and ZIP archives inside the app
+- Search your files
+
+Sharing
+- Share a file with an encrypted link. The key sits in the part of the link that browsers never send to a server, so we cannot open what you share.
+- Add a password or an expiry date to a link, and revoke it at any time
+- Ask someone to send you files with a file request link
+
+Photos
+- Browse your photos by date
+- Back up photos and videos from your phone's gallery
+
+Lock
+- Unlock the app with your fingerprint or face
+
+HOW IT WORKS
+
+- Files are encrypted with AES-256-GCM on your phone, before upload
+- Your keys are made on your own devices. We never hold them in a form we can use.
+- File names are encrypted too, not only the contents
+- Your recovery phrase is the only way back in if you forget your password. Keep it somewhere safe. We cannot reset it for you.
+
+OPEN, NOT HIDDEN
+
+The source code of this app is public (AGPL-3.0), so anyone can check what it does. It has not yet been audited externally.
+
+No ads. No trackers. No data brokers.
+
+You need a Beebeeb account to use the app. Questions or problems: https://beebeeb.io/support
+Privacy policy: https://beebeeb.io/privacy
