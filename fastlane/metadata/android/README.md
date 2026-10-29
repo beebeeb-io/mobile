@@ -8,23 +8,27 @@ Layout follows `fastlane supply` (`fastlane/metadata/android/<locale>/`), next t
 |---|---|---|---|
 | `en-US/title.txt` | App name | 30 | 24 |
 | `en-US/short_description.txt` | Short description | 80 | 72 |
-| `en-US/full_description.txt` | Full description | 4000 | 1781 |
+| `en-US/full_description.txt` | Full description | 4000 | 1740 |
 | `en-US/images/icon.png` | App icon | 512 x 512, 32-bit PNG with alpha | included (RGBA, opaque; full-bleed square, Play applies its own mask) |
 | `en-US/images/featureGraphic.png` | Feature graphic | 1024 x 500, JPEG or 24-bit PNG, no alpha | included (RGB, dark: "Your files. Your keys." / "stored in Europe") |
 | `en-US/images/phoneScreenshots/` | Phone screenshots | 2 to 8 | Guus captures, see below |
 
-## Before you publish: five checks
+## Before you publish: four checks
 
-The copy only claims what the code on `main` has. Four lines describe features that exist in the
+The copy only claims what the code on `main` has. Three lines describe features that exist in the
 code but that nobody has confirmed on an Android phone yet. Check each on your OnePlus and delete
 the line from `full_description.txt` if it does not work:
 
-1. "Back up photos and videos from your phone's gallery" (Photos tab, auto backup on).
-2. "Unlock the app with your fingerprint or face" (Settings, app lock).
-3. "Search your files".
-4. "revoke it at any time" (Shared tab, a link you made).
-5. "You need a Beebeeb account to use the app" stays true either way. If "Create account"
+1. "Unlock the app with your fingerprint or face" (Settings, app lock).
+2. "Search your files".
+3. "revoke it at any time" (Shared tab, a link you made).
+4. "You need a Beebeeb account to use the app" stays true either way. If "Create account"
    works on Android, you can leave it; it does not say where to sign up on purpose (see Payments).
+
+Not claimed, on purpose: **backup from the phone** (photos, contacts, calendar). On Android the toggles
+call native functions the Android module does not have (`enablePhotoBackup`, `enableContactsBackup`,
+`enableCalendarBackup`, `triggerImmediateBackup`: 0 registrations in `BeebeebCryptoModule.kt`), so turning
+backup on fails. The port is task 0728; hiding the toggles until then is a separate task.
 
 ## What blocks a public (production) release, but not closed testing
 
@@ -35,9 +39,8 @@ the line from `full_description.txt` if it does not work:
 - **Task 2219, the public account-deletion page.** Play asks for a deletion URL that works
   without signing in.
 - **Data safety form.** Draft answers: `.claude/tasks/verification-evidence/1754/play-review-notes-and-data-safety.md`
-  (workspace repo). Re-check two answers against Android: contacts and calendar backup exist in
-  Settings (if you keep them, declare Contacts and Calendar as collected and end-to-end encrypted),
-  and photos are collected only when backup is on.
+  (workspace repo). On Android, backup from the phone does not work yet (see above), so the app
+  collects no gallery photos, contacts or calendar entries; re-check this when 0728 lands.
 - **Public-claims canon.** `docs/canon/public-claims.md`, row "Android availability", says
   "Android in testing" and never "available on Google Play". When the listing goes public, the row
   is upgraded first (evidence: the public listing URL), then the site and READMEs.
@@ -57,25 +60,24 @@ if you can (no carrier name, full battery).
 
 Play's rules that matter here: PNG or JPEG, up to 8 MB, each side 320 to 3840 px, and the long side
 at most twice the short side. A raw OnePlus capture is 20:9 (for example 1080 x 2400), which is MORE
-than twice and will be rejected as is. Two ways out:
-- send me the raw captures and I frame them to 1080 x 1920 (9:16) with the caption above the screen,
-  the way the iOS set is framed (`scripts/generate-app-store-screenshots.mjs`); or
-- crop each to 1080 x 2160 yourself (cut 240 px: the status bar and the gesture bar).
-
-At least 4 screenshots of 1080 px or more make the listing eligible for Play's promotion slots.
+than twice and will be rejected as is. Play's recommendation slots also want 9:16 portrait screenshots
+of at least 1080 px (at least 4 of them). So: send me the raw captures and I frame each one to
+1080 x 1920 (9:16), caption above the screen, the way the iOS set is framed
+(`scripts/generate-app-store-screenshots.mjs`). Do not crop them yourself: a plain crop to 9:16 cuts
+480 px of the screen.
 
 | # | Screen to capture | How to get there | Caption (eyebrow / headline / line) |
 |---|---|---|---|
 | 1 | Files, root folder with 6 to 8 items, a mix of folders and files | Files tab, list view | END-TO-END ENCRYPTED / Your files, encrypted / Every file and folder name is encrypted on your phone before upload. |
 | 2 | A photo or PDF open in preview | tap a file | DECRYPTED ON YOUR DEVICE / Opened on your phone / Previews decrypt locally. We only ever store ciphertext. |
 | 3 | The share sheet for a file, with a password typed (dots) and an expiry chosen | three dots on a file, Share Beebeeb link | ENCRYPTED LINKS / Share without handing over the key / The key stays in the link. Add a password or an expiry date. |
-| 4 | Photos tab, scrolled into a month with a full grid | Photos tab | PHOTO BACKUP / Your photos, by date / Photos are encrypted on your phone before they are backed up. |
+| 4 | Photos tab, scrolled into a month with a full grid | Photos tab | YOUR PHOTOS / Your photos, by date / Photos stay encrypted until they open on your phone. |
 | 5 | A file request link just created, ready to share | a folder, File request, Create & share link (stop at the share sheet, do not send) | FILE REQUESTS / Let others send you files / Collect files into a folder from anyone with the link. |
 | 6 | A ZIP archive open, showing its folder tree | tap a .zip in the demo vault (upload a small one with neutral names first if there is none) | PREVIEW MORE / Look inside archives / Open ZIP files and the files inside them, on your phone. |
 | 7 | Settings, the app lock section with fingerprint unlock on | Settings | APP LOCK / Locked when you're away / Unlock with your fingerprint or face. |
 | 8 | Settings, the storage location row showing Europe or the country | Settings, Storage location | STORED IN EUROPE / Your vault stays in the EU / Encrypted on your phone, stored in Europe. |
 
-Order on the listing: 1, 3, 4, 2, 8, 5, 6, 7 (encryption, sharing and photos first). Drop 4 or 7 if checks 1 or 2 above fail;
+Order on the listing: 1, 3, 4, 2, 8, 5, 6, 7 (encryption, sharing and photos first). Drop 7 if check 1 above fails;
 six screenshots is plenty.
 
 Never capture: the recovery phrase screen (it blocks screen capture on purpose), any real email

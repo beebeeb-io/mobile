@@ -20,8 +20,7 @@ Sharing
 - Ask someone to send you files with a file request link
 
 Photos
-- Browse your photos by date
-- Back up photos and videos from your phone's gallery
+- Browse the photos in your vault by date
 
 Lock
 - Unlock the app with your fingerprint or face
