@@ -2,7 +2,7 @@
 import { expect, test } from 'bun:test';
 import { createElement, Fragment } from 'react';
 import { readFileSync } from 'node:fs';
-import ts from 'typescript6'; // TS 7 (native port) has no in-memory compiler API
+import ts from 'typescript';
 
 const source = readFileSync(new URL('./AdvancedSettingsScreen.tsx', import.meta.url), 'utf8');
 const ast = ts.createSourceFile('screen.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);

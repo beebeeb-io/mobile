@@ -7,13 +7,8 @@
  * the TypeScript AST of one source file and returns every string literal, template
  * piece and JSX text that carries that vocabulary. It lives in scripts/ (not src/)
  * so the vocabulary below is not itself scanned.
- *
- * Imports the TypeScript 6 compiler API (dev alias `typescript6`) on purpose:
- * TypeScript 7 is the native port and its package no longer exposes the
- * in-memory parser/visitor API this scan needs (only a project/file based
- * client API under `typescript/unstable/*`). The app itself type-checks on 7.
  */
-import ts from 'typescript6';
+import ts from 'typescript';
 
 /** Words that are purchase vocabulary wherever they appear in a visible string. */
 const ALWAYS =
