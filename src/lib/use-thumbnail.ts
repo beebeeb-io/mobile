@@ -2,13 +2,14 @@ import { sharedFileKeyIsLoaded, getSharedKeyResolver } from './shared-folder-key
 import { isForeignSharedFile } from './shared-folder-tree';
 import { accountEpoch } from './account-epoch';
 import type { ThumbnailDecrypt } from './thumbnail';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { useCrypto } from './crypto-context';
 import { onThumbnailReady } from './thumbnail-events';
 import { getCachedThumbnail, enqueueThumbnailLoad } from './thumbnail-cache';
 import { cacheLocalThumbnail, fetchDecryptedThumbnailUri } from './thumbnail';
+import { isThumbnailLoadCancelled, type ThumbnailLoadResult } from './thumbnail-load-outcome';
 import { getLocalIdentifier } from './local-identifier-map';
 import { recordRuntimeTrace } from './runtime-trace';
 
@@ -18,6 +19,11 @@ interface UseThumbnailOptions {
   enabled?: boolean;
   mimeType?: string | null;
   hasThumbnail?: boolean;
+  /**
+   * Bump to force a re-run without changing the identity of the call (used by
+   * `ThumbnailImage` after it invalidated a corrupt cache entry).
+   */
+  reloadKey?: number;
 }
 
 interface ThumbnailHookState {
@@ -58,7 +64,8 @@ export async function fetchThumbnailUriOnce(
       return null;
     }
   }
-  return fetchDecryptedThumbnailUri(fileId, fileKey, signal);
+  const result = await fetchDecryptedThumbnailUri(fileId, fileKey, signal);
+  return isThumbnailLoadCancelled(result) ? null : result;
 }
 
 /**
@@ -71,10 +78,16 @@ export function useThumbnail(
   fileId: string,
   options: UseThumbnailOptions = {},
 ): ThumbnailHookState {
-  const { width = 256, height = 256, enabled = true, mimeType = null, hasThumbnail = true } = options;
+  const {
+    width = 256,
+    height = 256,
+    enabled = true,
+    mimeType = null,
+    hasThumbnail = true,
+    reloadKey = 0,
+  } = options;
   const { getFileKeyBytes, decryptChunk: decryptFileChunk, isUnlocked } = useCrypto();
   const [state, setState] = useState<ThumbnailHookState>({ uri: null, source: null, failed: false });
-  const cancelledRef = useRef(false);
   // Decrypted MIME metadata arrives after remote thumbnails can already be
   // visible. Only local-asset generation needs that value; restarting Android
   // remote loads here clears a valid URI and repeats cache/bridge work.
@@ -84,14 +97,44 @@ export function useThumbnail(
     : mimeType;
 
   useEffect(() => {
-    cancelledRef.current = false;
+    // P1-1 — one cancel flag PER EFFECT RUN. A shared ref was reset to false
+    // by the next run before the previous run's abort resolved, so the old
+    // load's `null` was reported as a failure and a still-visible tile went
+    // blank (ThumbnailImage → onUnavailable → has_thumbnail:false).
+    let cancelled = false;
     // A4 — one controller per effect run (cell mount / fileId change): the
     // cleanup aborts the queued or running load so an unmounted cell never
     // downloads, decrypts or writes.
     const controller = new AbortController();
     setState({ uri: null, source: null, failed: false });
 
-    if (!enabled || !isUnlocked) return () => { cancelledRef.current = true; controller.abort(); };
+    if (!enabled || !isUnlocked) return () => { cancelled = true; controller.abort(); };
+
+    /**
+     * A cancelled or dropped load (viewport change, unmount, account switch)
+     * is NOT "no thumbnail": ignore it. Only a real 404 / missing thumbnail /
+     * decrypt failure may set `failed` — that is what clears `has_thumbnail`.
+     */
+    const applyRemote = (
+      result: ThumbnailLoadResult,
+      traceSuccess: string,
+      traceEmpty: string,
+    ) => {
+      if (cancelled) return;
+      if (isThumbnailLoadCancelled(result)) return;
+      if (result) {
+        recordRuntimeTrace(traceSuccess, { fileId });
+        setState({ uri: result, source: 'remote', failed: false });
+      } else {
+        recordRuntimeTrace(traceEmpty, { fileId });
+        setState({ uri: null, source: null, failed: true });
+      }
+    };
+    const fail = () => {
+      if (cancelled) return;
+      setState({ uri: null, source: null, failed: true });
+    };
+
     recordRuntimeTrace('thumbnail.hook.request', {
       fileId,
       platform: Platform.OS,
@@ -107,18 +150,19 @@ export function useThumbnail(
       if (sharedFileKeyIsLoaded(fileId)) {
         void enqueueThumbnailLoad(
           fileId,
-          fId => fetchDecryptedThumbnailUri(fId, (n, c) => decryptFileChunk(fId, n, c), controller.signal),
+          (fId, innerSignal, epoch) =>
+            fetchDecryptedThumbnailUri(fId, (n, c) => decryptFileChunk(fId, n, c), innerSignal, epoch),
           controller.signal,
         )
-          .then(uri => { if (!cancelledRef.current) setState({ uri, source: uri ? 'remote' : null, failed: !uri }); })
-          .catch(() => { if (!cancelledRef.current) setState({ uri: null, source: null, failed: true }); });
+          .then((result) => applyRemote(result, 'thumbnail.hook.remote_success', 'thumbnail.hook.remote_empty'))
+          .catch(fail);
         return;
       }
       if (Platform.OS === 'ios' && !sharedFileKeyIsLoaded(fileId) && ThumbnailServiceNative?.getThumbnail) {
         ThumbnailServiceNative
           .getThumbnail(fileId, width, height)
           .then((result) => {
-            if (cancelledRef.current) return;
+            if (cancelled) return;
             recordRuntimeTrace('thumbnail.hook.native_success', {
               fileId,
               source: result.source,
@@ -130,7 +174,7 @@ export function useThumbnail(
             });
           })
           .catch((err) => {
-            if (cancelledRef.current) return;
+            if (cancelled) return;
             recordRuntimeTrace('thumbnail.hook.native_failed', {
               fileId,
               error: err instanceof Error ? err.message : String(err),
@@ -151,7 +195,7 @@ export function useThumbnail(
 
       getCachedThumbnail(fileId)
         .then((cachedUri) => {
-          if (cancelledRef.current) return;
+          if (cancelled) return;
           if (cachedUri) {
             recordRuntimeTrace('thumbnail.hook.android_cache_hit', { fileId });
             setState({ uri: cachedUri, source: 'cache', failed: false });
@@ -159,7 +203,7 @@ export function useThumbnail(
           }
           if (cameraRollUri) {
             return cacheLocalThumbnail(fileId, cameraRollUri, thumbnailMimeType).then((localUri) => {
-              if (cancelledRef.current) return;
+              if (cancelled) return;
               if (localUri) {
                 recordRuntimeTrace('thumbnail.hook.android_photokit_success', { fileId });
                 setState({ uri: localUri, source: 'photoKit', failed: false });
@@ -169,18 +213,11 @@ export function useThumbnail(
                 setState({ uri: null, source: null, failed: true });
                 return;
               }
-              return enqueueThumbnailLoad(fileId, async (fId) => {
+              return enqueueThumbnailLoad(fileId, async (fId, innerSignal, epoch) => {
                 const fileKey = await getFileKeyBytes(fId);
-                return fetchDecryptedThumbnailUri(fId, fileKey, controller.signal);
-              }, controller.signal).then((serverUri) => {
-                if (cancelledRef.current) return;
-                if (serverUri) {
-                  recordRuntimeTrace('thumbnail.hook.android_remote_success', { fileId });
-                  setState({ uri: serverUri, source: 'remote', failed: false });
-                } else {
-                  recordRuntimeTrace('thumbnail.hook.android_remote_empty', { fileId });
-                  setState({ uri: null, source: null, failed: true });
-                }
+                return fetchDecryptedThumbnailUri(fId, fileKey, innerSignal, epoch);
+              }, controller.signal).then((result) => {
+                applyRemote(result, 'thumbnail.hook.android_remote_success', 'thumbnail.hook.android_remote_empty');
               });
             });
           }
@@ -188,40 +225,29 @@ export function useThumbnail(
             setState({ uri: null, source: null, failed: true });
             return;
           }
-          return enqueueThumbnailLoad(fileId, async (fId) => {
+          return enqueueThumbnailLoad(fileId, async (fId, innerSignal, epoch) => {
             const fileKey = await getFileKeyBytes(fId);
-            return fetchDecryptedThumbnailUri(fId, fileKey, controller.signal);
-          }, controller.signal).then((serverUri) => {
-            if (cancelledRef.current) return;
-            if (serverUri) {
-              recordRuntimeTrace('thumbnail.hook.remote_success', { fileId });
-              setState({ uri: serverUri, source: 'remote', failed: false });
-            } else {
-              recordRuntimeTrace('thumbnail.hook.remote_empty', { fileId });
-              setState({ uri: null, source: null, failed: true });
-            }
+            return fetchDecryptedThumbnailUri(fId, fileKey, innerSignal, epoch);
+          }, controller.signal).then((result) => {
+            applyRemote(result, 'thumbnail.hook.remote_success', 'thumbnail.hook.remote_empty');
           });
         })
-        .catch(() => {
-          if (cancelledRef.current) return;
-          recordRuntimeTrace('thumbnail.hook.failed', { fileId });
-          setState({ uri: null, source: null, failed: true });
-        });
+        .catch(fail);
     };
     const resolver = isForeignSharedFile(fileId, accountEpoch().accountId) && !sharedFileKeyIsLoaded(fileId) ? getSharedKeyResolver() : null;
     if (resolver) {
       void resolver.ensureLoaded([fileId])
         .then(result => {
-          if (cancelledRef.current) return;
+          if (cancelled) return;
           if (result.get(fileId) !== 'loaded') { setState({ uri: null, source: null, failed: true }); return; }
           start();
         })
-        .catch(() => { if (!cancelledRef.current) setState({ uri: null, source: null, failed: true }); });
+        .catch(fail);
     } else {
       start();
     }
-    return () => { cancelledRef.current = true; controller.abort(); };
-  }, [fileId, width, height, enabled, isUnlocked, thumbnailMimeType, hasThumbnail, getFileKeyBytes, decryptFileChunk]);
+    return () => { cancelled = true; controller.abort(); };
+  }, [fileId, width, height, enabled, isUnlocked, thumbnailMimeType, hasThumbnail, reloadKey, getFileKeyBytes, decryptFileChunk]);
 
   // Subscribe to refresh events on iOS — when a remote thumbnail lands after
   // the initial render, the actor fires `onThumbnailReady` so we can update
@@ -230,7 +256,6 @@ export function useThumbnail(
     if (Platform.OS !== 'ios') return;
     const sub = onThumbnailReady(({ fileId: changedId, uri, source }) => {
       if (changedId !== fileId) return;
-      if (cancelledRef.current) return;
       recordRuntimeTrace('thumbnail.hook.native_event_ready', {
         fileId,
         source,
@@ -239,12 +264,6 @@ export function useThumbnail(
     });
     return () => sub.remove();
   }, [fileId]);
-
-  const _markFailed = useCallback(() => {
-    if (cancelledRef.current) return;
-    setState((prev) => ({ ...prev, failed: true }));
-  }, []);
-  void _markFailed;
 
   return state;
 }

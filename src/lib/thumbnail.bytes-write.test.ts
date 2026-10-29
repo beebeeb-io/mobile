@@ -8,7 +8,8 @@
  *  - the write receives a `Uint8Array` (no base64 encode, no legacy
  *    `writeAsStringAsync` with Base64);
  *  - the directory is created once per session, not per tile;
- *  - aborting mid-decrypt returns null and performs no write.
+ *  - aborting mid-decrypt returns CANCELLED (round 2: never mistaken for
+ *    "no thumbnail") and performs no write.
  */
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
@@ -87,6 +88,7 @@ mock.module('./shared-folder-keys', () => ({
 mock.module('./shared-folder-tree', () => ({ isForeignSharedFile: () => false }));
 mock.module('./local-identifier-map', () => ({ getLocalIdentifier: () => null }));
 
+const { THUMBNAIL_LOAD_CANCELLED } = await import('./thumbnail-load-outcome');
 const { clearThumbnailCache } = await import('./thumbnail-cache');
 const { fetchDecryptedThumbnailUri } = await import('./thumbnail');
 
@@ -137,7 +139,7 @@ describe('task 2233 A5 — byte writes, no base64, one mkdir per session', () =>
     expect(state.legacyMkdirs).toBe(0);
   });
 
-  test('case 2: aborting mid-decrypt returns null and writes nothing', async () => {
+  test('case 2: aborting mid-decrypt returns CANCELLED and writes nothing', async () => {
     let resolveDecrypt: (b: Uint8Array) => void = () => {};
     state.decrypt = () => new Promise((resolve) => { resolveDecrypt = resolve; });
 
@@ -149,7 +151,7 @@ describe('task 2233 A5 — byte writes, no base64, one mkdir per session', () =>
     controller.abort();
     resolveDecrypt(PLAIN);
 
-    expect(await pending).toBeNull();
+    expect(await pending).toBe(THUMBNAIL_LOAD_CANCELLED);
     expect(state.writes.length).toBe(0);
   });
 });

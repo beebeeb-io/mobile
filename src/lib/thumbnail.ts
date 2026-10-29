@@ -39,8 +39,15 @@ import {
 import {
   cacheThumbnail,
   enqueueThumbnailLoad,
+  forgetCachedThumbnailName,
   getCachedThumbnail,
 } from './thumbnail-cache';
+import {
+  THUMBNAIL_LOAD_CANCELLED,
+  isThumbnailLoadCancelled,
+  type ThumbnailLoadResult,
+} from './thumbnail-load-outcome';
+import { isCurrentAccountEpoch, type AccountEpoch } from './account-epoch';
 import {
   LEGACY_THUMB_CACHE_DIR_NAMES,
   MAX_THUMB_BYTES_BY_SIZE,
@@ -396,6 +403,12 @@ export async function cacheLocalThumbnail(
     const existing = await cachedThumbnailUri(fileId);
     if (existing) return existing;
 
+    // P2-4 — on iOS the native `ThumbnailService` owns this cache and treats
+    // `<id>.medium.webp` as its own disk hit; a JS write here would fake a
+    // native entry with unverified metadata. Before round 1 the base64 writer
+    // threw on iOS, so the function wrote nothing. Keep that: no write.
+    if (Platform.OS === 'ios') return null;
+
     const thumb = await generateThumbnailForMedia(localUri, mimeType);
     if (!thumb) return null;
 
@@ -549,7 +562,6 @@ export async function ensureThumbnailForImage(
 // documentDirectory (persistent) via thumbnail-cache.ts so iOS doesn't
 // evict them between app launches.
 const thumbCache = new Map<string, string>();
-const inflight = new Map<string, Promise<string | null>>();
 const repairInflight = new Map<string, Promise<boolean>>();
 
 /**
@@ -639,6 +651,9 @@ export async function pruneThumbnailCache(maxItems = MAX_THUMB_CACHE_ITEMS): Pro
       for (const item of toDelete) {
         await FileSystem.deleteAsync(item.uri, { idempotent: true }).catch(() => {});
         thumbCache.delete(item.name.replace(/\.(webp|jpg)$/, ''));
+        // P2-6c — keep the persistent cache index truthful: a name we deleted
+        // must not stay a 0-stat "hit" pointing at a missing file.
+        forgetCachedThumbnailName(item.name);
       }
     }
   } catch {
@@ -688,11 +703,12 @@ export async function fetchDecryptedThumbnailUri(
   fileId: string,
   fileKey: Uint8Array | ThumbnailDecrypt,
   signal?: AbortSignal,
-): Promise<string | null> {
+  expectedEpoch?: AccountEpoch,
+): Promise<ThumbnailLoadResult> {
   if (Platform.OS === 'ios' && typeof fileKey !== 'function') {
     throw new Error('thumbnail.ts iOS path replaced by BeebeebThumbnails — caller should use useThumbnail()');
   }
-  if (signal?.aborted) return null;
+  if (signal?.aborted) return THUMBNAIL_LOAD_CANCELLED;
   // Central PhotoKit guard: caller-side checks can race the async map hydrate.
   // Once a file resolves to a local PHAsset, never surface or write the
   // encrypted server thumbnail from this path.
@@ -701,9 +717,8 @@ export async function fetchDecryptedThumbnailUri(
   const cached = await cachedThumbnailUri(fileId);
   if (cached) return cached;
 
-  const pending = inflight.get(fileId);
-  if (pending) return pending;
-
+  // Dedupe lives in the queue (`enqueueThumbnailLoad` coalesces by fileId):
+  // a second in-flight map here would hand one caller's abort to another.
   const fetchPromise = (async () => {
     const backoffRemaining = thumbnailBackoffRemainingMs();
     if (backoffRemaining > 0) {
@@ -751,7 +766,11 @@ export async function fetchDecryptedThumbnailUri(
     }
 
     // A2: an aborted (unmounted) cell must not write to disk.
-    if (signal?.aborted) return null;
+    if (signal?.aborted) return THUMBNAIL_LOAD_CANCELLED;
+    // P2-7 — the queue captured the epoch when the job was enqueued. If the
+    // account moved while this load ran, the bytes belong to the previous
+    // account: drop the write and report CANCELLED.
+    if (expectedEpoch && !isCurrentAccountEpoch(expectedEpoch)) return THUMBNAIL_LOAD_CANCELLED;
 
     // Write decrypted thumbnail to persistent storage so it survives app restarts.
     if (getLocalIdentifier(fileId)) return null;
@@ -762,20 +781,17 @@ export async function fetchDecryptedThumbnailUri(
     return persistedPath;
   })();
 
-  inflight.set(fileId, fetchPromise);
   try {
     return await fetchPromise;
   } catch (err) {
     if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
-      return null;
+      return THUMBNAIL_LOAD_CANCELLED;
     }
     warnThumbnailOnce('[thumbnail] remote thumbnail fetch threw', {
       fileId,
       error: err instanceof Error ? err.message : String(err),
     });
     return null;
-  } finally {
-    inflight.delete(fileId);
   }
 }
 
@@ -871,10 +887,16 @@ export async function prefetchDecryptedThumbnails(
     }
     stats.attempted += 1;
     try {
-      const uri = await enqueueThumbnailLoad(fileId, async (fId, innerSignal) => {
+      // P1-2 — prefetch jobs coalesce with the cells' own jobs and yield to
+      // them. A withdrawn/dropped job is CANCELLED, not a failure.
+      const uri = await enqueueThumbnailLoad(fileId, async (fId, innerSignal, epoch) => {
         const fileKey = await getFileKeyBytes(fId);
-        return fetchDecryptedThumbnailUri(fId, fileKey, innerSignal);
-      }, signal);
+        return fetchDecryptedThumbnailUri(fId, fileKey, innerSignal, epoch);
+      }, signal, { prefetch: true });
+      if (isThumbnailLoadCancelled(uri)) {
+        stats.skipped += 1;
+        return;
+      }
       if (uri) {
         stats.loaded += 1;
         onLoaded?.(fileId, uri);

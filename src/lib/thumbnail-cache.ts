@@ -24,20 +24,27 @@ import { Platform } from 'react-native';
 
 import { notePlaintextPathCreated } from './plaintext-storage';
 import { THUMB_CACHE_DIR_NAME, type ThumbnailVariant } from './thumbnail-policy';
-import { onAccountEpochAdvance } from './account-epoch';
+import { accountEpoch, onAccountEpochAdvance, type AccountEpoch } from './account-epoch';
 import { getModernThumbnailFs } from './thumbnail-fs-modern';
+import {
+  THUMBNAIL_LOAD_CANCELLED,
+  type ThumbnailLoadResult,
+} from './thumbnail-load-outcome';
 
 const THUMB_DIR = `${FileSystem.documentDirectory}${THUMB_CACHE_DIR_NAME}/`;
 
 /** Max concurrent thumbnail download+decrypt operations. */
 const MAX_CONCURRENT_LOADS = 6;
 /**
- * Task 2233 item 1 (A3) — at most this many jobs may WAIT for a slot. A long
- * fling enqueues far more; the OLDEST waiting job is resolved `null` on
- * overflow and the newest job is served first, because the cell the user is
- * looking at now was enqueued last.
+ * Task 2233 round 2 (P1-2) — at most this many unique jobs may WAIT for a slot.
+ *
+ * Jobs are coalesced by fileId (a cell and the prefetch asking for the same
+ * thumbnail share one job), so this counts distinct thumbnails, not callers.
+ * On overflow the oldest PREFETCH-ONLY job is dropped first: a mounted cell's
+ * job must win over speculative work. A dropped job resolves CANCELLED, never
+ * "no thumbnail".
  */
-export const MAX_WAITING_THUMBNAIL_JOBS = 96;
+export const MAX_WAITING_THUMBNAIL_JOBS = 256;
 /** Task 2233 item 1 (A6) — in-memory path map bound (LRU by touch). */
 const MAX_MEMORY_THUMB_PATHS = 3000;
 const memoryThumbPaths = new Map<string, string>();
@@ -70,8 +77,24 @@ function rememberPath(key: string, path: string): void {
 let diskNames: Set<string> | null = null;
 let hydration: Promise<void> | null = null;
 let indexUsable = false;
+/**
+ * Task 2233 round 2 (P2-6a) — a listing that was started before a reset
+ * (account switch / sign-out purge) must never be installed afterwards.
+ */
+let indexGeneration = 0;
+
+/**
+ * A folder that does not exist yet (first run, or removed by the sign-out
+ * purge / the iOS native purge) is an EMPTY cache, not a broken index. Any
+ * other listing failure means the index cannot be trusted this session.
+ */
+function isMissingFolderError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
+  return /enoent|no such file|no such directory|does not exist|doesn't exist|not exist|unable to find/.test(message);
+}
 
 function resetCacheIndex(): void {
+  indexGeneration += 1;
   diskNames = null;
   hydration = null;
   indexUsable = false;
@@ -80,16 +103,21 @@ function resetCacheIndex(): void {
 async function cacheIndex(): Promise<void> {
   if (diskNames) return;
   if (!hydration) {
+    const generation = indexGeneration;
     hydration = FileSystem.readDirectoryAsync(THUMB_DIR)
       .then((names) => {
+        if (generation !== indexGeneration) return;
         diskNames = new Set(names);
         indexUsable = true;
       })
-      .catch(() => {
+      .catch((err) => {
+        if (generation !== indexGeneration) return;
         diskNames = new Set();
-        indexUsable = false;
+        indexUsable = isMissingFolderError(err);
       })
-      .finally(() => { hydration = null; });
+      .finally(() => {
+        if (generation === indexGeneration) hydration = null;
+      });
   }
   await hydration;
 }
@@ -100,6 +128,15 @@ function noteDiskName(name: string): void {
 
 function forgetDiskName(name: string): void {
   diskNames?.delete(name);
+}
+
+/**
+ * Task 2233 round 2 (P2-6c) — `pruneThumbnailCache` deletes files behind this
+ * module's back; it must drop the names from the hydrated index too, or a
+ * later read would serve a path that no longer exists until the next restart.
+ */
+export function forgetCachedThumbnailName(name: string): void {
+  forgetDiskName(name);
 }
 
 
@@ -294,31 +331,18 @@ export async function cacheThumbnail(
 ): Promise<string> {
   await ensureThumbDir();
   const path = variantPath(fileId, variant);
-  await writeThumbnailBytes(path, data);
-  rememberPath(cacheKey(fileId, variant), path);
-  noteDiskName(variantName(fileId, variant));
-  return path;
-}
-
-/**
- * Write a decrypted thumbnail from a base64 string to persistent storage.
- * Returns the persisted file URI.
- */
-export async function cacheThumbnailBase64(
-  fileId: string,
-  base64Data: string,
-  variant: ThumbnailVariant = 'medium',
-): Promise<string> {
-  if (Platform.OS !== 'android') {
-    throw new Error('cacheThumbnailBase64 is Android-only — iOS thumbnails are managed by the native ThumbnailService actor');
+  try {
+    await writeThumbnailBytes(path, data);
+  } catch (err) {
+    // P2-5 — the folder can vanish under a live memo: the sign-out purge can
+    // race a write, and the iOS native service purges the directory on its
+    // own. Without recovery every later write fails until the app restarts,
+    // so drop the memo, recreate once and retry the write once.
+    if (!isMissingFolderError(err)) throw err;
+    dirReady = null;
+    await ensureThumbDir();
+    await writeThumbnailBytes(path, data);
   }
-  await ensureThumbDir();
-  const path = variantPath(fileId, variant);
-  await gatedPlaintextWrite('thumbnail cache', path, FileSystem, () =>
-    FileSystem.writeAsStringAsync(path, base64Data, {
-      encoding: FileSystem.EncodingType.Base64,
-    }),
-  );
   rememberPath(cacheKey(fileId, variant), path);
   noteDiskName(variantName(fileId, variant));
   return path;
@@ -462,101 +486,231 @@ export async function pruneThumbnailsForRemoteFiles(
 // Concurrency-limited thumbnail loading queue
 // ---------------------------------------------------------------------------
 
+/**
+ * Loads one thumbnail. Receives the job's own abort signal (aborts only when
+ * every caller that joined the job has gone away) and the account epoch
+ * captured at enqueue, so the loader can refuse a write for a stale account.
+ */
 export type ThumbnailLoader = (
   fileId: string,
   signal?: AbortSignal,
-) => Promise<string | null>;
+  epoch?: AccountEpoch,
+) => Promise<ThumbnailLoadResult>;
 
-interface QueueItem {
-  fileId: string;
-  loader: ThumbnailLoader;
+export interface EnqueueThumbnailOptions {
+  /** Speculative work (prefetch). Yields to cell-owned jobs and is dropped first. */
+  prefetch?: boolean;
+}
+
+interface QueueJoiner {
   signal?: AbortSignal;
   onAbort?: () => void;
-  resolve: (uri: string | null) => void;
+  resolve: (result: ThumbnailLoadResult) => void;
   reject: (err: unknown) => void;
 }
 
-const queue: QueueItem[] = [];
+interface QueueJob {
+  fileId: string;
+  loader: ThumbnailLoader;
+  /** The job's own controller: one caller's abort must never kill another's load. */
+  controller: AbortController;
+  joiners: QueueJoiner[];
+  queued: boolean;
+  prefetchOnly: boolean;
+  cancelled: boolean;
+  settled: boolean;
+  /** Captured at first enqueue; checked right before the gated write. */
+  epoch: AccountEpoch;
+}
+
+/** FIFO by first enqueue. */
+const queue: QueueJob[] = [];
+/** One job per fileId — the queue is the only in-flight dedupe. */
+const jobsByFileId = new Map<string, QueueJob>();
+const running = new Set<QueueJob>();
 let activeCount = 0;
 let droppedCount = 0;
 
-function detachAbortListener(item: QueueItem): void {
-  if (item.signal && item.onAbort) {
-    item.signal.removeEventListener('abort', item.onAbort);
-    item.onAbort = undefined;
+function detachJoiner(joiner: QueueJoiner): void {
+  if (joiner.signal && joiner.onAbort) {
+    joiner.signal.removeEventListener('abort', joiner.onAbort);
+    joiner.onAbort = undefined;
   }
 }
 
-function drainQueue(): void {
-  while (activeCount < MAX_CONCURRENT_LOADS && queue.length > 0) {
-    // A3 — newest first: the cell the user is looking at now was enqueued
-    // last, so it must not wait behind a fling's stale jobs.
-    const item = queue.pop();
-    if (!item) break;
-    detachAbortListener(item);
-    if (item.signal?.aborted) {
-      item.resolve(null);
-      continue;
-    }
-    activeCount++;
-    item.loader(item.fileId, item.signal)
-      .then(item.resolve)
-      .catch(item.reject)
-      .finally(() => {
-        activeCount--;
-        drainQueue();
-      });
+function forgetJob(job: QueueJob): void {
+  if (jobsByFileId.get(job.fileId) === job) jobsByFileId.delete(job.fileId);
+}
+
+function takeJoiners(job: QueueJob): QueueJoiner[] {
+  const joiners = job.joiners;
+  job.joiners = [];
+  return joiners;
+}
+
+function resolveJoiners(job: QueueJob, result: ThumbnailLoadResult): void {
+  for (const joiner of takeJoiners(job)) {
+    detachJoiner(joiner);
+    joiner.resolve(result);
+  }
+}
+
+function rejectJoiners(job: QueueJob, error: unknown): void {
+  for (const joiner of takeJoiners(job)) {
+    detachJoiner(joiner);
+    joiner.reject(error);
   }
 }
 
 /**
- * Enqueue a thumbnail load. If the concurrency limit has not been reached,
- * the load starts immediately. Otherwise it waits for a slot.
+ * Withdraw a job: queued jobs leave the queue, running ones have their fetch
+ * aborted. Every joined caller resolves CANCELLED — never "no thumbnail".
+ */
+function cancelJob(job: QueueJob): void {
+  if (job.settled) return;
+  job.cancelled = true;
+  forgetJob(job);
+  if (job.queued) {
+    const index = queue.indexOf(job);
+    if (index >= 0) queue.splice(index, 1);
+    job.queued = false;
+  }
+  job.controller.abort();
+  resolveJoiners(job, THUMBNAIL_LOAD_CANCELLED);
+}
+
+/** Add a caller to an existing job. A cell caller promotes a prefetch job. */
+function joinJob(
+  job: QueueJob,
+  signal: AbortSignal | undefined,
+  prefetch: boolean,
+): Promise<ThumbnailLoadResult> {
+  if (prefetch === false) job.prefetchOnly = false;
+  if (job.settled) return Promise.resolve(THUMBNAIL_LOAD_CANCELLED);
+  return new Promise<ThumbnailLoadResult>((resolve, reject) => {
+    const joiner: QueueJoiner = { resolve, reject };
+    if (signal) {
+      const onAbort = () => {
+        signal.removeEventListener('abort', onAbort);
+        joiner.onAbort = undefined;
+        const index = job.joiners.indexOf(joiner);
+        if (index >= 0) job.joiners.splice(index, 1);
+        resolve(THUMBNAIL_LOAD_CANCELLED);
+        // Abort the underlying fetch only when nobody else wants it.
+        if (job.joiners.length === 0) cancelJob(job);
+      };
+      joiner.signal = signal;
+      joiner.onAbort = onAbort;
+      signal.addEventListener('abort', onAbort);
+    }
+    job.joiners.push(joiner);
+  });
+}
+
+/** P1-2 — count unique jobs; drop the oldest prefetch-only job first. */
+function enforceWaitingBound(): void {
+  while (queue.length > MAX_WAITING_THUMBNAIL_JOBS) {
+    let index = queue.findIndex((job) => job.prefetchOnly);
+    if (index < 0) index = 0;
+    const [dropped] = queue.splice(index, 1);
+    dropped.queued = false;
+    droppedCount += 1;
+    cancelJob(dropped);
+  }
+}
+
+function startJob(job: QueueJob): void {
+  activeCount += 1;
+  running.add(job);
+  let pending: Promise<ThumbnailLoadResult>;
+  try {
+    pending = Promise.resolve(job.loader(job.fileId, job.controller.signal, job.epoch));
+  } catch (err) {
+    pending = Promise.reject(err);
+  }
+  pending
+    .then((result) => finishJob(job, undefined, result))
+    .catch((err) => finishJob(job, err));
+}
+
+function finishJob(job: QueueJob, error: unknown, result?: ThumbnailLoadResult): void {
+  if (job.settled) return;
+  job.settled = true;
+  job.queued = false;
+  running.delete(job);
+  forgetJob(job);
+  activeCount = Math.max(0, activeCount - 1);
+  if (job.cancelled) {
+    // Joiners were already resolved CANCELLED when the job was withdrawn.
+    resolveJoiners(job, THUMBNAIL_LOAD_CANCELLED);
+  } else if (error !== undefined) {
+    rejectJoiners(job, error);
+  } else {
+    resolveJoiners(job, result ?? null);
+  }
+  drainQueue();
+}
+
+function drainQueue(): void {
+  while (activeCount < MAX_CONCURRENT_LOADS && queue.length > 0) {
+    // FIFO by first enqueue, but a mounted cell's job goes before speculative
+    // prefetch work. Abort-on-unmount already removes fling leftovers, so
+    // FIFO is the correct order for the rest.
+    let index = queue.findIndex((job) => !job.prefetchOnly);
+    if (index < 0) index = 0;
+    const [job] = queue.splice(index, 1);
+    if (!job) break;
+    job.queued = false;
+    if (job.cancelled || job.joiners.length === 0) {
+      cancelJob(job);
+      continue;
+    }
+    startJob(job);
+  }
+}
+
+/**
+ * Enqueue a thumbnail load. If the concurrency limit has not been reached, the
+ * load starts immediately. Otherwise it waits for a slot.
  *
- * `loader` is a function that downloads+decrypts a single thumbnail and
- * returns the local file URI (or null on failure). If `signal` aborts before
- * the slot opens, the entry is dropped from the queue and the promise resolves
- * with null. Once running, the signal is passed to the loader so it can abort
- * the underlying fetch.
+ * Callers asking for the same `fileId` share ONE job (and one network fetch):
+ * a second enqueue joins the existing job and adds its signal, and the job is
+ * aborted only when every joined signal has aborted. A cancelled or dropped
+ * load resolves `THUMBNAIL_LOAD_CANCELLED`; only a real missing/failed
+ * thumbnail resolves `null`.
  */
 export function enqueueThumbnailLoad(
   fileId: string,
   loader: ThumbnailLoader,
   signal?: AbortSignal,
-): Promise<string | null> {
+  options: EnqueueThumbnailOptions = {},
+): Promise<ThumbnailLoadResult> {
   if (Platform.OS !== 'android') {
     throw new Error('enqueueThumbnailLoad is Android-only — iOS uses BeebeebThumbnails native service');
   }
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      resolve(null);
-      return;
-    }
-    const item: QueueItem = { fileId, loader, signal, resolve, reject };
-    if (signal) {
-      const onAbort = () => {
-        const idx = queue.indexOf(item);
-        if (idx >= 0) {
-          queue.splice(idx, 1);
-          detachAbortListener(item);
-          resolve(null);
-        }
-      };
-      item.onAbort = onAbort;
-      signal.addEventListener('abort', onAbort);
-    }
-    queue.push(item);
-    // A3 — bound the waiting set; the OLDEST waiting job loses its slot.
-    if (queue.length > MAX_WAITING_THUMBNAIL_JOBS) {
-      const dropped = queue.shift();
-      if (dropped) {
-        detachAbortListener(dropped);
-        droppedCount += 1;
-        dropped.resolve(null);
-      }
-    }
-    drainQueue();
-  });
+  const prefetch = options.prefetch === true;
+  if (signal?.aborted) return Promise.resolve(THUMBNAIL_LOAD_CANCELLED);
+
+  const existing = jobsByFileId.get(fileId);
+  if (existing) return joinJob(existing, signal, prefetch);
+
+  const job: QueueJob = {
+    fileId,
+    loader,
+    controller: new AbortController(),
+    joiners: [],
+    queued: true,
+    prefetchOnly: prefetch,
+    cancelled: false,
+    settled: false,
+    epoch: accountEpoch(),
+  };
+  jobsByFileId.set(fileId, job);
+  queue.push(job);
+  const result = joinJob(job, signal, prefetch);
+  enforceWaitingBound();
+  drainQueue();
+  return result;
 }
 
 /** Diagnostics (tests + the optional runtime counter): current queue state. */
@@ -566,25 +720,23 @@ export function thumbnailQueueStats(): { active: number; waiting: number; droppe
 
 /**
  * Clear the pending queue (e.g. when scrolling away from a section).
- * In-flight loads are not cancelled, but pending ones are resolved as null.
+ * In-flight loads are not cancelled, but pending ones resolve CANCELLED.
  */
 export function clearThumbnailQueue(): void {
-  while (queue.length > 0) {
-    const item = queue.pop();
-    if (!item) continue;
-    detachAbortListener(item);
-    item.resolve(null);
-  }
+  for (const job of [...queue]) cancelJob(job);
 }
 
 /**
- * A4/A6 — an account switch invalidates every queued job and every cached
- * name for the previous account: nothing from it may land in the new session.
+ * A4/A6 + round 2 P2-7 — an account switch invalidates every queued AND
+ * running job, the memoized directory state and every cached name for the
+ * previous account: nothing from it may land in the new session.
  */
 onAccountEpochAdvance(() => {
   clearThumbnailQueue();
+  for (const job of [...running]) cancelJob(job);
   memoryThumbPaths.clear();
   resetCacheIndex();
+  dirReady = null;
 });
 
 // ---------------------------------------------------------------------------

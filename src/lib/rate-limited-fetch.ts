@@ -166,12 +166,14 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
     const minSpacing = spacing[bucket] ?? 0;
     if (minSpacing <= 0) {
       // Zero-spacing buckets do not serialize: the request starts immediately
-      // unless the bucket is currently paused by a 429/Retry-After (A1). The
-      // pause gate is read once, so a pause set by one response never delays
-      // requests that are already running.
-      const state = stateFor(bucket);
-      const waitMs = Math.max(0, state.nextAt - now());
-      if (waitMs > 0) await sleep(waitMs);
+      // unless the bucket is currently paused by a 429/Retry-After. Task 2233
+      // round 1 (A1) introduced that pause for `thumbnails` only; `billing`
+      // and `external` behave exactly as on main (no pause gate).
+      if (bucket === 'thumbnails') {
+        const state = stateFor(bucket);
+        const waitMs = Math.max(0, state.nextAt - now());
+        if (waitMs > 0) await sleep(waitMs);
+      }
       const response = await fetchImpl(input, init);
       await applyResponsePacing(bucket, response);
       return response;

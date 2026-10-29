@@ -4,7 +4,7 @@
  *
  *  - Case 4: an account-epoch advance aborts every queued thumbnail job and
  *    clears the in-memory cache index (nothing from the old account is served
- *    to the new one).
+ *    to the new one). Round 2 (P2-7) extends it to RUNNING jobs.
  *  - Case 5: a write that reaches the cache after the sign-out purge closed
  *    the plaintext gate is refused and never lands in the index.
  */
@@ -46,6 +46,7 @@ mock.module('./thumbnail-fs-modern', () => ({
   resetModernThumbnailFsForTests: () => {},
 }));
 
+const { THUMBNAIL_LOAD_CANCELLED } = await import('./thumbnail-load-outcome');
 const { advanceAccountEpoch } = await import('./account-epoch');
 const { plaintextGate } = await import('./plaintext-gate');
 const {
@@ -65,7 +66,7 @@ describe('task 2233 cases 4/5 — account boundary', () => {
     fs.dirs = 0;
   });
 
-  test('case 4a: epoch advance resolves queued jobs null; running jobs stop being served', async () => {
+  test('case 4a: epoch advance resolves queued jobs CANCELLED; they never start', async () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const started: string[] = [];
@@ -76,12 +77,37 @@ describe('task 2233 cases 4/5 — account boundary', () => {
     expect(thumbnailQueueStats().waiting).toBe(1);
 
     advanceAccountEpoch();
-    expect(await queued).toBeNull();
+    expect(await queued).toBe(THUMBNAIL_LOAD_CANCELLED);
     expect(thumbnailQueueStats().waiting).toBe(0);
 
     release();
     await new Promise((r) => setTimeout(r, 10));
     expect(started).not.toContain('queued');
+  });
+
+  test('case 4c: epoch advance aborts RUNNING jobs too (round 2 P2-7)', async () => {
+    const signals: AbortSignal[] = [];
+    const pending: Array<Promise<string | null>> = [];
+    for (let i = 0; i < 6; i++) {
+      pending.push(enqueueThumbnailLoad(`run-${i}`, (_id, signal) => {
+        signals.push(signal);
+        return new Promise<string | null>((resolve) => {
+          signal?.addEventListener('abort', () => resolve(null));
+        });
+      }));
+    }
+    expect(thumbnailQueueStats().active).toBe(6);
+
+    advanceAccountEpoch();
+
+    // Aborting first keeps the RED run from hanging on a never-settling load.
+    expect(signals.length).toBe(6);
+    for (const signal of signals) expect(signal.aborted).toBe(true);
+    for (const result of await Promise.all(pending)) {
+      expect(result).toBe(THUMBNAIL_LOAD_CANCELLED);
+    }
+    await new Promise((r) => setTimeout(r, 10));
+    expect(thumbnailQueueStats().active).toBe(0);
   });
 
   test('case 4b: epoch advance clears the cache index (old names are not served)', async () => {

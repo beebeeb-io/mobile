@@ -42,6 +42,7 @@ mock.module('expo-file-system/legacy', () => ({
   copyAsync: async () => undefined,
 }));
 
+const { THUMBNAIL_LOAD_CANCELLED } = await import('./thumbnail-load-outcome');
 const { enqueueThumbnailLoad, clearThumbnailQueue } = await import('./thumbnail-cache');
 
 describe('enqueueThumbnailLoad concurrency + cancellation', () => {
@@ -65,7 +66,7 @@ describe('enqueueThumbnailLoad concurrency + cancellation', () => {
     expect(peak).toBeLessThanOrEqual(6);
   });
 
-  test('pending entry is dropped (resolves null) when its signal aborts before run', async () => {
+  test('pending entry is dropped (resolves CANCELLED) when its signal aborts before run', async () => {
     let started = 0;
     const slowLoader = async () => {
       started++;
@@ -81,7 +82,7 @@ describe('enqueueThumbnailLoad concurrency + cancellation', () => {
     const pending = enqueueThumbnailLoad('pending-1', slowLoader, controller.signal);
     controller.abort();
 
-    expect(await pending).toBeNull();
+    expect(await pending).toBe(THUMBNAIL_LOAD_CANCELLED);
     await Promise.all(blocking);
     expect(started).toBe(6); // pending-1 never started
   });
@@ -101,11 +102,16 @@ describe('enqueueThumbnailLoad concurrency + cancellation', () => {
     // Abort after the loader has started.
     setTimeout(() => controller.abort(), 1);
     const result = await p;
+    // The withdrawn job's promise settles at the abort; the loader is still
+    // inside its 5 ms wait. Give it time to observe its aborted signal.
+    await new Promise((r) => setTimeout(r, 10));
     expect(sawAbort).toBe(true);
-    expect(result).toBeNull();
+    // Task 2233 round 2 (P1-1): a withdrawn load is CANCELLED, never
+    // "no thumbnail" — the hook would otherwise blank a live tile.
+    expect(result).toBe(THUMBNAIL_LOAD_CANCELLED);
   });
 
-  test('aborted signal at enqueue time resolves null without invoking loader', async () => {
+  test('aborted signal at enqueue time resolves CANCELLED without invoking loader', async () => {
     const controller = new AbortController();
     controller.abort();
     let called = false;
@@ -114,6 +120,6 @@ describe('enqueueThumbnailLoad concurrency + cancellation', () => {
       return 'uri';
     }, controller.signal);
     expect(called).toBe(false);
-    expect(result).toBeNull();
+    expect(result).toBe(THUMBNAIL_LOAD_CANCELLED);
   });
 });
