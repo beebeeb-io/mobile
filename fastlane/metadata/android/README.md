@@ -9,8 +9,8 @@ Layout follows `fastlane supply` (`fastlane/metadata/android/<locale>/`), next t
 | `en-US/title.txt` | App name | 30 | 24 |
 | `en-US/short_description.txt` | Short description | 80 | 72 |
 | `en-US/full_description.txt` | Full description | 4000 | 1781 |
-| `en-US/images/icon.png` | App icon | 512 x 512, 32-bit PNG with alpha | from the lead's `play/` folder |
-| `en-US/images/featureGraphic.png` | Feature graphic | 1024 x 500, JPEG or 24-bit PNG, no alpha | from the lead's `play/` folder |
+| `en-US/images/icon.png` | App icon | 512 x 512, 32-bit PNG with alpha | included (RGBA, opaque; full-bleed square, Play applies its own mask) |
+| `en-US/images/featureGraphic.png` | Feature graphic | 1024 x 500, JPEG or 24-bit PNG, no alpha | included (RGB, dark: "Your files. Your keys." / "stored in Europe") |
 | `en-US/images/phoneScreenshots/` | Phone screenshots | 2 to 8 | Guus captures, see below |
 
 ## Before you publish: five checks
