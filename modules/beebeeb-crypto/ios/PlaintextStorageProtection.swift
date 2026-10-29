@@ -112,6 +112,15 @@ public enum PlaintextStorageProtection {
             kind: .file, contains: "fileId to PHAsset localIdentifier map"),
       Entry(url: docs.appendingPathComponent("thumbnail_queue.sqlite", isDirectory: false),
             kind: .file, contains: "thumbnail work queue"),
+      // Task 1962 round 4 (7g) — SQLite sidecars of the thumbnail queue
+      // (WAL mode). They are separate inodes and are only removed through
+      // `ThumbnailQueueDB.prepareForStoragePurge()`; the registry keeps them
+      // backup-excluded and their names mirrored in JS
+      // (`PROTECTED_LEAF_NAMES`).
+      Entry(url: docs.appendingPathComponent("thumbnail_queue.sqlite-wal", isDirectory: false),
+            kind: .file, contains: "thumbnail work queue write-ahead log"),
+      Entry(url: docs.appendingPathComponent("thumbnail_queue.sqlite-shm", isDirectory: false),
+            kind: .file, contains: "thumbnail work queue shared-memory index"),
       Entry(url: docs.appendingPathComponent("beebeeb-simulator-master-key.txt", isDirectory: false),
             kind: .file, contains: "raw master key — simulator-only, gated on Device.isDevice"),
       Entry(url: support.appendingPathComponent("NativeBackupStaging", isDirectory: true),

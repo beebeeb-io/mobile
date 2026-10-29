@@ -2445,9 +2445,21 @@ public class BeebeebCryptoModule: Module {
       let manifest = NativeBackupEngine.shared.prepareForStoragePurge(
         mode: purgeMode, deletedAccountIds: Set(deletedAccountIds ?? [])
       )
+      // Task 1962 round 4 (Bug 7b) — the thumbnail queue reaches the purge
+      // from EVERY sign-out path (forced ones never call the JS
+      // `clearQueueOnSignOut`). Stop in-flight workers, then reset the queue
+      // THROUGH its own open handle. The three files it owns are added to
+      // `preserving` in every outcome, so the registry sweep below never
+      // unlinks a database under a live connection (the DB closes and
+      // unlinks them itself on a failed reset, 7d).
+      ThumbnailWorkerPool.shared.cancelAll()
+      ThumbnailQueueDB.prepareForStoragePurge()
       // Task 1593 round 7 (C1) — moved LAST (was first). See the block
       // comment above this AsyncFunction for why.
-      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)
+      let result = PlaintextStorageProtection.purgeAll(
+        pendingNonce: pendingNonce,
+        preserving: manifest.kept.union(ThumbnailQueueDB.storagePurgePaths())
+      )
       failed += result.failed
       return [
         "removed": result.removed,
