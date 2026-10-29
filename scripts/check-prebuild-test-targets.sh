@@ -37,7 +37,7 @@ REQUIRED_TARGETS=(ProvenanceHeadersTests CoreVectorsKATTests)
 REQUIRED_FILES=(
   "targets/native-tests/ProvenanceHeadersTests.swift"
   "targets/native-tests/CoreVectorsKATTests.swift"
-  "targets/native-tests/Vectors/core-vectors.v11.json"
+  "targets/native-tests/Vectors/core-vectors.json"
 )
 
 if [ "${1:-}" != "--skip-prebuild" ]; then

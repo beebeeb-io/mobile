@@ -43,22 +43,36 @@ import uniffi.beebeeb_uniffi.FileKeyHandle
  * the pinning decision in the design spec — UniFFI 0.31.1).
  *
  * ## Refreshing the vendored vector file
- * `src/androidTest/assets/core-vectors.v11.json` is a vendored COPY of
- * `repos/core/test-vectors/vectors.json`. To refresh after core bumps it:
- * 1. `cp ../../../core/test-vectors/vectors.json modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v11.json`
- * 2. `sha256sum` the new copy and update [EXPECTED_SHA256] (see the task file).
+ * `src/androidTest/assets/core-vectors.json` is a vendored COPY of core's
+ * `test-vectors/vectors.json`; the filename is stable and [EXPECTED_VERSION] plus
+ * [EXPECTED_SHA256] guard its content. From the mobile repo root:
+ * 1. `git -C ../core show $(cat modules/beebeeb-crypto/CORE_REV):test-vectors/vectors.json`
+ *    > `modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.json`, then copy that
+ *    same file to `targets/native-tests/Vectors/core-vectors.json`.
+ * 2. `shasum -a 256` the new copy and update [EXPECTED_SHA256] (see the task file).
  * 3. If core bumped the version, update [EXPECTED_VERSION] and [EXPECTED_FAMILY_ROW_COUNTS].
- *    `src/lib/1943-core-vectors-v11.guard.test.ts` pins the same bytes, version and row counts.
+ *    `src/lib/1943-core-vectors-v11.guard.test.ts` pins the same bytes, version and row counts
+ *    and compares this table with the TS one.
  *
- * ## Families not implemented (documented follow-ups, by design)
- * - `master_key_from_password`, `recovery_phrase_roundtrip`: Argon2id
- *   (256 MiB / 4 iter) — deliberately excluded from the M0 smoke because of
- *   device runtime; add with generous timeouts when the suite is promoted to
- *   a full mirror of the iOS gate.
+ * ## Families decrypted here, and the ones only counted
+ * All 31 families are required by name with their row count in [vectorsFileIntegrity]. 21 are
+ * decrypted or derived through the binding: `file_key_derivation`, `chunk_encrypt_decrypt`,
+ * `x25519_identity_keypair`, `x25519_share_key_exchange`, `recovery_check`,
+ * `metadata_encrypt_decrypt`, `file_request_seal_open`, `chunk_v2_stream`,
+ * `chunk_v2_single_frame`, `metadata_v2_name`, `metadata_v2_name_filekey`,
+ * `metadata_v1_name_filekey`, `key_wrap_v1`, `folder_link_passphrase`,
+ * `folder_link_passphrase_nfd`, `folder_custody_v1`, `link_owner_key_v1`,
+ * `link_owner_token_v1`, `folder_child_file_v1`, `folder_child_folder_v1` and
+ * `owner_wrapped_file_key`. The other 10 are only counted:
+ * - `master_key_from_password`, `recovery_phrase_roundtrip`: Argon2id (256 MiB / 4 iter) —
+ *   deliberately excluded from the emulator smoke because of device runtime; add with
+ *   generous timeouts when the suite is promoted to a full mirror of the iOS gate.
  * - `envelope_serialization`: not exposed by UniFFI (same skip as iOS).
- * - `share_key_wrap`, `thumbnail_encrypt`: their decrypt primitives need the
- *   exact call mapping confirmed (AES-GCM key/nonce/ciphertext shapes differ
- *   from `decryptChunk` inputs); add with the full mirror.
+ * - `share_key_wrap`, `thumbnail_encrypt`: their decrypt primitives need the exact call mapping
+ *   confirmed (AES-GCM key/nonce/ciphertext shapes differ from `decryptChunk` inputs); add with
+ *   the full mirror.
+ * - `folder_key_id`, `shared_folder_index_key`, `combine_folder_link_key`,
+ *   `owner_wrapped_folder_key`, `folder_wrapped_file_key`: no mobile reader uses them yet.
  */
 @RunWith(AndroidJUnit4::class)
 class CoreVectorsKATTest {
@@ -111,11 +125,11 @@ class CoreVectorsKATTest {
 
         private fun loadRoot(): JSONObject {
             val assets = InstrumentationRegistry.getInstrumentation().context.assets
-            val bytes = assets.open("core-vectors.v11.json").readBytes()
+            val bytes = assets.open("core-vectors.json").readBytes()
             val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
             val hex = digest.joinToString("") { "%02x".format(it) }
             assertEquals(
-                "vendored core-vectors.v11.json drifted from the pinned sha256 — see this file's header",
+                "vendored core-vectors.json drifted from the pinned sha256 — see this file's header",
                 EXPECTED_SHA256,
                 hex,
             )
@@ -128,7 +142,7 @@ class CoreVectorsKATTest {
                 val v = vectors.getJSONObject(i)
                 if (v.optString("name") == name) return v
             }
-            throw AssertionError("vector '$name' not found in core-vectors.v11.json")
+            throw AssertionError("vector '$name' not found in core-vectors.json")
         }
 
         private fun String.hexToBytes(): ByteArray {
@@ -179,6 +193,79 @@ class CoreVectorsKATTest {
             EXPECTED_FAMILY_ROW_COUNTS.values.sum(),
             vectors.length(),
         )
+    }
+
+    // MARK: - 21/22. The 1908 chunk and name families, decrypted through the binding
+
+    /**
+     * `chunk_v2_stream` and `chunk_v2_single_frame`: the sequential reader under the V2 pin
+     * reproduces the published plaintext and finishes on the last frame, and every frame also
+     * opens on its own through the random-access reader at its published index. A wrong key,
+     * nonce, index or format fails here.
+     */
+    @Test
+    fun chunkV2FamiliesDecryptThroughTheBinding() {
+        for (name in listOf("chunk_v2_single_frame", "chunk_v2_stream")) {
+            val v = vector(loadRoot(), name)
+            val master = MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes())
+            val fileId = v.getString("file_id")
+            val versionId = v.getString("version_id_hex").hexToBytes()
+            val fileKey = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
+            val frames = v.getJSONArray("frames")
+            assertEquals("$name: frame count", v.getInt("chunk_count"), frames.length())
+
+            val decryptor = ChunkDecryptorHandle.forPush(master, fileId, 2u)
+            val streamed = java.io.ByteArrayOutputStream()
+            for (position in 0 until frames.length()) {
+                val frame = frames.getJSONObject(position)
+                val frameData = frame.getString("frame_hex").hexToBytes()
+                val index = frame.getInt("index")
+                val isLast = frame.getBoolean("is_last")
+                assertEquals("$name: frames must be ordered by index", position, index)
+                val opened = decryptor.pushFrame(frameData)
+                assertEquals("$name: pushed frame index", index.toUInt(), opened.index)
+                streamed.write(opened.data)
+                val randomAccess = fileKey.decryptChunkFrame(
+                    fileId, versionId, index.toUInt(), isLast, 2u, frameData)
+                assertHexEquals("$name: frame $index random access", frame.getString("plaintext_hex"), randomAccess)
+            }
+            val summary = decryptor.finish()
+            assertEquals("$name: detected format", 2, summary.format.toInt())
+            assertEquals("$name: finished chunk count", frames.length().toUInt(), summary.chunkCount)
+            assertHexEquals("$name: streamed plaintext", v.getString("plaintext_hex"), streamed.toByteArray())
+            println("[CoreVectorsKAT] $name: 1 row (streamed + per-frame open)")
+        }
+    }
+
+    /**
+     * `metadata_v2_name` through the master-key name reader, and the two per-file-key name
+     * vectors through the file-key reader: name, MIME type and the returned pin must match the
+     * vector. The pin is what every later content reader of that file must use.
+     */
+    @Test
+    fun nameFamiliesDecryptThroughTheBinding() {
+        val masterVector = vector(loadRoot(), "metadata_v2_name")
+        val master = MasterKeyHandle.fromKeychainBytes(masterVector.getString("master_key_hex").hexToBytes())
+        val masterMeta = master.decryptFileMetadata(
+            masterVector.getString("file_id"), masterVector.getString("name_encrypted"))
+        assertEquals("metadata_v2_name: name", masterVector.getString("expected_name"), masterMeta.name)
+        assertEquals("metadata_v2_name: mime", masterVector.getString("expected_mime_type"), masterMeta.mimeType)
+        assertEquals(
+            "metadata_v2_name: pin",
+            masterVector.getInt("expected_chunk_format").toUByte(),
+            masterMeta.chunkFormat,
+        )
+        println("[CoreVectorsKAT] metadata_v2_name: 1 row (master-key name reader)")
+
+        for (name in listOf("metadata_v2_name_filekey", "metadata_v1_name_filekey")) {
+            val v = vector(loadRoot(), name)
+            val meta = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
+                .decryptFileMetadata(v.getString("name_encrypted"))
+            assertEquals("$name: name", v.getString("expected_name"), meta.name)
+            assertEquals("$name: mime", v.getString("expected_mime_type"), meta.mimeType)
+            assertEquals("$name: pin", v.getInt("expected_chunk_format").toUByte(), meta.chunkFormat)
+            println("[CoreVectorsKAT] $name: 1 row (file-key name reader)")
+        }
     }
 
     // MARK: - 2. file_key_derivation (HKDF-SHA256)
