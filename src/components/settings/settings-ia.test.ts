@@ -1,7 +1,7 @@
 // @ts-nocheck — bun test types are outside the Expo tsconfig.
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import ts from 'typescript';
+import ts from 'typescript6'; // TS 7 (native port) has no in-memory compiler API
 
 const source = readFileSync(new URL('../../screens/SettingsScreen.tsx', import.meta.url), 'utf8');
 const ast = ts.createSourceFile('SettingsScreen.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
