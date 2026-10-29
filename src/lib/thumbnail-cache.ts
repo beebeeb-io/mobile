@@ -24,18 +24,84 @@ import { Platform } from 'react-native';
 
 import { notePlaintextPathCreated } from './plaintext-storage';
 import { THUMB_CACHE_DIR_NAME, type ThumbnailVariant } from './thumbnail-policy';
+import { onAccountEpochAdvance } from './account-epoch';
+import { getModernThumbnailFs } from './thumbnail-fs-modern';
 
 const THUMB_DIR = `${FileSystem.documentDirectory}${THUMB_CACHE_DIR_NAME}/`;
 
 /** Max concurrent thumbnail download+decrypt operations. */
 const MAX_CONCURRENT_LOADS = 6;
-/** In-memory cache. Keyed by `${fileId}:${variant}` so the photo grid never
- *  serves a stale small thumbnail when a medium one was requested. */
+/**
+ * Task 2233 item 1 (A3) — at most this many jobs may WAIT for a slot. A long
+ * fling enqueues far more; the OLDEST waiting job is resolved `null` on
+ * overflow and the newest job is served first, because the cell the user is
+ * looking at now was enqueued last.
+ */
+export const MAX_WAITING_THUMBNAIL_JOBS = 96;
+/** Task 2233 item 1 (A6) — in-memory path map bound (LRU by touch). */
+const MAX_MEMORY_THUMB_PATHS = 3000;
 const memoryThumbPaths = new Map<string, string>();
+
 
 function cacheKey(fileId: string, variant: ThumbnailVariant): string {
   return `${fileId}:${variant}`;
 }
+
+function variantName(fileId: string, variant: ThumbnailVariant): string {
+  return `${fileId}.${variant}.webp`;
+}
+
+/** LRU-touch insertion: Map preserves insertion order, so re-setting an
+ *  existing key moves it to the newest position and eviction is shift(). */
+function rememberPath(key: string, path: string): void {
+  memoryThumbPaths.delete(key);
+  memoryThumbPaths.set(key, path);
+  while (memoryThumbPaths.size > MAX_MEMORY_THUMB_PATHS) {
+    const oldest = memoryThumbPaths.keys().next();
+    if (oldest.done) break;
+    memoryThumbPaths.delete(oldest.value);
+  }
+}
+
+// A6 — names present in THUMB_DIR, hydrated once per session from the
+// directory listing. A hit then costs 0 getInfoAsync bridge calls; a miss
+// costs at most one (the verification fallback for a path written after
+// hydration by code this module does not own).
+let diskNames: Set<string> | null = null;
+let hydration: Promise<void> | null = null;
+let indexUsable = false;
+
+function resetCacheIndex(): void {
+  diskNames = null;
+  hydration = null;
+  indexUsable = false;
+}
+
+async function cacheIndex(): Promise<void> {
+  if (diskNames) return;
+  if (!hydration) {
+    hydration = FileSystem.readDirectoryAsync(THUMB_DIR)
+      .then((names) => {
+        diskNames = new Set(names);
+        indexUsable = true;
+      })
+      .catch(() => {
+        diskNames = new Set();
+        indexUsable = false;
+      })
+      .finally(() => { hydration = null; });
+  }
+  await hydration;
+}
+
+function noteDiskName(name: string): void {
+  diskNames?.add(name);
+}
+
+function forgetDiskName(name: string): void {
+  diskNames?.delete(name);
+}
+
 
 function variantPath(fileId: string, variant: ThumbnailVariant): string {
   return `${THUMB_DIR}${fileId}.${variant}.webp`;
@@ -64,22 +130,79 @@ export async function getCachedThumbnail(
 ): Promise<string | null> {
   const key = cacheKey(fileId, variant);
   const memory = memoryThumbPaths.get(key);
-  if (memory) return memory;
+  if (memory) {
+    rememberPath(key, memory);
+    return memory;
+  }
 
   const path = variantPath(fileId, variant);
+  const name = variantName(fileId, variant);
+  await cacheIndex();
+
+  if (indexUsable && diskNames) {
+    if (diskNames.has(name)) {
+      rememberPath(key, path);
+      return path;
+    }
+
+    // Task 0552 migration: pre-variant builds wrote `${fileId}.webp`. We treat
+    // those as `medium` (the only variant that was ever uploaded before this
+    // task) and move them into the suffixed slot.
+    if (variant === 'medium') {
+      const legacyName = `${fileId}.webp`;
+      if (diskNames.has(legacyName)) {
+        const legacy = `${THUMB_DIR}${legacyName}`;
+        try {
+          await FileSystem.moveAsync({ from: legacy, to: path });
+          forgetDiskName(legacyName);
+          noteDiskName(name);
+          rememberPath(key, path);
+          return path;
+        } catch {
+          // If the rename failed, surface the legacy file as-is so the grid
+          // still renders something. It will be re-fetched on next miss.
+          rememberPath(key, legacy);
+          return legacy;
+        }
+      }
+    }
+
+    // Check for legacy .jpg cached before the WebP migration
+    const legacyJpgName = `${fileId}.jpg`;
+    if (diskNames.has(legacyJpgName)) {
+      const legacyJpg = `${THUMB_DIR}${legacyJpgName}`;
+      rememberPath(key, legacyJpg);
+      return legacyJpg;
+    }
+
+    // One verification stat: a writer outside this module may have created
+    // the file after hydration (A6: a miss costs at most 1 getInfoAsync).
+    try {
+      const info = await FileSystem.getInfoAsync(path);
+      if (info.exists) {
+        noteDiskName(name);
+        rememberPath(key, path);
+        return path;
+      }
+    } catch {
+      return null;
+    }
+    memoryThumbPaths.delete(key);
+    return null;
+  }
+
+  // Hydration failed (unreadable directory): fall back to stat-based lookup,
+  // the pre-A6 behaviour.
   try {
     const info = await FileSystem.getInfoAsync(path);
     if (info.exists) {
-      memoryThumbPaths.set(key, path);
+      rememberPath(key, path);
       return path;
     }
   } catch {
     return null;
   }
 
-  // Task 0552 migration: pre-variant builds wrote `${fileId}.webp`. We treat
-  // those as `medium` (the only variant that was ever uploaded before this
-  // task) and move them into the suffixed slot.
   if (variant === 'medium') {
     const legacy = legacyVariantPath(fileId);
     try {
@@ -87,12 +210,10 @@ export async function getCachedThumbnail(
       if (legacyInfo.exists) {
         try {
           await FileSystem.moveAsync({ from: legacy, to: path });
-          memoryThumbPaths.set(key, path);
+          rememberPath(key, path);
           return path;
         } catch {
-          // If the rename failed, surface the legacy file as-is so the grid
-          // still renders something. It will be re-fetched on next miss.
-          memoryThumbPaths.set(key, legacy);
+          rememberPath(key, legacy);
           return legacy;
         }
       }
@@ -101,12 +222,11 @@ export async function getCachedThumbnail(
     }
   }
 
-  // Check for legacy .jpg cached before the WebP migration
   const legacyJpg = `${THUMB_DIR}${fileId}.jpg`;
   try {
     const info = await FileSystem.getInfoAsync(legacyJpg);
     if (info.exists) {
-      memoryThumbPaths.set(key, legacyJpg);
+      rememberPath(key, legacyJpg);
       return legacyJpg;
     }
   } catch {
@@ -115,6 +235,51 @@ export async function getCachedThumbnail(
 
   memoryThumbPaths.delete(key);
   return null;
+}
+
+/**
+ * Task 2233 item 1 (A5) — the thumbnail directory is created once per
+ * session, not once per tile (`makeDirectoryAsync` per write showed up in the
+ * per-cell cost model).
+ */
+let dirReady: Promise<void> | null = null;
+
+async function ensureThumbDir(): Promise<void> {
+  if (!dirReady) {
+    dirReady = (async () => {
+      const modern = getModernThumbnailFs();
+      if (modern) {
+        await modern.ensureDir(THUMB_DIR);
+      } else {
+        await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
+      }
+      notePlaintextPathCreated();
+    })().catch((err) => {
+      dirReady = null;
+      throw err;
+    });
+  }
+  return dirReady;
+}
+
+/**
+ * A5 — write the decrypted bytes, not base64. The modern expo-file-system
+ * `File.write(Uint8Array)` takes the array as-is (no JS string, no native
+ * base64 decode); the legacy string writer remains only as a fallback for
+ * builds/runtimes where the modern module is unavailable. Always under the
+ * sign-out plaintext lease.
+ */
+async function writeThumbnailBytes(path: string, data: Uint8Array): Promise<void> {
+  const modern = getModernThumbnailFs();
+  await gatedPlaintextWrite('thumbnail cache', path, FileSystem, async () => {
+    if (modern) {
+      await modern.writeBytes(path, data);
+      return;
+    }
+    await FileSystem.writeAsStringAsync(path, uint8ArrayToBase64(data), {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+  });
 }
 
 /**
@@ -127,16 +292,11 @@ export async function cacheThumbnail(
   data: Uint8Array,
   variant: ThumbnailVariant = 'medium',
 ): Promise<string> {
-  await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
-  notePlaintextPathCreated();
+  await ensureThumbDir();
   const path = variantPath(fileId, variant);
-  // Task 1593 round 3 — decrypted thumbnail: gated by the sign-out purge.
-  await gatedPlaintextWrite('thumbnail cache', path, FileSystem, () =>
-    FileSystem.writeAsStringAsync(path, uint8ArrayToBase64(data), {
-      encoding: FileSystem.EncodingType.Base64,
-    }),
-  );
-  memoryThumbPaths.set(cacheKey(fileId, variant), path);
+  await writeThumbnailBytes(path, data);
+  rememberPath(cacheKey(fileId, variant), path);
+  noteDiskName(variantName(fileId, variant));
   return path;
 }
 
@@ -152,15 +312,15 @@ export async function cacheThumbnailBase64(
   if (Platform.OS !== 'android') {
     throw new Error('cacheThumbnailBase64 is Android-only — iOS thumbnails are managed by the native ThumbnailService actor');
   }
-  await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
-  notePlaintextPathCreated();
+  await ensureThumbDir();
   const path = variantPath(fileId, variant);
   await gatedPlaintextWrite('thumbnail cache', path, FileSystem, () =>
     FileSystem.writeAsStringAsync(path, base64Data, {
       encoding: FileSystem.EncodingType.Base64,
     }),
   );
-  memoryThumbPaths.set(cacheKey(fileId, variant), path);
+  rememberPath(cacheKey(fileId, variant), path);
+  noteDiskName(variantName(fileId, variant));
   return path;
 }
 
@@ -173,13 +333,13 @@ export async function persistThumbnailFromPath(
   sourcePath: string,
   variant: ThumbnailVariant = 'medium',
 ): Promise<string> {
-  await FileSystem.makeDirectoryAsync(THUMB_DIR, { intermediates: true });
-  notePlaintextPathCreated();
+  await ensureThumbDir();
   const destPath = variantPath(fileId, variant);
   await gatedPlaintextWrite('thumbnail cache', destPath, FileSystem, () =>
     FileSystem.copyAsync({ from: sourcePath, to: destPath }),
   );
-  memoryThumbPaths.set(cacheKey(fileId, variant), destPath);
+  rememberPath(cacheKey(fileId, variant), destPath);
+  noteDiskName(variantName(fileId, variant));
   return destPath;
 }
 
@@ -188,6 +348,8 @@ export async function persistThumbnailFromPath(
  */
 export async function clearThumbnailCache(): Promise<void> {
   memoryThumbPaths.clear();
+  resetCacheIndex();
+  dirReady = null;
   await FileSystem.deleteAsync(THUMB_DIR, { idempotent: true });
 }
 
@@ -219,6 +381,11 @@ export async function invalidateCachedThumbnail(fileId: string): Promise<void> {
     legacyVariantPath(fileId),
     `${THUMB_DIR}${fileId}.jpg`,
   ];
+  forgetDiskName(variantName(fileId, 'small'));
+  forgetDiskName(variantName(fileId, 'medium'));
+  forgetDiskName(variantName(fileId, 'large'));
+  forgetDiskName(`${fileId}.webp`);
+  forgetDiskName(`${fileId}.jpg`);
   await Promise.all(candidates.map((path) =>
     FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {}),
   ));
@@ -284,6 +451,7 @@ export async function pruneThumbnailsForRemoteFiles(
         memoryThumbPaths.delete(cacheKey(fileId, v));
       }
       await FileSystem.deleteAsync(`${THUMB_DIR}${name}`, { idempotent: true }).catch(() => {});
+      forgetDiskName(name);
     }));
   } catch {
     // Best-effort cleanup; cache cleanup must not affect the photo grid.
@@ -310,6 +478,7 @@ interface QueueItem {
 
 const queue: QueueItem[] = [];
 let activeCount = 0;
+let droppedCount = 0;
 
 function detachAbortListener(item: QueueItem): void {
   if (item.signal && item.onAbort) {
@@ -320,7 +489,9 @@ function detachAbortListener(item: QueueItem): void {
 
 function drainQueue(): void {
   while (activeCount < MAX_CONCURRENT_LOADS && queue.length > 0) {
-    const item = queue.shift();
+    // A3 — newest first: the cell the user is looking at now was enqueued
+    // last, so it must not wait behind a fling's stale jobs.
+    const item = queue.pop();
     if (!item) break;
     detachAbortListener(item);
     if (item.signal?.aborted) {
@@ -375,8 +546,22 @@ export function enqueueThumbnailLoad(
       signal.addEventListener('abort', onAbort);
     }
     queue.push(item);
+    // A3 — bound the waiting set; the OLDEST waiting job loses its slot.
+    if (queue.length > MAX_WAITING_THUMBNAIL_JOBS) {
+      const dropped = queue.shift();
+      if (dropped) {
+        detachAbortListener(dropped);
+        droppedCount += 1;
+        dropped.resolve(null);
+      }
+    }
     drainQueue();
   });
+}
+
+/** Diagnostics (tests + the optional runtime counter): current queue state. */
+export function thumbnailQueueStats(): { active: number; waiting: number; dropped: number } {
+  return { active: activeCount, waiting: queue.length, dropped: droppedCount };
 }
 
 /**
@@ -385,12 +570,22 @@ export function enqueueThumbnailLoad(
  */
 export function clearThumbnailQueue(): void {
   while (queue.length > 0) {
-    const item = queue.shift();
+    const item = queue.pop();
     if (!item) continue;
     detachAbortListener(item);
     item.resolve(null);
   }
 }
+
+/**
+ * A4/A6 — an account switch invalidates every queued job and every cached
+ * name for the previous account: nothing from it may land in the new session.
+ */
+onAccountEpochAdvance(() => {
+  clearThumbnailQueue();
+  memoryThumbPaths.clear();
+  resetCacheIndex();
+});
 
 // ---------------------------------------------------------------------------
 // Helpers

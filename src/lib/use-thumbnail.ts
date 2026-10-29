@@ -85,9 +85,13 @@ export function useThumbnail(
 
   useEffect(() => {
     cancelledRef.current = false;
+    // A4 — one controller per effect run (cell mount / fileId change): the
+    // cleanup aborts the queued or running load so an unmounted cell never
+    // downloads, decrypts or writes.
+    const controller = new AbortController();
     setState({ uri: null, source: null, failed: false });
 
-    if (!enabled || !isUnlocked) return () => { cancelledRef.current = true; };
+    if (!enabled || !isUnlocked) return () => { cancelledRef.current = true; controller.abort(); };
     recordRuntimeTrace('thumbnail.hook.request', {
       fileId,
       platform: Platform.OS,
@@ -101,7 +105,11 @@ export function useThumbnail(
     // (never fall to the ordinary reader, which would use the wrong key) when the key cannot be resolved.
     const start = () => {
       if (sharedFileKeyIsLoaded(fileId)) {
-        void enqueueThumbnailLoad(fileId, fId => fetchDecryptedThumbnailUri(fId, (n, c) => decryptFileChunk(fId, n, c)))
+        void enqueueThumbnailLoad(
+          fileId,
+          fId => fetchDecryptedThumbnailUri(fId, (n, c) => decryptFileChunk(fId, n, c), controller.signal),
+          controller.signal,
+        )
           .then(uri => { if (!cancelledRef.current) setState({ uri, source: uri ? 'remote' : null, failed: !uri }); })
           .catch(() => { if (!cancelledRef.current) setState({ uri: null, source: null, failed: true }); });
         return;
@@ -163,8 +171,8 @@ export function useThumbnail(
               }
               return enqueueThumbnailLoad(fileId, async (fId) => {
                 const fileKey = await getFileKeyBytes(fId);
-                return fetchDecryptedThumbnailUri(fId, fileKey);
-              }).then((serverUri) => {
+                return fetchDecryptedThumbnailUri(fId, fileKey, controller.signal);
+              }, controller.signal).then((serverUri) => {
                 if (cancelledRef.current) return;
                 if (serverUri) {
                   recordRuntimeTrace('thumbnail.hook.android_remote_success', { fileId });
@@ -182,8 +190,8 @@ export function useThumbnail(
           }
           return enqueueThumbnailLoad(fileId, async (fId) => {
             const fileKey = await getFileKeyBytes(fId);
-            return fetchDecryptedThumbnailUri(fId, fileKey);
-          }).then((serverUri) => {
+            return fetchDecryptedThumbnailUri(fId, fileKey, controller.signal);
+          }, controller.signal).then((serverUri) => {
             if (cancelledRef.current) return;
             if (serverUri) {
               recordRuntimeTrace('thumbnail.hook.remote_success', { fileId });
@@ -212,7 +220,7 @@ export function useThumbnail(
     } else {
       start();
     }
-    return () => { cancelledRef.current = true; };
+    return () => { cancelledRef.current = true; controller.abort(); };
   }, [fileId, width, height, enabled, isUnlocked, thumbnailMimeType, hasThumbnail, getFileKeyBytes, decryptFileChunk]);
 
   // Subscribe to refresh events on iOS — when a remote thumbnail lands after

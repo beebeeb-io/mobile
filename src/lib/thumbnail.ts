@@ -38,7 +38,6 @@ import {
 } from './encrypted-download';
 import {
   cacheThumbnail,
-  cacheThumbnailBase64,
   enqueueThumbnailLoad,
   getCachedThumbnail,
 } from './thumbnail-cache';
@@ -400,8 +399,8 @@ export async function cacheLocalThumbnail(
     const thumb = await generateThumbnailForMedia(localUri, mimeType);
     if (!thumb) return null;
 
-    const b64 = bytesToBase64(thumb);
-    const persistedPath = await cacheThumbnailBase64(fileId, b64);
+    // A5: write the bytes directly — no base64 encode/decode round trip.
+    const persistedPath = await cacheThumbnail(fileId, thumb);
     thumbCache.set(fileId, persistedPath);
     return persistedPath;
   } catch {
@@ -745,18 +744,20 @@ export async function fetchDecryptedThumbnailUri(
       return null;
     } else {
       if (encryptedBytes.length < 13) return null;
-      const nonce = encryptedBytes.slice(0, 12);
-      const ciphertext = encryptedBytes.slice(12);
+      // A5: views over the same buffer instead of two ~100 KB copies.
+      const nonce = encryptedBytes.subarray(0, 12);
+      const ciphertext = encryptedBytes.subarray(12);
       plainBytes = await (typeof fileKey === 'function' ? fileKey(nonce, ciphertext) : decryptChunk(fileKey, nonce, ciphertext));
     }
 
+    // A2: an aborted (unmounted) cell must not write to disk.
+    if (signal?.aborted) return null;
+
     // Write decrypted thumbnail to persistent storage so it survives app restarts.
     if (getLocalIdentifier(fileId)) return null;
-    // A decrypt callback is how shared-file thumbnails arrive, and it is allowed on iOS; cacheThumbnailBase64 throws on
-    // every platform but Android, so the callback path uses the platform-neutral writer.
-    const persistedPath = typeof fileKey === 'function'
-      ? await cacheThumbnail(fileId, plainBytes)
-      : await cacheThumbnailBase64(fileId, bytesToBase64(plainBytes));
+    // A5: write the bytes. The shared-file decrypt callback and the raw-key
+    // path both take the platform-neutral byte writer now (no base64).
+    const persistedPath = await cacheThumbnail(fileId, plainBytes);
     thumbCache.set(fileId, persistedPath);
     return persistedPath;
   })();
@@ -805,8 +806,8 @@ export async function fetchDecryptedLargeThumbnailUri(
     const encryptedBytes = new Uint8Array(await res.arrayBuffer());
     if (encryptedBytes.length < 13) return null;
 
-    const nonce = encryptedBytes.slice(0, 12);
-    const ciphertext = encryptedBytes.slice(12);
+    const nonce = encryptedBytes.subarray(0, 12);
+    const ciphertext = encryptedBytes.subarray(12);
     const plainBytes = await (typeof fileKey === 'function' ? fileKey(nonce, ciphertext) : decryptChunk(fileKey, nonce, ciphertext));
     return cacheThumbnail(fileId, plainBytes, 'large');
   } catch {
