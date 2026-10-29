@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import JSZip from 'jszip';
-import pako from 'pako';
+import { inflate } from 'pako';
 import { radii } from '../../theme';
 import type { Colors } from '../../theme';
 import { formatBytes } from '../../lib/format';
@@ -204,7 +204,7 @@ function parseTarBuffer(arrayBuffer: ArrayBuffer): ArchiveSummary {
 
 function parseGzBuffer(arrayBuffer: ArrayBuffer, isTgz: boolean): ArchiveSummary {
   const compressed = new Uint8Array(arrayBuffer);
-  const decompressed = pako.inflate(compressed);
+  const decompressed = inflate(compressed);
 
   if (isTgz) {
     // .tgz / .tar.gz — the decompressed content is a TAR
@@ -322,7 +322,7 @@ export function ArchiveRenderer({ data, extension, colors: c, topInset = 0, bott
           // a valid header), treat it as TGZ. Otherwise treat as plain GZ.
           try {
             const compressed = new Uint8Array(data);
-            const decompressed = pako.inflate(compressed);
+            const decompressed = inflate(compressed);
             // Check if decompressed data looks like a TAR (first 100 bytes
             // should contain a filename — at least some non-zero bytes)
             if (decompressed.length >= 512 && decompressed[0] !== 0) {
