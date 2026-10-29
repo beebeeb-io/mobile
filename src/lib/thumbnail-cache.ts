@@ -93,6 +93,21 @@ function isMissingFolderError(err: unknown): boolean {
   return /enoent|no such file|no such directory|does not exist|doesn't exist|not exist|unable to find/.test(message);
 }
 
+/**
+ * Task 2233 round 3 (N7) — ask the filesystem instead of parsing the error
+ * text. iOS spells the message with a curly apostrophe ("doesn’t exist"), so
+ * the regex above misses it on that platform. Only a stat that says the
+ * folder is gone counts as "missing"; a failed stat is not evidence.
+ */
+async function folderIsMissing(): Promise<boolean> {
+  try {
+    const info = await FileSystem.getInfoAsync(THUMB_DIR);
+    return info.exists === false;
+  } catch {
+    return false;
+  }
+}
+
 function resetCacheIndex(): void {
   indexGeneration += 1;
   diskNames = null;
@@ -110,10 +125,14 @@ async function cacheIndex(): Promise<void> {
         diskNames = new Set(names);
         indexUsable = true;
       })
-      .catch((err) => {
+      .catch(async (err) => {
+        if (generation !== indexGeneration) return;
+        // N7 — the message check is a fast path; when it does not match (iOS
+        // curly apostrophe) or there is no message, ask the filesystem.
+        const missing = isMissingFolderError(err) || await folderIsMissing();
         if (generation !== indexGeneration) return;
         diskNames = new Set();
-        indexUsable = isMissingFolderError(err);
+        indexUsable = missing;
       })
       .finally(() => {
         if (generation === indexGeneration) hydration = null;
@@ -338,7 +357,10 @@ export async function cacheThumbnail(
     // race a write, and the iOS native service purges the directory on its
     // own. Without recovery every later write fails until the app restarts,
     // so drop the memo, recreate once and retry the write once.
-    if (!isMissingFolderError(err)) throw err;
+    //
+    // N7 — decide "the folder is gone" by statting it, not by parsing the
+    // error message: iOS says "doesn’t exist" with a curly apostrophe.
+    if (!(await folderIsMissing())) throw err;
     dirReady = null;
     await ensureThumbDir();
     await writeThumbnailBytes(path, data);
