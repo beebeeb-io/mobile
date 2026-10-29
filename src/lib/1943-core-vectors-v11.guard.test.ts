@@ -83,42 +83,69 @@ const TOTAL_ROWS = Object.values(EXPECTED_FAMILIES).reduce((sum, rows) => sum + 
 
 const CORE_DIR = resolve(ROOT, '../core');
 const CORE_REV = readFileSync(join(ROOT, 'modules/beebeeb-crypto/CORE_REV'), 'utf8').trim();
-const HAVE_CORE = existsSync(CORE_DIR);
-if (!HAVE_CORE) {
+const CORE_PRESENT = existsSync(CORE_DIR);
+
+/** The pinned revision is only comparable when the sibling core clone actually has it. */
+function coreHasPinnedRevision(): boolean {
+  if (!CORE_PRESENT) return false;
+  return Bun.spawnSync(['git', '-C', CORE_DIR, 'cat-file', '-e', CORE_REV]).exitCode === 0;
+}
+
+const HAVE_CORE_REV = coreHasPinnedRevision();
+if (!CORE_PRESENT) {
   console.log(
     '[1943] skipping the sibling-core byte comparison: ../core is absent; the vendored bytes are pinned by sha256 only',
+  );
+} else if (!HAVE_CORE_REV) {
+  console.log(
+    `[1943] skipping the sibling-core byte comparison: git -C ../core cat-file -e ${CORE_REV} failed (revision not fetched); the vendored bytes are pinned by sha256 only`,
   );
 }
 
 /**
- * Run a command and capture its output through a file. On this Mac a `bun test` child writing
- * straight into a pipe comes back with no output, while a file redirect returns it faithfully.
+ * Run a command and capture stdout and stderr separately through files. On this Mac a
+ * `bun test` child writing straight into a pipe comes back with no output, while a file
+ * redirect returns it faithfully. Both streams come back as Buffers so the comparison is
+ * byte-exact.
  */
 function runCaptured(argv: string[], opts: { cwd?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'bb-1943-git-'));
-  const outFile = join(dir, 'out.txt');
+  const outFile = join(dir, 'out.bin');
+  const errFile = join(dir, 'err.bin');
   const wrapper = join(dir, 'run.sh');
   try {
-    writeFileSync(wrapper, '#!/usr/bin/env bash\n"$@" >"$BB_CAPTURE_OUT" 2>&1\n');
+    writeFileSync(wrapper, '#!/usr/bin/env bash\n"$@" >"$BB_CAPTURE_OUT" 2>"$BB_CAPTURE_ERR"\n');
     chmodSync(wrapper, 0o755);
     const proc = Bun.spawnSync([wrapper, ...argv], {
       cwd: opts.cwd ?? ROOT,
-      env: { ...process.env, BB_CAPTURE_OUT: outFile },
+      env: { ...process.env, BB_CAPTURE_OUT: outFile, BB_CAPTURE_ERR: errFile },
       stdout: 'inherit',
       stderr: 'inherit',
     });
-    return { code: proc.exitCode, output: readFileSync(outFile, 'utf8') };
+    return { code: proc.exitCode, stdout: readFileSync(outFile), stderr: readFileSync(errFile) };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-function familiesFromNativeTable(source: string, start: string, stop: string): Record<string, number> {
-  const from = source.indexOf(start);
-  const table = source.slice(from, source.indexOf(stop, from));
+/**
+ * Parse a native family-count table. Anchors on the table DECLARATION (the header prose also
+ * names it), skips comment lines, and stops at the declaration's closing bracket — so a
+ * commented-out row disappears from the parsed table instead of matching inside a comment.
+ */
+function familiesFromNativeTable(source: string, declaration: string): Record<string, number> {
+  const lines = source.split('\n');
+  const declarationRe = new RegExp(`\\b(?:let|val)\\s+${declaration}\\b`);
+  const start = lines.findIndex((line) => declarationRe.test(line) && !/^\s*(\/\/|\*|\/\*)/.test(line));
+  if (start < 0) throw new Error(`native table declaration '${declaration}' not found`);
   const entries: Record<string, number> = {};
-  for (const match of table.matchAll(/"([a-z0-9_]+)"(?:\s*,\s*|\s+to\s+)(\d+)/g)) {
-    entries[match[1]] = Number(match[2]);
+  for (const line of lines.slice(start + 1)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith(']') || trimmed.startsWith(')')) break;
+    if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) continue;
+    for (const match of line.matchAll(/"([a-z0-9_]+)"(?:\s*,\s*|\s+to\s+)(\d+)/g)) {
+      entries[match[1]] = Number(match[2]);
+    }
   }
   return entries;
 }
@@ -191,13 +218,13 @@ describe('vendored core vectors (task 1943 M1)', () => {
   test('bothNativeKatsFamilyTablesMatchThisTest', () => {
     const swift = readFileSync(join(ROOT, SWIFT_KAT), 'utf8');
     const kotlin = readFileSync(join(ROOT, KOTLIN_KAT), 'utf8');
-    expect(familiesFromNativeTable(swift, 'expectedFamilyRowCounts', '\n    ]')).toEqual(EXPECTED_FAMILIES);
-    expect(familiesFromNativeTable(kotlin, 'EXPECTED_FAMILY_ROW_COUNTS', '\n        )')).toEqual(EXPECTED_FAMILIES);
+    expect(familiesFromNativeTable(swift, 'expectedFamilyRowCounts')).toEqual(EXPECTED_FAMILIES);
+    expect(familiesFromNativeTable(kotlin, 'EXPECTED_FAMILY_ROW_COUNTS')).toEqual(EXPECTED_FAMILIES);
   });
 
-  test.skipIf(!HAVE_CORE)('theVendoredBytesMatchCoreAtThePinnedRevision', () => {
+  test.skipIf(!HAVE_CORE_REV)('theVendoredBytesMatchCoreAtThePinnedRevision', () => {
     const proc = runCaptured(['git', '-C', CORE_DIR, 'show', `${CORE_REV}:test-vectors/vectors.json`]);
-    expect({ code: proc.code, output: proc.code === 0 ? '' : proc.output }).toEqual({ code: 0, output: '' });
-    expect(proc.output).toBe(readFileSync(join(ROOT, IOS_VECTORS), 'utf8'));
+    expect({ code: proc.code, stderr: proc.stderr.toString() }).toEqual({ code: 0, stderr: '' });
+    expect(proc.stdout.equals(readFileSync(join(ROOT, IOS_VECTORS)))).toBe(true);
   });
 });
