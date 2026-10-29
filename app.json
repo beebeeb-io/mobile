@@ -70,7 +70,7 @@
         "ITSAppUsesNonExemptEncryption": true,
         "ITSEncryptionExportComplianceCode": "64c25f1a-bd4f-4c0f-98f8-9c80844890d0"
       },
-      "buildNumber": "250"
+      "buildNumber": "251"
     },
     "android": {
       "adaptiveIcon": {
@@ -78,7 +78,7 @@
         "backgroundColor": "#1A1714"
       },
       "package": "io.beebeeb.app",
-      "versionCode": 10,
+      "versionCode": 11,
       "permissions": [
         "android.permission.USE_BIOMETRIC",
         "android.permission.USE_FINGERPRINT"
