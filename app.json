@@ -118,6 +118,7 @@
       "./modules/beebeeb-crypto/app.plugin.js",
       "./plugins/file-provider/withFileProvider.js",
       "./plugins/share-extension/withShareExtension.js",
+      "./plugins/native-tests/withNativeTestTargets.js",
       "./plugins/uniffi-bridge/withUniffiBridge.js",
       "./plugins/scene-lifecycle/withSceneLifecycle.js",
       "./plugins/withWidget",

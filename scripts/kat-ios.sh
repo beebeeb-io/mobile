@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # kat-ios.sh — local gate for task 1382 (audit item K2, mobile half).
 #
-# Runs the CoreVectorsKATTests XCTest target (ios/BeebeebNativeTests/CoreVectorsKATTests.swift),
-# which drives repos/core/test-vectors/vectors.json (vendored at
-# ios/BeebeebNativeTests/Vectors/core-vectors.v4.json) through the SAME production UniFFI Swift
+# Runs the CoreVectorsKATTests XCTest target (targets/native-tests/CoreVectorsKATTests.swift, wired
+# into the project by plugins/native-tests/withNativeTestTargets.js — task 1562), which drives
+# repos/core/test-vectors/vectors.json (vendored at
+# targets/native-tests/Vectors/core-vectors.v4.json) through the SAME production UniFFI Swift
 # bindings the app links, proving mobile decrypts/derives byte-identically to core for every
 # vector family the UniFFI surface exposes.
 #

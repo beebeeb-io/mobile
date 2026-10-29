@@ -5,7 +5,10 @@ import CryptoKit
 /// vectors (`test-vectors/vectors.json`, v11, 31 families) through the SAME production UniFFI Swift
 /// bindings the app links (`modules/beebeeb-crypto/ios/beebeeb_uniffi.swift`, compiled directly into
 /// this target's Sources build phase — see the `CoreVectorsKATTests` target in `Beebeeb.xcodeproj`,
-/// mirroring the host-less `ProvenanceHeadersTests` target added in task 1439). No app host, no
+/// mirroring the host-less `ProvenanceHeadersTests` target added in task 1439). This file lives at
+/// `targets/native-tests/` — OUTSIDE `ios/` — because `expo prebuild --clean` wipes the whole `ios/`
+/// tree before regenerating it; `plugins/native-tests/withNativeTestTargets.js` (task 1562) wires the
+/// target into the project on every prebuild, referencing this file directly. No app host, no
 /// Pods, no Expo — this is deliberately the smallest possible harness that still exercises the real
 /// linked `.a` (not a mock). Semantic reference for what each family proves:
 /// `repos/core/beebeeb-core/tests/cross_platform_vectors.rs`.
@@ -19,10 +22,10 @@ import CryptoKit
 /// `Vectors/core-vectors.v10.json` is a vendored COPY of `repos/core/test-vectors/vectors.json` — it
 /// has to be a copy (not a symlink out of the repo) so this xctest bundle can embed it as a Resource.
 /// To refresh after core bumps the vector file:
-/// 1. `cp ../../core/test-vectors/vectors.json ios/BeebeebNativeTests/Vectors/core-vectors.v10.json`
-///    (run from the mobile repo's `ios/` directory in the standard `<workspace>/repos/{core,mobile}`
-///    layout — NOT from an isolated `git worktree`, which has no sibling `repos/core` checkout).
-/// 2. `shasum -a 256 ios/BeebeebNativeTests/Vectors/core-vectors.v10.json` and paste the new hex into
+/// 1. `cp ../core/test-vectors/vectors.json targets/native-tests/Vectors/core-vectors.v10.json`
+///    (run from the mobile repo root in the standard `<workspace>/repos/{core,mobile}` layout — NOT
+///    from an isolated `git worktree`, which has no sibling `repos/core` checkout).
+/// 2. `shasum -a 256 targets/native-tests/Vectors/core-vectors.v10.json` and paste the new hex into
 ///    `expectedSha256Hex` below.
 /// 3. If core bumped `version`, update `expectedVersion` and `requiredVectorNames` here to match
 ///    `vector_file_version_check` in `cross_platform_vectors.rs`.
@@ -136,11 +139,11 @@ final class CoreVectorsKATTests: XCTestCase {
         return data
     }
 
-    /// `<repo>/ios/BeebeebNativeTests/CoreVectorsKATTests.swift` -> two levels up from `ios/` is
-    /// `../../core/test-vectors/vectors.json`, matching the standard `<workspace>/repos/{core,mobile}`
-    /// sibling layout. An isolated worktree may have an unrelated `../core` checkout; only the
-    /// documented `repos/` layout participates in this optional comparison. The SHA pin is enforced
-    /// in every layout.
+    /// `<repo>/targets/native-tests/CoreVectorsKATTests.swift` -> four levels up (this file,
+    /// `native-tests/`, `targets/`, repo root) lands on `repos/`, then `core/test-vectors/vectors.json`
+    /// — the standard `<workspace>/repos/{core,mobile}` sibling layout. An isolated worktree may have
+    /// an unrelated `../core` checkout; only the documented `repos/` layout participates in this
+    /// optional comparison. The SHA pin is enforced in every layout.
     private static func siblingCoreVectorsURL() -> URL? {
         let parent = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // BeebeebNativeTests/

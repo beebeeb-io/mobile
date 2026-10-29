@@ -26,7 +26,7 @@ eas build --platform ios --profile production --local --output ./build/beebeeb.i
 
 ## `expo prebuild` — ALWAYS run the vendored-file restore afterwards (task 1305)
 
-`expo prebuild` (with AND without `--clean`) deletes/overwrites files the config plugins do NOT reproduce: `ios/BeebeebCore.xcframework`, `ios/Beebeeb/beebeeb_uniffi.swift`, `ios/.xcode.env`, `ios/BeebeebWidget/BeebeebWidget.swift`, `PrivacyInfo.xcprivacy` — committed copies are the source of truth. **Treat it like `git clean`: destructive in this tree, never in a tree you did not allocate.** Every extension target is created by its config plugin (`plugins/lib/extension-target.js`) — never by hand in Xcode; plugin mods execute in REVERSE registration order; every Rust-linking target sets its own per-SDK `OTHER_LDFLAGS`; a `PBXBuildFile` belongs to exactly ONE build phase. `--clean` currently DESTROYS the `ProvenanceHeadersTests`/`CoreVectorsKATTests` native test targets (hand-added, no plugin yet) — restore by hand before committing. (details: H#task-1305)
+`expo prebuild` (with AND without `--clean`) deletes/overwrites files the config plugins do NOT reproduce: `ios/BeebeebCore.xcframework`, `ios/Beebeeb/beebeeb_uniffi.swift`, `ios/.xcode.env`, `ios/BeebeebWidget/BeebeebWidget.swift`, `PrivacyInfo.xcprivacy` — committed copies are the source of truth. **Treat it like `git clean`: destructive in this tree, never in a tree you did not allocate.** Every extension target is created by its config plugin (`plugins/lib/extension-target.js`) — never by hand in Xcode; plugin mods execute in REVERSE registration order; every Rust-linking target sets its own per-SDK `OTHER_LDFLAGS`; a `PBXBuildFile` belongs to exactly ONE build phase. `--clean` used to destroy the `ProvenanceHeadersTests`/`CoreVectorsKATTests` native test targets; they now live at `targets/native-tests/` and are plugin-owned (task 1562). (details: H#task-1305)
 
 ```sh
 bunx expo prebuild --platform ios --clean --no-install && scripts/restore-vendored-ios.sh
@@ -43,6 +43,19 @@ existing secret/coordination hook. Install explicitly with
 `bash scripts/install-prebuild-guard.sh` if lifecycle scripts are disabled.
 The guard checks the copy mod; a real clean prebuild plus the documented restore
 and an iOS Debug build remain required when changing the generator.
+
+### Native XCTest targets are plugin-owned (task 1562)
+
+`ProvenanceHeadersTests` and `CoreVectorsKATTests` now survive `expo prebuild --clean`. Both were
+hand-added straight into `project.pbxproj` (tasks 1382/1439) with no config plugin, so a clean
+prebuild silently dropped the old `ios/BeebeebNativeTests/` group and both targets — `scripts/kat-ios.sh`
+then failed outright ("scheme not found"). Canonical sources now live OUTSIDE `ios/` at
+`targets/native-tests/` (mirroring `targets/share-extension/`, `targets/file-provider/`);
+`plugins/native-tests/withNativeTestTargets.js` wires both host-less XCTest bundles on every
+prebuild via `plugins/lib/xctest-target.js` (no test host, no Pods, no entitlements, no Info.plist
+file, never embedded into the app). Verify with `scripts/check-prebuild-test-targets.sh` (clean
+prebuild + `restore-vendored-ios.sh`, then `xcodebuild -list` — never a pbxproj text grep). LOCAL
+gate only, same as `kat-ios.sh`. (details: H#task-1562)
 
 ## iOS 27 UIScene lifecycle (build-213 App Review crash, fixed in 214)
 
@@ -140,7 +153,14 @@ bun test            # WRONG: leaky shared registry, reports ~10 phantom failures
 
 ### Native crypto KAT — `scripts/kat-ios.sh` (task 1382) — LOCAL GATE, NOT CI
 
-Drives the vendored, sha256-pinned `repos/core/test-vectors/vectors.json` through the SAME production UniFFI bindings the app links; 11 of core's 12 vector families asserted (`envelope_serialization` = explicit `XCTSkip`, not a silent omission). Run `scripts/kat-ios.sh` by hand after touching `beebeeb_uniffi.swift`, `BeebeebCore.xcframework`, or the vectors file — CI runs `typecheck` only. Keep regens additive-only at the FFI level and symbol-diff the two `beebeeb_uniffiFFI.h` files before shipping (the 0426 12-symbol-drift lesson). (details: H#task-1382, H#task-1450)
+Drives the vendored, sha256-pinned `repos/core/test-vectors/vectors.json` (vendored at
+`targets/native-tests/Vectors/core-vectors.v10.json`, and compiled from
+`targets/native-tests/CoreVectorsKATTests.swift` — both outside `ios/`, task 1562) through the SAME
+production UniFFI bindings the app links; 11 of core's 12 vector families asserted
+(`envelope_serialization` = explicit `XCTSkip`, not a silent omission). Run `scripts/kat-ios.sh` by
+hand after touching `beebeeb_uniffi.swift`, `BeebeebCore.xcframework`, or the vectors file — CI runs
+`typecheck` only. Keep regens additive-only at the FFI level and symbol-diff the two
+`beebeeb_uniffiFFI.h` files before shipping (the 0426 12-symbol-drift lesson). (details: H#task-1382, H#task-1450)
 
 ## API
 
