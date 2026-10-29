@@ -1840,7 +1840,7 @@ PODS:
     - ReactNativeDependencies
     - SwiftUIIntrospect (~> 1.0)
     - Yoga
-  - react-native-menu (1.2.4):
+  - react-native-menu (2.0.0):
     - hermes-engine
     - RCTRequired
     - RCTTypeSafety
@@ -2986,7 +2986,7 @@ SPEC CHECKSUMS:
   ExpoLocalAuthentication: 96989637e567a10cdeabe61e5c6026d30c0dc53f
   ExpoLogBox: 80957303325cd4439137765c90a87d7f22aaf2ff
   ExpoMediaLibrary: 344f5b528a71f34794e9d7396e32589531df146e
-  ExpoModulesCore: 3873d4e4f0f1c421968751b5ca7db2f7810a1007
+  ExpoModulesCore: 6049a0c778ab7e6d1fe3c0f81eefccdd14b32785
   ExpoModulesJSI: 1529d4289b9a3647d8901a27b41f1af173598b45
   ExpoModulesWorklets: 57a11e6ae984c2680e7967b785ded96199caed8c
   ExpoNotifications: dd1288ca85d320ea163105e5efdf0a1cc05760f8
@@ -3045,7 +3045,7 @@ SPEC CHECKSUMS:
   react-native-blob-util: fee8f26813fcc4cb01008ba7f5b485b290d33bcc
   react-native-blurhash: 994932753df8d58ec605388c96df9e6a039bc60e
   react-native-bottom-tabs: 9bffa8adc0a08a3b278f824b3569d5ba74cea880
-  react-native-menu: 9393a56c538bdc1831f88a193766d9a52ba23281
+  react-native-menu: cef8fb263b5fbc4a748de65494fe768b7527c135
   react-native-netinfo: 2f906d5d9a639090ed1c079135d6485a95f749f1
   react-native-pdf: 2bc0989bc44ef7e5221c49c0f1bb464a2c27640b
   react-native-safe-area-context: 6b4966397ada0f7dd481e4486a2ef936834861a1
