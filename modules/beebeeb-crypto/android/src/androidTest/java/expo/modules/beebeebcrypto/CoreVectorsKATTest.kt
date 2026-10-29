@@ -56,15 +56,15 @@ import uniffi.beebeeb_uniffi.ChunkDecryptorHandle
  *    and compares this table with the TS one.
  *
  * ## Families decrypted here, and the ones only counted
- * All 31 families are required by name with their row count in [vectorsFileIntegrity]. 21 are
+ * All 31 families are required by name with their row count in [vectorsFileIntegrity]. 22 are
  * decrypted or derived through the binding: `file_key_derivation`, `chunk_encrypt_decrypt`,
  * `x25519_identity_keypair`, `x25519_share_key_exchange`, `recovery_check`,
  * `metadata_encrypt_decrypt`, `file_request_seal_open`, `chunk_v2_stream`,
  * `chunk_v2_single_frame`, `metadata_v2_name`, `metadata_v2_name_filekey`,
- * `metadata_v1_name_filekey`, `key_wrap_v1`, `folder_link_passphrase`,
+ * `metadata_v1_name_filekey`, `folder_key_id`, `key_wrap_v1`, `folder_link_passphrase`,
  * `folder_link_passphrase_nfd`, `folder_custody_v1`, `link_owner_key_v1`,
  * `link_owner_token_v1`, `folder_child_file_v1`, `folder_child_folder_v1` and
- * `owner_wrapped_file_key`. The other 10 are only counted:
+ * `owner_wrapped_file_key`. The other 9 are only counted:
  * - `master_key_from_password`, `recovery_phrase_roundtrip`: Argon2id (256 MiB / 4 iter) —
  *   deliberately excluded from the emulator smoke because of device runtime; add with
  *   generous timeouts when the suite is promoted to a full mirror of the iOS gate.
@@ -72,7 +72,7 @@ import uniffi.beebeeb_uniffi.ChunkDecryptorHandle
  * - `share_key_wrap`, `thumbnail_encrypt`: their decrypt primitives need the exact call mapping
  *   confirmed (AES-GCM key/nonce/ciphertext shapes differ from `decryptChunk` inputs); add with
  *   the full mirror.
- * - `folder_key_id`, `shared_folder_index_key`, `combine_folder_link_key`,
+ * - `shared_folder_index_key`, `combine_folder_link_key`,
  *   `owner_wrapped_folder_key`, `folder_wrapped_file_key`: no mobile reader uses them yet.
  */
 @RunWith(AndroidJUnit4::class)
@@ -232,10 +232,43 @@ class CoreVectorsKATTest {
             }
             val summary = decryptor.finish()
             assertEquals("$name: detected format", 2, summary.format.toInt())
+            val actualVersionId = decryptor.versionId()
+            assertNotNull("$name: version id is null after the frames", actualVersionId)
+            assertHexEquals("$name: version id after the frames", v.getString("version_id_hex"), actualVersionId!!)
             assertEquals("$name: finished chunk count", frames.length().toUInt(), summary.chunkCount)
             assertHexEquals("$name: streamed plaintext", v.getString("plaintext_hex"), streamed.toByteArray())
             println("[CoreVectorsKAT] $name: 1 row (streamed + per-frame open)")
         }
+    }
+
+    /**
+     * The two negatives the iOS KAT has. A V2 stream that stops before its authenticated last
+     * frame must refuse promotion at `finish()`, and a legacy V1 frame replayed under the V2
+     * pin must be refused at `pushFrame()` — the pin is authenticated, not advisory.
+     */
+    @Test
+    fun truncatedV2StreamRejectsMissingLastFrame() {
+        val v = vector(loadRoot(), "chunk_v2_stream")
+        val key = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
+        val decryptor = ChunkDecryptorHandle.forPushWithFileKeyHandle(key, v.getString("file_id"), 2u)
+        val frames = v.getJSONArray("frames")
+        assertEquals("chunk_v2_stream: frame count", 3, frames.length())
+        for (position in 0 until 2) {
+            val frame = frames.getJSONObject(position)
+            val opened = decryptor.pushFrame(frame.getString("frame_hex").hexToBytes())
+            assertEquals("chunk_v2_stream: opened frame size", 32, opened.data.size)
+        }
+        assertThrows(Exception::class.java) { decryptor.finish() }
+    }
+
+    @Test
+    fun v1FrameIsRefusedUnderTheV2Pin() {
+        val v = vector(loadRoot(), "chunk_v2_single_frame")
+        val key = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
+        val legacy = key.encryptChunk("replayed v1".toByteArray())
+        val wire = legacy.nonce + legacy.ciphertext
+        val decryptor = ChunkDecryptorHandle.forPushWithFileKeyHandle(key, v.getString("file_id"), 2u)
+        assertThrows(Exception::class.java) { decryptor.pushFrame(wire) }
     }
 
     /**
@@ -421,6 +454,14 @@ class CoreVectorsKATTest {
         val expected = FileKeyHandle.fromKeyBytes(v.getString("inner_key_hex").hexToBytes())
         assertTrue(opened.keyId().contentEquals(expected.keyId()))
         println("[CoreVectorsKAT] key_wrap_v1: 1 row")
+    }
+
+    @Test
+    fun folderKeyId() {
+        val v = vector(loadRoot(), "folder_key_id")
+        val key = FileKeyHandle.fromKeyBytes(v.getString("folder_key_hex").hexToBytes())
+        assertHexEquals("folder_key_id: key id mismatch", v.getString("expected_key_id_hex"), key.keyId())
+        println("[CoreVectorsKAT] folder_key_id: 1 row")
     }
 
     @Test

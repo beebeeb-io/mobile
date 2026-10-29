@@ -157,8 +157,8 @@ Drives the vendored, sha256-pinned `repos/core/test-vectors/vectors.json` (vendo
 `targets/native-tests/Vectors/core-vectors.json`, and compiled from
 `targets/native-tests/CoreVectorsKATTests.swift` — both outside `ios/`, task 1562) through the SAME
 production UniFFI bindings the app links; all 31 families are required by name with their row
-count, and 25 of them are decrypted or derived through the binding. The other 6 are only counted:
-`envelope_serialization` (explicit `XCTSkip` — no UniFFI export) plus the five folder/owner-wrap
+count, and 26 of them are decrypted or derived through the binding. The other 5 are only counted:
+`envelope_serialization` (explicit `XCTSkip` — no UniFFI export) plus the four folder/owner-wrap
 families no mobile reader uses yet. Run `scripts/kat-ios.sh` by
 hand after touching `beebeeb_uniffi.swift`, `BeebeebCore.xcframework`, or the vectors file — CI runs
 `typecheck` only. Keep regens additive-only at the FFI level and symbol-diff the two

@@ -20,17 +20,17 @@ import CryptoKit
 ///
 /// ## What is decrypted and what is only counted
 /// All 31 families are required by name with their row count, in
-/// `testVectorFileVersionAndEveryFamilyRowCount`. 25 of them are then decrypted or derived through
+/// `testVectorFileVersionAndEveryFamilyRowCount`. 26 of them are then decrypted or derived through
 /// the binding: `master_key_from_password`, `file_key_derivation`, `chunk_encrypt_decrypt`,
 /// `x25519_identity_keypair`, `x25519_share_key_exchange`, `recovery_check`,
 /// `recovery_phrase_roundtrip`, `metadata_encrypt_decrypt`, `file_request_seal_open`,
 /// `share_key_wrap`, `thumbnail_encrypt`, `chunk_v2_stream`, `chunk_v2_single_frame`,
-/// `metadata_v2_name`, `metadata_v2_name_filekey`, `metadata_v1_name_filekey`, `key_wrap_v1`,
-/// `folder_link_passphrase`, `folder_link_passphrase_nfd`, `folder_custody_v1`,
+/// `metadata_v2_name`, `metadata_v2_name_filekey`, `metadata_v1_name_filekey`, `folder_key_id`,
+/// `key_wrap_v1`, `folder_link_passphrase`, `folder_link_passphrase_nfd`, `folder_custody_v1`,
 /// `link_owner_key_v1`, `link_owner_token_v1`, `folder_child_file_v1`, `folder_child_folder_v1`
 /// and `owner_wrapped_file_key`.
-/// The other 6 are only counted: `envelope_serialization` (explicit `XCTSkip` — no UniFFI
-/// export), and `folder_key_id`, `shared_folder_index_key`, `combine_folder_link_key`,
+/// The other 5 are only counted: `envelope_serialization` (explicit `XCTSkip` — no UniFFI
+/// export), and `shared_folder_index_key`, `combine_folder_link_key`,
 /// `owner_wrapped_folder_key`, `folder_wrapped_file_key` (no mobile reader uses them yet).
 ///
 /// ## Refreshing the vendored vector file
@@ -251,7 +251,8 @@ final class CoreVectorsKATTests: XCTestCase {
             let fileKey = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
             let frames = try XCTUnwrap(v["frames"] as? [[String: Any]], "\(name): frames")
             let chunkCount = try XCTUnwrap(v["chunk_count"] as? Int)
-            XCTAssertEqual(frames.count, chunkCount, "\(name): frame count")
+            var allPassed = true
+            expectEqual(frames.count, chunkCount, "\(name): frame count", allPassed: &allPassed)
 
             let decryptor = try ChunkDecryptorHandle.forPush(
                 masterKey: master, fileId: fileId, expectedChunkFormat: 2)
@@ -260,22 +261,24 @@ final class CoreVectorsKATTests: XCTestCase {
                 let frameData = try Self.hex(frame, "frame_hex")
                 let index = try XCTUnwrap(frame["index"] as? Int)
                 let isLast = try XCTUnwrap(frame["is_last"] as? Bool)
-                XCTAssertEqual(index, position, "\(name): frames must be ordered by index")
+                expectEqual(index, position, "\(name): frames must be ordered by index", allPassed: &allPassed)
                 let opened = try decryptor.pushFrame(frame: frameData)
-                XCTAssertEqual(opened.index, UInt32(index), "\(name): pushed frame index")
+                expectEqual(opened.index, UInt32(index), "\(name): pushed frame index", allPassed: &allPassed)
                 streamed.append(opened.data)
                 let randomAccess = try fileKey.decryptChunkFrame(
                     fileId: fileId, versionId: versionId, index: UInt32(index), isLast: isLast,
                     format: 2, frame: frameData)
                 let expectedFrame = try Self.hex(frame, "plaintext_hex")
-                XCTAssertEqual(randomAccess, expectedFrame, "\(name): frame \(index) random access")
+                expectEqual(randomAccess, expectedFrame, "\(name): frame \(index) random access", allPassed: &allPassed)
             }
+            expectEqual(try XCTUnwrap(decryptor.versionId()), versionId,
+                        "\(name): version id after the frames", allPassed: &allPassed)
             let summary = try decryptor.finish()
-            XCTAssertEqual(summary.format, 2, "\(name): detected format")
-            XCTAssertEqual(summary.chunkCount, UInt32(frames.count), "\(name): finished chunk count")
+            expectEqual(summary.format, 2, "\(name): detected format", allPassed: &allPassed)
+            expectEqual(summary.chunkCount, UInt32(frames.count), "\(name): finished chunk count", allPassed: &allPassed)
             let expectedStream = try Self.hex(v, "plaintext_hex")
-            XCTAssertEqual(streamed, expectedStream, "\(name): streamed plaintext")
-            Self.logPass("\(name) (streamed + per-frame open)")
+            expectEqual(streamed, expectedStream, "\(name): streamed plaintext", allPassed: &allPassed)
+            if allPassed { Self.logPass("\(name) (streamed + per-frame open)") }
         }
     }
 
@@ -638,6 +641,17 @@ final class CoreVectorsKATTests: XCTestCase {
         let expected = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "inner_key_hex"))
         XCTAssertEqual(try opened.keyId(), try expected.keyId())
         print("[CoreVectorsKAT] key_wrap_v1: 1 row")
+    }
+
+    // v11: folder_key_id is the HKDF-SHA256 id a server compares folder keys by; assert the
+    // handle's own `keyId()` against the vector instead of only counting the family.
+    func testFolderKeyId() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "folder_key_id")
+        let key = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "folder_key_hex"))
+        let expected = try Self.hex(v, "expected_key_id_hex")
+        var allPassed = true
+        expectEqual(try key.keyId(), expected, "folder_key_id: key id does not match vector", allPassed: &allPassed)
+        if allPassed { Self.logPass("folder_key_id") }
     }
 
     func testFolderLinkPassphrase() throws {
