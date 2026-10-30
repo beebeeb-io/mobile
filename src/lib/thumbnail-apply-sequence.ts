@@ -13,13 +13,15 @@
  * the test drives the epoch advancing at each await with fakes.
  */
 
+import type { AccountEpoch } from './account-epoch';
+
 export type ThumbnailApplySequenceDeps = {
   /** The epoch captured by the screen before its first await. */
-  capturedEpoch: number;
+  capturedEpoch: AccountEpoch;
   getRemoteToLocalMap: () => Promise<Map<string, string>>;
   seedLocalIdentifierMap: (map: Record<string, string>) => Promise<void>;
-  enqueue: (fileIds: string[], qualityPreset: string) => Promise<void>;
-  isCurrentEpoch: (epoch: number) => boolean;
+  enqueue: (fileIds: string[], qualityPreset: string) => Promise<unknown>;
+  isCurrentEpoch: (epoch: AccountEpoch) => boolean;
 };
 
 export type ThumbnailApplyOutcome = 'applied' | 'epoch-advanced';
