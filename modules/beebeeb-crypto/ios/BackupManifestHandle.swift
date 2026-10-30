@@ -122,7 +122,59 @@ final class BackupManifestHandle {
   static let busyTimeoutMs: Int32 = 2_000
 
   let path: String
-  private(set) var db: OpaquePointer?
+  /// LD-0002 rule 2(b): `sqlite3_interrupt` must be called from the
+  /// background-time expiry handler while this owner queue is inside a
+  /// statement, so the pointer is published under its own lock. Every read
+  /// and write of `db` itself remains `dbQueue`-only.
+  private let interruptLock = NSLock()
+  private var interruptibleConnection: OpaquePointer?
+  private var _db: OpaquePointer?
+  private(set) var db: OpaquePointer? {
+    get { _db }
+    set {
+      _db = newValue
+      interruptLock.lock()
+      interruptibleConnection = newValue
+      interruptLock.unlock()
+      BackupManifestHandle.publishLiveConnection(newValue)
+    }
+  }
+
+  /// LD-0002: process-wide target for `sqlite3_interrupt` (there is one native
+  /// manifest connection in the app). The background-time expiry handler calls
+  /// `interruptLiveStatement()` without touching any owner-only state; the
+  /// pointer itself is published under this lock.
+  private static let liveConnectionLock = NSLock()
+  private static var liveConnection: OpaquePointer?
+
+  private static func publishLiveConnection(_ connection: OpaquePointer?) {
+    liveConnectionLock.lock()
+    liveConnection = connection
+    liveConnectionLock.unlock()
+  }
+
+  /// Abort the statement executing on the live native manifest connection.
+  /// Safe from any thread; a no-op when nothing is open.
+  static func interruptLiveStatement() {
+    liveConnectionLock.lock()
+    let connection = liveConnection
+    liveConnectionLock.unlock()
+    if let connection { exsqlite3_interrupt(connection) }
+  }
+  /// LD-0002 rule 2(b): abort the statement currently executing on this
+  /// connection (if any). Safe from any thread — the pointer comes from the
+  /// lock above, never from the owner-only `db` accesses. `SQLITE_INTERRUPT`
+  /// rolls the in-flight transaction back; the engine's batch then ends with
+  /// its rows untouched.
+  func interruptInFlightStatement() {
+    interruptLock.lock()
+    let connection = interruptibleConnection
+    interruptLock.unlock()
+    if let connection {
+      exsqlite3_interrupt(connection)
+    }
+  }
+
   /// True from a failed `resetForSignOut` until `finishAfterFailedReset`.
   private(set) var awaitingPurgeFinish = false
   /// How many times a handle was opened (diagnostics and tests).
