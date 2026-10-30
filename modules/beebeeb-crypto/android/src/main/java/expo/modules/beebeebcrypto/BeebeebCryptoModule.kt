@@ -914,6 +914,15 @@ class BeebeebCryptoModule : Module() {
       }
     }
 
+    // SF-0002 M2a run 3: one owned name's exact convention through the owner
+    // resolver (the batch path reports `string_or_binary` for a table hit).
+    AsyncFunction("resolveOwnerNameConvention") { handleId: Int, fileId: String, nameEncrypted: String ->
+      try {
+        val (_, convention) = SharedKeyOps.resolveOwnerName(handles.get(handleId), fileId, nameEncrypted)
+        SharedKeyOps.conventionCode(convention)
+      } catch (error: Exception) { null }
+    }
+
     // SF-0002 M2a: one bounded GET on chunk 0 decides an owned content version's
     // id convention. Rules and C live in OwnerContentClassifier; an over-cap
     // chunk 0 is `string_or_binary` without reading the body.

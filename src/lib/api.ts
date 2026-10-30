@@ -1192,6 +1192,12 @@ export interface FileEntry {
   created_at: string;
   updated_at: string;
   version_number?: number;
+  /**
+   * SF-0002 M2a: the listing's current object version id. The content
+   * convention is keyed by it, so a move or rename (which does not change it)
+   * keeps the classification while a new version invalidates it.
+   */
+  download_version?: string | number | null;
   storage_pool_id?: string | null;
   /** Task 2050: where THIS file is stored, by COUNTRY (`{ country: "Germany",
    * country_code: "DE" }`). Present on file entries (not folders). A server

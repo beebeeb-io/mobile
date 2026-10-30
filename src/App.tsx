@@ -336,6 +336,11 @@ export type RootStackParamList = {
     fileName: string;
     mimeType?: string;
     sizeBytes?: number;
+    /** SF-0002 M2a run 3: resolve the exact name convention before sharing. */
+    nameEncrypted?: string;
+    /** The listing's current object version id, for the content classification. */
+    objectVersionId?: string;
+    createdAt?: string;
     /**
      * Task 2238 — the target is a FOLDER: the sheet mints a snapshot bundle of
      * every file below it (a `file` share on the folder row cannot download).

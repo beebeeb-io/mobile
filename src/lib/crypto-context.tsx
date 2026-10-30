@@ -36,15 +36,18 @@ import {
 } from '../../modules/beebeeb-crypto'
 import {
   classifyOwnerContent as classifyOwnerContentNative,
+  resolveOwnerNameConvention as resolveOwnerNameConventionNative,
   type BatchNameItem,
   type BatchNameResult,
   type EncryptedData,
+  type OwnerNameConvention,
   type RequestKeypairResult,
 } from '../../modules/beebeeb-crypto'
 import {
   fileWriteState as derivedFileWriteState,
   noteObjectVersion,
   recordContentConvention,
+  recordNameConvention,
   type ContentConvention,
   type FileWriteState,
 } from './sf-0002-write-state'
@@ -645,6 +648,11 @@ interface CryptoContextValue {
    * this yet; run 3 wires it.
    */
   fileWriteState: (fileId: string) => FileWriteState
+  /**
+   * SF-0002 M2a run 3: one owned name's exact convention (the batch path only
+   * proves `string_or_binary`). `null` when it cannot be resolved.
+   */
+  resolveOwnerNameConvention: (fileId: string, nameEncrypted: string) => Promise<OwnerNameConvention | null>
   /**
    * Derive and return the raw 32-byte file key for a given fileId.
    * Used for ZK share creation where we need to wrap the key client-side.
@@ -1388,6 +1396,25 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
 
   const fileWriteStateFn = useCallback((fileId: string): FileWriteState => derivedFileWriteState(fileId), [])
 
+  /**
+   * SF-0002 M2a run 3: one owned name's exact convention, for share gating.
+   * Records the name half. `null` = the name could not be resolved (treated as
+   * a check failure by the callers, never as writable/shareable).
+   */
+  const resolveOwnerNameConventionFn = useCallback(
+    async (fileId: string, nameEncrypted: string): Promise<OwnerNameConvention | null> => {
+      try {
+        const convention = await resolveOwnerNameConventionNative(requireHandleId(), fileId, nameEncrypted)
+        if (convention) recordNameConvention(fileId, convention)
+        return convention
+      } catch {
+        return null
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
   const getFileKeyBytesFn = useCallback(
     async (fileId: string): Promise<Uint8Array> => {
       // The handle is created at unlock time on every platform (including
@@ -1651,6 +1678,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
         decryptNames: decryptNamesFn,
         classifyOwnerContent: classifyOwnerContentFn,
         fileWriteState: fileWriteStateFn,
+        resolveOwnerNameConvention: resolveOwnerNameConventionFn,
         getFileKeyBytes: getFileKeyBytesFn,
         getMasterKeyHandleId: getMasterKeyHandleIdFn,
         deriveX25519PrivateFromHandle: deriveX25519PrivateFromHandleFn,

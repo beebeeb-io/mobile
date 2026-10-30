@@ -3,6 +3,7 @@ import { ancestorsOf, isForeignSharedFile, treeNode } from './shared-folder-tree
 import { getSharedKeyResolver, sharedFileKeyIsLoaded, sharedMasterHandleId } from './shared-folder-keys';
 import { gatedPlaintextWrite } from './plaintext-gate';
 import { custodyMemory, noteUpgradeRequired, type CustodyMemory } from './shared-folder-custody';
+import { cachedNameConvention } from './sf-0002-write-state';
 
 const ROOTS_TTL = 5 * 60_000;
 const RETRY_TTL = 7 * 86_400_000;
@@ -217,7 +218,11 @@ async function defaultPublisher(): Promise<Publisher | null> {
       custody: custodyMemory,
       wrap: (folder, ids) => native.sharedWrapChildKeys(sharedMasterHandleId(), folder, ids),
       publish: (root, keys) => api.publishSharedFolderKeys(root, keys),
-      ancestors: ancestorsOf, eligible: id => isPublishableOwnedFile(id, epoch.accountId),
+      ancestors: ancestorsOf,
+      // SF-0002 M2a run 3: an UpperRepair/Binary name must not be published
+      // into a shared folder as if it were canonical.
+      eligible: id => isPublishableOwnedFile(id, epoch.accountId)
+        && !['binary', 'upper_repair'].includes(cachedNameConvention(id) ?? ''),
       read: async () => { await diskWork; if (!valid()) return null; const info = await fs.getInfoAsync(path); return info.exists && valid() ? fs.readAsStringAsync(path) : null; },
       write: value => {
         diskWork = diskWork.catch(() => {}).then(async () => {

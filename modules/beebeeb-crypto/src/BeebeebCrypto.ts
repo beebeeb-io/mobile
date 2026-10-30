@@ -779,6 +779,27 @@ export async function classifyOwnerContent(
 }
 
 /**
+ * SF-0002 M2a run 3: resolve ONE owned name's exact convention through the
+ * owner resolver. The batch name path reports `string_or_binary` for a table
+ * hit (it accepts both id conventions); share gating needs the exact
+ * `string`/`binary`/`upper_repair` answer, so this read is separate. The file
+ * key never crosses the bridge; `null` means the name could not be resolved.
+ */
+export async function resolveOwnerNameConvention(
+  handleId: number,
+  fileId: string,
+  nameEncrypted: string,
+): Promise<OwnerNameConvention | null> {
+  const resolve = (BeebeebCryptoModule as unknown as {
+    resolveOwnerNameConvention?: (handleId: number, fileId: string, nameEncrypted: string) => Promise<unknown>
+  }).resolveOwnerNameConvention
+  if (typeof resolve !== 'function') return null
+  const value = await resolve(handleId, fileId, nameEncrypted)
+  return value === 'string' || value === 'binary' || value === 'upper_repair'
+    ? (value as OwnerNameConvention) : null
+}
+
+/**
  * Derive the X25519 secret scalar from the master key handle. Used for
  * key-agreement during share creation. Returns raw bytes because the
  * caller needs them for the X25519 shared secret computation.

@@ -3059,6 +3059,16 @@ public class BeebeebCryptoModule: Module {
       }
     }
 
+    // SF-0002 M2a run 3: resolve ONE owned name's exact convention through the
+    // owner resolver. The batch path reports `string_or_binary` for a table hit;
+    // share gating needs the exact convention. No key material crosses the bridge.
+    AsyncFunction("resolveOwnerNameConvention") { [self] (handleId: Int, fileId: String, nameEncrypted: String) throws -> String? in
+      let master = try self.getHandle(handleId)
+      guard let resolved = try? SharedKeyOps.resolveOwnerName(
+        master: master, fileId: fileId, nameEncrypted: nameEncrypted) else { return nil }
+      return SharedKeyOps.conventionCode(resolved.convention)
+    }
+
     // SF-0002 M2a: one bounded GET on chunk 0 decides an owned content version's
     // id convention. Rules and C live in OwnerContentClassifier; an over-cap
     // chunk 0 is `string_or_binary` without reading the body.

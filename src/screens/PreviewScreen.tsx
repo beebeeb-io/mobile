@@ -51,6 +51,7 @@ import { bandColors, type Stop } from '../components/glass/gradient';
 import { useToast } from '../lib/toast-context';
 import { getToken, friendlyError, trustLocation, trashFiles, getFile, getFileCurrentVersion, listAllFiles, moveFile, type UploadProgress } from '../lib/api';
 import { useCrypto } from '../lib/crypto-context';
+import { editorSavePlan } from '../lib/sf-0002-readonly-actions';
 import { generateFileId } from '../lib/encrypted-upload';
 import { encryptedMetadataToJson, encryptedMetadataPayloadToBytes, fileMetadataPlaintext } from '../lib/encrypted-metadata';
 import { collectAllFolders, movePickerFolderFallbackName, type MovePickerFolderNode } from '../lib/move-picker-folders';
@@ -2360,6 +2361,10 @@ export default function PreviewScreen() {
   const [editMode, setEditMode] = useState(false);
   const [editText, setEditText] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // SF-0002 M2a run 3: an UpperRepair CONTENT version still edits, but its Save
+  // writes a fresh copy (the button says so). Classified once when the editor
+  // opens; an unknown classification is handled at save time (retry).
+  const [editSaveCopyOnly, setEditSaveCopyOnly] = useState(false);
   const [savedVersionNumber, setSavedVersionNumber] = useState<number | null>(null);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [fileMeta, setFileMeta] = useState<{ nameEncrypted: string; parentId: string | null; versionNumber: number } | null>(null);
@@ -2455,7 +2460,7 @@ export default function PreviewScreen() {
     }).catch(() => {});
   }, []);
 
-  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey, encryptChunk, encryptMetadata, decryptMetadata } = useCrypto();
+  const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId, getRequestContentKey, encryptChunk, encryptMetadata, decryptMetadata, classifyOwnerContent, resolveOwnerNameConvention } = useCrypto();
 
   // Resolve the key provider + master-key handle for decryptToTempFile. For a
   // file-request upload (0643) we hand it the request content key C and a null
@@ -2768,8 +2773,21 @@ export default function PreviewScreen() {
     setEditText(textContent);
     setEditMode(true);
     setOptionsVisible(false);
+    setEditSaveCopyOnly(false);
     if (!fileMeta) void loadFileMeta();
-  }, [canEditText, textContent, fileMeta, loadFileMeta]);
+    // SF-0002 M2a run 3: one classification decides the Save label. A failure
+    // stays `unknown` and is only surfaced when the user saves.
+    void (async () => {
+      try {
+        const meta = fileMeta ?? await loadFileMeta();
+        if (!meta) return;
+        const content = await classifyOwnerContent(currentFileId, String(meta.versionNumber), currentCreatedAt ?? '');
+        setEditSaveCopyOnly(content === 'upper_repair');
+      } catch {
+        setEditSaveCopyOnly(false);
+      }
+    })();
+  }, [canEditText, textContent, fileMeta, loadFileMeta, classifyOwnerContent, currentFileId, currentCreatedAt]);
 
   // Task 1587 — a file just created from the Files "+" menu opens straight in
   // the editor. Fires once, after the (empty) text has loaded and the normal
@@ -2945,12 +2963,45 @@ export default function PreviewScreen() {
           showSaveFailed(fileMetaError ?? 'Could not read the file before saving.');
           return;
         }
+        // SF-0002 M2a run 3: classify before writing. UpperRepair content saves
+        // a fresh copy; an unknown classification uploads nothing and offers
+        // the network copy's retry; an UpperRepair NAME cannot be edited.
+        const name = await resolveOwnerNameConvention(currentFileId, meta.nameEncrypted);
+        const content = await classifyOwnerContent(currentFileId, String(meta.versionNumber), currentCreatedAt ?? '');
+        const plan = editorSavePlan(name, content);
+        if (plan.action === 'retry') {
+          showSaveFailed(plan.copy);
+          return;
+        }
+        if (plan.action === 'save-copy') {
+          const newFileId = await generateFileId();
+          const keptName = buildKeepBothName(previewFileName, deviceNoun());
+          const metadataPlain = fileMetadataPlaintext(keptName, currentMimeType ?? null, null);
+          const encName = await encryptMetadata(newFileId, metadataPlain);
+          const nameEncrypted = encryptedMetadataToJson(encName);
+          try {
+            await saveTextFileVersion({
+              fileId: newFileId,
+              nameEncrypted,
+              parentId: meta.parentId ?? undefined,
+              text,
+              encryptChunkFn: encryptChunk,
+            });
+            setEditMode(false);
+            setEditText(null);
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+            showToast({ type: 'success', message: `Saved as "${keptName}"` });
+          } catch (err) {
+            showSaveFailed(friendlyError(err));
+          }
+          return;
+        }
         await saveAsNewVersion({ text, meta });
       } finally {
         setSaving(false);
       }
     });
-  }, [editText, fileMeta, loadFileMeta, fileMetaError, saveAsNewVersion, showSaveFailed]);
+  }, [editText, fileMeta, loadFileMeta, fileMetaError, saveAsNewVersion, showSaveFailed, resolveOwnerNameConvention, classifyOwnerContent, currentFileId, currentCreatedAt, previewFileName, currentMimeType, encryptMetadata, encryptChunk, showToast]);
 
   const handleConflictChoice = useCallback(async (choice: 'keep-both' | 'new-version' | 'discard' | 'cancel') => {
     setConflict(null);
@@ -4234,8 +4285,19 @@ export default function PreviewScreen() {
 
   const handleShare = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    navigation.navigate('ShareSheet', { fileId: currentFileId, fileName: previewFileName, mimeType: currentMimeType, sizeBytes: shownSizeBytes ?? undefined });
-  }, [navigation, currentFileId, previewFileName, currentMimeType, shownSizeBytes]);
+    // SF-0002 M2a run 3: the sheet needs the row's encrypted name to resolve
+    // its exact convention before minting a link.
+    const meta = fileMeta ?? await loadFileMeta();
+    navigation.navigate('ShareSheet', {
+      fileId: currentFileId,
+      fileName: previewFileName,
+      mimeType: currentMimeType,
+      sizeBytes: shownSizeBytes ?? undefined,
+      nameEncrypted: meta?.nameEncrypted,
+      objectVersionId: meta ? String(meta.versionNumber) : '',
+      createdAt: currentCreatedAt,
+    });
+  }, [navigation, currentFileId, previewFileName, currentMimeType, shownSizeBytes, fileMeta, loadFileMeta, currentCreatedAt]);
 
   const handleCopyName = useCallback(async () => {
     await Clipboard.setStringAsync(previewFileName);
@@ -5179,13 +5241,13 @@ export default function PreviewScreen() {
             disabled={!isDirty || saving}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             testID="preview-edit-save"
-            accessibilityLabel="Save"
+            accessibilityLabel={editSaveCopyOnly ? 'Save as a copy' : 'Save'}
           >
             <View style={[styles.editSavePill, (!isDirty || saving) && styles.editSavePillDisabled]}>
               {saving ? (
                 <ActivityIndicator size="small" color="#1A1405" />
               ) : (
-                <Text style={styles.editSavePillText}>Save</Text>
+                <Text style={styles.editSavePillText}>{editSaveCopyOnly ? 'Save as a copy' : 'Save'}</Text>
               )}
             </View>
           </TouchableOpacity>

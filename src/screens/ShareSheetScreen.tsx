@@ -22,6 +22,8 @@ import { useKeyboardLayoutAnimation } from '../lib/useKeyboardLayoutAnimation';
 import { ApiError, approveInvite, createBundleShare, createInvite, createShare, friendlyError, getWebAppUrl, listAllFiles, resolveSharingContact } from '../lib/api';
 import type { CreateBundleShareItem, FileEntry, Share as ShareLink } from '../lib/api';
 import { FOLDER_BUNDLE_MAX_ITEMS, collectFolderBundle } from '../lib/folder-bundle';
+import { folderSharePlan, singleFileSharePlan, type FolderSharePlan } from '../lib/sf-0002-readonly-actions';
+import type { OwnerNameConvention } from '../../modules/beebeeb-crypto';
 import type { FolderBundleScan } from '../lib/folder-bundle';
 import { useCrypto } from '../lib/crypto-context';
 import { formatBytes as formatSize } from '../lib/format';
@@ -175,8 +177,8 @@ export default function ShareSheetScreen() {
   const navigation = useNavigation();
   const route = useRoute<ShareRoute>();
   const { colors: c, resolved } = useTheme();
-  const { fileId, fileName, mimeType, sizeBytes, isFolder } = route.params;
-  const { getFileKeyBytes, decryptNames, deriveX25519PrivateFromHandle, getMasterKeyHandleId, isUnlocked } = useCrypto();
+  const { fileId, fileName, mimeType, sizeBytes, isFolder, nameEncrypted, objectVersionId, createdAt } = route.params;
+  const { getFileKeyBytes, decryptNames, deriveX25519PrivateFromHandle, getMasterKeyHandleId, isUnlocked, classifyOwnerContent, resolveOwnerNameConvention } = useCrypto();
   useKeyboardLayoutAnimation();
   const sharing = useSharedFoldersFlag();
   const [folderSharingUnavailable, setFolderSharingUnavailable] = useState(false);
@@ -206,6 +208,11 @@ export default function ShareSheetScreen() {
   const [folderScanError, setFolderScanError] = useState<string | null>(null);
   // Bumped by the note's Retry control; re-runs the folder walk.
   const [folderScanAttempt, setFolderScanAttempt] = useState(0);
+  // SF-0002 M2a run 3: the exact name convention per scanned file (the batch
+  // name path only proves `string_or_binary`). Null = unresolved.
+  const [folderConventions, setFolderConventions] = useState<Record<string, OwnerNameConvention | null>>({});
+  // A failed owner check keeps a Retry next to the network copy.
+  const [shareRetry, setShareRetry] = useState(false);
   const { showToast } = useToast();
 
   const badge = makeFileTypeBadge(mimeType, c);
@@ -288,6 +295,13 @@ export default function ShareSheetScreen() {
   // can state the real snapshot count and refuse an empty / over-cap folder
   // before it mints anything. Mirrors web's share dialog.
   const folderFiles = isFolder ? folderScan?.files ?? [] : [];
+  /** SF-0002 M2a run 3: which descendants may travel in a folder share. */
+  const folderPlan: FolderSharePlan | null = useMemo(
+    () => (isFolder && folderScan
+      ? folderSharePlan(folderScan.files.map((f) => ({ fileId: f.fileId, name: folderConventions[f.fileId] ?? null })))
+      : null),
+    [isFolder, folderScan, folderConventions],
+  );
   /** Minting is refused while the folder is unread, empty or over the cap. */
   const folderBlocked = !!isFolder && (folderScan === null || folderFiles.length === 0 || folderScan.overCap);
 
@@ -313,7 +327,14 @@ export default function ShareSheetScreen() {
             },
           },
         );
-        if (!cancelled) setFolderScan(scan);
+        const conventions: Record<string, OwnerNameConvention | null> = {};
+        await Promise.all(scan.files.map(async (f) => {
+          conventions[f.fileId] = await resolveOwnerNameConvention(f.fileId, f.nameEncrypted);
+        }));
+        if (!cancelled) {
+          setFolderConventions(conventions);
+          setFolderScan(scan);
+        }
       } catch (e) {
         if (!cancelled) setFolderScanError(friendlyError(e));
       }
@@ -321,18 +342,39 @@ export default function ShareSheetScreen() {
     return () => {
       cancelled = true;
     };
-  }, [isFolder, isUnlocked, fileId, decryptNames, folderScanAttempt, sharing.loading, folderSharingEnabled, folderSharingUnavailable]);
+  }, [isFolder, isUnlocked, fileId, decryptNames, resolveOwnerNameConvention, folderScanAttempt, sharing.loading, folderSharingEnabled, folderSharingUnavailable]);
 
   const handleCreate = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setCreating(true);
     setError(null);
     setInviteSentTo(null);
+    setShareRetry(false);
 
     try {
       if (!isUnlocked) {
         setError('Vault is locked. Unlock it to create a share.');
         return;
+      }
+
+      // SF-0002 M2a run 3: a single-file share needs an exactly String name and
+      // content that is neither UpperRepair nor unknown. A folder share gates
+      // its descendants below instead.
+      if (!isFolder) {
+        const name = nameEncrypted
+          ? await resolveOwnerNameConvention(fileId, nameEncrypted)
+          : null;
+        const content = await classifyOwnerContent(
+          fileId,
+          objectVersionId ?? '',
+          createdAt ?? new Date().toISOString(),
+        );
+        const plan = singleFileSharePlan(name, content);
+        if (!plan.allowed) {
+          setError(plan.copy);
+          setShareRetry(plan.retry);
+          return;
+        }
       }
 
       // ── Folder snapshot bundle (task 2238) ────────────────────────────────
@@ -356,12 +398,18 @@ export default function ShareSheetScreen() {
           return;
         }
 
+        const included = new Set(folderPlan?.included ?? scan.files.map((f) => f.fileId));
+        const shareFiles = scan.files.filter((f) => included.has(f.fileId));
+        if (shareFiles.length === 0) {
+          setError("Nothing to share yet");
+          return;
+        }
         const clientKey = await generateRandomBytes(32);
         let items: CreateBundleShareItem[] = [];
         let keyForUrl: string;
         let ownerWrappedKey: string;
         try {
-          for (const f of scan.files) {
+          for (const f of shareFiles) {
             const itemKey = await getFileKeyBytes(f.fileId);
             try {
               const wrapped = await wrapFileKeyForShare(clientKey, itemKey);
@@ -503,7 +551,7 @@ export default function ShareSheetScreen() {
     } finally {
       setCreating(false);
     }
-  }, [fileId, expiry, opens, passphrase, isUnlocked, isFolder, folderScan, getFileKeyBytes, getMasterKeyHandleId]);
+  }, [fileId, expiry, opens, passphrase, isUnlocked, isFolder, folderScan, folderPlan, nameEncrypted, objectVersionId, createdAt, resolveOwnerNameConvention, classifyOwnerContent, getFileKeyBytes, getMasterKeyHandleId]);
 
   const handleCreateInvite = useCallback(async () => {
     const raw = recipient.trim();
@@ -737,6 +785,11 @@ export default function ShareSheetScreen() {
                 </Text>
                 {/* Task 2238 review — the rows we had to leave out, said plainly
                     instead of silently publishing an item nobody can decrypt. */}
+                {!!isUnlocked && folderPlan?.copy && !folderScan?.overCap && (
+                  <Text style={styles.snapshotNoteText} testID="folder-exclusion-note">
+                    {folderPlan.copy}
+                  </Text>
+                )}
                 {!!isUnlocked && folderScan && folderScan.requestUploads > 0 && !folderScan.overCap && (
                   <Text style={styles.snapshotNoteText} testID="folder-request-uploads-note">
                     {folderScan.requestUploads === 1
@@ -887,6 +940,11 @@ export default function ShareSheetScreen() {
             {error && (
               <View style={styles.errorBanner}>
                 <Text style={styles.errorText}>{error}</Text>
+                {shareRetry && (
+                  <TouchableOpacity accessibilityRole="button" onPress={() => { void handleCreate(); }} disabled={creating}>
+                    <Text style={styles.snapshotNoteText}>Retry</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             )}
 

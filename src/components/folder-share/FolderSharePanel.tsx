@@ -10,6 +10,7 @@ import { friendlyError, getFolderMembers, listFolderLinks, revokeFolderLink, upd
 import { linkErrorCode, type FolderLink, type FolderMember } from '../../lib/folder-link-types';
 import { createFolderLinkPorts, createFolderLinkWithKeys, folderLinkNative, FolderPassphraseError, recoverLinkUrl, type CreateFolderLinkInput } from '../../lib/folder-link-create';
 import { accountEpoch, isCurrentAccountEpoch, isStaleAccountError } from '../../lib/account-epoch';
+import { cachedNameConvention } from '../../lib/sf-0002-write-state';
 import { FolderLinkRow, folderAccessCopy } from './FolderLinkRow';
 import { CreateFolderLinkForm } from './CreateFolderLinkForm';
 interface Props { folderId: string; folderName: string; onClose(): void; onUnavailable?(): void }
@@ -18,11 +19,20 @@ export function FolderSharePanel({ folderId, folderName, onClose, onUnavailable 
   const { colors: c } = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList & { SharedFolderActivity: { folderId?: string } | undefined }>>();
   const { getMasterKeyHandleId } = useCrypto();
-  const ports = useMemo(() => createFolderLinkPorts(getMasterKeyHandleId), [getMasterKeyHandleId]);
+  // SF-0002 M2a run 3: leave out descendants whose name is Binary/UpperRepair
+  // (the name half is already cached from folder listing).
+  const ports = useMemo(() => ({
+    ...createFolderLinkPorts(getMasterKeyHandleId),
+    excluded: (id: string) => {
+      const convention = cachedNameConvention(id);
+      return convention === 'binary' || convention === 'upper_repair';
+    },
+  }), [getMasterKeyHandleId]);
   const [rows, setRows] = useState<LinkView[]>([]);
   const [members, setMembers] = useState<FolderMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [working, setWorking] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ phase: 'preparing' | 'securing'; done: number; total: number } | null>(null);
   const [passphraseFailed, setPassphraseFailed] = useState(false);
@@ -64,10 +74,11 @@ export function FolderSharePanel({ folderId, folderName, onClose, onUnavailable 
     if (working !== null) return;
     const epoch = accountEpoch();
     const abort = new AbortController(); controller.current = abort;
-    setWorking('create'); setError(null); setPassphraseFailed(false); setProgress({ phase: 'preparing', done: 0, total: 0 });
+    setWorking('create'); setError(null); setNotice(null); setPassphraseFailed(false); setProgress({ phase: 'preparing', done: 0, total: 0 });
     try {
       const result = await createFolderLinkWithKeys({ ...input, signal: abort.signal, onProgress: value => { if (active.current && isCurrentAccountEpoch(epoch)) setProgress(value); } }, ports);
       if (!active.current || !isCurrentAccountEpoch(epoch)) return;
+      if (result.excludedCount) setNotice(`${result.excludedCount} ${result.excludedCount === 1 ? 'file' : 'files'} can't be shared yet`);
       urls.current.set(result.id, result.url); await load();
     } catch (err) {
       if (!active.current || !isCurrentAccountEpoch(epoch) || isStaleAccountError(err) || (err as Error)?.name === 'AbortError') return;
@@ -97,6 +108,7 @@ export function FolderSharePanel({ folderId, folderName, onClose, onUnavailable 
     {members.map(member => <View key={member.user_id} style={{ borderTopWidth: 1, borderTopColor: c.line, paddingVertical: 12, gap: 4 }}><Text style={{ color: c.ink }}>{member.email}</Text><Text style={{ color: c.ink3 }}>{folderAccessCopy[member.access_level] ?? folderAccessCopy.view}</Text></View>)}
     {loading && <ActivityIndicator color={c.ink3} />}
     {rows.map(row => <FolderLinkRow key={row.link.id} {...row} busy={working !== null} onPause={() => mutate(row, false)} onRevoke={() => mutate(row, true)} onError={() => setError("Couldn't copy this link. Try again.")} />)}
+    {notice && <Text accessibilityRole="text" style={{ color: c.ink2 }}>{notice}</Text>}
     {error && <Text accessibilityRole="alert" style={{ color: c.red }}>{error}</Text>}
     {error && !loading && <TouchableOpacity accessibilityRole="button" onPress={() => { setError(null); void load().catch(report); }}><Text style={{ color: c.ink, paddingVertical: 8 }}>Retry</Text></TouchableOpacity>}
     {rows.length >= 20 && <Text style={{ color: c.ink2 }}>A folder can have at most 20 links.</Text>}

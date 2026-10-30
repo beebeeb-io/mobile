@@ -57,6 +57,11 @@ export function recordNameConvention(fileId: string, convention: OwnerNameConven
   map.set(fileId, { ...map.get(fileId), name: convention });
 }
 
+/** The cached name convention for a row, or `null` when none is known. */
+export function cachedNameConvention(fileId: string): OwnerNameConvention | null {
+  return live().get(fileId)?.name ?? null;
+}
+
 export function hasUpperRepairName(fileId: string): boolean {
   return live().get(fileId)?.name === 'upper_repair';
 }
