@@ -168,12 +168,15 @@ struct FixtureCryptoError: Error {}
 final class MasterKeyHandle {
   let key: Data
   init(key: Data) { self.key = key }
+  /// SF-0002 part 1: every id string the extension hands to key derivation.
+  static var derivedFileIds: [String] = []
   static func fromKeychainBytes(bytes: Data) throws -> MasterKeyHandle {
     guard bytes.count == 32 else { throw FixtureCryptoError() }
     return MasterKeyHandle(key: bytes)
   }
   func deriveFileKey(fileId: Data) throws -> FileKeyHandle {
-    FileKeyHandle(key: Data(SHA256.hash(data: key + fileId)))
+    MasterKeyHandle.derivedFileIds.append(String(data: fileId, encoding: .utf8) ?? "<non-utf8-id>")
+    return FileKeyHandle(key: Data(SHA256.hash(data: key + fileId)))
   }
   // Forces CryptoBridge onto its JSON-envelope path, which encryptFilename produces.
   func decryptNameWithMime(fileId: String, nameEncrypted: String) throws -> DecryptedNameWithMime {
@@ -304,8 +307,11 @@ final class ApiClient {
   var calls: [String] { callsLock.lock(); defer { callsLock.unlock() }; return recordedCalls }
   private func record(_ call: String) { callsLock.lock(); recordedCalls.append(call); callsLock.unlock() }
   private(set) var patchedNames: [String?] = []
+  /// SF-0002 part 1: the file_id the real ApiClient puts in the upload-init
+  /// body (it sends fileId.lowercased(), ApiClient.swift).
+  private(set) var uploadInitFileIds: [String] = []
 
-  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); callsLock.lock(); recordedCalls = []; callsLock.unlock(); patchedNames = [] }
+  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); callsLock.lock(); recordedCalls = []; callsLock.unlock(); patchedNames = []; uploadInitFileIds = [] }
   func count(_ prefix: String) -> Int { calls.filter { $0.hasPrefix(prefix) }.count }
 
   func listFiles(parentId: String?) async throws -> [FileEntryDto] {
@@ -326,14 +332,17 @@ final class ApiClient {
   func initUploadV2(fileId: String, nameEncrypted: String, fileSizeBytes: Int64, mimeType: String?, parentId: String?,
                     isMedia: Bool, chunkSizeBytes: Int, chunkCount: Int, expectedUser: String?) async throws -> UploadV2InitResponse {
     record("upload-init \(fileId)")
-    return UploadV2InitResponse(file_id: fileId, upload_session_id: "session", chunk_size_bytes: chunkSizeBytes, chunk_count: chunkCount)
+    // Mirror the shipped ApiClient: the server body's file_id is the
+    // lowercased argument, and the completion row carries the server id.
+    uploadInitFileIds.append(fileId.lowercased())
+    return UploadV2InitResponse(file_id: fileId.lowercased(), upload_session_id: "session", chunk_size_bytes: chunkSizeBytes, chunk_count: chunkCount)
   }
   func uploadChunkV2(uploadSessionId: String, index: Int, encryptedChunk: Data, expectedUser: String?) async throws {
     record("upload-chunk \(index)")
   }
   func completeUploadV2(uploadSessionId: String, expectedUser: String?) async throws -> UploadResponseDto {
     record("upload-complete")
-    return UploadResponseDto(id: "uploaded", name_encrypted: nil, size_bytes: 0, chunk_count: 1, created_at: nil, updated_at: nil)
+    return UploadResponseDto(id: uploadInitFileIds.last ?? "uploaded", name_encrypted: nil, size_bytes: 0, chunk_count: 1, created_at: nil, updated_at: nil)
   }
 }
 `
@@ -376,6 +385,7 @@ func row(_ id: String, parent: String? = nil, name: String? = nil, encrypted: St
 func reset() {
   CacheManager.shared.reset()
   ApiClient.shared.reset()
+  MasterKeyHandle.derivedFileIds = []
   BeebeebKeychainCore.strings = ["owner": "user-1", "user": "user-1"]
   BeebeebKeychainCore.keyResult = .success(BeebeebKeychainCore.goodKey)
   BeebeebKeychainCore.keyLoads = 0
@@ -1121,6 +1131,43 @@ func workingSetScenariosFinish() {
   check(softFailures == 0, "\(softFailures) working set check(s) failed")
 }
 
+// ---- SF-0002 part 1: the id a Files-app create mints is lowercase everywhere ----
+// UUID().uuidString is uppercase. The extension seals the name and every chunk
+// under deriveFileKey(fileId: Data(fileId.utf8)) while ApiClient posts
+// fileId.lowercased() as file_id; a reader derives from the stored lowercase
+// id and so never opens a file created this way. The id minted for a create must
+// therefore be lowercase ONCE, and everything downstream must use that string.
+func createMintsALowercaseFileIdUsedForDerivation() async {
+  reset()
+  let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
+  let template = Template("template", parent: "root", filename: "Notes.txt")
+  let source = AppGroupContainer.directory("create-source").appendingPathComponent("Notes.txt")
+  try! Data("hello from the Files app".utf8).write(to: source)
+
+  let result: (NSFileProviderItem?, NSError?) = await withCheckedContinuation { continuation in
+    _ = ext.createItem(basedOn: template, fields: [], contents: source, options: [],
+                       request: NSFileProviderRequest()) { item, _, _, error in
+      continuation.resume(returning: (item, error as NSError?))
+    }
+  }
+
+  check(result.0 != nil && result.1 == nil, "createItem finished with an item and no error, got \(describe(result.1))")
+
+  let bodyIds = ApiClient.shared.uploadInitFileIds
+  check(bodyIds.count == 1, "exactly one upload-init, got \(bodyIds)")
+  let bodyId = bodyIds.first ?? ""
+  check(!bodyId.isEmpty, "the upload-init carries a file_id")
+  check(bodyId == bodyId.lowercased(), "the upload-init file_id is lowercase, got \(bodyId)")
+
+  let derived = MasterKeyHandle.derivedFileIds
+  check(derived.count == 2, "the name and the single chunk each derive a file key, got \(derived)")
+  check(derived.allSatisfy { $0 == $0.lowercased() }, "every deriveFileKey id is lowercase, got \(derived)")
+  check(derived.allSatisfy { $0 == bodyId }, "every deriveFileKey id equals the upload-init file_id, got \(derived) vs \(bodyId)")
+
+  check(result.0?.itemIdentifier.rawValue == bodyId, "the created item's identifier is that same id, got \(result.0?.itemIdentifier.rawValue ?? "nil")")
+  check(result.0?.filename == "Notes.txt", "the created item keeps its name, got \(result.0?.filename ?? "nil")")
+}
+
 let scenarioTable: [(String, () async -> Void)] = [
   ("key-errors", keyFailuresAreAuthenticationRequired),
   ("other-errors", otherFailuresKeepTheirMeaning),
@@ -1140,6 +1187,7 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("stream-abort", midStreamStopsDeleteThePartialFile),
   ("materialized-set", { await materializedSetFollowsTheSystem(); workingSetScenariosFinish() }),
   ("materialized-refresh", { await staleMaterializedFoldersAreRefreshed(); workingSetScenariosFinish() }),
+  ("create-lowercase-id", createMintsALowercaseFileIdUsedForDerivation),
 ]
 
 @main
@@ -1340,5 +1388,15 @@ describe('task 1722 (G4/G5, review I1): content is streamed into the registered 
 
   nativeSwiftHarnessTest('a purge or a cancel mid-stream leaves no partial plaintext (-1005 / NSUserCancelledError)', () => {
     expectScenario('stream-abort', 5);
+  }, 300_000);
+});
+
+// SF-0002 part 1: a Files-app create used to mint UPPERCASE (UUID().uuidString)
+// and derive the name/chunk keys from it, while the server body carried the
+// lowercase id — so no client could derive the key. The mint is lowercase once,
+// and the bytes handed to deriveFileKey are exactly the file_id sent upstream.
+describe('SF-0002 part 1: a Files-app create derives keys from the lowercase id it sends', () => {
+  nativeSwiftHarnessTest('createItem derives the name and chunk keys from the same lowercase id as file_id', () => {
+    expectScenario('create-lowercase-id', 9);
   }, 300_000);
 });
