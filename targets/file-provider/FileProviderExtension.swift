@@ -433,7 +433,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         progress.completedUnitCount = 90
 
         let cached = CachedItem(
-          id: response.id,
+          id: fileId,
           parentId: parentId,
           nameEncrypted: response.name_encrypted,
           nameDecrypted: itemTemplate.filename,
@@ -799,6 +799,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       chunkCount: chunkCount,
       expectedUser: expectedUser
     )
+    // Task SF-0001 (2275 L13/A7): the id this extension minted must be the id
+    // the init answer names — checked before a single chunk is sealed.
+    try UploadItemIdEcho.assertEchoedId(chosen: fileId, echoed: session.file_id)
 
     let handle = try FileHandle(forReadingFrom: sourceUrl)
     defer { try? handle.close() }
@@ -839,7 +842,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
 
     try Task.checkCancellation()
-    return try await ApiClient.shared.completeUploadV2(uploadSessionId: session.upload_session_id, expectedUser: expectedUser)
+    let completed = try await ApiClient.shared.completeUploadV2(uploadSessionId: session.upload_session_id, expectedUser: expectedUser)
+    // Task SF-0001 (2275 L13/A7): the completion answer must name the same id
+    // — nothing is cached, listed or written under anything else.
+    try UploadItemIdEcho.assertEchoedId(chosen: fileId, echoed: completed.id)
+    return completed
   }
 
   /// True when iOS would classify `type` as photo/video content. Used to set
@@ -905,5 +912,26 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       return NSFileProviderError(.notAuthenticated)
     }
     return NSFileProviderError(.cannotSynchronize)
+  }
+}
+
+/// Task SF-0001 (contract 2275 L13): this extension mints the item id it
+/// proposes and requires every init/create/completion answer to echo it back.
+/// A difference aborts before anything is sealed, renamed or cached.
+///
+/// Lives here (not in the pod) because the File Provider target does not link
+/// the pod; modules/beebeeb-crypto/ios/UploadItemIdEcho.swift carries the same
+/// rule for the backup engine, and the share extension carries its own copy.
+enum UploadItemIdEcho {
+  static let message = "The server answered with a different item. Nothing was uploaded under it."
+  static let errorCode = "server_changed_item_id"
+
+  struct Mismatch: Error, Equatable {
+    let code = UploadItemIdEcho.errorCode
+    var localizedDescription: String { UploadItemIdEcho.message }
+  }
+
+  static func assertEchoedId(chosen: String, echoed: String?) throws {
+    guard let echoed, echoed == chosen else { throw Mismatch() }
   }
 }

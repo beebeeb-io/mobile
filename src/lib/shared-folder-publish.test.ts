@@ -126,7 +126,9 @@ async function runtimeSession(id = 'owner') {
 const uploadOptions = {fileId:'client-id',uri:'file:///source',name:'private.txt',parentId:'R',masterKeyHandleId:9,
   encryptChunkFn:async()=>({nonce:new Uint8Array(12),ciphertext:new Uint8Array(16)}),
   encryptMetadataFn:async()=>({nonce:new Uint8Array(12),ciphertext:new Uint8Array(16)})};
-test('both_actual_upload_engines_publish_the_returned_id_and_parent_fallback',async()=>{
+// Task SF-0001 (2275 L13): both engines publish the id this client chose (the
+// id the upload was completed under), never an id an answer reported.
+test('both_actual_upload_engines_publish_the_id_the_client_chose',async()=>{
   await runtimeSession(); runtimePosts.length=0;
   const {encryptedUpload} = await import('./encrypted-upload');
   for (const native of [true,false]) {
@@ -134,7 +136,7 @@ test('both_actual_upload_engines_publish_the_returned_id_and_parent_fallback',as
     expect(await encryptedUpload(uploadOptions)).toBe(completedEntry);
     await retryPending();
   }
-  expect(runtimePosts.map(p=>[p.root,p.keys.map(k=>k.file_id)])).toEqual([['R',['native-result']],['R',['js-result']]]);
+  expect(runtimePosts.map(p=>[p.root,p.keys.map(k=>k.file_id)])).toEqual([['R',['client-id']],['R',['client-id']]]);
   await clearPendingPublishes(); expect(runtimeDisk.size).toBe(0);
 });
 test('an_upload_finishing_after_account_switch_cannot_publish_under_the_new_account',async()=>{
