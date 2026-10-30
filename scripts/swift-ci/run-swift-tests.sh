@@ -162,6 +162,17 @@ SWIFT
       fi
       extra_objs+=("$VANILLA_SQLITE_OBJ")
       ;;
+    thumbnail-queue-purge-test.swift)
+      # Task 1962 round 5 (P2.2): link the same vanilla SQLite object the app
+      # gets through the Rust core. Apple's system SQLite defaults
+      # secure_delete to 2, which hides a dropped `PRAGMA secure_delete = ON`.
+      if ! build_vanilla_sqlite; then
+        echo "COMPILE FAILED: thumbnail-queue-purge-test.swift (vanilla SQLite)"
+        rc=1
+        continue
+      fi
+      extra_objs+=("$VANILLA_SQLITE_OBJ")
+      ;;
   esac
   # shellcheck disable=SC2086
   if ! xcrun swiftc "${flags[@]}" $srcs "$tmp/main.swift" ${extra_objs[@]+"${extra_objs[@]}"} -o "$tmp/t" >"$LOG_DIR/$base.build.log" 2>&1; then
