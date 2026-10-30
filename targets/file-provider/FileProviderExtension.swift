@@ -42,12 +42,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   private var cachedForSignedInUser: String?
 
   required init(domain: NSFileProviderDomain) {
+    // Task 1962 round 4 (Bug 6c) — this extension process has its OWN
+    // `URLCache.shared` and container, which a sign-out in the app cannot
+    // reach. Before the first request: a zero-capacity shared cache rooted at
+    // an explicit extension directory, then an off-main clear of whatever an
+    // older build left in this process's default cache directory.
+    URLCache.shared = LegacyURLCacheCleanup.zeroCapacityURLCache(directoryName: "bb-no-http-cache-file-provider")
+    LegacyURLCacheCleanup.clearLegacyDefaultStoreOffMainThread()
     super.init()
     _ = domain
     _ = CacheManager.shared
     _ = Self.leftoverContentSweep
     _ = Self.materializedSetBootstrap
   }
+
 
   /// Task 1722 round 4 (review round 2, minor 6): once per extension process, read the system's
   /// materialized set. A phone upgraded from a build that did not track it (TestFlight 236) has

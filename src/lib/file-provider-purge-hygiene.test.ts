@@ -20,6 +20,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
+// Task 1962 round 4 (Bug 7b) — the registry purge call site now also passes the
+// thumbnail queue's three files in `preserving`, so the literal is
+// `...preserving: manifest.kept.union(ThumbnailQueueDB.storagePurgePaths()))`.
+// The needle stops inside the `preserving:` argument: it still pins the nonce
+// threading and `manifest.kept`, and still catches a comment that mentions the
+// call ahead of the real one (see the "exactly once" count below).
+const PURGE_ALL_CALL = 'PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept';
+
 const REPO_ROOT = join(import.meta.dir, '..', '..');
 const REGISTRY_SWIFT_PATH = join(
   REPO_ROOT, 'modules', 'beebeeb-crypto', 'ios', 'PlaintextStorageProtection.swift',
@@ -363,7 +371,7 @@ describe('C1 (round 7, P1): purgePlaintextStorage resets the DB LAST, after cons
     // `pendingNonce: pendingNonce` (marker-first threads the nonce through).
     const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
     const removeIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()');
-    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)');
+    const purgeAllIdx = purgeBody.indexOf(PURGE_ALL_CALL);
     expect(consentIdx).toBeGreaterThan(-1);
     expect(removeIdx).toBeGreaterThan(-1);
     expect(purgeAllIdx).toBeGreaterThan(-1);
@@ -1861,14 +1869,14 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1): a failed early epoc
     const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
     const bumpIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
     const removeIdx = purgeBody.indexOf('removeFileProviderDomainIfRegistered()');
-    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)');
+    const purgeAllIdx = purgeBody.indexOf(PURGE_ALL_CALL);
     expect(consentIdx).toBeLessThan(bumpIdx);
     expect(bumpIdx).toBeLessThan(removeIdx);
     expect(removeIdx).toBeLessThan(purgeAllIdx);
     // The literal call text must occur EXACTLY once in this function body —
     // if a future comment reintroduces it above the real call, this count
     // goes to 2 and the ordering assertions above stop meaning what they say.
-    const occurrences = purgeBody.split('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)').length - 1;
+    const occurrences = purgeBody.split(PURGE_ALL_CALL).length - 1;
     expect(occurrences).toBe(1);
   });
 
@@ -2076,7 +2084,7 @@ describe('f3 (item 1): the chmod-0400 fallback is REMOVED — a createFile failu
     expect(afterMark).toMatch(/if pendingNonce == nil \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.failed", \["stage": "pending_marker"\]\)\s*\n\s*failed \+= 1\s*\n\s*\}/);
     // The final in-place reset is unconditional — never gated on
     // pendingNonce, and nothing between the mark and it early-returns.
-    const purgeAllIdx = body.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)');
+    const purgeAllIdx = body.indexOf(PURGE_ALL_CALL);
     expect(purgeAllIdx).toBeGreaterThan(markIdx);
     const between = body.slice(markIdx, purgeAllIdx);
     expect(between).not.toMatch(/\breturn \[/);
@@ -2586,7 +2594,7 @@ describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIR
     const consentIdx = purgeBody.indexOf('resetFileProviderShowInFilesConsent(defaults: sharedDefaults())');
     const bumpIdx = purgeBody.indexOf('if !bumpFileProviderCacheVersion() {');
     const removeDomainIdx = purgeBody.indexOf('if !removeFileProviderDomainIfRegistered() {');
-    const purgeAllIdx = purgeBody.indexOf('PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)');
+    const purgeAllIdx = purgeBody.indexOf(PURGE_ALL_CALL);
     expect(markIdx).toBeGreaterThan(-1);
     // markPurgePending must be BEFORE every one of the other four steps.
     expect(consentIdx).toBeGreaterThan(markIdx);
@@ -2624,7 +2632,10 @@ describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIR
 
   test('purgeAll is called with pendingNonce: pendingNonce — the EXACT value markPurgePending() returned, never a fresh read', () => {
     const purgeBody = bracedBody(moduleSwift, 'AsyncFunction("purgePlaintextStorage") { (mode: String?, deletedAccountIds: [String]?) -> [String: Int] in');
-    expect(purgeBody).toMatch(/PlaintextStorageProtection\.purgeAll\(pendingNonce: pendingNonce, preserving: manifest\.kept\)/);
+    // Task 1962 round 4 (Bug 7b) — `preserving:` now also carries the thumbnail
+    // queue's three files (`manifest.kept.union(...)`); the nonce threading and
+    // the manifest's own kept set are still pinned.
+    expect(purgeBody).toMatch(/PlaintextStorageProtection\.purgeAll\(pendingNonce: pendingNonce, preserving: manifest\.kept\.union\(ThumbnailQueueDB\.storagePurgePaths\(\)\)\)/);
   });
 });
 

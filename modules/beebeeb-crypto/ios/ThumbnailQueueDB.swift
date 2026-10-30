@@ -4,55 +4,212 @@ import SQLite3
 /// SQLite-backed persistent queue for thumbnail regeneration work.
 /// Survives app restarts. Cleared on sign-out. Single writer (`ThumbnailWorkerPool`),
 /// multiple readers safe — all access is serialized through a private queue.
+///
+/// Task 1962 round 4 (Bug 7) — the connection is opened LAZILY, inside
+/// `serialQueue`, on first use; `init()` never touches the file. Sign-out
+/// (manual or forced) resets it through `prepareForStoragePurge()`, which the
+/// registry sweep is then told to preserve (`.sqlite`, `-wal`, `-shm`): the DB
+/// owns those three files' lifecycle, so the purge never unlinks a file under
+/// this class's live handle.
 public final class ThumbnailQueueDB {
-    public static let shared = ThumbnailQueueDB()
+    public static let shared = ThumbnailQueueDB(directory: nil)
 
     private var db: OpaquePointer?
     private let serialQueue = DispatchQueue(label: "io.beebeeb.thumbnail.queue-db")
+    /// `nil` = the app's Documents directory. The harness passes a temp
+    /// directory; production never does.
+    private let directoryOverride: URL?
+    /// Test seam: the purge harness injects an unlink that always throws, so
+    /// the failure-reporting path is exercised deterministically (permission
+    /// tricks are not portable to a root CI container).
+    var removeFile: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
 
-    private init() {
-        openOrCreate()
+    init(directory: URL?) {
+        // Task 1962 round 4 (7a) — never open here. Opening happens only in
+        // `ensureOpen()`, called inside `serialQueue`, so a sign-out's
+        // `prepareForStoragePurge()` can never race an open.
+        self.directoryOverride = directory
     }
 
     deinit {
-        if let db { sqlite3_close(db) }
+        if let db { sqlite3_close_v2(db) }
     }
 
     // MARK: - Schema
 
     private var dbURL: URL {
+        if let directoryOverride {
+            return directoryOverride.appendingPathComponent("thumbnail_queue.sqlite")
+        }
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return dir.appendingPathComponent("thumbnail_queue.sqlite")
     }
 
-    private func openOrCreate() {
-        guard sqlite3_open(dbURL.path, &db) == SQLITE_OK else {
-            NSLog("[ThumbnailQueueDB] failed to open \(dbURL.path)")
-            return
-        }
-        exec("PRAGMA journal_mode = WAL;")
-        exec("""
-            CREATE TABLE IF NOT EXISTS queue_items (
-                file_id          TEXT PRIMARY KEY,
-                quality_preset   TEXT NOT NULL,
-                state            TEXT NOT NULL,
-                attempts         INTEGER NOT NULL DEFAULT 0,
-                next_attempt_at  INTEGER,
-                last_error_code  TEXT,
-                last_error_msg   TEXT,
-                enqueued_at      INTEGER NOT NULL,
-                updated_at       INTEGER NOT NULL
-            );
-        """)
-        exec("CREATE INDEX IF NOT EXISTS idx_queue_state_next ON queue_items(state, next_attempt_at);")
+    /// The three files this database owns. The sign-out purge must receive
+    /// them in `preserving` (task 1962 round 4, 7b/7g): unlinking any of them
+    /// under a live connection leaves this process writing to a deleted inode.
+    public var purgePaths: Set<String> {
+        let path = dbURL.path
+        return [path, path + "-wal", path + "-shm"]
     }
 
-    private func exec(_ sql: String) {
-        var err: UnsafeMutablePointer<Int8>?
-        if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
-            NSLog("[ThumbnailQueueDB] exec failed: \(String(cString: err!))")
-            sqlite3_free(err)
+    public static func storagePurgePaths() -> Set<String> {
+        shared.purgePaths
+    }
+
+    /// Opens the connection if it is not open yet. Must be called inside
+    /// `serialQueue`. Returns `false` (and leaves `db == nil`) on any failure;
+    /// every method then does nothing and returns its empty value.
+    private func ensureOpen() -> Bool {
+        if db != nil { return true }
+        var handle: OpaquePointer?
+        guard sqlite3_open(dbURL.path, &handle) == SQLITE_OK, let handle else {
+            NSLog("[ThumbnailQueueDB] failed to open \(dbURL.path)")
+            if let handle { sqlite3_close_v2(handle) }
+            db = nil
+            return false
         }
+        db = handle
+        // Task 1962 round 4 (7a/7c): secure_delete zeroes deleted cells so the
+        // purge's DELETE leaves none of the outgoing account's ids in the file.
+        let configured = exec("PRAGMA journal_mode = WAL;")
+            && exec("PRAGMA secure_delete = ON;")
+            && exec("""
+                CREATE TABLE IF NOT EXISTS queue_items (
+                    file_id          TEXT PRIMARY KEY,
+                    quality_preset   TEXT NOT NULL,
+                    state            TEXT NOT NULL,
+                    attempts         INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at  INTEGER,
+                    last_error_code  TEXT,
+                    last_error_msg   TEXT,
+                    enqueued_at      INTEGER NOT NULL,
+                    updated_at       INTEGER NOT NULL
+                );
+            """)
+            && exec("CREATE INDEX IF NOT EXISTS idx_queue_state_next ON queue_items(state, next_attempt_at);")
+        if !configured {
+            sqlite3_close_v2(handle)
+            db = nil
+            return false
+        }
+        // Task 1962 round 5 (P2.5) — these three files are created lazily by
+        // this open (and recreated after a failed reset), long after the launch
+        // hardening pass. Exclude them from iCloud backup now, not at the next
+        // cold launch's `hardenAll()`.
+        PlaintextStorageProtection.protect(dbURL)
+        _ = PlaintextStorageProtection.protectSQLiteSidecars(dbURL)
+        return true
+    }
+
+    @discardableResult
+    private func exec(_ sql: String) -> Bool {
+        guard let db else { return false }
+        var err: UnsafeMutablePointer<Int8>?
+        let rc = sqlite3_exec(db, sql, nil, nil, &err)
+        if rc != SQLITE_OK {
+            // Task 1962 round 4 (7a) — never force-unwrap `err`: SQLite may
+            // report a failure without populating it.
+            let message = err.map { String(cString: $0) } ?? "code \(rc)"
+            NSLog("[ThumbnailQueueDB] exec failed: \(message)")
+            if let err { sqlite3_free(err) }
+            return false
+        }
+        if let err { sqlite3_free(err) }
+        return true
+    }
+
+    // MARK: - Storage purge (task 1962 round 4, 7c-7e)
+
+    /// Called from `purgePlaintextStorage` on EVERY sign-out path, before the
+    /// registry sweep, after `ThumbnailWorkerPool.cancelAll()`.
+    @discardableResult
+    public static func prepareForStoragePurge() -> Int {
+        shared.performPrepareForStoragePurge(forceResetFailure: false)
+    }
+
+    /// The whole reset is ONE `serialQueue` block: no other open/statement can
+    /// interleave. `forceResetFailure` is the harness's injected reset failure
+    /// (7d); production always passes `false`.
+    @discardableResult
+    func performPrepareForStoragePurge(forceResetFailure: Bool) -> Int {
+        serialQueue.sync {
+            // 7e — no connection: nothing can open it meanwhile (opening only
+            // happens on `serialQueue`), so the files are simply unlinked.
+            guard let handle = db else {
+                return removeDatabaseFiles()
+            }
+            // 7c — DELETE + TRUNCATE checkpoint; success requires both to
+            // return OK, the checkpoint to report busy = 0, and 0 rows left.
+            // The connection stays open in that case.
+            let deleted = !forceResetFailure && exec("DELETE FROM queue_items;")
+            let busy = deleted ? checkpointTruncate(handle) : -1
+            let remaining = (deleted && busy == 0) ? queueRowCount(handle) : -1
+            // Task 1962 round 5 (P2.4) — DELETE + TRUNCATE leaves freed pages
+            // from older (non-secure-delete) builds on the freelist. They can
+            // still hold the outgoing account's bytes, so a reset that leaves
+            // any of them behind is not a successful in-place reset.
+            let free = (deleted && busy == 0 && remaining == 0) ? freelistCount(handle) : -1
+            if deleted, busy == 0, remaining == 0, free == 0 { return 0 }
+            // 7d — reset failed: close BEFORE unlinking, then unlink all
+            // three. The next use reopens lazily (7a).
+            sqlite3_close_v2(handle)
+            db = nil
+            return removeDatabaseFiles()
+        }
+    }
+
+    private func checkpointTruncate(_ handle: OpaquePointer) -> Int {
+        var stmt: OpaquePointer?
+        let sql = "PRAGMA wal_checkpoint(TRUNCATE);"
+        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+        // Column 0 is `busy` (0 = the checkpoint completed).
+        return Int(sqlite3_column_int(stmt, 0))
+    }
+
+    private func freelistCount(_ handle: OpaquePointer) -> Int {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "PRAGMA freelist_count;", -1, &stmt, nil) == SQLITE_OK else {
+            return -1
+        }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+        return Int(sqlite3_column_int64(stmt, 0))
+    }
+
+    private func queueRowCount(_ handle: OpaquePointer) -> Int {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "SELECT count(*) FROM queue_items;", -1, &stmt, nil) == SQLITE_OK else {
+            return -1
+        }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+        return Int(sqlite3_column_int64(stmt, 0))
+    }
+
+    /// Unlinks the three files this database owns. Returns the number that
+    /// could NOT be removed: round 4 swallowed unlink errors with `try?` and
+    /// reported the reset as a success, so `purgePlaintextStorage`'s `failed`
+    /// count never saw them (task 1962 round 5, P2.3).
+    private func removeDatabaseFiles() -> Int {
+        let path = dbURL.path
+        var failures = 0
+        for suffix in ["", "-wal", "-shm"] {
+            let url = URL(fileURLWithPath: path + suffix)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            do {
+                try removeFile(url)
+            } catch {
+                failures += 1
+                RuntimeTrace.event("thumbnail.queue.unlink_failed", [
+                    "file": url.lastPathComponent,
+                ])
+                NSLog("[ThumbnailQueueDB] failed to unlink \(url.path): \(error)")
+            }
+        }
+        return failures
     }
 
     // MARK: - Types
@@ -76,6 +233,7 @@ public final class ThumbnailQueueDB {
     /// Insert OR ignore (existing entries preserved with original quality).
     public func enqueue(fileIds: [String], qualityPreset: String) {
         serialQueue.sync {
+            guard ensureOpen() else { return }
             let now = Int64(Date().timeIntervalSince1970 * 1000)
             exec("BEGIN;")
             for id in fileIds {
@@ -103,6 +261,7 @@ public final class ThumbnailQueueDB {
     /// Bump attempt counter, set backoff or mark perm-fail.
     public func recordFailure(fileId: String, category: ThumbnailErrorCategory, message: String) {
         serialQueue.sync {
+            guard ensureOpen() else { return }
             guard let item = fetchInternal(fileId: fileId) else { return }
             let nextAttempts = item.attempts + 1
             let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -141,6 +300,7 @@ public final class ThumbnailQueueDB {
     public func popReady(limit: Int) -> [Item] {
         var out: [Item] = []
         serialQueue.sync {
+            guard ensureOpen() else { return }
             let now = Int64(Date().timeIntervalSince1970 * 1000)
             var stmt: OpaquePointer?
             let sql = """
@@ -169,6 +329,7 @@ public final class ThumbnailQueueDB {
     public func stats() -> (pending: Int, running: Int, succeeded: Int, failedRetry: Int, failedPerm: Int) {
         var result: (Int, Int, Int, Int, Int) = (0, 0, 0, 0, 0)
         serialQueue.sync {
+            guard ensureOpen() else { return }
             var stmt: OpaquePointer?
             let sql = "SELECT state, COUNT(*) FROM queue_items GROUP BY state;"
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
@@ -192,6 +353,7 @@ public final class ThumbnailQueueDB {
     public func failedPermFileIds() -> [String] {
         var ids: [String] = []
         serialQueue.sync {
+            guard ensureOpen() else { return }
             var stmt: OpaquePointer?
             let sql = "SELECT file_id FROM queue_items WHERE state='failed_perm' ORDER BY updated_at DESC LIMIT 200;"
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
@@ -206,7 +368,10 @@ public final class ThumbnailQueueDB {
     // MARK: - Helpers
 
     private func mutate(_ sql: String, _ args: [Any]) {
-        serialQueue.sync { bindAndStep(sql, args) }
+        serialQueue.sync {
+            guard ensureOpen() else { return }
+            bindAndStep(sql, args)
+        }
     }
 
     private func fetchInternal(fileId: String) -> Item? {
@@ -238,6 +403,7 @@ public final class ThumbnailQueueDB {
     }
 
     private func bindAndStep(_ sql: String, _ args: [Any]) {
+        guard let db else { return }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(stmt) }

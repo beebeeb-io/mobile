@@ -76,4 +76,12 @@ dependencies {
   // task 1683b — JVM-side module-surface probe (fast definition() bisect loop;
   // registration touches no Android framework APIs).
   testImplementation "junit:junit:4.13.2"
+
+  // task 1962 round 4 (Bug 6e) — the lifecycle listener installs an RN
+  // OkHttpClientProvider factory (com.facebook.react.modules.network). The
+  // app supplies react-android itself; this module only compiles against it,
+  // and its JVM test needs the classes on the unit-test classpath. Version
+  // matches the RN 0.86.3 catalog pin in the app.
+  compileOnly "com.facebook.react:react-android:0.86.3"
+  testImplementation "com.facebook.react:react-android:0.86.3"
 }

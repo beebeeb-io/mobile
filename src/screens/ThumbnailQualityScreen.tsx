@@ -32,6 +32,8 @@ import { ensurePhotoPermission } from '../lib/photo-permissions';
 import { loadFileIndex } from '../lib/file-index-loader';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
 import { seedLocalIdentifierMap } from '../lib/local-identifier-map';
+import { accountEpoch, isCurrentAccountEpoch } from '../lib/account-epoch';
+import { seedAndEnqueueThumbnailApply } from '../lib/thumbnail-apply-sequence';
 import { formatBytes } from '../lib/format';
 import { useTheme } from '../lib/theme-context';
 
@@ -218,6 +220,12 @@ export default function ThumbnailQualityScreen() {
 
   const handleApply = useCallback(async () => {
     if (applying || eligibleIds.length === 0) return;
+    // Task 1962 round 4 (Bug 7f): the queue belongs to the account that was
+    // signed in when the ids were selected. A forced sign-out can land during
+    // the awaits below; a late INSERT would put the outgoing account's ids in
+    // the next session's queue. Capture the epoch here and re-check it with no
+    // await between the check and the native call.
+    const epoch = accountEpoch();
     setApplying(true);
     try {
       const q = fromSliderT(sliderValue);
@@ -231,9 +239,18 @@ export default function ThumbnailQualityScreen() {
       // native backup engine landed), so every file failed 404 "no local
       // identifier mapping" → permanent fail (task 0883). Seeding here makes the
       // worker and the eligibility set agree by construction.
-      const localMap = await getRemoteToLocalMap();
-      await seedLocalIdentifierMap(Object.fromEntries(localMap));
-      await BeebeebThumbnails.enqueueApplyQuality(eligibleIds, preset);
+      const outcome = await seedAndEnqueueThumbnailApply(
+        {
+          capturedEpoch: epoch,
+          getRemoteToLocalMap,
+          seedLocalIdentifierMap,
+          enqueue: (ids, qualityPreset) => BeebeebThumbnails.enqueueApplyQuality(ids, qualityPreset),
+          isCurrentEpoch: isCurrentAccountEpoch,
+        },
+        eligibleIds,
+        preset,
+      );
+      if (outcome === 'epoch-advanced') return;
       navigation.navigate('ThumbnailWorker');
     } catch {
       // Non-fatal: native module may be unavailable on Android / Expo Go.

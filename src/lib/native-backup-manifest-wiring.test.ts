@@ -23,6 +23,11 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+// Task 1962 round 4 (Bug 7b) — the call site also passes the thumbnail queue's
+// three files in `preserving` (`manifest.kept.union(...)`), so the needle stops
+// just before that union closes; `manifest.kept` is still what must be passed.
+const PURGE_ALL_CALL = 'PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept';
+
 const IOS = join(import.meta.dir, '../../modules/beebeeb-crypto/ios');
 const engine = readFileSync(join(IOS, 'NativeBackupEngine.swift'), 'utf8');
 const moduleSwift = readFileSync(join(IOS, 'BeebeebCryptoModule.swift'), 'utf8');
@@ -65,7 +70,7 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     const [prep, purgeAll] = order(
       purge,
       'let manifest = NativeBackupEngine.shared.prepareForStoragePurge(',
-      'PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)',
+      PURGE_ALL_CALL,
     );
     expect(prep).toBeGreaterThan(-1);
     expect(purgeAll).toBeGreaterThan(prep);

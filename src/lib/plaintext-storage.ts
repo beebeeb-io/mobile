@@ -61,6 +61,9 @@ export const PROTECTED_LEAF_NAMES = [
   'beebeeb-file-index-cache-v1.json',
   'local-id-map.json',
   'thumbnail_queue.sqlite',
+  // Task 1962 round 4 (7g) — the queue's WAL sidecars.
+  'thumbnail_queue.sqlite-wal',
+  'thumbnail_queue.sqlite-shm',
   'beebeeb-simulator-master-key.txt',
   'NativeBackupStaging',
   'Beebeeb',
