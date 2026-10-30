@@ -301,6 +301,29 @@ describe('android-release-guard.sh (task 1943 M1 / S6, D15 amendment 2026-10-30)
     expect(attrs).toMatch(/^\*\.sh\s+text\s+eol=lf\s*$/m);
   });
 
+  test('a CRLF copy of the script still allows iOS, and still refuses android (fails closed)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bb-d15-crlf-'));
+    try {
+      mkdirSync(join(dir, 'scripts'), { recursive: true });
+      const crlf = join(dir, 'scripts/android-release-guard.sh');
+      writeFileSync(crlf, readFileSync(SCRIPT, 'utf8').replace(/\n/g, '\r\n'));
+      const ios = runGuard({ script: crlf, env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'ios' } });
+      expect({ code: ios.code, out: ios.stdout.includes('allowed') }).toEqual({ code: 0, out: true });
+      expect(runGuard({ script: crlf, args: ['ios'] }).code).toBe(0);
+      expect(runGuard({ script: crlf, env: ANDROID_EAS }).code).not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the iOS exit comes before `set -euo pipefail`', () => {
+    const src = readFileSync(SCRIPT, 'utf8');
+    const iosExit = src.indexOf(`echo "android-release-guard: platform 'ios'`);
+    const setLine = src.search(/^set -euo pipefail$/m);
+    expect(iosExit).toBeGreaterThan(-1);
+    expect(setLine).toBeGreaterThan(iosExit);
+  });
+
   test('an EAS build with no EAS_BUILD_PLATFORM fails closed', () => {
     expectRefused(runGuard({ env: { EAS_BUILD: 'true' } }), 'no build platform (failing closed)');
   });
