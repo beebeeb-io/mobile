@@ -150,6 +150,148 @@ function familiesFromNativeTable(source: string, declaration: string): Record<st
   return entries;
 }
 
+/** Line number (1-based) of a character offset, for failure messages a human can act on. */
+function lineOf(source: string, index: number): number {
+  let line = 1;
+  for (let i = 0; i < index; i++) if (source[i] === '\n') line++;
+  return line;
+}
+
+/**
+ * Blank out comments and string literals, keeping every offset and newline in place.
+ *
+ * The chunk-v2 helpers are read as text, so a call name mentioned in a doc comment or a
+ * message string ("`finish()` takes the handle's state, so `versionId()` MUST be read FIRST")
+ * must never be mistaken for a call. Line comments, nested block comments (both Kotlin and Swift allow nesting), escaped
+ * strings and Kotlin `"""` raw strings are handled. Neither file has a char literal, so `'`
+ * outside a string is left alone.
+ */
+function maskCommentsAndStrings(source: string): string {
+  const out = source.split('');
+  const blank = (from: number, to: number) => {
+    for (let i = from; i < to; i++) if (out[i] !== '\n') out[i] = ' ';
+  };
+  let i = 0;
+  while (i < source.length) {
+    const two = source.slice(i, i + 2);
+    if (two === '//') {
+      const end = source.indexOf('\n', i);
+      const stop = end < 0 ? source.length : end;
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+    if (two === '/*') {
+      let depth = 0;
+      let j = i;
+      while (j < source.length) {
+        if (source.startsWith('/*', j)) {
+          depth++;
+          j += 2;
+        } else if (source.startsWith('*/', j)) {
+          depth--;
+          j += 2;
+          if (depth === 0) break;
+        } else j++;
+      }
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    const triple = source.slice(i, i + 3);
+    if (triple === '"""') {
+      const end = source.indexOf('"""', i + 3);
+      const stop = end < 0 ? source.length : end + 3;
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+    if (source[i] === '"') {
+      let j = i + 1;
+      while (j < source.length && source[j] !== '"') j += source[j] === '\\' ? 2 : 1;
+      const stop = Math.min(j + 1, source.length);
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+    i++;
+  }
+  return out.join('');
+}
+
+/**
+ * The body of the innermost brace block that contains `needle`, with the opening and closing
+ * braces included. `masked` is the masked form (same offsets as `source`), so brace counting
+ * never sees a brace inside a comment or a string.
+ */
+function enclosingBlock(masked: string, needleIndex: number): { start: number; text: string } {
+  let depth = 0;
+  let open = -1;
+  for (let i = 0; i < needleIndex; i++) {
+    if (masked[i] === '{') {
+      depth++;
+      open = i;
+    } else if (masked[i] === '}') {
+      depth--;
+      if (depth < 0) throw new Error(`unbalanced '}' before the needle at offset ${needleIndex}`);
+    }
+  }
+  if (open < 0 || depth === 0) throw new Error(`no enclosing block for the needle at offset ${needleIndex}`);
+  let close = -1;
+  let inner = 1;
+  for (let i = open + 1; i < masked.length; i++) {
+    if (masked[i] === '{') inner++;
+    else if (masked[i] === '}' && --inner === 0) {
+      close = i;
+      break;
+    }
+  }
+  if (close < 0) throw new Error(`unclosed block opened at offset ${open}`);
+  return { start: open, text: masked.slice(open, close + 1) };
+}
+
+/**
+ * Every reason the chunk-v2 helper in `source` reads its decryptor's version id after
+ * `finish()`. Empty means the order is right.
+ *
+ * `finish()` takes the handle's state, so `versionId()` must be read first — after `finish()`
+ * every call throws "handle has been cleared", which on Android turned the version-id
+ * assertion into a per-family exception instead of a recorded failure (fixed in 6b8ec28b).
+ */
+function versionIdOrderProblems(label: string, source: string): string[] {
+  const masked = maskCommentsAndStrings(source);
+  const needle = masked.indexOf('ChunkDecryptorHandle.forPush(');
+  if (needle < 0) return [`${label}: no ChunkDecryptorHandle.forPush( call found`];
+  const { start: bodyStart, text: body } = enclosingBlock(masked, needle);
+  const assigned = /(?:val|let|var)\s+(\w+)\s*=\s*(?:try\s+)?ChunkDecryptorHandle\.forPush\(/.exec(body);
+  if (!assigned) return [`${label}: the chunk-v2 helper does not bind the ChunkDecryptorHandle.forPush result to a name`];
+  const decryptor = assigned[1];
+  const versionIdRe = new RegExp(`\\b${decryptor}\\.versionId\\(\\)`, 'g');
+  const finishRe = new RegExp(`\\b${decryptor}\\.finish\\(\\)`, 'g');
+  const versionIdAt = [...body.matchAll(versionIdRe)].map((match) => match.index ?? 0);
+  const finishAt = [...body.matchAll(finishRe)].map((match) => match.index ?? 0);
+  const problems: string[] = [];
+  if (versionIdAt.length === 0) problems.push(`${label}: never calls ${decryptor}.versionId()`);
+  if (finishAt.length === 0) problems.push(`${label}: never calls ${decryptor}.finish()`);
+  for (const versionId of versionIdAt) {
+    for (const finish of finishAt) {
+      if (versionId >= finish) {
+        const order =
+          `reads ${decryptor}.versionId() at line ${lineOf(source, bodyStart + versionId)} ` +
+          `AFTER ${decryptor}.finish() at line ${lineOf(source, bodyStart + finish)} — ` +
+          `finish() clears the handle, so the version id must be read first`;
+        problems.push(`${label}: ${order}`);
+      }
+    }
+  }
+  return problems;
+}
+
+/** The chunk-v2 KAT source under test; a test-only override lets the red run read the old bytes. */
+const KOTLIN_KAT_UNDER_TEST = process.env.BB_1943_KOTLIN_KAT_UNDER_TEST
+  ? resolve(process.env.BB_1943_KOTLIN_KAT_UNDER_TEST)
+  : join(ROOT, KOTLIN_KAT);
+
 describe('vendored core vectors (task 1943 M1)', () => {
   test('bothBundlesCarryTheVectorsByteForByte', () => {
     const ios = readFileSync(join(ROOT, IOS_VECTORS));
@@ -243,6 +385,20 @@ describe('vendored core vectors (task 1943 M1)', () => {
       path: KOTLIN_KAT,
       isolated: true,
     });
+  });
+
+  test('theAndroidV2HelperReadsVersionIdBeforeFinish', () => {
+    // The v2 KAT bug of 6b8ec28b cannot be shown red on this host: the Android binding needs the
+    // UniFFI .so in an emulator. The order it depends on is textual, so assert it here instead —
+    // same helper shape on both platforms, so the Swift mirror is checked too.
+    const problems = [
+      ...versionIdOrderProblems(
+        'Android CoreVectorsKATTest.kt',
+        readFileSync(KOTLIN_KAT_UNDER_TEST, 'utf8'),
+      ),
+      ...versionIdOrderProblems('Swift CoreVectorsKATTests.swift', readFileSync(join(ROOT, SWIFT_KAT), 'utf8')),
+    ];
+    expect(problems).toEqual([]);
   });
 
   test.skipIf(!HAVE_CORE_REV)('theVendoredBytesMatchCoreAtThePinnedRevision', () => {
