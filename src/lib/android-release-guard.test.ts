@@ -2,19 +2,19 @@
 /**
  * Task 1943 mobile M1 — `scripts/android-release-guard.sh` (spec S6, decision D15).
  *
- * Android ships nothing until task 1943 M7 passes. The script runs from `package.json`'s
- * `eas-build-pre-install` hook on every EAS build and refuses EVERY Android build, any
- * profile. It fails closed: inside an EAS build (any `EAS_BUILD*` variable set) only
- * `EAS_BUILD_PLATFORM=ios` is allowed; `android`, an unset platform and an unknown platform
- * are all refused. There is no evidence-file unlock — the PR that records M7's evidence
- * removes the hook from `eas-build-pre-install`, reviewed.
+ * D15 amendment 2026-10-30 (lead ruling): an Android EAS build is allowed ONLY while the Android
+ * binding is the last Android-verified one: `modules/beebeeb-crypto/CORE_REV` equals the pinned
+ * rev AND the Kotlin binding and both `.so` files hash to their pinned sha256. Any binding bump
+ * (a new CORE_REV or rebuilt artifacts) re-arms the guard without anyone having to remember;
+ * the reviewed M7 PR moves the pins. An EMPTY pin refuses every Android build (how a PR that
+ * changes the Android readers without a binding bump re-arms it). iOS is always allowed; an
+ * unset or unknown platform fails closed. There is no evidence-file unlock.
  *
- * Every test drives the shipped script through `bash` with the `EAS_*` variables EAS sets,
- * and one test copies the script's directory and plants a complete M7 evidence file next to
- * it to prove no repo file can unlock the guard.
+ * Every test drives the shipped script through `bash` with the `EAS_*` variables EAS sets.
+ * Tests that need a different binding copy the script plus the pinned files into a temp tree.
  */
 import { describe, expect, test } from 'bun:test';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -59,22 +59,82 @@ function expectRefused(result: { code: number; stderr: string }, reason: string)
   expect(result.stderr).toContain(reason);
 }
 
-const ANDROID_REASON = 'an Android build';
+
+const BINDING_FILES = [
+  'modules/beebeeb-crypto/CORE_REV',
+  'modules/beebeeb-crypto/android/src/main/java/uniffi/beebeeb_uniffi/beebeeb_uniffi.kt',
+  'modules/beebeeb-crypto/android/src/main/jniLibs/arm64-v8a/libbeebeeb_uniffi.so',
+  'modules/beebeeb-crypto/android/src/main/jniLibs/x86_64/libbeebeeb_uniffi.so',
+];
+
+/** A temp tree holding a copy of the script and the pinned binding files, for mutation cases. */
+function withTree(mutate: (dir: string) => void, run: (script: string) => void) {
+  const dir = mkdtempSync(join(tmpdir(), 'bb-d15-guard-'));
+  try {
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    copyFileSync(SCRIPT, join(dir, 'scripts/android-release-guard.sh'));
+    for (const rel of BINDING_FILES) {
+      mkdirSync(join(dir, rel, '..'), { recursive: true });
+      copyFileSync(join(ROOT, rel), join(dir, rel));
+    }
+    mutate(dir);
+    run(join(dir, 'scripts/android-release-guard.sh'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const ANDROID_EAS = { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'android' };
+
+const ANDROID_REASON = 'not the last Android-verified binding';
 const NO_PLATFORM_REASON = 'no build platform (failing closed)';
 
-describe('android-release-guard.sh (task 1943 M1 / S6)', () => {
-  for (const profile of PROFILES) {
-    test(`android under an EAS build is refused with profile ${profile}`, () => {
-      const result = runGuard({
-        env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'android', EAS_BUILD_PROFILE: profile },
-      });
-      expectRefused(result, ANDROID_REASON);
-    });
-  }
+describe('android-release-guard.sh (task 1943 M1 / S6, D15 amendment 2026-10-30)', () => {
+  test('android at the pinned, Android-verified binding is allowed with every profile', () => {
+    for (const profile of PROFILES) {
+      const result = runGuard({ env: { ...ANDROID_EAS, EAS_BUILD_PROFILE: profile } });
+      expect({ profile, code: result.code, err: result.stderr }).toEqual({ profile, code: 0, err: '' });
+    }
+  });
 
-  test('android is refused under an EAS build with no profile at all', () => {
-    const result = runGuard({ env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'android' } });
-    expectRefused(result, ANDROID_REASON);
+  test('android is refused when CORE_REV is not the pinned rev', () => {
+    withTree(
+      (dir) => writeFileSync(join(dir, BINDING_FILES[0]), '0123456789abcdef0123456789abcdef01234567\n'),
+      (script) => expectRefused(runGuard({ script, env: ANDROID_EAS }), ANDROID_REASON),
+    );
+  });
+
+  test('android is refused when a rebuilt .so does not match its pin (no CORE_REV bump)', () => {
+    withTree(
+      (dir) => writeFileSync(join(dir, BINDING_FILES[2]), 'rebuilt binary'),
+      (script) => expectRefused(runGuard({ script, env: ANDROID_EAS }), ANDROID_REASON),
+    );
+  });
+
+  test('android is refused when the Kotlin binding changed', () => {
+    withTree(
+      (dir) => writeFileSync(join(dir, BINDING_FILES[1]), '// regenerated\n'),
+      (script) => expectRefused(runGuard({ script, env: ANDROID_EAS }), ANDROID_REASON),
+    );
+  });
+
+  test('android fails closed when CORE_REV is missing', () => {
+    withTree(
+      (dir) => rmSync(join(dir, BINDING_FILES[0])),
+      (script) => expectRefused(runGuard({ script, env: ANDROID_EAS }), ANDROID_REASON),
+    );
+  });
+
+  test('an EMPTY pin (re-armed) refuses android even at the current binding', () => {
+    withTree(
+      (dir) => {
+        const p = join(dir, 'scripts/android-release-guard.sh');
+        const src = readFileSync(p, 'utf8').replace(/^ANDROID_VERIFIED_CORE_REV="[0-9a-f]*"$/m, 'ANDROID_VERIFIED_CORE_REV=""');
+        expect(src).toContain('ANDROID_VERIFIED_CORE_REV=""');
+        writeFileSync(p, src);
+      },
+      (script) => expectRefused(runGuard({ script, env: ANDROID_EAS }), 're-armed'),
+    );
   });
 
   test('an EAS build with no EAS_BUILD_PLATFORM fails closed', () => {
@@ -98,37 +158,37 @@ describe('android-release-guard.sh (task 1943 M1 / S6)', () => {
     }
   });
 
-  test('an uppercase ANDROID platform is still refused', () => {
-    const result = runGuard({ env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'ANDROID' } });
-    expectRefused(result, ANDROID_REASON);
+  test('an uppercase ANDROID platform follows the android rule (refused off-pin)', () => {
+    withTree(
+      (dir) => writeFileSync(join(dir, BINDING_FILES[0]), '0123456789abcdef0123456789abcdef01234567\n'),
+      (script) => expectRefused(runGuard({ script, env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'ANDROID' } }), ANDROID_REASON),
+    );
   });
 
   test('outside an EAS build, the positional platform uses the same rule', () => {
-    expectRefused(runGuard({ args: ['android'] }), ANDROID_REASON);
+    expect(runGuard({ args: ['android'] }).code).toBe(0);
     expect(runGuard({ args: ['ios'] }).code).toBe(0);
+    withTree(
+      (dir) => writeFileSync(join(dir, BINDING_FILES[0]), '0123456789abcdef0123456789abcdef01234567\n'),
+      (script) => expectRefused(runGuard({ script, args: ['android'] }), ANDROID_REASON),
+    );
   });
 
   test('outside an EAS build, no platform fails closed', () => {
     expectRefused(runGuard({}), NO_PLATFORM_REASON);
   });
 
-  test('an evidence file in the script directory cannot unlock an Android build', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'bb-1943-guard-'));
-    try {
-      mkdirSync(join(dir, 'scripts'), { recursive: true });
-      copyFileSync(SCRIPT, join(dir, 'scripts/android-release-guard.sh'));
-      mkdirSync(join(dir, 'docs/_qa-evidence/1943-mobile'), { recursive: true });
-      writeFileSync(
-        join(dir, EVIDENCE),
-        ['# M7 evidence — task 1943', '', '## Android M7 evidence', '', '- 33 passed / 0 failed', ''].join('\n'),
-      );
-      const result = runGuard({
-        script: join(dir, 'scripts/android-release-guard.sh'),
-        env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'android' },
-      });
-      expectRefused(result, ANDROID_REASON);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  test('an evidence file cannot unlock an off-pin Android build', () => {
+    withTree(
+      (dir) => {
+        writeFileSync(join(dir, BINDING_FILES[0]), '0123456789abcdef0123456789abcdef01234567\n');
+        mkdirSync(join(dir, 'docs/_qa-evidence/1943-mobile'), { recursive: true });
+        writeFileSync(
+          join(dir, EVIDENCE),
+          ['# M7 evidence — task 1943', '', '## Android M7 evidence', '', '- 33 passed / 0 failed', ''].join('\n'),
+        );
+      },
+      (script) => expectRefused(runGuard({ script, env: ANDROID_EAS }), ANDROID_REASON),
+    );
   });
 });
