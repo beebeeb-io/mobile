@@ -159,5 +159,8 @@ export function folderSharePlan(items: readonly FolderShareItem[]): FolderShareP
  * move is never gated; the rename follows the name half only.
  */
 export function legacyMovePlan(name: NameState, targetName: string | null | undefined): { move: true; rename: boolean } {
-  return { move: true, rename: renameOffer(name, 'unknown') === 'rename' && !!targetName };
+  // Legacy migration rows predate the convention cache: an UNRESOLVED name is
+  // an ordinary plaintext row and may be renamed. Only a KNOWN UpperRepair
+  // name is refused.
+  return { move: true, rename: name !== 'upper_repair' && !!targetName };
 }

@@ -606,7 +606,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           let decision = FileProviderEditPolicy.contentDecision(
             state: state,
             originalName: originalName,
-            deviceLabel: Self.deviceLabel
+            deviceLabel: Self.deviceLabel,
+            uuid: UUID().uuidString.lowercased()
           )
           if case let .uploadAsCopy(copyId, copyName) = decision {
             let copyNameEncrypted = try CryptoBridge.encryptFilename(

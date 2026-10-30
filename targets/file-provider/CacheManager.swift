@@ -123,13 +123,13 @@ final class CacheManager {
     }
     // SF-0002 M2a run 3: idempotent convention columns for databases created
     // before them. NEVER writes PRAGMA user_version (the purge epoch).
-    for sql in FileProviderCacheSchema.addColumnStatements(existing: Set(tableColumns("file_cache"))) {
+    for sql in FileProviderCacheSchema.addColumnStatements(existing: Set(tableColumns())) {
       execute(sql)
     }
   }
 
   /// The columns `pragma table_info` reports for `table`.
-  private func tableColumns(_ table: String) -> [String] {
+  private func tableColumns(_ table: String = "file_cache") -> [String] {
     var stmt: OpaquePointer?
     defer { sqlite3_finalize(stmt) }
     guard prepare("PRAGMA table_info(\(table))", &stmt) else { return [] }

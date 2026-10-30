@@ -44,7 +44,7 @@ enum FileProviderEditPolicy {
         state: FileProviderWriteState,
         originalName: String,
         deviceLabel: String,
-        uuid: String = UUID().uuidString
+        uuid: String
     ) -> FileProviderContentDecision {
         switch state {
         case .writable:

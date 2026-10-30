@@ -36,7 +36,6 @@ import {
 } from '../../modules/beebeeb-crypto'
 import {
   classifyOwnerContent as classifyOwnerContentNative,
-  resolveOwnerNameConvention as resolveOwnerNameConventionNative,
   type BatchNameItem,
   type BatchNameResult,
   type EncryptedData,
@@ -1404,7 +1403,9 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
   const resolveOwnerNameConventionFn = useCallback(
     async (fileId: string, nameEncrypted: string): Promise<OwnerNameConvention | null> => {
       try {
-        const convention = await resolveOwnerNameConventionNative(requireHandleId(), fileId, nameEncrypted)
+        // Imported lazily so module mocks that predate this bridge still load.
+        const { resolveOwnerNameConvention: resolveNative } = await import('../../modules/beebeeb-crypto')
+        const convention = await resolveNative(requireHandleId(), fileId, nameEncrypted)
         if (convention) recordNameConvention(fileId, convention)
         return convention
       } catch {
