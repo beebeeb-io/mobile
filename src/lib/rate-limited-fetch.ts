@@ -5,11 +5,17 @@ type FetchLike = (input: FetchInput, init?: RequestInit) => Promise<Response>;
 type SleepFn = (ms: number) => Promise<void>;
 type NowFn = () => number;
 
-export type RateLimitBucket = 'auth' | 'files' | 'shares' | 'billing' | 'general' | 'external';
+export type RateLimitBucket = 'auth' | 'files' | 'thumbnails' | 'shares' | 'billing' | 'general' | 'external';
 
 const DEFAULT_BUCKET_SPACING_MS: Record<RateLimitBucket, number> = {
   auth: 250,
   files: 120,
+  // Task 2233 item 1 (A1) — thumbnail GETs are not paced against `files`.
+  // Serializing them (120 ms each, waiting for the previous response) meant a
+  // 32-tile Android screen was 32 sequential round trips. The server has its
+  // own 50k/min thumbnail limiter; client concurrency is bounded by the
+  // thumbnail queue (6) and 429/5xx pacing is applied per response below.
+  thumbnails: 0,
   shares: 250,
   // Billing reads (subscription + plans) are a tiny, low-frequency pair that a
   // single screen fires together. Keep them in their own zero-spacing bucket so
@@ -79,6 +85,10 @@ export function bucketForUrl(input: FetchInput): RateLimitBucket {
     // Relative URLs are rare in this app, but the path checks below still work.
   }
 
+  // Thumbnail GETs (`/api/v1/files/{id}/thumbnail[/small|/large]`) have their
+  // own concurrency-bounded, unpaced lane (task 2233 A1). Check before the
+  // generic `/api/v1/files` rule below.
+  if (/\/api\/v1\/files\/[^/]+\/thumbnail(?:\/(?:small|large))?\/?$/.test(pathname)) return 'thumbnails';
   if (pathname.includes('/api/v1/files') || pathname.includes('/api/v1/uploads')) return 'files';
   if (pathname.includes('/api/v1/auth')) return 'auth';
   if (pathname.includes('/api/v1/shares')) return 'shares';
@@ -155,6 +165,15 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
     const bucket = bucketForUrl(input);
     const minSpacing = spacing[bucket] ?? 0;
     if (minSpacing <= 0) {
+      // Zero-spacing buckets do not serialize: the request starts immediately
+      // unless the bucket is currently paused by a 429/Retry-After. Task 2233
+      // round 1 (A1) introduced that pause for `thumbnails` only; `billing`
+      // and `external` behave exactly as on main (no pause gate).
+      if (bucket === 'thumbnails') {
+        const state = stateFor(bucket);
+        const waitMs = Math.max(0, state.nextAt - now());
+        if (waitMs > 0) await sleep(waitMs);
+      }
       const response = await fetchImpl(input, init);
       await applyResponsePacing(bucket, response);
       return response;

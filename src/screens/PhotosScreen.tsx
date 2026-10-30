@@ -39,6 +39,7 @@ import { getPhotoCandidates } from '../lib/photo-index-source';
 import { isStaleAccountError } from '../lib/account-epoch';
 import type { FileEntry } from '../lib/api';
 import { guessMimeType } from '../lib/media';
+import { GRID_GAP, PhotoRow, swatch, thumbnailSignatureForRow } from './photos/photo-grid-row';
 // Task 1687c — the row-level Photos-tab media classification lives in
 // src/lib/photo-candidates.ts (unit-tested): an upload row that is already
 // a media candidate (`is_media`, decodable mime, or a thumbnail) appears in
@@ -136,17 +137,8 @@ function preparePhotoEntries(entries: FileEntry[]): FileEntry[] {
 }
 
 /**
- * Deterministic warm swatch — used as a load-time placeholder behind each
- * thumbnail so the grid never shows blank cells while images are streaming in.
+ * Photo groups — one FlatList section per month.
  */
-function swatch(seed: number): string {
-  // Neutral warm-tone palette: low-saturation, no green or olive. Once
-  // PhotoKit short-circuit (task 0552) is active for camera-roll-backed
-  // photos, this placeholder flashes only briefly for non-PhotoKit files.
-  const colors = ['#e8e2d5', '#d9d2c3', '#dcd5c5', '#d4ccba', '#e1dac9', '#d0c8b6', '#e5dfd0', '#d8d1c0'];
-  return colors[seed % colors.length] ?? '#e8e2d5';
-}
-
 interface PhotoGroup {
   /** "September 2025" */
   label: string;
@@ -201,7 +193,6 @@ function normalizeCreatedAt(value: string | null | undefined): string | null {
 // ---------------------------------------------------------------------------
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
-const GRID_GAP = 2;
 const DEFAULT_COLS = DEFAULT_PHOTO_GRID_COLUMNS;
 const SECTION_HEADER_HEIGHT = 28;
 const LIST_FOOTER_HEIGHT = 12;
@@ -426,207 +417,6 @@ function firstVisiblePhotoId(items: PhotoListItem[], visibleIndexes: number[]): 
 function findPhotoItemIndex(items: PhotoListItem[], photoId: string): number {
   return items.findIndex((item) => item.type === 'row' && item.photos.some((photo) => photo.id === photoId));
 }
-
-// ---------------------------------------------------------------------------
-// Photo cell
-// ---------------------------------------------------------------------------
-
-const PhotoCell = React.memo(function PhotoCell({
-  fileId,
-  hasThumbnail,
-  loadThumbnail,
-  seed,
-  isFromBackup,
-  localAssetUri,
-  mimeType,
-  blurhash,
-  onThumbnailUnavailable,
-  onPress,
-  accessibilityLabel,
-  cellSize,
-  columns,
-  isVideo,
-  isSelected,
-  selectMode,
-  onLongPress,
-  isLocked = false,
-}: {
-  fileId: string;
-  hasThumbnail?: boolean;
-  loadThumbnail: boolean;
-  seed: number;
-  isFromBackup: boolean;
-  localAssetUri?: string | null;
-  mimeType?: string | null;
-  blurhash?: string | null;
-  onThumbnailUnavailable: (fileId: string) => void;
-  onPress?: () => void;
-  accessibilityLabel: string;
-  cellSize: number;
-  columns: number;
-  isVideo: boolean;
-  isSelected: boolean;
-  selectMode: boolean;
-  onLongPress?: () => void;
-  /** Flow iOS-core issue 3 — draw the lock placeholder instead of an image. */
-  isLocked?: boolean;
-}) {
-  const { colors: c } = useTheme();
-  const showOverlay = columns <= 4;
-  const videoBadgeSize = columns <= 4 ? 22 : 18;
-  return (
-    <TouchableOpacity
-      activeOpacity={0.7}
-      onPress={onPress}
-      onLongPress={onLongPress}
-      delayLongPress={250}
-      accessibilityRole="button"
-      accessibilityState={selectMode ? { selected: isSelected } : undefined}
-      accessibilityLabel={accessibilityLabel}
-      style={{ width: cellSize, height: cellSize }}
-    >
-      <ThumbnailImage
-        fileId={fileId}
-        hasThumbnail={hasThumbnail}
-        loadThumbnail={loadThumbnail}
-        localAssetUri={localAssetUri}
-        mimeType={mimeType}
-        blurhash={blurhash}
-        onUnavailable={onThumbnailUnavailable}
-        placeholderColor={swatch(seed)}
-        style={StyleSheet.absoluteFill}
-        accessibilityLabel={accessibilityLabel}
-      />
-      {isLocked ? (
-        <View
-          testID={`photo-tile-locked-${fileId}`}
-          style={[StyleSheet.absoluteFill, styles.lockedTile, { backgroundColor: c.paper2 }]}
-          pointerEvents="none"
-        >
-          <Icon name="lock" size={columns <= 4 ? 20 : 14} color={c.ink3} />
-        </View>
-      ) : null}
-      {showOverlay && isFromBackup && (
-        <View style={[styles.originBadge, { backgroundColor: c.amber }]}>
-          <Ionicons name="camera" size={10} color={c.ink} />
-        </View>
-      )}
-      {isVideo ? (
-        <View
-          style={[
-            styles.videoBadge,
-            {
-              width: videoBadgeSize,
-              height: videoBadgeSize,
-              borderRadius: videoBadgeSize / 2,
-            },
-          ]}
-        >
-          <Ionicons name="play" size={columns <= 4 ? 12 : 10} color="#FFFFFF" />
-        </View>
-      ) : null}
-      {selectMode ? (
-        <>
-          {isSelected ? <View style={styles.selectionOverlay} pointerEvents="none" /> : null}
-          <View
-            style={[
-              styles.selectionBadge,
-              {
-                borderColor: isSelected ? c.amber : 'rgba(255,255,255,0.8)',
-                backgroundColor: isSelected ? c.amber : 'rgba(0,0,0,0.35)',
-              },
-            ]}
-            pointerEvents="none"
-          >
-            {isSelected ? <Ionicons name="checkmark" size={14} color={c.ink} /> : null}
-          </View>
-        </>
-      ) : null}
-    </TouchableOpacity>
-  );
-});
-
-const PhotoRow = React.memo(function PhotoRow({
-  photos,
-  photosFolderId,
-  activeThumbnailIds,
-  localAssetMap,
-  decryptedNames,
-  decryptedMimeTypes,
-  onThumbnailUnavailable,
-  onOpenPhoto,
-  onTogglePhoto,
-  onLongPressPhoto,
-  selectedIds,
-  selectMode,
-  columns,
-  cellSize,
-  seedOffset,
-  lockedIds,
-  lockStateReady,
-}: {
-  photos: FileEntry[];
-  photosFolderId: string | null;
-  activeThumbnailIds: Set<string>;
-  localAssetMap: Map<string, string>;
-  decryptedNames: Record<string, string>;
-  decryptedMimeTypes: Record<string, string>;
-  onThumbnailUnavailable: (fileId: string) => void;
-  onOpenPhoto: (entry: FileEntry) => void;
-  onTogglePhoto: (entry: FileEntry) => void;
-  onLongPressPhoto: (entry: FileEntry) => void;
-  selectedIds: Set<string>;
-  selectMode: boolean;
-  columns: number;
-  cellSize: number;
-  seedOffset: number;
-  lockedIds: ReadonlySet<string>;
-  lockStateReady: boolean;
-}) {
-  return (
-    <View style={[styles.photoRow, { height: cellSize + GRID_GAP }]}>
-      {photos.map((photo, i) => {
-        // If this photo was backed up from camera roll, use its local asset URI
-        const localId = localAssetMap.get(photo.id);
-        const localAssetUri = localId ? `ph://${localId}` : null;
-        const mimeType = decryptedMimeTypes[photo.id] ?? mediaMimeType(photo);
-        const isVideo = !!mimeType?.startsWith('video/');
-        const mediaLabel = isVideo ? 'Video' : 'Photo';
-        const isSelected = selectedIds.has(photo.id);
-        // Flow iOS-core issue 3 — a locked photo shows no image of any kind.
-        const gated = lockAwareThumbnailFields(
-          photo.id,
-          { localAssetId: localAssetUri, blurhash: photo.blurhash },
-          lockedIds,
-          lockStateReady,
-        );
-        return (
-          <PhotoCell
-            key={photo.id}
-            fileId={photo.id}
-            hasThumbnail={photo.has_thumbnail}
-            loadThumbnail={!gated.hideThumbnail && (activeThumbnailIds.size === 0 || activeThumbnailIds.has(photo.id))}
-            seed={seedOffset + i}
-            isFromBackup={photosFolderId !== null && photo.parent_id === photosFolderId}
-            localAssetUri={gated.localAssetId}
-            mimeType={mimeType}
-            blurhash={gated.blurhash}
-            isLocked={gated.isLocked}
-            onThumbnailUnavailable={onThumbnailUnavailable}
-            accessibilityLabel={decryptedNames[photo.id] ? `${mediaLabel}: ${decryptedNames[photo.id]}` : mediaLabel}
-            onPress={() => (selectMode ? onTogglePhoto(photo) : onOpenPhoto(photo))}
-            onLongPress={() => onLongPressPhoto(photo)}
-            cellSize={cellSize}
-            columns={columns}
-            isVideo={isVideo}
-            isSelected={isSelected}
-            selectMode={selectMode}
-          />
-        );
-      })}
-    </View>
-  );
-});
 
 // ---------------------------------------------------------------------------
 // Device photos banner — shows local-library count when backup is enabled
@@ -2008,12 +1798,13 @@ export default function PhotosScreen() {
       );
     }
 
+    const activeIds = activeThumbnailIds.size > 0 ? activeThumbnailIds : initialThumbnailIds;
     return (
       <PhotoRow
         photos={item.photos}
         seedOffset={item.seedOffset}
         photosFolderId={photosFolderId}
-        activeThumbnailIds={activeThumbnailIds.size > 0 ? activeThumbnailIds : initialThumbnailIds}
+        thumbnailSignature={thumbnailSignatureForRow(item.photos, activeIds)}
         localAssetMap={photoKitAssetMap}
         decryptedNames={decryptedNames}
         decryptedMimeTypes={decryptedMimeTypes}
@@ -2323,7 +2114,7 @@ export default function PhotosScreen() {
                 scrollEventThrottle={16}
                 scrollEnabled={!isPinching}
                 removeClippedSubviews
-                initialNumToRender={12}
+                initialNumToRender={6}
                 maxToRenderPerBatch={8}
                 updateCellsBatchingPeriod={80}
                 windowSize={5}

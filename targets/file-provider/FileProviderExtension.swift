@@ -400,7 +400,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         let owned = try self.masterKey()
         let masterKey = owned.handle
-        let fileId = UUID().uuidString
+        // SF-0002 part 1: Swift's uuidString is uppercase, and the same id
+        // string is the bytes of every key derivation below. ApiClient sends
+        // `fileId.lowercased()` as `file_id`, and every reader derives from
+        // that stored lowercase id, so mint it lowercase ONCE here.
+        let fileId = UUID().uuidString.lowercased()
         let nameEncrypted = try CryptoBridge.encryptFilename(
           masterKeyHandle: masterKey,
           fileId: fileId,

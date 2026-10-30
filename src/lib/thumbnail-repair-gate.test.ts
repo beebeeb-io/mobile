@@ -85,8 +85,8 @@ mock.module('./encrypted-download', () => ({
 }));
 
 mock.module('./thumbnail-cache', () => ({
+  forgetCachedThumbnailName: () => {},
   cacheThumbnail: async () => '/doc/thumb',
-  cacheThumbnailBase64: async () => '/doc/thumb',
   enqueueThumbnailLoad: async (_id, fn) => fn(),
   getCachedThumbnail: async () => null,
 }));
