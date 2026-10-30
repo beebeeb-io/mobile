@@ -19,11 +19,13 @@
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
+import { Platform } from 'react-native';
 import { gatedPlaintextWrite } from './plaintext-gate';
 
 import { notePlaintextPathCreated } from './plaintext-storage';
 import { THUMB_CACHE_DIR_NAME, type ThumbnailVariant } from './thumbnail-policy';
 import { accountEpoch, onAccountEpochAdvance, type AccountEpoch } from './account-epoch';
+import { sharedFileKeyIsLoaded } from './shared-folder-keys';
 import { getModernThumbnailFs } from './thumbnail-fs-modern';
 import {
   THUMBNAIL_LOAD_CANCELLED,
@@ -708,10 +710,22 @@ export function enqueueThumbnailLoad(
 ): Promise<ThumbnailLoadResult> {
   // MB-0002 — the queue is pure JS, not Android-only. iOS shares it for files
   // shared with you (their key lives in native memory, so the loader decrypts
-  // through the callback); iOS files of your own still go through the native
-  // ThumbnailService and never reach this queue. Android is unchanged.
+  // through the native handle callback). Android is unchanged.
   const prefetch = options.prefetch === true;
   if (signal?.aborted) return Promise.resolve(THUMBNAIL_LOAD_CANCELLED);
+
+  // MB-0002 round 2 — enforced, not merely assumed: on iOS a file of your own
+  // has its file key in native memory only, and no JS loader can read it
+  // without exporting it. Refuse such a job BEFORE the loader runs (so it can
+  // never call `getFileKeyBytes`/`setFileKey`) and resolve "unavailable"; the
+  // caller keeps using the native ThumbnailService. Only a foreign shared file
+  // whose key is already loaded natively may use the queue on iOS.
+  // `sharedFileKeyIsLoaded` is the native shared-key store, which only ever
+  // holds foreign shared keys: it is the routing predicate the hook uses too,
+  // and it does not depend on the JS tree map being hydrated yet.
+  if (Platform.OS === 'ios' && !sharedFileKeyIsLoaded(fileId)) {
+    return Promise.resolve(null);
+  }
 
   const existing = jobsByFileId.get(fileId);
   if (existing) return joinJob(existing, signal, prefetch);

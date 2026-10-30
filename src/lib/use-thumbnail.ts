@@ -46,9 +46,10 @@ const ThumbnailServiceNative = requireOptionalNativeModule<{
  *
  * It exists because there was nowhere for them to migrate to: `useThumbnail`
  * covers render sites, but a plain async function had only the legacy
- * `fetchDecryptedThumbnailUri`, which throws unconditionally on iOS since the
- * BeebeebThumbnails migration. Those callers wrapped it in try/catch, so the
- * throw turned into a silently missing thumbnail rather than an error.
+ * `fetchDecryptedThumbnailUri`, which on iOS refuses a raw JS file key (only the
+ * native handle callback of a foreign shared file is accepted) and so cannot
+ * serve a file of your own. Those callers wrapped it in try/catch, so the
+ * refusal turned into a silently missing thumbnail rather than an error.
  *
  * Same routing as the hook: iOS through the native ThumbnailService actor
  * (PhotoKit-first, source-aware cache, single-flight), everything else through
@@ -192,9 +193,28 @@ export function useThumbnail(
         return;
       }
 
-      // Android (and the unlikely case where the iOS module is unregistered):
-      // fall back to the existing fetch path. This preserves Android behaviour
-      // exactly until the Kotlin worker lands.
+      // iOS with the native `ThumbnailService` unregistered: a file of your own
+      // has no reader in JS — its file key stays in native memory — so this
+      // branch must never fall through to the raw-key loader below (that exported
+      // the key only to be refused again). Serve a cache hit; otherwise report
+      // unavailable, exactly as before MB-0002.
+      if (Platform.OS === 'ios') {
+        getCachedThumbnail(fileId)
+          .then((cachedUri) => {
+            if (cancelled) return;
+            if (cachedUri) {
+              recordRuntimeTrace('thumbnail.hook.ios_cache_hit', { fileId });
+              setState({ uri: cachedUri, source: 'cache', failed: false });
+              return;
+            }
+            fail();
+          })
+          .catch(fail);
+        return;
+      }
+
+      // Android: fall back to the existing fetch path. This preserves Android
+      // behaviour exactly until the Kotlin worker lands.
       const cameraRollUri = (() => {
         const local = getLocalIdentifier(fileId);
         return local ? `ph://${local}` : null;

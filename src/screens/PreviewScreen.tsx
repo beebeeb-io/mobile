@@ -781,9 +781,9 @@ async function loadNormalPreviewThumbnail(
     const fileKey = sharedFileKeyIsLoaded(entry.id)
       ? (nonce: Uint8Array, ciphertext: Uint8Array) => handleDecryptChunk(sharedMasterHandleId(), entry.id, nonce, ciphertext)
       : await getFileKeyBytes(entry.id);
-    // 1321 — was fetchDecryptedThumbnailUri, which throws unconditionally on
-    // iOS since the BeebeebThumbnails migration. The catch below turned that
-    // into a silently missing preview thumbnail.
+    // 1321 — was fetchDecryptedThumbnailUri, which on iOS refuses a raw JS file
+    // key (own files are read only by the native ThumbnailService). The catch
+    // below turned that refusal into a silently missing preview thumbnail.
     const remote = await fetchThumbnailUriOnce(entry.id, fileKey, { signal });
     throwIfPreviewAborted(signal);
     return remote ? { uri: remote, kind: 'thumbnail', source: 'remote' } : null;
