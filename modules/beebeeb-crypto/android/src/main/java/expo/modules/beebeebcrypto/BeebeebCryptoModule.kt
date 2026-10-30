@@ -980,7 +980,10 @@ class BeebeebCryptoModule : Module() {
     AsyncFunction("folderLinkRecoverKc") { masterId: Int, folderId: Int, wrapped: ByteArray, shareId: String ->
       SharedKeyOps.recoverKc(sharedMaster(masterId), folderId, wrapped, shareId)
     }
-    AsyncFunction("sharedKeysClear") { sharedKeys.clear() }
+    AsyncFunction("sharedKeysClear") {
+      sharedKeys.clear()
+      SharedKeyOps.ownerConventions.clear()
+    }
 
     // ─────────────────────────────── keychain / vault ────────────────────────
 

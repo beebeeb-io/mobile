@@ -19,8 +19,17 @@ enum SharedKeyError: LocalizedError {
     }
 }
 
+/// Whether a name batch may fall through to the owner resolver. Pure so the
+/// boundary is testable without native keys: a table hit is final; a table
+/// failure on a FOREIGN shared file is final; a table failure on this account's
+/// own file may be retried by the owner resolver.
+enum NameResolutionPlan: Equatable {
+    case tableFinal, ownerResolve, errorFinal
+}
+
 enum SharedKeyOps {
     static let registry = SharedKeyRegistry<FileKeyHandle>()
+    static let ownerConventions = OwnerConventionCache()
     static func folder(_ id: Int, registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> (handle: FileKeyHandle, folderId: String) {
         guard let folder = registry.folder(id) else { throw SharedKeyError.locked }
         return folder
@@ -78,6 +87,53 @@ enum SharedKeyOps {
         guard let key = registry.file(fileId) else { throw SharedKeyError.locked }
         return try wire(master.wrapOwnerFileKey(itemId: fileId, inner: key))
     }
+    // MARK: - SF-0002 owner resolvers
+
+    /// Resolve this account's per-file key from the stored name pair, reporting the
+    /// id convention. The returned key can only read; the convention is cached (never
+    /// the key) so a read-only decision survives the read that discovered it.
+    static func resolveOwnerName(master: MasterKeyHandle, fileId: String, nameEncrypted: String,
+                                 registry: SharedKeyRegistry<FileKeyHandle> = registry)
+        throws -> (readKey: OwnerReadKey, convention: OwnerKeyConvention) {
+        let resolved = try master.ownerFileKeyForName(fileId: fileId, nameEncrypted: nameEncrypted)
+        ownerConventions.storeName(
+            resolved.convention, epoch: registry.generation, fileId: fileId, nameEncrypted: nameEncrypted)
+        return (OwnerReadKey(resolved.key), resolved.convention)
+    }
+
+    /// Resolve one content version independently of the name: the first frame decides
+    /// which id convention that version's key came from.
+    static func resolveOwnerContent(master: MasterKeyHandle, fileId: String, firstFrame: Data,
+                                    registry: SharedKeyRegistry<FileKeyHandle> = registry)
+        throws -> (readKey: OwnerReadKey, convention: OwnerKeyConvention) {
+        let resolved = try master.ownerFileKeyForContent(fileId: fileId, firstChunkFrame: firstFrame)
+        ownerConventions.storeContent(
+            resolved.convention, epoch: registry.generation, fileId: fileId,
+            objectVersionId: firstFrame.base64EncodedString())
+        return (OwnerReadKey(resolved.key), resolved.convention)
+    }
+
+    /// The only pin source for an owned file: authenticated metadata under the owner's
+    /// resolved key. Never a server header.
+    static func readContentPin(master: MasterKeyHandle, fileId: String, nameEncrypted: String,
+                               registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> ContentPin {
+        let resolved = try resolveOwnerName(master: master, fileId: fileId, nameEncrypted: nameEncrypted,
+                                            registry: registry)
+        do {
+            let metadata = try resolved.readKey.decryptFileMetadata(nameEncrypted: nameEncrypted)
+            return ContentPin(chunkFormat: metadata.chunkFormat, nameConvention: resolved.convention)
+        } catch {
+            throw ContentPinUnverifiable(underlying: error)
+        }
+    }
+
+    /// The shared-folder boundary as a pure decision.
+    static func nameResolutionPlan(tablePresent: Bool, tableFailed: Bool, isForeign: Bool) -> NameResolutionPlan {
+        if tablePresent && !tableFailed { return .tableFinal }
+        if isForeign { return .errorFinal }
+        return .ownerResolve
+    }
+
     static func fileKey(master: MasterKeyHandle, fileId: String,
                         registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> FileKeyHandle {
         try pickKey(table: registry.file(fileId)) { try master.deriveFileKey(fileId: Data(fileId.utf8)) }
@@ -123,6 +179,7 @@ enum SharedKeyOps {
         return base64url(candidate)
     }
     static func decryptNames(master: MasterKeyHandle, items: [BatchNameItem],
+                             foreignFileIds: Set<String> = [],
                              registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> [BatchNameResult] {
         var fromTable: [(index: Int, value: BatchNameResult)] = []
         var remaining: [BatchNameItem] = [], indices: [Int] = []
@@ -132,8 +189,19 @@ enum SharedKeyOps {
                     let value = try key.decryptNameMetadata(nameEncrypted: item.nameEncrypted)
                     fromTable.append((index, BatchNameResult(name: value.name, mimeType: value.mimeType, error: nil)))
                 } catch {
-                    // A present but wrong table key is an error; never retry with the master.
-                    fromTable.append((index, BatchNameResult(name: nil, mimeType: nil, error: String(describing: error))))
+                    // A present but wrong table key is final for a FOREIGN shared file. For
+                    // this account's own file it may be the uppercase-repair convention,
+                    // which only the owner resolver can authenticate — retry there.
+                    if nameResolutionPlan(tablePresent: true, tableFailed: true,
+                                          isForeign: foreignFileIds.contains(item.fileId)) == .ownerResolve,
+                       let owner = try? resolveOwnerName(
+                            master: master, fileId: item.fileId, nameEncrypted: item.nameEncrypted,
+                            registry: registry),
+                       let value = try? owner.readKey.decryptNameMetadata(nameEncrypted: item.nameEncrypted) {
+                        fromTable.append((index, BatchNameResult(name: value.name, mimeType: value.mimeType, error: nil)))
+                    } else {
+                        fromTable.append((index, BatchNameResult(name: nil, mimeType: nil, error: String(describing: error))))
+                    }
                 }
             } else { remaining.append(item); indices.append(index) }
         }

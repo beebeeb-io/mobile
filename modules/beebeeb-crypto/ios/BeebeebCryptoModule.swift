@@ -2802,7 +2802,10 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("folderLinkRecoverKc") { [self] (masterId: Int, folderId: Int, wrapped: Data, shareId: String) throws -> String? in
       try SharedKeyOps.recoverKc(master: self.sharedMaster(masterId), folderId: folderId, wrapped: wrapped, shareId: shareId)
     }
-    AsyncFunction("sharedKeysClear") { [self] () in self.sharedKeys.clear() }
+    AsyncFunction("sharedKeysClear") { [self] () in
+      self.sharedKeys.clear()
+      SharedKeyOps.ownerConventions.clear()
+    }
 
     AsyncFunction("openRequestUpload") { (rPriv: Data, ePub: Data, wrappedKey: Data) throws -> Data in
       // Recover the content key C for a request-uploaded file (owner decrypt).
