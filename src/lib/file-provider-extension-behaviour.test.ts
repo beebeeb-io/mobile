@@ -1209,7 +1209,11 @@ const REAL_SOURCES = [
   'SyncEngine.swift',
   'CachedHandleIdentity.swift',
   'CryptoBridge.swift',
-].map((file) => join(EXT, file));
+].map((file) => join(EXT, file)).concat([
+  // Task 1962 r4: the File Provider target also compiles this shared helper (plugins/file-provider/withFileProvider.js
+  // and the committed pbxproj list it); without it here the harness cannot compile FileProviderExtension.swift.
+  join(ROOT, 'modules', 'beebeeb-crypto', 'ios', 'LegacyURLCacheCleanup.swift'),
+]);
 
 let compiled: { dir: string; binary: string } | null = null;
 
