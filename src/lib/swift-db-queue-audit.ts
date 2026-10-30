@@ -276,6 +276,9 @@ export function auditDbQueue(source: string): DbQueueAudit {
       if (isDbQueueReceiver(receiver) && name !== 'asyncAfter') return { kind: 'dbQueue', what: `${receiver.split(/\s+/).pop()}.${name}` };
       return { kind: 'hop', what: `${receiver.split(/\s+/).pop()}.${name}` };
     }
+    // LD-0002 rule 5: the helper enqueues the write on dbQueue (under a short
+    // background assertion); its closure is a dbQueue critical section.
+    if (name === 'runBackgroundCompletionWrite') return { kind: 'dbQueue', what: name };
     if (SYNC_CALLEES.has(name) || /^withUnsafe/.test(name)) return { kind: 'sync', what: name };
     return { kind: 'hop', what: chain };
   };

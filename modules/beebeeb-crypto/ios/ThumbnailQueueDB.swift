@@ -16,6 +16,11 @@ public final class ThumbnailQueueDB {
 
     private var db: OpaquePointer?
     private let serialQueue = DispatchQueue(label: "io.beebeeb.thumbnail.queue-db")
+    /// LD-0002 rule 2(b): published under its own lock so the background-time
+    /// expiry handler can `sqlite3_interrupt` an in-flight statement from any
+    /// thread (the pointer is only ever *set* on `serialQueue`).
+    private let interruptLock = NSLock()
+    private var interruptibleConnection: OpaquePointer?
     /// `nil` = the app's Documents directory. The harness passes a temp
     /// directory; production never does.
     private let directoryOverride: URL?
@@ -33,6 +38,39 @@ public final class ThumbnailQueueDB {
 
     deinit {
         if let db { sqlite3_close_v2(db) }
+    }
+
+    /// Must be called on `serialQueue` (or before the queue can see the
+    /// connection, as in `deinit`). Publishes the pointer for `interrupt`.
+    private func setConnection(_ connection: OpaquePointer?) {
+        db = connection
+        interruptLock.lock()
+        interruptibleConnection = connection
+        interruptLock.unlock()
+    }
+
+    /// LD-0002 rule 2(b): abort the statement currently executing on this
+    /// connection. Safe from any thread; a no-op when nothing is open.
+    public func interruptInFlightStatement() {
+        interruptLock.lock()
+        let connection = interruptibleConnection
+        interruptLock.unlock()
+        if let connection { sqlite3_interrupt(connection) }
+    }
+
+    /// LD-0002 rule 2(c): wait (bounded) for the current serial block to exit.
+    /// Never call this from `serialQueue` itself.
+    public func waitForQuiet(timeout: TimeInterval) -> Bool {
+        let semaphore = DispatchSemaphore(value: 0)
+        serialQueue.async { semaphore.signal() }
+        return semaphore.wait(timeout: .now() + timeout) == .success
+    }
+
+    /// LD-0002 rule 6: no queue write while the backup execution gate is
+    /// closed (background time ended). The rows stay queued for the next
+    /// foreground or background assertion.
+    private func admitsGate() -> Bool {
+        BackupExecutionGate.shared.canStartSQLiteWork
     }
 
     // MARK: - Schema
@@ -66,10 +104,10 @@ public final class ThumbnailQueueDB {
         guard sqlite3_open(dbURL.path, &handle) == SQLITE_OK, let handle else {
             NSLog("[ThumbnailQueueDB] failed to open \(dbURL.path)")
             if let handle { sqlite3_close_v2(handle) }
-            db = nil
+            setConnection(nil)
             return false
         }
-        db = handle
+        setConnection(handle)
         // Task 1962 round 4 (7a/7c): secure_delete zeroes deleted cells so the
         // purge's DELETE leaves none of the outgoing account's ids in the file.
         let configured = exec("PRAGMA journal_mode = WAL;")
@@ -90,7 +128,7 @@ public final class ThumbnailQueueDB {
             && exec("CREATE INDEX IF NOT EXISTS idx_queue_state_next ON queue_items(state, next_attempt_at);")
         if !configured {
             sqlite3_close_v2(handle)
-            db = nil
+            setConnection(nil)
             return false
         }
         // Task 1962 round 5 (P2.5) — these three files are created lazily by
@@ -153,8 +191,8 @@ public final class ThumbnailQueueDB {
             if deleted, busy == 0, remaining == 0, free == 0 { return 0 }
             // 7d — reset failed: close BEFORE unlinking, then unlink all
             // three. The next use reopens lazily (7a).
+            setConnection(nil)
             sqlite3_close_v2(handle)
-            db = nil
             return removeDatabaseFiles()
         }
     }
@@ -233,7 +271,7 @@ public final class ThumbnailQueueDB {
     /// Insert OR ignore (existing entries preserved with original quality).
     public func enqueue(fileIds: [String], qualityPreset: String) {
         serialQueue.sync {
-            guard ensureOpen() else { return }
+            guard admitsGate(), ensureOpen() else { return }
             let now = Int64(Date().timeIntervalSince1970 * 1000)
             exec("BEGIN;")
             for id in fileIds {
@@ -261,7 +299,7 @@ public final class ThumbnailQueueDB {
     /// Bump attempt counter, set backoff or mark perm-fail.
     public func recordFailure(fileId: String, category: ThumbnailErrorCategory, message: String) {
         serialQueue.sync {
-            guard ensureOpen() else { return }
+            guard admitsGate(), ensureOpen() else { return }
             guard let item = fetchInternal(fileId: fileId) else { return }
             let nextAttempts = item.attempts + 1
             let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -300,7 +338,7 @@ public final class ThumbnailQueueDB {
     public func popReady(limit: Int) -> [Item] {
         var out: [Item] = []
         serialQueue.sync {
-            guard ensureOpen() else { return }
+            guard admitsGate(), ensureOpen() else { return }
             let now = Int64(Date().timeIntervalSince1970 * 1000)
             var stmt: OpaquePointer?
             let sql = """
@@ -369,7 +407,7 @@ public final class ThumbnailQueueDB {
 
     private func mutate(_ sql: String, _ args: [Any]) {
         serialQueue.sync {
-            guard ensureOpen() else { return }
+            guard admitsGate(), ensureOpen() else { return }
             bindAndStep(sql, args)
         }
     }

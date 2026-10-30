@@ -145,6 +145,15 @@ export function auditWriteFence(source: string): WriteFenceAudit {
     const open = m.index + m[0].length - 1;
     closures.push({ name: m[1], open, close: matchBrace(code, open) });
   }
+  // LD-0002: a background-URLSession completion write is a critical section too.
+  // The write closure is handed to `runBackgroundCompletionWrite`, which runs
+  // it on `dbQueue` under a short background assertion (rule 5); the fence
+  // check inside it is the same `admitsChunkCallback`/`admitsWrite`.
+  const completionRe = /\brunBackgroundCompletionWrite\([^)]*\)\s*\{/g;
+  for (let m = completionRe.exec(code); m; m = completionRe.exec(code)) {
+    const open = m.index + m[0].length - 1;
+    closures.push({ name: 'completion', open, close: matchBrace(code, open) });
+  }
   const inClosure = (pos: number) => closures.some((c) => c.open < pos && pos < c.close);
 
   // ---- 1. writer functions

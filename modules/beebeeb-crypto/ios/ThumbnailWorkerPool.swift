@@ -360,7 +360,12 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
         // or resumed worker must not start work for the outgoing account.
         let mayPump = purgeGate.allowsPump
         stateLock.unlock()
+        // LD-0002 rule 6: no queue pop/claim while the backup execution gate
+        // is closed (background time ended; SQLite must go quiet).
         if isPaused || !mayPump { return }
+        // LD-0002 rule 6: no queue pop/claim while the backup execution gate
+        // is closed (background time ended; SQLite must go quiet).
+        guard BackupExecutionGate.shared.canStartSQLiteWork else { return }
         let capacity = queue.maxConcurrentOperationCount - queue.operationCount
         guard capacity > 0 else { return }
         let ready = ThumbnailQueueDB.shared.popReady(limit: capacity)
@@ -394,6 +399,9 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
 
     /// Execute a single thumbnail regeneration pipeline with a 45-second deadline.
     private func runOne(item: ThumbnailQueueDB.Item, generation: UInt64) async {
+        // LD-0002 rule 6: do not even start regenerating when the gate closed
+        // after this item was popped; its DB writes are refused too.
+        guard BackupExecutionGate.shared.canStartSQLiteWork else { return }
         let slotIndex = self.claimSlot(fileId: item.fileId) ?? -1
         let startedAt = Date()
         var success = false
