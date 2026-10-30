@@ -21,6 +21,14 @@ enum CryptoBridge {
     let mimeType: String?
   }
 
+  /// SF-0002 M2a run 3: a name read through the owner resolver, with the id
+  /// convention it authenticated under (`string` / `binary` / `upper_repair`).
+  struct OwnerDecryptedName {
+    let name: String
+    let mimeType: String?
+    let convention: String
+  }
+
   // MARK: - Key ownership (task 1594 round 2, F3)
 
   /// The vault key's proven owner (`BeebeebCryptoModule.mirrorKeyOwner`) and
@@ -96,6 +104,41 @@ enum CryptoBridge {
       fileId: fileId,
       nameEncrypted: nameEncrypted
     ).name
+  }
+
+  /// The owner name resolver, for an owned row. Reports the exact convention
+  /// the ciphertext authenticated under; the key never leaves the handle.
+  static func resolveOwnerNameWithMime(
+    masterKeyHandle: MasterKeyHandle,
+    fileId: String,
+    nameEncrypted: String
+  ) throws -> OwnerDecryptedName {
+    let resolved = try masterKeyHandle.ownerFileKeyForName(fileId: fileId, nameEncrypted: nameEncrypted)
+    let meta = try resolved.key.decryptNameMetadata(nameEncrypted: nameEncrypted)
+    let convention: String
+    switch resolved.convention {
+    case .string: convention = "string"
+    case .binary: convention = "binary"
+    case .upperRepair: convention = "upper_repair"
+    }
+    return OwnerDecryptedName(name: meta.name, mimeType: meta.mimeType, convention: convention)
+  }
+
+  /// SF-0002 M2a run 3: classify one owned content version from its first
+  /// chunk frame. Returns `string`, `binary` or `upper_repair`; nil when the
+  /// frame does not authenticate.
+  static func classifyOwnerContent(
+    masterKeyHandle: MasterKeyHandle,
+    fileId: String,
+    firstChunkFrame: Data
+  ) -> String? {
+    guard let resolved = try? masterKeyHandle.ownerFileKeyForContent(
+      fileId: fileId, firstChunkFrame: firstChunkFrame) else { return nil }
+    switch resolved.convention {
+    case .string: return "string"
+    case .binary: return "binary"
+    case .upperRepair: return "upper_repair"
+    }
   }
 
   static func decryptNameWithMime(

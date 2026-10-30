@@ -1318,6 +1318,32 @@ private func retryFileProviderCacheReadyAndBumpOffCooperativePool(
   }
 }
 
+/// SF-0002 M2a run 3: the convention columns, added idempotently to databases
+/// created before them. NEVER writes `PRAGMA user_version` (the purge epoch).
+private let fileProviderCacheConventionColumns: [(String, String)] = [
+  ("name_convention", "TEXT"),
+  ("content_convention", "TEXT"),
+  ("content_version_id", "TEXT"),
+]
+
+private func fileProviderCacheTableColumns(_ db: OpaquePointer?) -> Set<String> {
+  var stmt: OpaquePointer?
+  defer { sqlite3_finalize(stmt) }
+  guard sqlite3_prepare_v2(db, "PRAGMA table_info(file_cache)", -1, &stmt, nil) == SQLITE_OK else { return [] }
+  var names = Set<String>()
+  while sqlite3_step(stmt) == SQLITE_ROW {
+    if let cstr = sqlite3_column_text(stmt, 1) { names.insert(String(cString: cstr)) }
+  }
+  return names
+}
+
+private func ensureFileProviderCacheConventionColumns(_ db: OpaquePointer?) {
+  for (name, declaration) in fileProviderCacheConventionColumns {
+    guard !fileProviderCacheTableColumns(db).contains(name) else { continue }
+    sqlite3_exec(db, "ALTER TABLE file_cache ADD COLUMN \(name) \(declaration)", nil, nil, nil)
+  }
+}
+
 private let fileProviderCacheSchemaStatements = [
   """
   CREATE TABLE IF NOT EXISTS file_cache (
@@ -1335,7 +1361,10 @@ private let fileProviderCacheSchemaStatements = [
     created_at TEXT,
     updated_at TEXT,
     sync_anchor INTEGER NOT NULL DEFAULT 0,
-    is_materialized INTEGER NOT NULL DEFAULT 0
+    is_materialized INTEGER NOT NULL DEFAULT 0,
+    name_convention TEXT,
+    content_convention TEXT,
+    content_version_id TEXT
   );
   """,
   "CREATE INDEX IF NOT EXISTS idx_file_cache_parent ON file_cache(parent_id);",
@@ -1429,6 +1458,7 @@ private func ensureFileProviderCacheDatabase() -> Bool {
   for statement in fileProviderCacheSchemaStatements {
     sqlite3_exec(db, statement, nil, nil, nil)
   }
+  ensureFileProviderCacheConventionColumns(db)
   return true
 }
 
@@ -1502,6 +1532,7 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
   for statement in fileProviderCacheSchemaStatements {
     ok = ok && sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK
   }
+  ensureFileProviderCacheConventionColumns(db)
   ok = ok && sqlite3_exec(db, "DELETE FROM file_cache", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "DELETE FROM sync_state", nil, nil, nil) == SQLITE_OK
   ok = ok && sqlite3_exec(db, "DELETE FROM upload_queue", nil, nil, nil) == SQLITE_OK
@@ -3841,12 +3872,14 @@ public class BeebeebCryptoModule: Module {
       for statement in fileProviderCacheSchemaStatements {
         sqlite3_exec(db, statement, nil, nil, nil)
       }
+      ensureFileProviderCacheConventionColumns(db)
 
       let upsertSql = """
       INSERT INTO file_cache(
         id, parent_id, name_encrypted, name_decrypted, mime_type, size_bytes,
-        is_folder, is_pinned, has_thumbnail, created_at, updated_at, sync_anchor, is_materialized
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 0)
+        is_folder, is_pinned, has_thumbnail, created_at, updated_at, sync_anchor, is_materialized,
+        name_convention
+      ) VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 0, ?)
       ON CONFLICT(id) DO UPDATE SET
         parent_id = excluded.parent_id,
         name_encrypted = excluded.name_encrypted,
@@ -3856,7 +3889,12 @@ public class BeebeebCryptoModule: Module {
         is_folder = excluded.is_folder,
         created_at = excluded.created_at,
         updated_at = excluded.updated_at,
-        sync_anchor = excluded.sync_anchor;
+        sync_anchor = excluded.sync_anchor,
+        name_convention = CASE
+          WHEN file_cache.name_encrypted = excluded.name_encrypted
+          THEN COALESCE(excluded.name_convention, file_cache.name_convention)
+          ELSE excluded.name_convention
+        END;
       """
 
       sqlite3_exec(db, "BEGIN", nil, nil, nil)
@@ -3929,6 +3967,9 @@ public class BeebeebCryptoModule: Module {
           sqlite3_bind_text(stmt, 9, (updatedAt as NSString).utf8String, -1, transient)
         } else { sqlite3_bind_null(stmt, 9) }
         sqlite3_bind_int64(stmt, 10, now)
+        if let convention = entry["name_convention"] as? String {
+          sqlite3_bind_text(stmt, 11, (convention as NSString).utf8String, -1, transient)
+        } else { sqlite3_bind_null(stmt, 11) }
 
         if sqlite3_step(stmt) == SQLITE_DONE { count += 1 }
       }

@@ -1153,6 +1153,11 @@ export interface FileProviderCacheEntry {
   is_folder?: boolean
   created_at?: string | null
   updated_at?: string | null
+  /**
+   * SF-0002 M2a run 3: the convention the name authenticated under. Reset
+   * natively whenever `name_encrypted` changes.
+   */
+  name_convention?: string | null
 }
 
 /**
