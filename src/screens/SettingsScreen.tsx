@@ -46,8 +46,10 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { fonts, spacing, surfacesFor, typeScale, type Colors } from '../theme';
+import { BackupUnavailableStatus } from '../components/BackupUnavailableStatus';
 import { useAuth } from '../lib/auth';
 import { useBackup } from '../lib/backup-context';
+import { isPhoneBackupSupported } from '../lib/backup-platform-support';
 import { useCrypto } from '../lib/crypto-context';
 import { useTheme, type ThemeMode } from '../lib/theme-context';
 import { SCROLL_EDGE, ScrollEdgeBlur, useTabBarBottomInset } from '../components/glass';
@@ -2201,235 +2203,251 @@ export default function SettingsScreen() {
         <View style={layout.section}>
           <SectionHeader title="Backup" c={c} />
           <View style={[layout.card, { backgroundColor: surfaces.groupedCell }]}>
-            <ToggleRow
-              label="Back up camera roll"
-              value={isPhotoBackupEnabled}
-              onValueChange={handleTogglePhotoBackup}
-              c={c}
-              testID="toggle-photo-backup"
-            />
-            {isPhotoBackupEnabled && (
-              <TouchableOpacity
-                style={{
-                  paddingHorizontal: 12,
-                  paddingBottom: 10,
-                  paddingTop: 2,
-                  gap: 6,
-                }}
-                activeOpacity={0.6}
-                onPress={() => navigation.navigate('BackupInsights')}
-                accessibilityLabel="View camera roll backup details"
-                accessibilityRole="button"
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-                  <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: cameraRollStatusDotColor }} />
-                  <Text style={{ fontSize: 11, color: cameraRollSummaryColor, flex: 1 }}>
-                    {cameraRollSummary}
-                  </Text>
-                  <Ionicons name="chevron-forward" size={14} color={c.ink4} />
-                </View>
-                {cameraTotalCount > 0 && (
-                  <View style={{ height: 4, borderRadius: 2, backgroundColor: c.line2, overflow: 'hidden' }}>
-                    <View style={{ height: '100%', width: cameraProgressFillWidth, backgroundColor: cameraProgressBarColor, borderRadius: 2 }} />
-                  </View>
-                )}
-              </TouchableOpacity>
-            )}
-            <RowDivider c={c} />
-            <ToggleRow
-              label="Back up contacts"
-              value={isContactsBackupEnabled}
-              onValueChange={handleToggleContactsBackup}
-              c={c}
-            />
-            {isContactsBackupEnabled && (
-              <BackupCategoryStatus
-                stats={displayContactsStats}
-                paused={backupPaused}
-                c={c}
-                label="Contacts"
-                itemSingular="contact"
-                itemPlural="contacts"
-                checking={contactsBackupChecking}
-                onPress={() => navigation.navigate('BackupInsights')}
-              />
-            )}
-            <RowDivider c={c} />
-            <ToggleRow
-              label="Back up calendar"
-              value={isCalendarBackupEnabled}
-              onValueChange={handleToggleCalendarBackup}
-              c={c}
-            />
-            {isCalendarBackupEnabled && (
-              <BackupCategoryStatus
-                stats={displayCalendarStats}
-                paused={backupPaused}
-                c={c}
-                label="Calendar"
-                itemSingular="event"
-                itemPlural="events"
-                checking={calendarBackupChecking}
-                onPress={() => navigation.navigate('BackupInsights')}
-              />
-            )}
-            <RowDivider c={c} />
-            <TouchableOpacity
-              style={layout.row}
-              activeOpacity={0.6}
-              onPress={() => setAdvancedExpanded((prev) => !prev)}
-              accessibilityLabel={advancedExpanded ? 'Collapse backup options' : 'Expand backup options'}
-              accessibilityRole="button"
-            >
-              <Ionicons
-                name={advancedExpanded ? 'chevron-down' : 'chevron-forward'}
-                size={14}
-                color={c.ink3}
-                style={{ marginRight: 8 }}
-              />
-              <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
-                Backup options
-              </Text>
-            </TouchableOpacity>
-            {advancedExpanded && (
+            {/* Task 2303 — Android has no native backup engine, so the card
+                shows a plain status line instead of toggles that cannot work.
+                iOS keeps the real backup controls unchanged. */}
+            {!isPhoneBackupSupported() && (
               <>
-                <RowDivider c={c} />
-                <ToggleRow
-                  label="Include videos"
-                  subtitle="Back up videos in addition to photos. Videos can be large -- backed up over Wi-Fi only."
-                  value={includeVideos}
-                  onValueChange={handleIncludeVideosChange}
-                  indent
-                  c={c}
+                <BackupUnavailableStatus
+                  color={c.ink3}
+                  style={{ paddingHorizontal: 12, paddingVertical: 12 }}
                 />
-                {Platform.OS === 'ios' && (
-                  <>
-                    <RowDivider c={c} />
-                    <TouchableOpacity
-                      style={[layout.row, { paddingLeft: 28 }]}
-                      activeOpacity={0.6}
-                      onPress={() => {
-                        setPhotoAlbumsExpanded((prev) => !prev);
-                        if (!photoAlbumsExpanded) void loadPhotoAlbumSelection();
-                      }}
-                      accessibilityLabel="Choose photo albums to back up"
-                      accessibilityRole="button"
-                    >
-                      <Ionicons
-                        name={photoAlbumsExpanded ? 'chevron-down' : 'chevron-forward'}
-                        size={14}
-                        color={c.ink3}
-                        style={{ marginRight: 8 }}
-                      />
-                      <View style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
-                          Photo albums to back up
-                        </Text>
-                        <Text style={{ fontSize: 11, color: c.ink3, marginTop: 2 }}>
-                          {photoAlbumsLoading ? 'Loading albums...' : photoAlbumSelectionLabel}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                    {photoAlbumsExpanded && (
-                      <View style={{ paddingHorizontal: 12, paddingBottom: 8, paddingLeft: 50 }}>
-                        <Text style={{ fontSize: 12, color: c.ink3, paddingVertical: 6 }}>Choose phone albums to upload. To change what appears in Photos, use Folders shown in Photos.</Text>
-                        <TouchableOpacity
-                          style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 }}
-                          activeOpacity={0.6}
-                          onPress={() => void persistPhotoAlbumSelection([])}
-                        >
-                          <View style={[layout.regionRadio, { borderColor: selectedPhotoAlbumIds.length === 0 ? c.amber : c.ink4 }]}>
-                            {selectedPhotoAlbumIds.length === 0 && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
-                          </View>
-                          <Text style={{ fontSize: 13, color: c.ink, flex: 1 }}>All photos</Text>
-                        </TouchableOpacity>
-                        {photoAlbums.map((album) => {
-                          const selected = selectedPhotoAlbumIds.includes(album.id);
-                          return (
-                            <TouchableOpacity
-                              key={album.id}
-                              style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 }}
-                              activeOpacity={0.6}
-                              onPress={() => handleTogglePhotoAlbum(album.id)}
-                              accessibilityLabel={`${album.title}${selected ? ', selected' : ''}`}
-                              accessibilityState={{ checked: selected }}
-                            >
-                              <Ionicons
-                                name={selected ? 'checkbox' : 'square-outline'}
-                                size={18}
-                                color={selected ? c.amber : c.ink4}
-                              />
-                              <Text style={{ fontSize: 13, color: c.ink, flex: 1 }} numberOfLines={1}>
-                                {album.title}
-                              </Text>
-                              <Text style={{ fontSize: 12, color: c.ink3 }}>
-                                {album.assetCount.toLocaleString()}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                        {!photoAlbumsLoading && photoAlbums.length === 0 && (
-                          <Text style={{ fontSize: 12, color: c.ink3, paddingVertical: 6 }}>
-                            No custom iOS albums found. Beebeeb will back up all photos.
-                          </Text>
-                        )}
+                <RowDivider c={c} />
+              </>
+            )}
+            {isPhoneBackupSupported() && (
+              <>
+                <ToggleRow
+                  label="Back up camera roll"
+                  value={isPhotoBackupEnabled}
+                  onValueChange={handleTogglePhotoBackup}
+                  c={c}
+                  testID="toggle-photo-backup"
+                />
+                {isPhotoBackupEnabled && (
+                  <TouchableOpacity
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingBottom: 10,
+                      paddingTop: 2,
+                      gap: 6,
+                    }}
+                    activeOpacity={0.6}
+                    onPress={() => navigation.navigate('BackupInsights')}
+                    accessibilityLabel="View camera roll backup details"
+                    accessibilityRole="button"
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+                      <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: cameraRollStatusDotColor }} />
+                      <Text style={{ fontSize: 11, color: cameraRollSummaryColor, flex: 1 }}>
+                        {cameraRollSummary}
+                      </Text>
+                      <Ionicons name="chevron-forward" size={14} color={c.ink4} />
+                    </View>
+                    {cameraTotalCount > 0 && (
+                      <View style={{ height: 4, borderRadius: 2, backgroundColor: c.line2, overflow: 'hidden' }}>
+                        <View style={{ height: '100%', width: cameraProgressFillWidth, backgroundColor: cameraProgressBarColor, borderRadius: 2 }} />
                       </View>
                     )}
-                  </>
+                  </TouchableOpacity>
                 )}
                 <RowDivider c={c} />
                 <ToggleRow
-                  label="Wi-Fi only"
-                  subtitle="Only upload over Wi-Fi to save cellular data"
-                  value={wifiOnly}
-                  onValueChange={handleWifiOnlyChange}
-                  indent
+                  label="Back up contacts"
+                  value={isContactsBackupEnabled}
+                  onValueChange={handleToggleContactsBackup}
                   c={c}
                 />
+                {isContactsBackupEnabled && (
+                  <BackupCategoryStatus
+                    stats={displayContactsStats}
+                    paused={backupPaused}
+                    c={c}
+                    label="Contacts"
+                    itemSingular="contact"
+                    itemPlural="contacts"
+                    checking={contactsBackupChecking}
+                    onPress={() => navigation.navigate('BackupInsights')}
+                  />
+                )}
                 <RowDivider c={c} />
                 <ToggleRow
-                  label="Background uploads"
-                  subtitle="Allow uploads in the background. May increase battery usage."
-                  value={backgroundUpload}
-                  onValueChange={handleBackgroundUploadChange}
-                  indent
+                  label="Back up calendar"
+                  value={isCalendarBackupEnabled}
+                  onValueChange={handleToggleCalendarBackup}
                   c={c}
                 />
+                {isCalendarBackupEnabled && (
+                  <BackupCategoryStatus
+                    stats={displayCalendarStats}
+                    paused={backupPaused}
+                    c={c}
+                    label="Calendar"
+                    itemSingular="event"
+                    itemPlural="events"
+                    checking={calendarBackupChecking}
+                    onPress={() => navigation.navigate('BackupInsights')}
+                  />
+                )}
                 <RowDivider c={c} />
-                <ToggleRow
-                  label="Allow backup while locked"
-                  subtitle="Keep an encryption key available on this device for backup, even when the app is locked. Background work depends on your phone’s settings."
-                  value={keepVaultUnlocked}
-                  onValueChange={handleKeepVaultUnlockedChange}
-                  indent
-                  c={c}
-                />
-                <RowDivider c={c} />
-                <View style={{ paddingHorizontal: 12, paddingVertical: 10, paddingLeft: 28 }}>
-                  <Text style={{ fontSize: 13, fontWeight: '400' as const, color: c.ink, marginBottom: 8 }}>
-                    When removed from device
+                <TouchableOpacity
+                  style={layout.row}
+                  activeOpacity={0.6}
+                  onPress={() => setAdvancedExpanded((prev) => !prev)}
+                  accessibilityLabel={advancedExpanded ? 'Collapse backup options' : 'Expand backup options'}
+                  accessibilityRole="button"
+                >
+                  <Ionicons
+                    name={advancedExpanded ? 'chevron-down' : 'chevron-forward'}
+                    size={14}
+                    color={c.ink3}
+                    style={{ marginRight: 8 }}
+                  />
+                  <Text style={{ flex: 1, fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
+                    Backup options
                   </Text>
-                  <TouchableOpacity
-                    style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 }}
-                    activeOpacity={0.6}
-                    onPress={() => void handleDeletionBehaviorChange('keep')}
-                  >
-                    <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'keep' ? c.amber : c.ink4 }]}>
-                      {deletionBehavior === 'keep' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
+                </TouchableOpacity>
+                {advancedExpanded && (
+                  <>
+                    <RowDivider c={c} />
+                    <ToggleRow
+                      label="Include videos"
+                      subtitle="Back up videos in addition to photos. Videos can be large -- backed up over Wi-Fi only."
+                      value={includeVideos}
+                      onValueChange={handleIncludeVideosChange}
+                      indent
+                      c={c}
+                    />
+                    {Platform.OS === 'ios' && (
+                      <>
+                        <RowDivider c={c} />
+                        <TouchableOpacity
+                          style={[layout.row, { paddingLeft: 28 }]}
+                          activeOpacity={0.6}
+                          onPress={() => {
+                            setPhotoAlbumsExpanded((prev) => !prev);
+                            if (!photoAlbumsExpanded) void loadPhotoAlbumSelection();
+                          }}
+                          accessibilityLabel="Choose photo albums to back up"
+                          accessibilityRole="button"
+                        >
+                          <Ionicons
+                            name={photoAlbumsExpanded ? 'chevron-down' : 'chevron-forward'}
+                            size={14}
+                            color={c.ink3}
+                            style={{ marginRight: 8 }}
+                          />
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ fontSize: 14, fontWeight: '400' as const, color: c.ink }}>
+                              Photo albums to back up
+                            </Text>
+                            <Text style={{ fontSize: 11, color: c.ink3, marginTop: 2 }}>
+                              {photoAlbumsLoading ? 'Loading albums...' : photoAlbumSelectionLabel}
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                        {photoAlbumsExpanded && (
+                          <View style={{ paddingHorizontal: 12, paddingBottom: 8, paddingLeft: 50 }}>
+                            <Text style={{ fontSize: 12, color: c.ink3, paddingVertical: 6 }}>Choose phone albums to upload. To change what appears in Photos, use Folders shown in Photos.</Text>
+                            <TouchableOpacity
+                              style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 }}
+                              activeOpacity={0.6}
+                              onPress={() => void persistPhotoAlbumSelection([])}
+                            >
+                              <View style={[layout.regionRadio, { borderColor: selectedPhotoAlbumIds.length === 0 ? c.amber : c.ink4 }]}>
+                                {selectedPhotoAlbumIds.length === 0 && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
+                              </View>
+                              <Text style={{ fontSize: 13, color: c.ink, flex: 1 }}>All photos</Text>
+                            </TouchableOpacity>
+                            {photoAlbums.map((album) => {
+                              const selected = selectedPhotoAlbumIds.includes(album.id);
+                              return (
+                                <TouchableOpacity
+                                  key={album.id}
+                                  style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 }}
+                                  activeOpacity={0.6}
+                                  onPress={() => handleTogglePhotoAlbum(album.id)}
+                                  accessibilityLabel={`${album.title}${selected ? ', selected' : ''}`}
+                                  accessibilityState={{ checked: selected }}
+                                >
+                                  <Ionicons
+                                    name={selected ? 'checkbox' : 'square-outline'}
+                                    size={18}
+                                    color={selected ? c.amber : c.ink4}
+                                  />
+                                  <Text style={{ fontSize: 13, color: c.ink, flex: 1 }} numberOfLines={1}>
+                                    {album.title}
+                                  </Text>
+                                  <Text style={{ fontSize: 12, color: c.ink3 }}>
+                                    {album.assetCount.toLocaleString()}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                            {!photoAlbumsLoading && photoAlbums.length === 0 && (
+                              <Text style={{ fontSize: 12, color: c.ink3, paddingVertical: 6 }}>
+                                No custom iOS albums found. Beebeeb will back up all photos.
+                              </Text>
+                            )}
+                          </View>
+                        )}
+                      </>
+                    )}
+                    <RowDivider c={c} />
+                    <ToggleRow
+                      label="Wi-Fi only"
+                      subtitle="Only upload over Wi-Fi to save cellular data"
+                      value={wifiOnly}
+                      onValueChange={handleWifiOnlyChange}
+                      indent
+                      c={c}
+                    />
+                    <RowDivider c={c} />
+                    <ToggleRow
+                      label="Background uploads"
+                      subtitle="Allow uploads in the background. May increase battery usage."
+                      value={backgroundUpload}
+                      onValueChange={handleBackgroundUploadChange}
+                      indent
+                      c={c}
+                    />
+                    <RowDivider c={c} />
+                    <ToggleRow
+                      label="Allow backup while locked"
+                      subtitle="Keep an encryption key available on this device for backup, even when the app is locked. Background work depends on your phone’s settings."
+                      value={keepVaultUnlocked}
+                      onValueChange={handleKeepVaultUnlockedChange}
+                      indent
+                      c={c}
+                    />
+                    <RowDivider c={c} />
+                    <View style={{ paddingHorizontal: 12, paddingVertical: 10, paddingLeft: 28 }}>
+                      <Text style={{ fontSize: 13, fontWeight: '400' as const, color: c.ink, marginBottom: 8 }}>
+                        When removed from device
+                      </Text>
+                      <TouchableOpacity
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 }}
+                        activeOpacity={0.6}
+                        onPress={() => void handleDeletionBehaviorChange('keep')}
+                      >
+                        <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'keep' ? c.amber : c.ink4 }]}>
+                          {deletionBehavior === 'keep' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
+                        </View>
+                        <Text style={{ fontSize: 13, color: c.ink }}>Keep in Beebeeb</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4, marginTop: 4 }}
+                        activeOpacity={0.6}
+                        onPress={() => void handleDeletionBehaviorChange('trash')}
+                      >
+                        <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'trash' ? c.amber : c.ink4 }]}>
+                          {deletionBehavior === 'trash' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
+                        </View>
+                        <Text style={{ fontSize: 13, color: c.ink }}>Move to Beebeeb trash</Text>
+                      </TouchableOpacity>
                     </View>
-                    <Text style={{ fontSize: 13, color: c.ink }}>Keep in Beebeeb</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4, marginTop: 4 }}
-                    activeOpacity={0.6}
-                    onPress={() => void handleDeletionBehaviorChange('trash')}
-                  >
-                    <View style={[layout.regionRadio, { borderColor: deletionBehavior === 'trash' ? c.amber : c.ink4 }]}>
-                      {deletionBehavior === 'trash' && <View style={[layout.regionRadioDot, { backgroundColor: c.amber }]} />}
-                    </View>
-                    <Text style={{ fontSize: 13, color: c.ink }}>Move to Beebeeb trash</Text>
-                  </TouchableOpacity>
-                </View>
+                  </>
+                )}
               </>
             )}
             <RowDivider c={c} />
