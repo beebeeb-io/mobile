@@ -124,6 +124,31 @@ class CoreVectorsKATTest {
             "folder_wrapped_file_key" to 1,
         )
 
+        /**
+         * The chunk-v2 families, in one place: the positive test and the [v2DecryptRefusesAnotherVersionId]
+         * negative both iterate this, so adding a family cannot leave the negative one family behind.
+         */
+        private val CHUNK_V2_FAMILIES = listOf("chunk_v2_single_frame", "chunk_v2_stream")
+
+        /** The name families, each decrypted by a different reader (see `assertNameFamilyDecrypts`). */
+        private val NAME_FAMILIES =
+            listOf("metadata_v2_name", "metadata_v2_name_filekey", "metadata_v1_name_filekey")
+
+        /**
+         * One parse of a chunk-v2 family, shared by the positive decrypt test and the version-id
+         * negative so the two cannot drift apart in how they read the fixture.
+         */
+        private fun chunkV2Fixture(name: String): ChunkV2Fixture {
+            val v = vector(loadRoot(), name)
+            return ChunkV2Fixture(
+                vector = v,
+                fileId = v.getString("file_id"),
+                versionId = v.getString("version_id_hex").hexToBytes(),
+                fileKey = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes()),
+                frames = v.getJSONArray("frames"),
+            )
+        }
+
         private fun loadRoot(): JSONObject {
             val assets = InstrumentationRegistry.getInstrumentation().context.assets
             val bytes = assets.open("core-vectors.json").readBytes()
@@ -208,13 +233,13 @@ class CoreVectorsKATTest {
     fun chunkV2FamiliesDecryptThroughTheBinding() {
         // Each family is isolated: collect a failure per family and assert once at the end, so
         // an exception in the first family (round 4: the binding threw "Decryption") still lets
-        // the second family run and every failure names its family.
+        // the second family run and every failure names its family and exception type.
         val failures = mutableListOf<String>()
-        for (name in listOf("chunk_v2_single_frame", "chunk_v2_stream")) {
+        for (name in CHUNK_V2_FAMILIES) {
             try {
                 assertChunkV2FamilyDecrypts(name)
             } catch (t: Throwable) {
-                failures += "$name: ${t.message ?: t.javaClass.simpleName}"
+                failures += "$name: ${t.javaClass.simpleName}: ${t.message.orEmpty()}"
             }
         }
         assertTrue(
@@ -225,15 +250,12 @@ class CoreVectorsKATTest {
     }
 
     private fun assertChunkV2FamilyDecrypts(name: String) {
-        val v = vector(loadRoot(), name)
-        val master = MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes())
-        val fileId = v.getString("file_id")
-        val versionId = v.getString("version_id_hex").hexToBytes()
-        val fileKey = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
-        val frames = v.getJSONArray("frames")
-        assertEquals("$name: frame count", v.getInt("chunk_count"), frames.length())
+        val fixture = chunkV2Fixture(name)
+        val master = MasterKeyHandle.fromKeychainBytes(fixture.vector.getString("master_key_hex").hexToBytes())
+        val frames = fixture.frames
+        assertEquals("$name: frame count", fixture.chunkCount, frames.length())
 
-        val decryptor = ChunkDecryptorHandle.forPush(master, fileId, 2u)
+        val decryptor = ChunkDecryptorHandle.forPush(master, fixture.fileId, 2u)
         val streamed = java.io.ByteArrayOutputStream()
         for (position in 0 until frames.length()) {
             val frame = frames.getJSONObject(position)
@@ -244,17 +266,19 @@ class CoreVectorsKATTest {
             val opened = decryptor.pushFrame(frameData)
             assertEquals("$name: pushed frame index", index.toUInt(), opened.index)
             streamed.write(opened.data)
-            val randomAccess = fileKey.decryptChunkFrame(
-                fileId, versionId, index.toUInt(), isLast, 2u, frameData)
+            val randomAccess = fixture.fileKey.decryptChunkFrame(
+                fixture.fileId, fixture.versionId, index.toUInt(), isLast, 2u, frameData)
             assertHexEquals("$name: frame $index random access", frame.getString("plaintext_hex"), randomAccess)
         }
-        val summary = decryptor.finish()
-        assertEquals("$name: detected format", 2, summary.format.toInt())
+        // `finish()` takes the handle's state, so `versionId()` MUST be read FIRST (as Swift
+        // does): after `finish()` every call throws "handle has been cleared".
         val actualVersionId = decryptor.versionId()
         assertNotNull("$name: version id is null after the frames", actualVersionId)
-        assertHexEquals("$name: version id after the frames", v.getString("version_id_hex"), actualVersionId!!)
+        assertHexEquals("$name: version id after the frames", fixture.vector.getString("version_id_hex"), actualVersionId!!)
+        val summary = decryptor.finish()
+        assertEquals("$name: detected format", 2, summary.format.toInt())
         assertEquals("$name: finished chunk count", frames.length().toUInt(), summary.chunkCount)
-        assertHexEquals("$name: streamed plaintext", v.getString("plaintext_hex"), streamed.toByteArray())
+        assertHexEquals("$name: streamed plaintext", fixture.plaintextHex, streamed.toByteArray())
         println("[CoreVectorsKAT] $name: 1 row (streamed + per-frame open)")
     }
 
@@ -266,11 +290,11 @@ class CoreVectorsKATTest {
     @Test
     fun v2DecryptRefusesAnotherVersionId() {
         val failures = mutableListOf<String>()
-        for (name in listOf("chunk_v2_single_frame", "chunk_v2_stream")) {
+        for (name in CHUNK_V2_FAMILIES) {
             try {
                 assertV2RefusesAnotherVersionId(name)
             } catch (t: Throwable) {
-                failures += "$name: ${t.message ?: t.javaClass.simpleName}"
+                failures += "$name: ${t.javaClass.simpleName}: ${t.message.orEmpty()}"
             }
         }
         assertTrue(
@@ -281,26 +305,24 @@ class CoreVectorsKATTest {
     }
 
     private fun assertV2RefusesAnotherVersionId(name: String) {
-        val v = vector(loadRoot(), name)
-        val fileId = v.getString("file_id")
-        val versionId = v.getString("version_id_hex").hexToBytes()
-        val fileKey = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
-        val frame = v.getJSONArray("frames").getJSONObject(0)
+        val fixture = chunkV2Fixture(name)
+        assertTrue("$name: version_id_hex must not be empty", fixture.versionId.isNotEmpty())
+        val frame = fixture.frames.getJSONObject(0)
         val frameData = frame.getString("frame_hex").hexToBytes()
         val index = frame.getInt("index")
         val isLast = frame.getBoolean("is_last")
 
-        val otherVersionId = versionId.copyOf()
+        val otherVersionId = fixture.versionId.copyOf()
         otherVersionId[0] = (otherVersionId[0].toInt() xor 0x01).toByte()
-        assertFalse("$name: the negative version id must differ in one bit", otherVersionId.contentEquals(versionId))
+        assertFalse("$name: the negative version id must differ in one bit", otherVersionId.contentEquals(fixture.versionId))
 
         // Positive control: the vector's own version id opens frame 0.
-        val opened = fileKey.decryptChunkFrame(fileId, versionId, index.toUInt(), isLast, 2u, frameData)
+        val opened = fixture.fileKey.decryptChunkFrame(fixture.fileId, fixture.versionId, index.toUInt(), isLast, 2u, frameData)
         assertHexEquals("$name: frame 0 opens under the vector version id", frame.getString("plaintext_hex"), opened)
 
         // Negative: the same frame under a one-bit-different version id must throw.
         assertThrows(Exception::class.java) {
-            fileKey.decryptChunkFrame(fileId, otherVersionId, index.toUInt(), isLast, 2u, frameData)
+            fixture.fileKey.decryptChunkFrame(fixture.fileId, otherVersionId, index.toUInt(), isLast, 2u, frameData)
         }
     }
 
@@ -328,10 +350,15 @@ class CoreVectorsKATTest {
     fun v1FrameIsRefusedUnderTheV2Pin() {
         val v = vector(loadRoot(), "chunk_v2_single_frame")
         val key = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
-        val legacy = key.encryptChunk("replayed v1".toByteArray())
-        val wire = legacy.nonce + legacy.ciphertext
-        val decryptor = ChunkDecryptorHandle.forPushWithFileKeyHandle(key, v.getString("file_id"), 2u)
-        assertThrows(Exception::class.java) { decryptor.pushFrame(wire) }
+        val fileId = v.getString("file_id")
+        // The v1 wire comes from the production wire helper, not hand-assembled bytes.
+        val wire = SharedKeyOps.wire(key.encryptChunk("replayed v1".toByteArray()))
+        val v2 = ChunkDecryptorHandle.forPushWithFileKeyHandle(key, fileId, 2u)
+        assertThrows(Exception::class.java) { v2.pushFrame(wire) }
+        // Positive control: the SAME wire opens under the v1 pin 0 — so the refusal above is the
+        // pin, not the frame being malformed.
+        val v1 = ChunkDecryptorHandle.forPushWithFileKeyHandle(key, fileId, 0u)
+        assertTrue(v1.pushFrame(wire).data.contentEquals("replayed v1".toByteArray()))
     }
 
     /**
@@ -341,26 +368,42 @@ class CoreVectorsKATTest {
      */
     @Test
     fun nameFamiliesDecryptThroughTheBinding() {
-        val masterVector = vector(loadRoot(), "metadata_v2_name")
-        val master = MasterKeyHandle.fromKeychainBytes(masterVector.getString("master_key_hex").hexToBytes())
-        val masterMeta = master.decryptFileMetadata(
-            masterVector.getString("file_id"), masterVector.getString("name_encrypted"))
-        assertEquals("metadata_v2_name: name", masterVector.getString("expected_name"), masterMeta.name)
-        assertEquals("metadata_v2_name: mime", masterVector.getString("expected_mime_type"), masterMeta.mimeType)
-        assertEquals(
-            "metadata_v2_name: pin",
-            masterVector.getInt("expected_chunk_format").toUByte(),
-            masterMeta.chunkFormat,
+        // Each family is isolated (its own try/catch) and only prints its row line once every
+        // assertion in it held, so a failed family can never be logged as a pass.
+        val failures = mutableListOf<String>()
+        for (name in NAME_FAMILIES) {
+            try {
+                assertNameFamilyDecrypts(name)
+            } catch (t: Throwable) {
+                failures += "$name: ${t.javaClass.simpleName}: ${t.message.orEmpty()}"
+            }
+        }
+        assertTrue(
+            "name families failed (each family isolated; all were attempted):\n" +
+                failures.joinToString("\n"),
+            failures.isEmpty(),
         )
-        println("[CoreVectorsKAT] metadata_v2_name: 1 row (master-key name reader)")
+    }
 
-        for (name in listOf("metadata_v2_name_filekey", "metadata_v1_name_filekey")) {
-            val v = vector(loadRoot(), name)
+    private fun assertNameFamilyDecrypts(name: String) {
+        val v = vector(loadRoot(), name)
+        val expectedName = v.getString("expected_name")
+        val expectedMime = v.getString("expected_mime_type")
+        val expectedPin = v.getInt("expected_chunk_format").toUByte()
+        if (name == "metadata_v2_name") {
+            val master = MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes())
+            val meta = master.decryptFileMetadata(
+                v.getString("file_id"), v.getString("name_encrypted"))
+            assertEquals("$name: name", expectedName, meta.name)
+            assertEquals("$name: mime", expectedMime, meta.mimeType)
+            assertEquals("$name: pin", expectedPin, meta.chunkFormat)
+            println("[CoreVectorsKAT] $name: 1 row (master-key name reader)")
+        } else {
             val meta = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
                 .decryptFileMetadata(v.getString("name_encrypted"))
-            assertEquals("$name: name", v.getString("expected_name"), meta.name)
-            assertEquals("$name: mime", v.getString("expected_mime_type"), meta.mimeType)
-            assertEquals("$name: pin", v.getInt("expected_chunk_format").toUByte(), meta.chunkFormat)
+            assertEquals("$name: name", expectedName, meta.name)
+            assertEquals("$name: mime", expectedMime, meta.mimeType)
+            assertEquals("$name: pin", expectedPin, meta.chunkFormat)
             println("[CoreVectorsKAT] $name: 1 row (file-key name reader)")
         }
     }
@@ -780,4 +823,16 @@ class CoreVectorsKATTest {
     assertEquals(60, wrapped.size)
     return wrapper.unwrapKey(wrapped.copyOfRange(0, 12), wrapped.copyOfRange(12, wrapped.size))
   }
+}
+
+/** One parse of a chunk-v2 family, shared by the positive decrypt test and the version-id negative. */
+private class ChunkV2Fixture(
+    val vector: JSONObject,
+    val fileId: String,
+    val versionId: ByteArray,
+    val fileKey: FileKeyHandle,
+    val frames: JSONArray,
+) {
+    val chunkCount: Int get() = vector.getInt("chunk_count")
+    val plaintextHex: String get() = vector.getString("plaintext_hex")
 }

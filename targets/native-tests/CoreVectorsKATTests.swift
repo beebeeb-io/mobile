@@ -94,6 +94,15 @@ final class CoreVectorsKATTests: XCTestCase {
         ("folder_wrapped_file_key", 1),
     ]
 
+    /// The chunk-v2 families, in one place: the positive test and the `versionId` negative both
+    /// iterate this, so adding a family cannot leave the negative silently one family behind.
+    private static let chunkV2Families = ["chunk_v2_single_frame", "chunk_v2_stream"]
+
+    /// The name families, each decrypted by a different reader (see `assertNameFamilyDecrypts`).
+    private static let nameFamilies = [
+        "metadata_v2_name", "metadata_v2_name_filekey", "metadata_v1_name_filekey",
+    ]
+
     // MARK: - Vector loading
 
     private static func bundledVectorsURL() throws -> URL {
@@ -157,6 +166,31 @@ final class CoreVectorsKATTests: XCTestCase {
                            userInfo: [NSLocalizedDescriptionKey: "field '\(field)' is not valid hex"])
         }
         return data
+    }
+
+    /// One parse of a chunk-v2 family, shared by the positive decrypt test and the `versionId`
+    /// negative so the two cannot drift apart in how they read the fixture.
+    private struct ChunkV2Fixture {
+        let name: String
+        let vector: [String: Any]
+        let fileId: String
+        let versionId: Data
+        let fileKey: FileKeyHandle
+        let frames: [[String: Any]]
+
+        var chunkCount: Int? { vector["chunk_count"] as? Int }
+    }
+
+    private static func chunkV2Fixture(_ name: String, vectors: [[String: Any]]) throws -> ChunkV2Fixture {
+        let v = try vector(vectors, named: name)
+        return ChunkV2Fixture(
+            name: name,
+            vector: v,
+            fileId: try str(v, "file_id"),
+            versionId: try hex(v, "version_id_hex"),
+            fileKey: try FileKeyHandle.fromKeyBytes(key: hex(v, "file_key_hex")),
+            frames: try XCTUnwrap(v["frames"] as? [[String: Any]], "\(name): frames")
+        )
     }
 
     private static func logPass(_ family: String) {
@@ -243,7 +277,7 @@ final class CoreVectorsKATTests: XCTestCase {
     /// nonce, index or format fails here.
     func testChunkV2FamiliesDecryptThroughTheBinding() throws {
         let vectors = try Self.loadVectors()
-        for name in ["chunk_v2_single_frame", "chunk_v2_stream"] {
+        for name in Self.chunkV2Families {
             // Each family runs in its own activity and its own do/catch: a throw is recorded as
             // THAT family's failure (named here and in the message) and the next family still
             // runs. Before round 4 the first family's throw aborted the method, so the second
@@ -259,18 +293,14 @@ final class CoreVectorsKATTests: XCTestCase {
     }
 
     private func assertChunkV2FamilyDecrypts(_ name: String, vectors: [[String: Any]]) throws {
-        let v = try Self.vector(vectors, named: name)
-        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(v, "master_key_hex"))
-        let fileId = try Self.str(v, "file_id")
-        let versionId = try Self.hex(v, "version_id_hex")
-        let fileKey = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
-        let frames = try XCTUnwrap(v["frames"] as? [[String: Any]], "\(name): frames")
-        let chunkCount = try XCTUnwrap(v["chunk_count"] as? Int)
+        let fixture = try Self.chunkV2Fixture(name, vectors: vectors)
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(fixture.vector, "master_key_hex"))
+        let frames = fixture.frames
         var allPassed = true
-        expectEqual(frames.count, chunkCount, "\(name): frame count", allPassed: &allPassed)
+        expectEqual(frames.count, try XCTUnwrap(fixture.chunkCount), "\(name): frame count", allPassed: &allPassed)
 
         let decryptor = try ChunkDecryptorHandle.forPush(
-            masterKey: master, fileId: fileId, expectedChunkFormat: 2)
+            masterKey: master, fileId: fixture.fileId, expectedChunkFormat: 2)
         var streamed = Data()
         for (position, frame) in frames.enumerated() {
             let frameData = try Self.hex(frame, "frame_hex")
@@ -280,18 +310,18 @@ final class CoreVectorsKATTests: XCTestCase {
             let opened = try decryptor.pushFrame(frame: frameData)
             expectEqual(opened.index, UInt32(index), "\(name): pushed frame index", allPassed: &allPassed)
             streamed.append(opened.data)
-            let randomAccess = try fileKey.decryptChunkFrame(
-                fileId: fileId, versionId: versionId, index: UInt32(index), isLast: isLast,
+            let randomAccess = try fixture.fileKey.decryptChunkFrame(
+                fileId: fixture.fileId, versionId: fixture.versionId, index: UInt32(index), isLast: isLast,
                 format: 2, frame: frameData)
             let expectedFrame = try Self.hex(frame, "plaintext_hex")
             expectEqual(randomAccess, expectedFrame, "\(name): frame \(index) random access", allPassed: &allPassed)
         }
-        expectEqual(try XCTUnwrap(decryptor.versionId()), versionId,
+        expectEqual(try XCTUnwrap(decryptor.versionId()), fixture.versionId,
                     "\(name): version id after the frames", allPassed: &allPassed)
         let summary = try decryptor.finish()
         expectEqual(summary.format, 2, "\(name): detected format", allPassed: &allPassed)
         expectEqual(summary.chunkCount, UInt32(frames.count), "\(name): finished chunk count", allPassed: &allPassed)
-        let expectedStream = try Self.hex(v, "plaintext_hex")
+        let expectedStream = try Self.hex(fixture.vector, "plaintext_hex")
         expectEqual(streamed, expectedStream, "\(name): streamed plaintext", allPassed: &allPassed)
         if allPassed { Self.logPass("\(name) (streamed + per-frame open)") }
     }
@@ -302,7 +332,7 @@ final class CoreVectorsKATTests: XCTestCase {
     /// different id cannot open the same frame, which is the binding itself.
     func testV2DecryptRefusesAnotherVersionId() throws {
         let vectors = try Self.loadVectors()
-        for name in ["chunk_v2_single_frame", "chunk_v2_stream"] {
+        for name in Self.chunkV2Families {
             _ = XCTContext.runActivity(named: "chunk v2 versionId negative: \(name)") { _ in
                 do {
                     try assertV2RefusesAnotherVersionId(name, vectors: vectors)
@@ -314,12 +344,15 @@ final class CoreVectorsKATTests: XCTestCase {
     }
 
     private func assertV2RefusesAnotherVersionId(_ name: String, vectors: [[String: Any]]) throws {
-        let v = try Self.vector(vectors, named: name)
-        let fileId = try Self.str(v, "file_id")
-        let versionId = try Self.hex(v, "version_id_hex")
-        let fileKey = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
-        let frames = try XCTUnwrap(v["frames"] as? [[String: Any]], "\(name): frames")
-        let frame = try XCTUnwrap(frames.first, "\(name): frame 0")
+        let fixture = try Self.chunkV2Fixture(name, vectors: vectors)
+        // A guard, not an index-before-check: an empty `version_id_hex` must be a recorded
+        // failure, not a trap in `otherVersionId[startIndex]`.
+        guard !fixture.versionId.isEmpty else {
+            XCTFail("\(name): version_id_hex is empty — cannot build the one-bit negative")
+            return
+        }
+        let versionId = fixture.versionId
+        let frame = try XCTUnwrap(fixture.frames.first, "\(name): frame 0")
         let frameData = try Self.hex(frame, "frame_hex")
         let index = try XCTUnwrap(frame["index"] as? Int)
         let isLast = try XCTUnwrap(frame["is_last"] as? Bool)
@@ -330,15 +363,15 @@ final class CoreVectorsKATTests: XCTestCase {
         XCTAssertNotEqual(otherVersionId, versionId, "\(name): the negative version id must differ in one bit")
 
         // Positive control: the vector's own version id opens frame 0.
-        let opened = try fileKey.decryptChunkFrame(
-            fileId: fileId, versionId: versionId, index: UInt32(index), isLast: isLast,
+        let opened = try fixture.fileKey.decryptChunkFrame(
+            fileId: fixture.fileId, versionId: versionId, index: UInt32(index), isLast: isLast,
             format: 2, frame: frameData)
         XCTAssertEqual(opened, expectedFrame, "\(name): frame 0 opens under the vector version id")
 
         // Negative: the same frame under a one-bit-different version id must throw.
         XCTAssertThrowsError(
-            try fileKey.decryptChunkFrame(
-                fileId: fileId, versionId: otherVersionId, index: UInt32(index), isLast: isLast,
+            try fixture.fileKey.decryptChunkFrame(
+                fileId: fixture.fileId, versionId: otherVersionId, index: UInt32(index), isLast: isLast,
                 format: 2, frame: frameData),
             "\(name): frame 0 must be refused under a version id that differs in one bit"
         )
@@ -349,34 +382,44 @@ final class CoreVectorsKATTests: XCTestCase {
     /// vector. The pin is what every later content reader of that file must use.
     func testNameFamiliesDecryptThroughTheBinding() throws {
         let vectors = try Self.loadVectors()
-
-        let masterVector = try Self.vector(vectors, named: "metadata_v2_name")
-        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(masterVector, "master_key_hex"))
-        let masterFileId = try Self.str(masterVector, "file_id")
-        let masterNameEncrypted = try Self.str(masterVector, "name_encrypted")
-        let masterMeta = try master.decryptFileMetadata(
-            fileId: masterFileId, nameEncrypted: masterNameEncrypted)
-        let masterExpectedName = try Self.str(masterVector, "expected_name")
-        let masterExpectedMime = try Self.str(masterVector, "expected_mime_type")
-        let masterExpectedPin = try XCTUnwrap(masterVector["expected_chunk_format"] as? Int)
-        XCTAssertEqual(masterMeta.name, masterExpectedName, "metadata_v2_name: name")
-        XCTAssertEqual(masterMeta.mimeType, Optional(masterExpectedMime), "metadata_v2_name: mime")
-        XCTAssertEqual(masterMeta.chunkFormat, UInt8(masterExpectedPin), "metadata_v2_name: pin")
-        Self.logPass("metadata_v2_name (master-key name reader)")
-
-        for name in ["metadata_v2_name_filekey", "metadata_v1_name_filekey"] {
-            let v = try Self.vector(vectors, named: name)
-            let key = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
-            let nameEncrypted = try Self.str(v, "name_encrypted")
-            let meta = try key.decryptFileMetadata(nameEncrypted: nameEncrypted)
-            let expectedName = try Self.str(v, "expected_name")
-            let expectedMime = try Self.str(v, "expected_mime_type")
-            let expectedPin = try XCTUnwrap(v["expected_chunk_format"] as? Int)
-            XCTAssertEqual(meta.name, expectedName, "\(name): name")
-            XCTAssertEqual(meta.mimeType, Optional(expectedMime), "\(name): mime")
-            XCTAssertEqual(meta.chunkFormat, UInt8(expectedPin), "\(name): pin")
-            Self.logPass("\(name) (file-key name reader)")
+        for name in Self.nameFamilies {
+            // Each family is isolated in its own activity and do/catch: a throw is recorded as
+            // THAT family's failure and the remaining families still run.
+            _ = XCTContext.runActivity(named: "name family: \(name)") { _ in
+                do {
+                    try assertNameFamilyDecrypts(name, vectors: vectors)
+                } catch {
+                    XCTFail("\(name): threw before the family completed — \(error)")
+                }
+            }
         }
+    }
+
+    private func assertNameFamilyDecrypts(_ name: String, vectors: [[String: Any]]) throws {
+        let v = try Self.vector(vectors, named: name)
+        let expectedName = try Self.str(v, "expected_name")
+        let expectedMime = try Self.str(v, "expected_mime_type")
+        let expectedPin = UInt8(try XCTUnwrap(v["expected_chunk_format"] as? Int))
+        var allPassed = true
+        // `allPassed` keeps a failed family from printing PASS: `expectEqual` only flips it.
+        let reader: String
+        if name == "metadata_v2_name" {
+            let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(v, "master_key_hex"))
+            let meta = try master.decryptFileMetadata(
+                fileId: Self.str(v, "file_id"), nameEncrypted: Self.str(v, "name_encrypted"))
+            reader = "master-key name reader"
+            expectEqual(meta.name, expectedName, "\(name): name", allPassed: &allPassed)
+            expectEqual(meta.mimeType, Optional(expectedMime), "\(name): mime", allPassed: &allPassed)
+            expectEqual(meta.chunkFormat, expectedPin, "\(name): pin", allPassed: &allPassed)
+        } else {
+            let key = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
+            let meta = try key.decryptFileMetadata(nameEncrypted: Self.str(v, "name_encrypted"))
+            reader = "file-key name reader"
+            expectEqual(meta.name, expectedName, "\(name): name", allPassed: &allPassed)
+            expectEqual(meta.mimeType, Optional(expectedMime), "\(name): mime", allPassed: &allPassed)
+            expectEqual(meta.chunkFormat, expectedPin, "\(name): pin", allPassed: &allPassed)
+        }
+        if allPassed { Self.logPass("\(name) (\(reader))") }
     }
 
     // MARK: - 1. master_key_from_password (Argon2id)
