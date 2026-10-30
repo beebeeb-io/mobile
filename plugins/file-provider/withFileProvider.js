@@ -50,6 +50,8 @@ const SOURCE_FILES = [
   'CacheManager.swift',
   'ApiClient.swift',
   'CryptoBridge.swift',
+  'FileProviderCacheSchema.swift',
+  'FileProviderEditPolicy.swift',
   'BeebeebKeychainCore.swift',
   'Constants.swift',
   'SyncEngine.swift',

@@ -56,6 +56,8 @@ export interface FolderBundleFile {
   position: number;
   /** Decrypted display name, or null when the name could not be decrypted. */
   name: string | null;
+  /** The row's encrypted name, so a caller can resolve its exact convention. */
+  nameEncrypted: string;
 }
 
 export interface FolderBundleScan {
@@ -144,7 +146,7 @@ export async function collectFolderBundle(
         overCap = true;
         return;
       }
-      files.push({ fileId: node.id, position: files.length, name });
+      files.push({ fileId: node.id, position: files.length, name, nameEncrypted: node.name_encrypted });
     }
   }
 

@@ -12,6 +12,14 @@ export function isForeignSharedFile(id: string, accountId: string | null): boole
   const row = nodes.get(id);
   return !!row && !row.file_request_id && (!!row.acted_via_share_id || (!!row.uploaded_by && row.uploaded_by !== accountId) || !!row.owner_wrapped_file_key);
 }
+/**
+ * The ids a batch name decrypt may hand to the owner resolver: everything this
+ * account owns. A row the tree marks foreign is excluded, so its table key (or
+ * its table-key failure) stays final — SF-0002's shared-folder boundary.
+ */
+export function nonForeignFileIds(items: { fileId: string }[], accountId: string | null): string[] {
+  return items.filter(item => !isForeignSharedFile(item.fileId, accountId)).map(item => item.fileId);
+}
 export function ancestorsOf(id: string, maxDepth = 32): string[] {
   const out: string[] = [], seen = new Set([id]); let parent = parentOf(id);
   while (parent && !seen.has(parent) && out.length < Math.min(32, maxDepth)) { seen.add(parent); out.push(parent); parent = parentOf(parent); }

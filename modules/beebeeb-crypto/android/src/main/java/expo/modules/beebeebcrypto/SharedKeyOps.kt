@@ -7,9 +7,20 @@ import java.util.Base64
 data class SharedKeyEntryNative(val fileId: String, val wrapped: ByteArray, val kind: Int)
 data class FolderLinkMintNative(val kc: String, val wrappedFolderKey: ByteArray,
   val ownerWrappedKey: ByteArray, val ownerWrappedToken: ByteArray)
+/** One bridge-facing name result: decrypted fields plus the authenticated convention. */
+data class SharedNameResult(val name: String?, val mimeType: String?, val error: String?, val convention: String?)
+
+/**
+ * Whether a name batch may fall through to the owner resolver. Pure so the
+ * boundary is testable without native keys: a table hit is final; a table
+ * failure on a FOREIGN shared file is final; a table failure on this account's
+ * own file may be retried by the owner resolver.
+ */
+enum class NameResolutionPlan { TABLE_FINAL, OWNER_RESOLVE, ERROR_FINAL }
 
 object SharedKeyOps {
   val registry = SharedKeyRegistry<FileKeyHandle> { it.close() }
+  val ownerConventions = OwnerConventionCache()
   fun folder(id: Int, registry: SharedKeyRegistry<FileKeyHandle> = this.registry) =
     registry.folder(id) ?: error("Vault is locked")
   fun wire(encrypted: EncryptedData) = encrypted.nonce + encrypted.ciphertext
@@ -66,6 +77,59 @@ object SharedKeyOps {
     val key = registry.file(fileId) ?: error("Vault is locked")
     return wire(master.wrapOwnerFileKey(fileId, key))
   }
+  // MARK: - SF-0002 owner resolvers
+
+  /**
+   * Resolve this account's per-file key from the stored name pair, reporting the
+   * id convention. The returned key can only read; the convention is cached (never
+   * the key) so a read-only decision survives the read that discovered it.
+   */
+  fun resolveOwnerName(master: MasterKeyHandle, fileId: String, nameEncrypted: String,
+    registry: SharedKeyRegistry<FileKeyHandle> = this.registry): Pair<OwnerReadKey, OwnerKeyConvention> {
+    val resolved = master.ownerFileKeyForName(fileId, nameEncrypted)
+    ownerConventions.storeName(resolved.convention, registry.generation, fileId, nameEncrypted)
+    return Pair(OwnerReadKey(resolved.key), resolved.convention)
+  }
+
+  /** Resolve one content version independently of the name. The caller
+   * (`classifyOwnerContent`) caches the convention under the real objectVersionId. */
+  fun resolveOwnerContent(master: MasterKeyHandle, fileId: String, firstFrame: ByteArray,
+    registry: SharedKeyRegistry<FileKeyHandle> = this.registry): Pair<OwnerReadKey, OwnerKeyConvention> {
+    val resolved = master.ownerFileKeyForContent(fileId, firstFrame)
+    return Pair(OwnerReadKey(resolved.key), resolved.convention)
+  }
+
+  /** The only pin source for an owned file: authenticated metadata under the owner's key. */
+  fun readContentPin(master: MasterKeyHandle, fileId: String, nameEncrypted: String,
+    registry: SharedKeyRegistry<FileKeyHandle> = this.registry): ContentPin {
+    val (readKey, convention) = resolveOwnerName(master, fileId, nameEncrypted, registry)
+    return try {
+      val metadata = readKey.decryptFileMetadata(nameEncrypted)
+      ContentPin(metadata.chunkFormat, convention)
+    } catch (error: Exception) { throw ContentPinUnverifiable(error) }
+  }
+
+  /** The shared-folder boundary as a pure decision. */
+  fun nameResolutionPlan(tablePresent: Boolean, tableFailed: Boolean, isForeign: Boolean): NameResolutionPlan =
+    when {
+      tablePresent && !tableFailed -> NameResolutionPlan.TABLE_FINAL
+      isForeign -> NameResolutionPlan.ERROR_FINAL
+      else -> NameResolutionPlan.OWNER_RESOLVE
+    }
+
+  /**
+   * Whether a core batch failure is retried through the owner resolver. Only a
+   * failed item this account owns may be; an undeclared (foreign) id stays final.
+   */
+  fun ownerRetryPlan(batchFailed: Boolean, owned: Boolean): Boolean = batchFailed && owned
+
+  /** The bridge code for a resolved convention. */
+  fun conventionCode(convention: OwnerKeyConvention): String = when (convention) {
+    OwnerKeyConvention.STRING -> "string"
+    OwnerKeyConvention.BINARY -> "binary"
+    OwnerKeyConvention.UPPER_REPAIR -> "upper_repair"
+  }
+
   fun fileKey(master: MasterKeyHandle, fileId: String,
     registry: SharedKeyRegistry<FileKeyHandle> = this.registry): FileKeyHandle =
     pickKey(registry.file(fileId)) { master.deriveFileKey(fileId.toByteArray(Charsets.UTF_8)) }
@@ -101,9 +165,15 @@ object SharedKeyOps {
         return base64url(candidate)
     } finally { candidate.fill(0) }
   }
+  /**
+   * `ownedFileIds` is the caller's declaration of which rows this account owns.
+   * Only those may fall through to the owner resolver; an id not listed is
+   * treated as foreign, so a wrong table key stays final (SF-0002 boundary).
+   */
   fun decryptNames(master: MasterKeyHandle, items: List<BatchNameItem>,
-    registry: SharedKeyRegistry<FileKeyHandle> = this.registry): List<BatchNameResult> {
-    val fromTable = mutableListOf<Pair<Int, BatchNameResult>>()
+    ownedFileIds: Set<String> = emptySet(),
+    registry: SharedKeyRegistry<FileKeyHandle> = this.registry): List<SharedNameResult> {
+    val fromTable = mutableListOf<Pair<Int, SharedNameResult>>()
     val remaining = mutableListOf<BatchNameItem>()
     val indices = mutableListOf<Int>()
     for ((index, item) in items.withIndex()) {
@@ -111,13 +181,42 @@ object SharedKeyOps {
       if (key != null) {
         val result = try {
           val value = key.decryptNameMetadata(item.nameEncrypted)
-          BatchNameResult(value.name, value.mimeType, null)
-        } catch (error: Exception) { BatchNameResult(null, null, error.message ?: "decryption failed") }
+          SharedNameResult(value.name, value.mimeType, null, "string_or_binary")
+        } catch (error: Exception) {
+          // A present but wrong table key is final for a FOREIGN shared file. For this
+          // account's own file it may be the uppercase-repair convention, which only the
+          // owner resolver can authenticate — retry there.
+          val retried = if (nameResolutionPlan(true, true, item.fileId !in ownedFileIds) ==
+            NameResolutionPlan.OWNER_RESOLVE) {
+            try {
+              val (readKey, convention) = resolveOwnerName(master, item.fileId, item.nameEncrypted, registry)
+              val value = readKey.decryptNameMetadata(item.nameEncrypted)
+              SharedNameResult(value.name, value.mimeType, null, conventionCode(convention))
+            } catch (_: Exception) { null }
+          } else null
+          retried ?: SharedNameResult(null, null, error.message ?: "decryption failed", null)
+        }
         fromTable.add(index to result)
       } else { remaining.add(item); indices.add(index) }
     }
     val results = if (remaining.isEmpty()) emptyList() else master.decryptNames(remaining)
-    return mergeNameResults(items.size, fromTable, indices.zip(results))
+    val fromMaster = indices.zip(results).map { (index, result) ->
+      if (result.error == null) {
+        index to SharedNameResult(result.name, result.mimeType, null, "string_or_binary")
+      } else if (ownerRetryPlan(result.error != null, items[index].fileId in ownedFileIds)) {
+        try {
+          val (readKey, convention) = resolveOwnerName(master, items[index].fileId,
+            items[index].nameEncrypted, registry)
+          val value = readKey.decryptNameMetadata(items[index].nameEncrypted)
+          index to SharedNameResult(value.name, value.mimeType, null, conventionCode(convention))
+        } catch (_: Exception) {
+          index to SharedNameResult(result.name, result.mimeType, result.error, null)
+        }
+      } else {
+        index to SharedNameResult(result.name, result.mimeType, result.error, null)
+      }
+    }
+    return mergeNameResults(items.size, fromTable, fromMaster)
   }
   private fun base64url(bytes: ByteArray): String = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 }

@@ -112,6 +112,19 @@ final class ApiClient {
   /// large file (the 59.8 MB DNG) never needs its full size in memory; the
   /// caller decrypts it chunk by chunk. The file holds ciphertext only and
   /// the caller deletes it (`DownloadedEncryptedFile.url`) when done.
+  /// SF-0002 M2a run 3: ONE bounded read of chunk 0, used to classify an owned
+  /// content version before a Files-app edit. A declared/actual length over
+  /// `maxBytes` reports `tooLarge` without keeping the body.
+  func firstChunk(fileId: String, maxBytes: Int) async throws -> (status: Int, body: Data, tooLarge: Bool) {
+    let url = baseUrl.appendingPathComponent("/api/v1/files/\(fileId)/chunks/0")
+    var request = try authedRequest(url: url, method: "GET")
+    request.setValue("bytes=0-\(maxBytes)", forHTTPHeaderField: "Range")
+    let (data, response) = try await session.data(for: request)
+    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+    if data.count > maxBytes { return (status, Data(), true) }
+    return (status, data, false)
+  }
+
   func downloadEncrypted(fileId: String) async throws -> DownloadedEncryptedFile {
     let url = baseUrl.appendingPathComponent("/api/v1/files/\(fileId)/download")
     let request = try authedRequest(url: url, method: "GET")

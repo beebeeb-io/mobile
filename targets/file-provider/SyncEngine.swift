@@ -107,7 +107,15 @@ enum SyncEngine {
         createdAt: dto.created_at,
         updatedAt: dto.updated_at,
         syncAnchor: bumpAnchor(prior?.syncAnchor),
-        isMaterialized: prior?.isMaterialized ?? false
+        isMaterialized: prior?.isMaterialized ?? false,
+        nameConvention: FileProviderCacheSchema.nameConvention(
+          previous: prior?.nameConvention,
+          previousNameEncrypted: prior?.nameEncrypted,
+          newNameEncrypted: dto.name_encrypted ?? "",
+          batch: decrypted.convention
+        ),
+        contentConvention: prior?.contentConvention,
+        contentVersionId: prior?.contentVersionId
       )
       rowsToUpsert.append(item)
     }
@@ -274,15 +282,27 @@ enum SyncEngine {
     dto: ApiClient.FileEntryDto,
     masterKeyHandle: MasterKeyHandle?,
     fallback: String?
-  ) -> (name: String?, mimeType: String?) {
+  ) -> (name: String?, mimeType: String?, convention: String?) {
     guard let raw = dto.name_encrypted, !raw.isEmpty else {
-      return (fallback, nil)
+      return (fallback, nil, nil)
     }
     if !raw.hasPrefix("{") {
-      return (raw, nil)
+      return (raw, nil, nil)
     }
     guard let masterKeyHandle else {
-      return (fallback, nil)
+      return (fallback, nil, nil)
+    }
+    // SF-0002 M2a run 3: an owned row goes through the owner name resolver,
+    // which also reports the exact id convention (upper_repair is read-only).
+    do {
+      let resolved = try CryptoBridge.resolveOwnerNameWithMime(
+        masterKeyHandle: masterKeyHandle,
+        fileId: dto.id,
+        nameEncrypted: raw
+      )
+      return (resolved.name, resolved.mimeType, resolved.convention)
+    } catch {
+      // A foreign/shared row or a legacy envelope: fall back to the file key.
     }
     do {
       let decrypted = try CryptoBridge.decryptNameWithMime(
@@ -290,10 +310,10 @@ enum SyncEngine {
         fileId: dto.id,
         nameEncrypted: raw
       )
-      return (decrypted.name, decrypted.mimeType)
+      return (decrypted.name, decrypted.mimeType, nil)
     } catch {
       NSLog("[Beebeeb] decrypt filename failed for item \(dto.id): \(error)")
-      return (fallback, nil)
+      return (fallback, nil, nil)
     }
   }
 }

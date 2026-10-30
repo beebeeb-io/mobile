@@ -73,6 +73,11 @@ import {
 } from '../lib/upload-conflict';
 // Task 1685 review should-fixes 1+2 — upload loop serialization + Resume-offer rule.
 import { canOfferResume, createUploadGate, type UploadGate } from '../lib/upload-gate';
+import {
+  READ_ONLY_EDIT_COPY,
+  objectVersionIdOf,
+  uploadConflictPlan,
+} from '../lib/sf-0002-readonly-actions';
 import type { UploadActivityState, UploadStage } from '../components/UploadActivityCard';
 import { useToast } from '../lib/toast-context';
 import SkeletonRow from '../components/SkeletonRow';
@@ -1508,7 +1513,7 @@ export default function FilesScreen() {
   const [lockStateReady, setLockStateReady] = useState(false);
 
   // Crypto
-  const { isUnlocked, unlock, unlockAttempted, decryptMetadata, decryptNames, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId } = useCrypto();
+  const { isUnlocked, unlock, unlockAttempted, decryptMetadata, decryptNames, encryptChunk, encryptMetadata, getFileKeyBytes, getRequestContentKey, getMasterKeyHandleId, classifyOwnerContent, resolveOwnerNameConvention } = useCrypto();
   useEffect(() => { if (isUnlocked) void loadFileIndex().catch(() => {}); }, [isUnlocked]);
   const [decryptedNames, setDecryptedNames] = useState<Record<string, string>>({});
   // Task 1592 — rows whose name the batch decrypt could not decrypt (shown as
@@ -1837,7 +1842,7 @@ export default function FilesScreen() {
     for (const f of encrypted) {
       const version = f.version_number ?? 0;
       const cached = cache[f.id];
-      if (cached && cached.version === version) {
+      if (cached && cached.version === version && cached.convention) {
         // Valid persistent-cache hit — surface it if not already shown.
         if (knownNames[f.id] == null) seedNames[f.id] = cached.name;
         if (cached.mime != null && knownMimes[f.id] == null) seedMimes[f.id] = cached.mime;
@@ -1873,6 +1878,7 @@ export default function FilesScreen() {
       const normal = misses.filter((f) => !isRequestUpload(f));
       const appliedNames: Record<string, string> = {};
       const appliedMimes: Record<string, string | null> = {};
+      const appliedConventions: Record<string, string | null> = {};
       const failedNames: Record<string, true> = {};
 
       if (normal.length > 0) {
@@ -1900,6 +1906,7 @@ export default function FilesScreen() {
             }
             appliedNames[f.id] = r.name;
             appliedMimes[f.id] = r.mimeType ?? null;
+            appliedConventions[f.id] = r.convention ?? null;
           });
         } catch {
           // Batch unavailable (JS-only build / locked) — leave misses unresolved;
@@ -1944,10 +1951,15 @@ export default function FilesScreen() {
       for (const f of misses) {
         const nm = appliedNames[f.id];
         if (nm == null) continue;
+        // SF-0002: only persist an entry that knows its convention; one without
+        // is a miss anyway (see name-cache loadNameCache).
+        const convention = appliedConventions[f.id];
+        if (!convention) continue;
         nameCacheRef.current[f.id] = {
           name: nm,
           mime: appliedMimes[f.id] ?? null,
           version: f.version_number ?? 0,
+          convention: convention as 'string_or_binary' | 'string' | 'binary' | 'upper_repair',
         };
         cacheChanged = true;
       }
@@ -2652,6 +2664,19 @@ export default function FilesScreen() {
     (navigation.navigate as any)('Tabs', { screen: 'Settings' });
   }, [navigation]);
 
+  /**
+   * SF-0002 M2a run 3: both halves of an OWNED row's verdict, for the write and
+   * share gates. The name is resolved exactly (the batch path only proves
+   * `string_or_binary`); the content version is classified once per version.
+   */
+  const resolveOwnerVerdict = useCallback(async (row: FileEntry) => {
+    const [name, content] = await Promise.all([
+      resolveOwnerNameConvention(row.id, row.name_encrypted),
+      classifyOwnerContent(row.id, objectVersionIdOf(row), row.created_at),
+    ]);
+    return { name, content };
+  }, [resolveOwnerNameConvention, classifyOwnerContent]);
+
   const pickAndUploadFile = useCallback(async () => {
     if (!phraseVerified) {
       Alert.alert(
@@ -2689,15 +2714,39 @@ export default function FilesScreen() {
     const existingFile = findConflict(asset.name);
     if (existingFile) {
       const uniqueName = getUniqueMobileName(asset.name, folderFileNames());
-      const choice = await promptFileConflict(asset.name, existingFile.id, uniqueName);
-      if (choice.action === 'cancel') return;
-      if (choice.action === 'overwrite') {
-        // Reuse the existing file ID → server stores a new version of it
-        uploadFileId = existingFile.id;
-        v2InitNameEncrypted = existingFile.name_encrypted;
+      const verdict = await resolveOwnerVerdict(existingFile);
+      const plan = uploadConflictPlan(verdict.name, verdict.content);
+      if (plan.action === 'retry') {
+        // The owner check failed: nothing this attempt can decide, so upload
+        // nothing and offer the same retry the network-error copy implies.
+        Alert.alert('Could not check this file', plan.copy, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Retry', onPress: () => { void pickAndUploadFile(); } },
+        ]);
+        return;
+      }
+      if (plan.action === 'keep-both') {
+        // Coerced: the existing file was saved under an older convention, so
+        // overwriting it could damage it. Offer only a fresh id + unique name.
+        const keepBoth = await new Promise<boolean>((resolve) => {
+          Alert.alert('Keep both?', plan.copy, [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Keep both', onPress: () => resolve(true) },
+          ], { cancelable: true, onDismiss: () => resolve(false) });
+        });
+        if (!keepBoth) return;
+        uploadFileName = uniqueName;
       } else {
-        // Keep both: upload under the suffixed name with a fresh ID
-        uploadFileName = choice.finalName;
+        const choice = await promptFileConflict(asset.name, existingFile.id, uniqueName);
+        if (choice.action === 'cancel') return;
+        if (choice.action === 'overwrite') {
+          // Reuse the existing file ID → server stores a new version of it
+          uploadFileId = existingFile.id;
+          v2InitNameEncrypted = existingFile.name_encrypted;
+        } else {
+          // Keep both: upload under the suffixed name with a fresh ID
+          uploadFileName = choice.finalName;
+        }
       }
     }
 
@@ -2786,7 +2835,7 @@ export default function FilesScreen() {
     void gate.run(runSingleFile).catch(() => {
       // The single-file path toasts its own failure; this only guards the gate.
     });
-  }, [currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, findConflict, waitForFolderNames, folderFileNames, encryptChunk, encryptMetadata, indexFile]);
+  }, [currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, findConflict, waitForFolderNames, folderFileNames, encryptChunk, encryptMetadata, indexFile, resolveOwnerVerdict]);
 
   const pickAndUploadPhotos = useCallback(async () => {
     if (!phraseVerified) {
@@ -2872,13 +2921,39 @@ export default function FilesScreen() {
       }
   
       let skippedConflicts = 0;
+      let readOnlyCoerced = 0;
       let batchDecisions = new Map<number, BatchDecision>();
       if (conflicts.length > 0) {
+        // SF-0002 M2a run 3: decide the owner verdict for every conflicting
+        // existing row BEFORE prompting, so a read-only row is coerced to Keep
+        // both and an unknown one uploads nothing at all.
+        const ownerPlans = new Map<string, ReturnType<typeof uploadConflictPlan>>();
+        await Promise.all(conflicts.map(async (conflict) => {
+          if (ownerPlans.has(conflict.existingId)) return;
+          const row = files.find((f) => f.id === conflict.existingId);
+          if (!row) return;
+          const verdict = await resolveOwnerVerdict(row);
+          ownerPlans.set(conflict.existingId, uploadConflictPlan(verdict.name, verdict.content));
+        }));
         const resolutions: Array<ConflictResolution | undefined> = new Array(conflicts.length).fill(undefined);
         let cancelledBatch = false;
         for (let c = 0; c < conflicts.length; c++) {
           if (resolutions[c]) continue;
           const conflict = conflicts[c]!;
+          const plan = ownerPlans.get(conflict.existingId);
+          if (plan?.action === 'retry') {
+            Alert.alert('Could not check this file', plan.copy, [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Retry', onPress: () => { void pickAndUploadPhotos(); } },
+            ]);
+            setUpload(null);
+            return;
+          }
+          if (plan?.action === 'keep-both') {
+            resolutions[c] = 'keep-both';
+            readOnlyCoerced += 1;
+            continue;
+          }
           const choice = await promptBatchConflict(
             {
               incomingName: conflict.incomingName,
@@ -2907,6 +2982,7 @@ export default function FilesScreen() {
         for (const decision of batchDecisions.values()) {
           if (decision.action === 'skip') skippedConflicts += 1;
         }
+        if (readOnlyCoerced > 0) showToast({ type: 'info', message: READ_ONLY_EDIT_COPY });
       }
   
       let successCount = 0;
@@ -3067,7 +3143,7 @@ export default function FilesScreen() {
     void gate.run(runBatch).catch(() => {
       // Per-file errors are toasted inside runBatch; this only guards the gate.
     });
-  }, [files, currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, waitForFolderNames, encryptChunk, encryptMetadata, indexFile]);
+  }, [files, currentFolder.id, fetchFiles, phraseVerified, blockIfReadOnly, showToast, waitForFolderNames, encryptChunk, encryptMetadata, indexFile, resolveOwnerVerdict]);
 
   const openDocumentScanner = useCallback(() => {
     if (!phraseVerified) {
@@ -3485,6 +3561,9 @@ export default function FilesScreen() {
         sizeBytes: item.size_bytes,
         // Task 2238 — a folder's link is a snapshot bundle of its files.
         isFolder: item.is_folder === true,
+        nameEncrypted: item.name_encrypted,
+        objectVersionId: objectVersionIdOf(item),
+        createdAt: item.created_at,
       });
     })();
   }, [selectedIds, files, decryptedNames, exitSelectMode, navigation, mimeTypeFor, ensureFileReady]);
@@ -4157,6 +4236,9 @@ export default function FilesScreen() {
               sizeBytes: item.size_bytes,
               // Task 2238 — a folder's link is a snapshot bundle of its files.
               isFolder: item.is_folder === true,
+              nameEncrypted: item.name_encrypted,
+              objectVersionId: objectVersionIdOf(item),
+              createdAt: item.created_at,
             });
           })();
           return;
@@ -4517,6 +4599,9 @@ export default function FilesScreen() {
         sizeBytes: item.size_bytes,
         // Task 2238 — a folder's link is a snapshot bundle of its files.
         isFolder: item.is_folder === true,
+        nameEncrypted: item.name_encrypted,
+        objectVersionId: objectVersionIdOf(item),
+        createdAt: item.created_at,
       });
     })();
   }, [navigation, decryptedNames, mimeTypeFor, ensureFileReady]);

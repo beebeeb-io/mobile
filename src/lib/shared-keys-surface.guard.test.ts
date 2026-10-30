@@ -99,11 +99,11 @@ for (const [path, fn] of [['ios/SharedKeyOps.swift', 'func'], ['android/src/main
     expect(source).not.toMatch(new RegExp(`${fn} unwrap\\(`))
   })
 }
-test('core_pin_and_fixtures_are_the_exact_L8_merge', () => {
-  expect(readFileSync(resolve(root, 'modules/beebeeb-crypto/CORE_REV'), 'utf8').trim()).toBe('c08defc70c35428926be6784d18ff091be6d004c')
+test('core_pin_and_fixtures_are_the_exact_L8_merge_the_SF-0002_binding_descends_from', () => {
+  expect(readFileSync(resolve(root, 'modules/beebeeb-crypto/CORE_REV'), 'utf8').trim()).toBe('f8ee8e414df359480e0110c2fa6db09140a2dfcb')
   const { createHash } = require('node:crypto')
   for (const path of ['targets/native-tests/Vectors/core-vectors.json', 'modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.json'])
-    expect(createHash('sha256').update(readFileSync(resolve(root,path))).digest('hex')).toBe('11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a')
+    expect(createHash('sha256').update(readFileSync(resolve(root,path))).digest('hex')).toBe('71fb633774fcb13d7cca0613603282ea47ab77e265abd09b3a2ec189689c1464')
 })
 
 // L7d / P2-2: the custody marker lives in no-backup storage the cache clear and the sign-out sweep never touch.

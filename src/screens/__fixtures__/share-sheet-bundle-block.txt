@@ -19,12 +19,18 @@
           return;
         }
 
+        const included = new Set(folderPlan?.included ?? scan.files.map((f) => f.fileId));
+        const shareFiles = scan.files.filter((f) => included.has(f.fileId));
+        if (shareFiles.length === 0) {
+          setError("Nothing to share yet");
+          return;
+        }
         const clientKey = await generateRandomBytes(32);
         let items: CreateBundleShareItem[] = [];
         let keyForUrl: string;
         let ownerWrappedKey: string;
         try {
-          for (const f of scan.files) {
+          for (const f of shareFiles) {
             const itemKey = await getFileKeyBytes(f.fileId);
             try {
               const wrapped = await wrapFileKeyForShare(clientKey, itemKey);

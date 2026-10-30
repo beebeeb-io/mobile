@@ -1,6 +1,7 @@
 import { accountEpoch, onAccountEpochAdvance, sameAccountEpoch, StaleAccountError, type AccountEpoch } from './account-epoch';
 import { ancestorsOf, clearTree, isForeignSharedFile } from './shared-folder-tree';
 import { CustodyUnavailableError, custodyMemory, isCustodyAbsentStatus, settleMissingCustody, type CustodyMemory } from './shared-folder-custody';
+import { clearWriteState } from './sf-0002-write-state';
 
 export type SharedKeyOutcome = 'loaded' | 'no_shared_root' | 'no_key_row' | 'key_does_not_open' | 'keys_incomplete' | 'update_required' | 'custody_unavailable' | 'stale';
 /** Promised C1/C3 Interfaces. These structural ports can be replaced by their exported types after merge. */
@@ -52,7 +53,7 @@ export function assertFileKeyExportable(id: string, loaded = sharedFileKeyIsLoad
 export function setSharedKeyResolver(value: SharedKeyResolver | null): void { resolver = value; }
 export function getSharedKeyResolver(): SharedKeyResolver | null { return resolver; }
 export function sharedKeyOutcome(id: string): SharedKeyOutcome | undefined { return outcomes.get(id); }
-export function clearSharedKeys(): void { nativeMaster = null; resolver?.clear(); clearTree(); outcomes.clear(); ownerWrapLoaded.clear(); }
+export function clearSharedKeys(): void { nativeMaster = null; resolver?.clear(); clearTree(); outcomes.clear(); ownerWrapLoaded.clear(); clearWriteState(); }
 onAccountEpochAdvance(clearSharedKeys);
 export function configureSharedKeys(native: Partial<SharedKeysNative>, api: SharedKeysApi, masterHandleId: () => number): SharedKeyResolver {
   nativeSurface = native;

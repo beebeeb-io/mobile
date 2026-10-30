@@ -131,7 +131,12 @@ export async function syncDecryptedEntriesToFileProvider(
   files: FileEntry[],
   decryptedNames: Record<string, string>,
   parentId?: string | null,
-  options: { prune?: boolean; pruneParents?: (string | null)[] } = {},
+  options: {
+    prune?: boolean;
+    pruneParents?: (string | null)[];
+    /** SF-0002 M2a run 3: exact name convention per file, from the batch result. */
+    conventions?: Record<string, string | null>;
+  } = {},
 ): Promise<number> {
   if (Platform.OS !== 'ios') return 0;
 
@@ -145,6 +150,7 @@ export async function syncDecryptedEntriesToFileProvider(
     is_folder: f.is_folder ?? false,
     created_at: f.created_at ?? null,
     updated_at: f.updated_at ?? null,
+    name_convention: options.conventions?.[f.id] ?? null,
   }));
 
   // `prune` is only safe when `files` is the COMPLETE listing for `parentId`
@@ -248,13 +254,17 @@ export async function populateFileProviderCache(
         // folder, not the first 200 (task 0755).
         const files = await listAllFiles(parentId);
         const names: Record<string, string> = {};
+        const conventions: Record<string, string | null> = {};
 
         const encrypted = files.filter((file) => (file.name_encrypted ?? '').startsWith('{'));
         if (options.decryptNames) {
           await decryptNamesInBackground(
             encrypted.map((file) => ({ fileId: file.id, nameEncrypted: file.name_encrypted ?? '' })),
             options.decryptNames,
-            (item, result) => { if (result.name) names[item.fileId] = result.name; },
+            (item, result) => {
+              if (result.name) names[item.fileId] = result.name;
+              if (result.convention) conventions[item.fileId] = result.convention;
+            },
             () => !lease.valid,
           );
         }
@@ -286,6 +296,7 @@ export async function populateFileProviderCache(
         // longer exist remotely (e.g. trashed on the web) are deleted.
         totalSynced += await syncDecryptedEntriesToFileProvider(files, names, parentId ?? null, {
           prune: true,
+          conventions,
         });
 
         for (const file of files) {

@@ -20,6 +20,8 @@ import { appVersion } from '../lib/app-version';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import { gatedPlaintextWrite } from '../lib/plaintext-gate';
+import { legacyMovePlan } from '../lib/sf-0002-readonly-actions';
+import { cachedNameConvention } from '../lib/sf-0002-write-state';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
@@ -551,8 +553,10 @@ async function ensureFolder(parentId: string | undefined, name: string): Promise
 
 async function moveLegacyItem(item: FileEntry, parentId: string, newPlaintextName?: string): Promise<boolean> {
   try {
+    // SF-0002 M2a run 3: the MOVE is never gated; the RENAME follows the name
+    // half only (an UpperRepair or unresolved name keeps its old name).
     await moveFile(item.id, parentId);
-    if (newPlaintextName) {
+    if (newPlaintextName && legacyMovePlan(cachedNameConvention(item.id), newPlaintextName).rename) {
       const decrypted = await decryptName(item);
       if (decrypted !== newPlaintextName) {
         const nameEncrypted = await encryptFileName(item.id, newPlaintextName);

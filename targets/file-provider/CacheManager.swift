@@ -93,7 +93,10 @@ final class CacheManager {
         created_at TEXT,
         updated_at TEXT,
         sync_anchor INTEGER NOT NULL DEFAULT 0,
-        is_materialized INTEGER NOT NULL DEFAULT 0
+        is_materialized INTEGER NOT NULL DEFAULT 0,
+        name_convention TEXT,
+        content_convention TEXT,
+        content_version_id TEXT
       );
       """,
       "CREATE INDEX IF NOT EXISTS idx_file_cache_parent ON file_cache(parent_id);",
@@ -118,6 +121,23 @@ final class CacheManager {
     for sql in statements {
       execute(sql)
     }
+    // SF-0002 M2a run 3: idempotent convention columns for databases created
+    // before them. NEVER writes PRAGMA user_version (the purge epoch).
+    for sql in FileProviderCacheSchema.addColumnStatements(existing: Set(tableColumns())) {
+      execute(sql)
+    }
+  }
+
+  /// The columns `pragma table_info` reports for `table`.
+  private func tableColumns(_ table: String = "file_cache") -> [String] {
+    var stmt: OpaquePointer?
+    defer { sqlite3_finalize(stmt) }
+    guard prepare("PRAGMA table_info(\(table))", &stmt) else { return [] }
+    var names: [String] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      names.append(textColumn(stmt, 1) ?? "")
+    }
+    return names
   }
 
   // MARK: - Public API
@@ -507,8 +527,9 @@ final class CacheManager {
     INSERT INTO file_cache(
       id, parent_id, name_encrypted, name_decrypted, mime_type, size_bytes,
       is_folder, is_pinned, has_thumbnail, thumbnail_data, thumbnail_nonce,
-      created_at, updated_at, sync_anchor, is_materialized
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      created_at, updated_at, sync_anchor, is_materialized,
+      name_convention, content_convention, content_version_id
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       parent_id = excluded.parent_id,
       name_encrypted = excluded.name_encrypted,
@@ -521,7 +542,10 @@ final class CacheManager {
       thumbnail_nonce = COALESCE(excluded.thumbnail_nonce, file_cache.thumbnail_nonce),
       created_at = excluded.created_at,
       updated_at = excluded.updated_at,
-      sync_anchor = excluded.sync_anchor;
+      sync_anchor = excluded.sync_anchor,
+      name_convention = excluded.name_convention,
+      content_convention = excluded.content_convention,
+      content_version_id = excluded.content_version_id;
     """
     executeBindable(sql) { stmt in
       bindText(stmt, 1, item.id)
@@ -539,6 +563,9 @@ final class CacheManager {
       bindNullable(stmt, 13, item.updatedAt)
       sqlite3_bind_int64(stmt, 14, item.syncAnchor)
       sqlite3_bind_int(stmt, 15, item.isMaterialized ? 1 : 0)
+      bindNullable(stmt, 16, item.nameConvention)
+      bindNullable(stmt, 17, item.contentConvention)
+      bindNullable(stmt, 18, item.contentVersionId)
     }
   }
 
@@ -608,7 +635,8 @@ final class CacheManager {
   private let rowSelectSql = """
   SELECT id, parent_id, name_encrypted, name_decrypted, mime_type, size_bytes,
          is_folder, is_pinned, has_thumbnail, thumbnail_data, thumbnail_nonce,
-         created_at, updated_at, sync_anchor, is_materialized
+         created_at, updated_at, sync_anchor, is_materialized,
+         name_convention, content_convention, content_version_id
   FROM file_cache
   """
 
@@ -629,7 +657,10 @@ final class CacheManager {
       createdAt: textColumn(stmt, 11),
       updatedAt: textColumn(stmt, 12),
       syncAnchor: sqlite3_column_int64(stmt, 13),
-      isMaterialized: sqlite3_column_int(stmt, 14) != 0
+      isMaterialized: sqlite3_column_int(stmt, 14) != 0,
+      nameConvention: textColumn(stmt, 15),
+      contentConvention: textColumn(stmt, 16),
+      contentVersionId: textColumn(stmt, 17)
     )
   }
 
@@ -721,4 +752,11 @@ struct CachedItem {
   let updatedAt: String?
   let syncAnchor: Int64
   var isMaterialized: Bool
+  /// SF-0002 M2a run 3: the convention the name authenticated under. Nil =
+  /// unresolved; reset whenever `nameEncrypted` changes.
+  var nameConvention: String? = nil
+  /// The classified content convention, keyed by `contentVersionId`.
+  var contentConvention: String? = nil
+  /// The `objectVersionId` the content convention describes.
+  var contentVersionId: String? = nil
 }

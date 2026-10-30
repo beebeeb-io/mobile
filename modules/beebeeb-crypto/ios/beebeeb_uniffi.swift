@@ -1775,6 +1775,12 @@ public protocol DirectDownloadPlannerHandleProtocol: AnyObject, Sendable {
     func apiFetchFailed(index: UInt32) throws 
     
     /**
+     * The ciphertext length of chunk `index` once the first window was accepted, else `None`.
+     * The grant's `length` is this number; check a storage answer against it.
+     */
+    func chunkLength(index: UInt32)  -> UInt64?
+    
+    /**
      * Chunk `index` arrived but did not authenticate when decrypted.
      */
     func chunkUnauthentic(index: UInt32) throws 
@@ -1935,6 +1941,19 @@ open func apiFetchFailed(index: UInt32)throws   {try rustCallWithError(FfiConver
         FfiConverterUInt32.lower(index),$0
     )
 }
+}
+    
+    /**
+     * The ciphertext length of chunk `index` once the first window was accepted, else `None`.
+     * The grant's `length` is this number; check a storage answer against it.
+     */
+open func chunkLength(index: UInt32) -> UInt64?  {
+    return try!  FfiConverterOptionUInt64.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_directdownloadplannerhandle_chunk_length(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(index),$0
+    )
+})
 }
     
     /**
@@ -2560,6 +2579,170 @@ public func FfiConverterTypeDirectSignedUrl_lift(_ handle: UInt64) throws -> Dir
 #endif
 public func FfiConverterTypeDirectSignedUrl_lower(_ value: DirectSignedUrl) -> UInt64 {
     return FfiConverterTypeDirectSignedUrl.lower(value)
+}
+
+
+
+
+
+
+/**
+ * A storage GET's body counted as it arrives, so no client counts body bytes on its own.
+ * `from_head` starts it (throwing `StorageBody` when the head is not a `200` of the grant's
+ * length), `push` counts the bytes read and throws as soon as they would pass the grant, and
+ * `finish` gives the answer and consumes the count.
+ */
+public protocol DirectStorageBodyHandleProtocol: AnyObject, Sendable {
+    
+    /**
+     * The body's answer; the count is consumed, and a second call gives the same answer.
+     */
+    func finish()  -> DirectStorageGetDto
+    
+    /**
+     * Count `n` more bytes. Throws `StorageBody` as soon as they would pass the grant. A push
+     * after `finish` is a CALLER bug, not a storage failure: it throws `Plan` with code
+     * `finished`, because the count was consumed by `finish` and there is no body left to count.
+     */
+    func push(n: UInt64) throws 
+    
+}
+/**
+ * A storage GET's body counted as it arrives, so no client counts body bytes on its own.
+ * `from_head` starts it (throwing `StorageBody` when the head is not a `200` of the grant's
+ * length), `push` counts the bytes read and throws as soon as they would pass the grant, and
+ * `finish` gives the answer and consumes the count.
+ */
+open class DirectStorageBodyHandle: DirectStorageBodyHandleProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_beebeeb_uniffi_fn_clone_directstoragebodyhandle(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_beebeeb_uniffi_fn_free_directstoragebodyhandle(handle, $0) }
+    }
+
+    
+public static func fromHead(status: UInt16, contentLength: UInt64?, expected: UInt64)throws  -> DirectStorageBodyHandle  {
+    return try  FfiConverterTypeDirectStorageBodyHandle_lift(try rustCallWithError(FfiConverterTypeDirectTransferError_lift) {
+    uniffi_beebeeb_uniffi_fn_constructor_directstoragebodyhandle_from_head(
+        FfiConverterUInt16.lower(status),
+        FfiConverterOptionUInt64.lower(contentLength),
+        FfiConverterUInt64.lower(expected),$0
+    )
+})
+}
+    
+
+    
+    /**
+     * The body's answer; the count is consumed, and a second call gives the same answer.
+     */
+open func finish() -> DirectStorageGetDto  {
+    return try!  FfiConverterTypeDirectStorageGetDto_lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_method_directstoragebodyhandle_finish(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Count `n` more bytes. Throws `StorageBody` as soon as they would pass the grant. A push
+     * after `finish` is a CALLER bug, not a storage failure: it throws `Plan` with code
+     * `finished`, because the count was consumed by `finish` and there is no body left to count.
+     */
+open func push(n: UInt64)throws   {try rustCallWithError(FfiConverterTypeDirectTransferError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_directstoragebodyhandle_push(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(n),$0
+    )
+}
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDirectStorageBodyHandle: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = DirectStorageBodyHandle
+
+    public static func lift(_ handle: UInt64) throws -> DirectStorageBodyHandle {
+        return DirectStorageBodyHandle(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: DirectStorageBodyHandle) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectStorageBodyHandle {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: DirectStorageBodyHandle, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectStorageBodyHandle_lift(_ handle: UInt64) throws -> DirectStorageBodyHandle {
+    return try FfiConverterTypeDirectStorageBodyHandle.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectStorageBodyHandle_lower(_ value: DirectStorageBodyHandle) -> UInt64 {
+    return FfiConverterTypeDirectStorageBodyHandle.lower(value)
 }
 
 
@@ -3476,7 +3659,68 @@ public protocol MasterKeyHandleProtocol: AnyObject, Sendable {
      */
     func exportForKeychain() throws  -> Data
     
+    /**
+     * Open one `bbcm1.` client-metadata envelope (task 1922).
+     */
+    func openClientMeta(recordKey: String, deviceKey: String?, field: UInt8, envelope: String) throws  -> String
+    
+    /**
+     * Open many client-metadata rows under ONE derived key (task 1922). Order
+     * and length match `items`; a bad row yields `ok: false` for that row only.
+     * A cleared key handle is an error for the whole call, not a batch of
+     * `ok: false` rows that would look like decryption failures.
+     */
+    func openClientMetaMany(items: [ClientMetaItem]) throws  -> [ClientMetaOpened]
+    
+    /**
+     * L9 (task 2255): open a LEGACY invite owner copy; `Some` only when core
+     * proves it over the folder's `rows` (at most 64 distinct ids, one call).
+     * The unproven candidate never leaves core. Attack B is a named residual.
+     */
+    func openLegacyInviteOwnerCopy(folderId: String, legacyCopy: Data, rows: [LegacyFolderKeyRow]) throws  -> FileKeyHandle?
+    
+    /**
+     * Resolve the owner's per-file key for ONE content version from the
+     * canonical `file_id` and that version's first chunk frame, reporting which
+     * id convention that version's key came from (SF-0002).
+     *
+     * The frame may be a v1 legacy frame (`nonce || ciphertext || tag`, no AAD —
+     * what the iOS File Provider wrote) or core's v2 frame 0. Resolve each
+     * version separately: the name's convention does not decide the content key.
+     *
+     * A file is READ-ONLY for the client if EITHER
+     * [`owner_file_key_for_name`](Self::owner_file_key_for_name) or ANY of its
+     * versions reports `OwnerKeyConvention.UpperRepair`: no rename, no new
+     * version; save an edit as a new file.
+     */
+    func ownerFileKeyForContent(fileId: String, firstChunkFrame: Data) throws  -> OwnerFileKey
+    
+    /**
+     * Resolve the owner's per-file key from the `(file_id, name_encrypted)`
+     * pair the server stores, reporting which id convention produced it
+     * (SF-0002).
+     *
+     * The string convention is tried first, then the legacy binary one, then
+     * the uppercase repair one (only when uppercasing changes the id). The
+     * first candidate whose key authenticates `name_encrypted` wins.
+     *
+     * `OwnerKeyConvention.UpperRepair` is READ-ONLY: treat the file as
+     * read-only — no rename and no new version; save an edit as a new file.
+     * Core only reports the convention; it never re-seals or migrates an
+     * existing row.
+     */
+    func ownerFileKeyForName(fileId: String, nameEncrypted: String) throws  -> OwnerFileKey
+    
+    /**
+     * Seal one encrypted client-metadata field (task 1922). `device_key` must
+     * be `None` for field 1 (a device hostname) and `Some` for fields 2-4; the
+     * derived key and the master key never cross FFI.
+     */
+    func sealClientMeta(recordKey: String, deviceKey: String?, field: UInt8, plaintext: String) throws  -> String
+    
     func unwrapFolderCustody(folderId: String, nonce: Data, ciphertext: Data) throws  -> FileKeyHandle
+    
+    func unwrapInviteOwnerCopy(folderId: String, nonce: Data, ciphertext: Data) throws  -> FileKeyHandle
     
     /**
      * The link fragment is the deliberate export exception: JS puts K_c in
@@ -3497,6 +3741,8 @@ public protocol MasterKeyHandleProtocol: AnyObject, Sendable {
     func wrapBytes(bytes: Data) throws  -> EncryptedData
     
     func wrapFolderCustody(folderId: String, inner: FileKeyHandle) throws  -> EncryptedData
+    
+    func wrapInviteOwnerCopy(folderId: String, inner: FileKeyHandle) throws  -> EncryptedData
     
     /**
      * Legacy direct-master wrap for existing protocols. Folder custody and
@@ -3792,9 +4038,131 @@ open func exportForKeychain()throws  -> Data  {
 })
 }
     
+    /**
+     * Open one `bbcm1.` client-metadata envelope (task 1922).
+     */
+open func openClientMeta(recordKey: String, deviceKey: String?, field: UInt8, envelope: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_open_client_meta(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(recordKey),
+        FfiConverterOptionString.lower(deviceKey),
+        FfiConverterUInt8.lower(field),
+        FfiConverterString.lower(envelope),$0
+    )
+})
+}
+    
+    /**
+     * Open many client-metadata rows under ONE derived key (task 1922). Order
+     * and length match `items`; a bad row yields `ok: false` for that row only.
+     * A cleared key handle is an error for the whole call, not a batch of
+     * `ok: false` rows that would look like decryption failures.
+     */
+open func openClientMetaMany(items: [ClientMetaItem])throws  -> [ClientMetaOpened]  {
+    return try  FfiConverterSequenceTypeClientMetaOpened.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_open_client_meta_many(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeClientMetaItem.lower(items),$0
+    )
+})
+}
+    
+    /**
+     * L9 (task 2255): open a LEGACY invite owner copy; `Some` only when core
+     * proves it over the folder's `rows` (at most 64 distinct ids, one call).
+     * The unproven candidate never leaves core. Attack B is a named residual.
+     */
+open func openLegacyInviteOwnerCopy(folderId: String, legacyCopy: Data, rows: [LegacyFolderKeyRow])throws  -> FileKeyHandle?  {
+    return try  FfiConverterOptionTypeFileKeyHandle.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_open_legacy_invite_owner_copy(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(folderId),
+        FfiConverterData.lower(legacyCopy),
+        FfiConverterSequenceTypeLegacyFolderKeyRow.lower(rows),$0
+    )
+})
+}
+    
+    /**
+     * Resolve the owner's per-file key for ONE content version from the
+     * canonical `file_id` and that version's first chunk frame, reporting which
+     * id convention that version's key came from (SF-0002).
+     *
+     * The frame may be a v1 legacy frame (`nonce || ciphertext || tag`, no AAD —
+     * what the iOS File Provider wrote) or core's v2 frame 0. Resolve each
+     * version separately: the name's convention does not decide the content key.
+     *
+     * A file is READ-ONLY for the client if EITHER
+     * [`owner_file_key_for_name`](Self::owner_file_key_for_name) or ANY of its
+     * versions reports `OwnerKeyConvention.UpperRepair`: no rename, no new
+     * version; save an edit as a new file.
+     */
+open func ownerFileKeyForContent(fileId: String, firstChunkFrame: Data)throws  -> OwnerFileKey  {
+    return try  FfiConverterTypeOwnerFileKey_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_owner_file_key_for_content(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(fileId),
+        FfiConverterData.lower(firstChunkFrame),$0
+    )
+})
+}
+    
+    /**
+     * Resolve the owner's per-file key from the `(file_id, name_encrypted)`
+     * pair the server stores, reporting which id convention produced it
+     * (SF-0002).
+     *
+     * The string convention is tried first, then the legacy binary one, then
+     * the uppercase repair one (only when uppercasing changes the id). The
+     * first candidate whose key authenticates `name_encrypted` wins.
+     *
+     * `OwnerKeyConvention.UpperRepair` is READ-ONLY: treat the file as
+     * read-only — no rename and no new version; save an edit as a new file.
+     * Core only reports the convention; it never re-seals or migrates an
+     * existing row.
+     */
+open func ownerFileKeyForName(fileId: String, nameEncrypted: String)throws  -> OwnerFileKey  {
+    return try  FfiConverterTypeOwnerFileKey_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_owner_file_key_for_name(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(fileId),
+        FfiConverterString.lower(nameEncrypted),$0
+    )
+})
+}
+    
+    /**
+     * Seal one encrypted client-metadata field (task 1922). `device_key` must
+     * be `None` for field 1 (a device hostname) and `Some` for fields 2-4; the
+     * derived key and the master key never cross FFI.
+     */
+open func sealClientMeta(recordKey: String, deviceKey: String?, field: UInt8, plaintext: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_seal_client_meta(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(recordKey),
+        FfiConverterOptionString.lower(deviceKey),
+        FfiConverterUInt8.lower(field),
+        FfiConverterString.lower(plaintext),$0
+    )
+})
+}
+    
 open func unwrapFolderCustody(folderId: String, nonce: Data, ciphertext: Data)throws  -> FileKeyHandle  {
     return try  FfiConverterTypeFileKeyHandle_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_folder_custody(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(folderId),
+        FfiConverterData.lower(nonce),
+        FfiConverterData.lower(ciphertext),$0
+    )
+})
+}
+    
+open func unwrapInviteOwnerCopy(folderId: String, nonce: Data, ciphertext: Data)throws  -> FileKeyHandle  {
+    return try  FfiConverterTypeFileKeyHandle_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_unwrap_invite_owner_copy(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(folderId),
         FfiConverterData.lower(nonce),
@@ -3858,6 +4226,16 @@ open func wrapBytes(bytes: Data)throws  -> EncryptedData  {
 open func wrapFolderCustody(folderId: String, inner: FileKeyHandle)throws  -> EncryptedData  {
     return try  FfiConverterTypeEncryptedData_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
     uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_folder_custody(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(folderId),
+        FfiConverterTypeFileKeyHandle_lower(inner),$0
+    )
+})
+}
+    
+open func wrapInviteOwnerCopy(folderId: String, inner: FileKeyHandle)throws  -> EncryptedData  {
+    return try  FfiConverterTypeEncryptedData_lift(try rustCallWithError(FfiConverterTypeCryptoError_lift) {
+    uniffi_beebeeb_uniffi_fn_method_masterkeyhandle_wrap_invite_owner_copy(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(folderId),
         FfiConverterTypeFileKeyHandle_lower(inner),$0
@@ -5123,6 +5501,131 @@ public func FfiConverterTypeChunkPlanResult_lower(_ value: ChunkPlanResult) -> R
 }
 
 
+/**
+ * One encrypted client-metadata row (task 1922): `record_key` is the record's
+ * client key, `device_key` the parent device's (absent for the device
+ * hostname), `field` is 1-4 and `envelope` is a `bbcm1.` string.
+ */
+public struct ClientMetaItem: Equatable, Hashable {
+    public var recordKey: String
+    public var deviceKey: String?
+    public var field: UInt8
+    public var envelope: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(recordKey: String, deviceKey: String?, field: UInt8, envelope: String) {
+        self.recordKey = recordKey
+        self.deviceKey = deviceKey
+        self.field = field
+        self.envelope = envelope
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ClientMetaItem: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeClientMetaItem: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ClientMetaItem {
+        return
+            try ClientMetaItem(
+                recordKey: FfiConverterString.read(from: &buf), 
+                deviceKey: FfiConverterOptionString.read(from: &buf), 
+                field: FfiConverterUInt8.read(from: &buf), 
+                envelope: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ClientMetaItem, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.recordKey, into: &buf)
+        FfiConverterOptionString.write(value.deviceKey, into: &buf)
+        FfiConverterUInt8.write(value.field, into: &buf)
+        FfiConverterString.write(value.envelope, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeClientMetaItem_lift(_ buf: RustBuffer) throws -> ClientMetaItem {
+    return try FfiConverterTypeClientMetaItem.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeClientMetaItem_lower(_ value: ClientMetaItem) -> RustBuffer {
+    return FfiConverterTypeClientMetaItem.lower(value)
+}
+
+
+/**
+ * One opened client-metadata row: `ok` false means this row failed and
+ * `value` is absent. One bad row never fails the batch.
+ */
+public struct ClientMetaOpened: Equatable, Hashable {
+    public var ok: Bool
+    public var value: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(ok: Bool, value: String?) {
+        self.ok = ok
+        self.value = value
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ClientMetaOpened: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeClientMetaOpened: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ClientMetaOpened {
+        return
+            try ClientMetaOpened(
+                ok: FfiConverterBool.read(from: &buf), 
+                value: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ClientMetaOpened, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.ok, into: &buf)
+        FfiConverterOptionString.write(value.value, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeClientMetaOpened_lift(_ buf: RustBuffer) throws -> ClientMetaOpened {
+    return try FfiConverterTypeClientMetaOpened.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeClientMetaOpened_lower(_ value: ClientMetaOpened) -> RustBuffer {
+    return FfiConverterTypeClientMetaOpened.lower(value)
+}
+
+
 public struct ConstellationEdgeDto: Equatable, Hashable {
     public var fromIdx: UInt32
     public var toIdx: UInt32
@@ -5709,13 +6212,34 @@ public struct DirectConstantsDto: Equatable, Hashable {
     public var discoveryTimeoutMs: UInt32
     public var apiCallTimeoutMs: UInt32
     public var backgroundPutResourceTimeoutMs: UInt32
+    /**
+     * The largest discovery body a client should read.
+     */
+    public var maxDiscoveryBodyBytes: UInt32
+    /**
+     * The largest grant-window body a client should read.
+     */
+    public var maxGrantBodyBytes: UInt32
+    /**
+     * The largest ciphertext chunk the client will ever see (256 MiB plus the AEAD overhead).
+     */
+    public var maxChunkBodyBytes: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(capObjectDownloadV1: String, capObjectUploadV1: String, capabilitiesHeader: String, discoveryPath: String, maxWindow: UInt32, defaultWindow: UInt32, chunkOverhead: UInt32, 
         /**
          * The time bounds every client applies (clients design 6.2), in milliseconds.
-         */storageConnectTimeoutMs: UInt32, storageGetIdleMs: UInt32, discoveryTimeoutMs: UInt32, apiCallTimeoutMs: UInt32, backgroundPutResourceTimeoutMs: UInt32) {
+         */storageConnectTimeoutMs: UInt32, storageGetIdleMs: UInt32, discoveryTimeoutMs: UInt32, apiCallTimeoutMs: UInt32, backgroundPutResourceTimeoutMs: UInt32, 
+        /**
+         * The largest discovery body a client should read.
+         */maxDiscoveryBodyBytes: UInt32, 
+        /**
+         * The largest grant-window body a client should read.
+         */maxGrantBodyBytes: UInt32, 
+        /**
+         * The largest ciphertext chunk the client will ever see (256 MiB plus the AEAD overhead).
+         */maxChunkBodyBytes: UInt64) {
         self.capObjectDownloadV1 = capObjectDownloadV1
         self.capObjectUploadV1 = capObjectUploadV1
         self.capabilitiesHeader = capabilitiesHeader
@@ -5728,6 +6252,9 @@ public struct DirectConstantsDto: Equatable, Hashable {
         self.discoveryTimeoutMs = discoveryTimeoutMs
         self.apiCallTimeoutMs = apiCallTimeoutMs
         self.backgroundPutResourceTimeoutMs = backgroundPutResourceTimeoutMs
+        self.maxDiscoveryBodyBytes = maxDiscoveryBodyBytes
+        self.maxGrantBodyBytes = maxGrantBodyBytes
+        self.maxChunkBodyBytes = maxChunkBodyBytes
     }
 
     
@@ -5757,7 +6284,10 @@ public struct FfiConverterTypeDirectConstantsDto: FfiConverterRustBuffer {
                 storageGetIdleMs: FfiConverterUInt32.read(from: &buf), 
                 discoveryTimeoutMs: FfiConverterUInt32.read(from: &buf), 
                 apiCallTimeoutMs: FfiConverterUInt32.read(from: &buf), 
-                backgroundPutResourceTimeoutMs: FfiConverterUInt32.read(from: &buf)
+                backgroundPutResourceTimeoutMs: FfiConverterUInt32.read(from: &buf), 
+                maxDiscoveryBodyBytes: FfiConverterUInt32.read(from: &buf), 
+                maxGrantBodyBytes: FfiConverterUInt32.read(from: &buf), 
+                maxChunkBodyBytes: FfiConverterUInt64.read(from: &buf)
         )
     }
 
@@ -5774,6 +6304,9 @@ public struct FfiConverterTypeDirectConstantsDto: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.discoveryTimeoutMs, into: &buf)
         FfiConverterUInt32.write(value.apiCallTimeoutMs, into: &buf)
         FfiConverterUInt32.write(value.backgroundPutResourceTimeoutMs, into: &buf)
+        FfiConverterUInt32.write(value.maxDiscoveryBodyBytes, into: &buf)
+        FfiConverterUInt32.write(value.maxGrantBodyBytes, into: &buf)
+        FfiConverterUInt64.write(value.maxChunkBodyBytes, into: &buf)
     }
 }
 
@@ -6542,6 +7075,64 @@ public func FfiConverterTypeEncryptedShardDto_lower(_ value: EncryptedShardDto) 
 
 
 /**
+ * One row of a shared folder's legacy key table, for the L9 proof (task 2255):
+ * `file_id` as the server lists it, `wrap` = nonce(12) || ciphertext || tag.
+ */
+public struct LegacyFolderKeyRow: Equatable, Hashable {
+    public var fileId: String
+    public var wrap: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(fileId: String, wrap: Data) {
+        self.fileId = fileId
+        self.wrap = wrap
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension LegacyFolderKeyRow: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLegacyFolderKeyRow: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LegacyFolderKeyRow {
+        return
+            try LegacyFolderKeyRow(
+                fileId: FfiConverterString.read(from: &buf), 
+                wrap: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LegacyFolderKeyRow, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.fileId, into: &buf)
+        FfiConverterData.write(value.wrap, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLegacyFolderKeyRow_lift(_ buf: RustBuffer) throws -> LegacyFolderKeyRow {
+    return try FfiConverterTypeLegacyFolderKeyRow.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLegacyFolderKeyRow_lower(_ value: LegacyFolderKeyRow) -> RustBuffer {
+    return FfiConverterTypeLegacyFolderKeyRow.lower(value)
+}
+
+
+/**
  * Master key bytes returned from `derive_master_key`.
  */
 public struct MasterKeyResult: Equatable, Hashable {
@@ -6829,6 +7420,65 @@ public func FfiConverterTypeOpaqueStartResult_lift(_ buf: RustBuffer) throws -> 
 #endif
 public func FfiConverterTypeOpaqueStartResult_lower(_ value: OpaqueStartResult) -> RustBuffer {
     return FfiConverterTypeOpaqueStartResult.lower(value)
+}
+
+
+/**
+ * The owner's per-file key for a file, plus which id convention produced it
+ * (SF-0002). The key stays in a [`FileKeyHandle`]; raw key bytes never cross
+ * FFI.
+ */
+public struct OwnerFileKey {
+    public var key: FileKeyHandle
+    public var convention: OwnerKeyConvention
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(key: FileKeyHandle, convention: OwnerKeyConvention) {
+        self.key = key
+        self.convention = convention
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension OwnerFileKey: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOwnerFileKey: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OwnerFileKey {
+        return
+            try OwnerFileKey(
+                key: FfiConverterTypeFileKeyHandle.read(from: &buf), 
+                convention: FfiConverterTypeOwnerKeyConvention.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: OwnerFileKey, into buf: inout [UInt8]) {
+        FfiConverterTypeFileKeyHandle.write(value.key, into: &buf)
+        FfiConverterTypeOwnerKeyConvention.write(value.convention, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOwnerFileKey_lift(_ buf: RustBuffer) throws -> OwnerFileKey {
+    return try FfiConverterTypeOwnerFileKey.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOwnerFileKey_lower(_ value: OwnerFileKey) -> RustBuffer {
+    return FfiConverterTypeOwnerFileKey.lower(value)
 }
 
 
@@ -8109,6 +8759,90 @@ public func FfiConverterTypeDirectLookupDto_lower(_ value: DirectLookupDto) -> R
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * The process class, which sets the ciphertext-in-flight cap.
+ */
+
+public enum DirectMemoryClassDto: Equatable, Hashable {
+    
+    case native
+    case browser
+    case mobileApp
+    case mobileExtension
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension DirectMemoryClassDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDirectMemoryClassDto: FfiConverterRustBuffer {
+    typealias SwiftType = DirectMemoryClassDto
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectMemoryClassDto {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .native
+        
+        case 2: return .browser
+        
+        case 3: return .mobileApp
+        
+        case 4: return .mobileExtension
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: DirectMemoryClassDto, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .native:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .browser:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .mobileApp:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .mobileExtension:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectMemoryClassDto_lift(_ buf: RustBuffer) throws -> DirectMemoryClassDto {
+    return try FfiConverterTypeDirectMemoryClassDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectMemoryClassDto_lower(_ value: DirectMemoryClassDto) -> RustBuffer {
+    return FfiConverterTypeDirectMemoryClassDto.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * What an API answer means.
  */
 
@@ -8667,6 +9401,80 @@ public func FfiConverterTypeDirectRetryDecisionDto_lower(_ value: DirectRetryDec
 }
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * What a storage GET answer means. `Stored` only for a `200` whose `Content-Length` is exactly
+ * the grant's length; `Failed` carries the status (`0` means there was no HTTP answer).
+ */
+
+public enum DirectStorageGetDto: Equatable, Hashable {
+    
+    case stored
+    case failed(status: UInt16
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension DirectStorageGetDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDirectStorageGetDto: FfiConverterRustBuffer {
+    typealias SwiftType = DirectStorageGetDto
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectStorageGetDto {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .stored
+        
+        case 2: return .failed(status: try FfiConverterUInt16.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: DirectStorageGetDto, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .stored:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .failed(status):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt16.write(status, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectStorageGetDto_lift(_ buf: RustBuffer) throws -> DirectStorageGetDto {
+    return try FfiConverterTypeDirectStorageGetDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectStorageGetDto_lower(_ value: DirectStorageGetDto) -> RustBuffer {
+    return FfiConverterTypeDirectStorageGetDto.lower(value)
+}
+
+
 
 /**
  * Why a call into the direct-transfer rules failed. Every variant carries a
@@ -8690,8 +9498,9 @@ public enum DirectTransferError: Swift.Error, Equatable, Hashable, Foundation.Lo
     case Discovery(code: String
     )
     /**
-     * A call that does not fit the planner's state (a bug in the caller):
-     * `not_in_flight`, `not_fetched`, `out_of_order`, `api_route_failure`.
+     * A call that does not fit the caller-driven state (a bug in the caller): the planner's
+     * `not_in_flight`, `not_fetched`, `out_of_order`, `api_route_failure`; or `finished`, which
+     * means the storage body handle was used after `finish` (the count was already consumed).
      */
     case Plan(code: String
     )
@@ -8699,6 +9508,14 @@ public enum DirectTransferError: Swift.Error, Equatable, Hashable, Foundation.Lo
      * `call` was none of `discovery`, `download_grant`, `pinned_chunk`.
      */
     case UnknownCall
+    /**
+     * A storage body operation failed: `failed` (the head was not a `200` of the grant's length,
+     * or a push would have passed the grant). The kind is core's `StorageGet::kind`; `status` is
+     * the status the head (or the refused push) answered, so the caller never re-derives it.
+     * Appended last so every earlier variant keeps its wire index.
+     */
+    case StorageBody(code: String, status: UInt16
+    )
 
     
 
@@ -8738,6 +9555,10 @@ public struct FfiConverterTypeDirectTransferError: FfiConverterRustBuffer {
             code: try FfiConverterString.read(from: &buf)
             )
         case 4: return .UnknownCall
+        case 5: return .StorageBody(
+            code: try FfiConverterString.read(from: &buf), 
+            status: try FfiConverterUInt16.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -8768,6 +9589,12 @@ public struct FfiConverterTypeDirectTransferError: FfiConverterRustBuffer {
         case .UnknownCall:
             writeInt(&buf, Int32(4))
         
+        
+        case let .StorageBody(code,status):
+            writeInt(&buf, Int32(5))
+            FfiConverterString.write(code, into: &buf)
+            FfiConverterUInt16.write(status, into: &buf)
+            
         }
     }
 }
@@ -9153,6 +9980,95 @@ public func FfiConverterTypeOnboardingError_lift(_ buf: RustBuffer) throws -> On
 public func FfiConverterTypeOnboardingError_lower(_ value: OnboardingError) -> RustBuffer {
     return FfiConverterTypeOnboardingError.lower(value)
 }
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Which byte representation of an item id an owner's per-file key was derived
+ * from (SF-0002).
+ */
+
+public enum OwnerKeyConvention: Equatable, Hashable {
+    
+    /**
+     * Canonical string-id convention.
+     */
+    case string
+    /**
+     * Legacy 16-byte binary UUID convention.
+     */
+    case binary
+    /**
+     * READ-ONLY repair convention: the id was uppercased before derivation
+     * (the iOS File Provider defect). No rename and no new version; save an
+     * edit as a new file.
+     */
+    case upperRepair
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension OwnerKeyConvention: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOwnerKeyConvention: FfiConverterRustBuffer {
+    typealias SwiftType = OwnerKeyConvention
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OwnerKeyConvention {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .string
+        
+        case 2: return .binary
+        
+        case 3: return .upperRepair
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: OwnerKeyConvention, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .string:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .binary:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .upperRepair:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOwnerKeyConvention_lift(_ buf: RustBuffer) throws -> OwnerKeyConvention {
+    return try FfiConverterTypeOwnerKeyConvention.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOwnerKeyConvention_lower(_ value: OwnerKeyConvention) -> RustBuffer {
+    return FfiConverterTypeOwnerKeyConvention.lower(value)
+}
+
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
@@ -10339,6 +11255,30 @@ fileprivate struct FfiConverterOptionTypeBreachCheckHandle: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeFileKeyHandle: FfiConverterRustBuffer {
+    typealias SwiftType = FileKeyHandle?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeFileKeyHandle.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeFileKeyHandle.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCachedFileEntryData: FfiConverterRustBuffer {
     typealias SwiftType = CachedFileEntryData?
 
@@ -10681,6 +11621,56 @@ fileprivate struct FfiConverterSequenceTypeCachedFileEntryData: FfiConverterRust
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeClientMetaItem: FfiConverterRustBuffer {
+    typealias SwiftType = [ClientMetaItem]
+
+    public static func write(_ value: [ClientMetaItem], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeClientMetaItem.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ClientMetaItem] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ClientMetaItem]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeClientMetaItem.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeClientMetaOpened: FfiConverterRustBuffer {
+    typealias SwiftType = [ClientMetaOpened]
+
+    public static func write(_ value: [ClientMetaOpened], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeClientMetaOpened.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ClientMetaOpened] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ClientMetaOpened]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeClientMetaOpened.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeConstellationEdgeDto: FfiConverterRustBuffer {
     typealias SwiftType = [ConstellationEdgeDto]
 
@@ -10823,6 +11813,31 @@ fileprivate struct FfiConverterSequenceTypeEncryptedShardDto: FfiConverterRustBu
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeEncryptedShardDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeLegacyFolderKeyRow: FfiConverterRustBuffer {
+    typealias SwiftType = [LegacyFolderKeyRow]
+
+    public static func write(_ value: [LegacyFolderKeyRow], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeLegacyFolderKeyRow.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [LegacyFolderKeyRow] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [LegacyFolderKeyRow]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeLegacyFolderKeyRow.read(from: &buf))
         }
         return seq
     }
@@ -11291,6 +12306,30 @@ public func directBackgroundPutResourceTimeoutMs() -> UInt64  {
 })
 }
 /**
+ * Check the body a storage GET actually delivered: `Stored` only when the counted bytes are
+ * exactly the grant. `Content-Length` is only the head; a truncated stream ends short.
+ */
+public func directCheckStorageBody(received: UInt64, expected: UInt64) -> DirectStorageGetDto  {
+    return try!  FfiConverterTypeDirectStorageGetDto_lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_direct_check_storage_body(
+        FfiConverterUInt64.lower(received),
+        FfiConverterUInt64.lower(expected),$0
+    )
+})
+}
+/**
+ * Check a storage GET answer: `Stored` only for `200` with `Some(expected)`.
+ */
+public func directCheckStorageGet(status: UInt16, contentLength: UInt64?, expected: UInt64) -> DirectStorageGetDto  {
+    return try!  FfiConverterTypeDirectStorageGetDto_lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_direct_check_storage_get(
+        FfiConverterUInt16.lower(status),
+        FfiConverterOptionUInt64.lower(contentLength),
+        FfiConverterUInt64.lower(expected),$0
+    )
+})
+}
+/**
  * May the app follow this storage link? `api_base` is the API origin in use.
  * Throws `LinkRefused` with the refusal code; the message never contains the URL.
  */
@@ -11319,6 +12358,46 @@ public func directDownloadGrantsPath(fileId: String) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
     uniffi_beebeeb_uniffi_fn_func_direct_download_grants_path(
         FfiConverterString.lower(fileId),$0
+    )
+})
+}
+/**
+ * The ciphertext bytes a process of `class` may hold at once (256, 64, 64, 16 MiB): a ceiling on
+ * the chunks held, never a reason to fail. The planner clamps the chunk count to at least one, so
+ * at least one chunk is always held, even a 256 MiB chunk in a 16 MiB class.
+ */
+public func directMaxInFlightBytes(`class`: DirectMemoryClassDto) -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_direct_max_in_flight_bytes(
+        FfiConverterTypeDirectMemoryClassDto_lower(`class`),$0
+    )
+})
+}
+/**
+ * When `wire_bytes` received since `start_ms` at `kbps` KiB/s lets the next storage request
+ * start. `kbps == 0` returns `i64::MIN`: there is no ceiling.
+ */
+public func directPacedUntilMs(startMs: Int64, wireBytes: UInt64, kbps: UInt64) -> Int64  {
+    return try!  FfiConverterInt64.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_direct_paced_until_ms(
+        FfiConverterInt64.lower(startMs),
+        FfiConverterUInt64.lower(wireBytes),
+        FfiConverterUInt64.lower(kbps),$0
+    )
+})
+}
+/**
+ * May this client use the direct transport for `direction`? True only when discovery offers it,
+ * names at least one `{host, bucket}` pair, AND every pair it names is in `pairs`. A discovery
+ * with no buckets is never allowed, not vacuously. Hosts compare ASCII case-insensitively,
+ * buckets exactly.
+ */
+public func directPairsAllowed(discovery: DirectDiscoveryDto, direction: DirectDirectionDto, pairs: [DirectStorageBucketDto]) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_direct_pairs_allowed(
+        FfiConverterTypeDirectDiscoveryDto_lower(discovery),
+        FfiConverterTypeDirectDirectionDto_lower(direction),
+        FfiConverterSequenceTypeDirectStorageBucketDto.lower(pairs),$0
     )
 })
 }
@@ -11482,6 +12561,17 @@ public func evaluatePassword(password: String, minLength: UInt32) -> PasswordEva
     uniffi_beebeeb_uniffi_fn_func_evaluate_password(
         FfiConverterString.lower(password),
         FfiConverterUInt32.lower(minLength),$0
+    )
+})
+}
+/**
+ * Shorten a client-metadata string for sealing (task 1922): over 1024 UTF-8
+ * bytes, keep the last 1021 bytes on a char boundary behind a leading `…`.
+ */
+public func fitForSeal(s: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_beebeeb_uniffi_fn_func_fit_for_seal(
+        FfiConverterString.lower(s),$0
     )
 })
 }
@@ -12029,6 +13119,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_func_direct_background_put_resource_timeout_ms() != 64703) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_func_direct_check_storage_body() != 26492) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_direct_check_storage_get() != 41265) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_func_direct_check_storage_url() != 37576) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -12036,6 +13132,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_direct_download_grants_path() != 38361) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_direct_max_in_flight_bytes() != 24727) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_direct_paced_until_ms() != 40002) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_direct_pairs_allowed() != 6861) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_direct_pinned_retry_decision() != 23908) {
@@ -12075,6 +13180,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_evaluate_password() != 50314) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_func_fit_for_seal() != 25405) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_func_folder_key_id() != 44432) {
@@ -12260,6 +13368,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_api_fetch_failed() != 34853) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_chunk_length() != 15665) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_method_directdownloadplannerhandle_chunk_unauthentic() != 20797) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -12321,6 +13432,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_directsignedurl_redacted() != 58321) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_directstoragebodyhandle_finish() != 25858) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_directstoragebodyhandle_push() != 65177) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_filekeyhandle_decrypt_chunk() != 50441) {
@@ -12437,7 +13554,28 @@ private let initializationResult: InitializationResult = {
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_export_for_keychain() != 50366) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_open_client_meta() != 39350) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_open_client_meta_many() != 65515) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_open_legacy_invite_owner_copy() != 59849) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_owner_file_key_for_content() != 51980) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_owner_file_key_for_name() != 14619) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_seal_client_meta() != 23793) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_folder_custody() != 29894) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_invite_owner_copy() != 13280) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_unwrap_link_owner_key() != 33903) {
@@ -12453,6 +13591,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_folder_custody() != 30373) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_invite_owner_copy() != 63555) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_method_masterkeyhandle_wrap_key() != 6508) {
@@ -12570,6 +13711,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_constructor_directsignedurl_new() != 57713) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_beebeeb_uniffi_checksum_constructor_directstoragebodyhandle_from_head() != 7464) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_beebeeb_uniffi_checksum_constructor_filekeyhandle_from_folder_link() != 22577) {

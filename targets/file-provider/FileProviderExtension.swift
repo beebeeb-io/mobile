@@ -1,5 +1,8 @@
 import FileProvider
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 import UniformTypeIdentifiers
 
 /// `NSFileProviderReplicatedExtension` (iOS 16+) that backs the Beebeeb entry
@@ -535,7 +538,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         // system put the label back on disk. A move still works: it carries
         // the existing ciphertext name.
         let nameIsUnresolved = cached.hasUnresolvedName
-        let renamesOnServer = changedFields.contains(.filename) && !nameIsUnresolved
+        // SF-0002 M2a run 3: a rename is declined on an UpperRepair name and on
+        // a NULL convention (the ciphertext was never authenticated).
+        let renamesOnServer = changedFields.contains(.filename)
+          && !nameIsUnresolved
+          && FileProviderEditPolicy.renameAllowed(nameConvention: cached.nameConvention)
         if changedFields.contains(.filename), nameIsUnresolved {
           NSLog("[Beebeeb] modifyItem(\(cached.id)) kept the server name: the current name could not be decrypted")
         }
@@ -588,45 +595,106 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
         progress.completedUnitCount = 30
 
+        var copiedContent = false
         if changedFields.contains(.contents), let newContents {
           let mimeType = item.contentType?.preferredMIMEType ?? cached.mimeType
-          // The v2 init endpoint requires an encrypted file name. If the
-          // cached row lacks one (legacy plaintext-named files), encrypt
-          // the current name on the fly using the existing file id.
-          let nameForUpload: String
-          if let existing = nextNameEncrypted {
-            nameForUpload = existing
-          } else {
-            // Task 1722 (d): no server name and no readable one: the only
-            // name available is our label, which must never become the
-            // file's name. Definitively unsyncable until the item changes.
-            guard !nameIsUnresolved else { throw NSFileProviderError(.cannotSynchronize) }
-            nameForUpload = try CryptoBridge.encryptFilename(
-              masterKeyHandle: masterKey,
-              fileId: cached.id,
-              filename: item.filename
-            )
-            nextNameEncrypted = nameForUpload
-          }
-          let response = try await Self.streamUpload(
-            sourceUrl: newContents,
-            fileId: cached.id,
-            nameEncrypted: nameForUpload,
-            mimeType: mimeType,
-            parentId: nextParentId,
-            isMedia: Self.isMediaContent(item.contentType),
-            masterKey: masterKey,
-            expectedUser: owned.owner,
-            progress: progress,
-            progressBase: 30,
-            progressSpan: 50
+          // SF-0002 M2a run 3: classify BEFORE writing. A read-only (or
+          // unclassifiable) row must never be overwritten in place; the edit
+          // becomes a NEW file and the original stays byte-identical.
+          let state = await Self.writeState(for: cached, masterKey: masterKey)
+          let originalName = cached.nameDecrypted ?? item.filename
+          let decision = FileProviderEditPolicy.contentDecision(
+            state: state,
+            originalName: originalName,
+            deviceLabel: Self.deviceLabel,
+            uuid: UUID().uuidString.lowercased()
           )
-          nextSizeBytes = response.size_bytes
-          nextNameEncrypted = response.name_encrypted ?? nextNameEncrypted
-          nextUpdatedAt = response.updated_at ?? response.created_at ?? nextUpdatedAt
-          progress.completedUnitCount = 80
+          if case let .uploadAsCopy(copyId, copyName) = decision {
+            let copyNameEncrypted = try CryptoBridge.encryptFilename(
+              masterKeyHandle: masterKey,
+              fileId: copyId,
+              filename: copyName
+            )
+            let response = try await Self.streamUpload(
+              sourceUrl: newContents,
+              fileId: copyId,
+              nameEncrypted: copyNameEncrypted,
+              mimeType: mimeType,
+              parentId: nextParentId,
+              isMedia: Self.isMediaContent(item.contentType),
+              masterKey: masterKey,
+              expectedUser: owned.owner,
+              progress: progress,
+              progressBase: 30,
+              progressSpan: 50
+            )
+            progress.completedUnitCount = 80
+            let copied = CachedItem(
+              id: copyId,
+              parentId: nextParentId,
+              nameEncrypted: response.name_encrypted ?? copyNameEncrypted,
+              nameDecrypted: copyName,
+              mimeType: mimeType,
+              sizeBytes: response.size_bytes,
+              isFolder: false,
+              isPinned: false,
+              hasThumbnail: false,
+              thumbnailData: nil,
+              thumbnailNonce: nil,
+              createdAt: response.created_at,
+              updatedAt: response.updated_at ?? response.created_at,
+              syncAnchor: Int64(Date().timeIntervalSince1970 * 1000),
+              isMaterialized: false,
+              nameConvention: "string"
+            )
+            copiedContent = true
+            _ = CacheManager.shared.upsert(copied, expectedEpoch: epochAtStart)
+            Self.signalWorkingSet()
+            // The original item is returned unchanged below.
+          } else {
+            // The v2 init endpoint requires an encrypted file name. If the
+            // cached row lacks one (legacy plaintext-named files), encrypt
+            // the current name on the fly using the existing file id.
+            let nameForUpload: String
+            if let existing = nextNameEncrypted {
+              nameForUpload = existing
+            } else {
+              // Task 1722 (d): no server name and no readable one: the only
+              // name available is our label, which must never become the
+              // file's name. Definitively unsyncable until the item changes.
+              guard !nameIsUnresolved else { throw NSFileProviderError(.cannotSynchronize) }
+              nameForUpload = try CryptoBridge.encryptFilename(
+                masterKeyHandle: masterKey,
+                fileId: cached.id,
+                filename: item.filename
+              )
+              nextNameEncrypted = nameForUpload
+            }
+            let response = try await Self.streamUpload(
+              sourceUrl: newContents,
+              fileId: cached.id,
+              nameEncrypted: nameForUpload,
+              mimeType: mimeType,
+              parentId: nextParentId,
+              isMedia: Self.isMediaContent(item.contentType),
+              masterKey: masterKey,
+              expectedUser: owned.owner,
+              progress: progress,
+              progressBase: 30,
+              progressSpan: 50
+            )
+            nextSizeBytes = response.size_bytes
+            nextNameEncrypted = response.name_encrypted ?? nextNameEncrypted
+            nextUpdatedAt = response.updated_at ?? response.created_at ?? nextUpdatedAt
+            progress.completedUnitCount = 80
+          }
         }
 
+        if copiedContent && !renamesOnServer && !changedFields.contains(.parentItemIdentifier) {
+          progress.completedUnitCount = 100
+          completionHandler(FileProviderItem(cached: cached), Self.declinedFields(changedFields), false, nil)
+          return
+        }
         if renamesOnServer || changedFields.contains(.parentItemIdentifier) {
           let patched = try await ApiClient.shared.patchFile(
             fileId: cached.id,
@@ -672,6 +740,46 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
     progress.cancellationHandler = { task.cancel() }
     return progress
+  }
+
+  /// SF-0002 M2a run 3: the row's content write state. An UpperRepair NAME is
+  /// read-only with zero requests; otherwise ONE bounded chunk-0 read decides
+  /// the content convention. An unreadable/oversized frame is `string_or_binary`
+  /// (writable); a failed read is `unknown` (copy, never overwrite).
+  private static func writeState(for cached: CachedItem, masterKey: MasterKeyHandle) async -> FileProviderWriteState {
+    if cached.nameConvention == "upper_repair" { return .readOnly }
+    guard let raw = cached.nameEncrypted, raw.hasPrefix("{") else { return .unknown }
+    do {
+      let chunk = try await ApiClient.shared.firstChunk(
+        fileId: cached.id,
+        maxBytes: 4 * 1024 * 1024 + 28
+      )
+      if chunk.tooLarge { return .writable }
+      guard (200..<300).contains(chunk.status), !chunk.body.isEmpty else { return .unknown }
+      guard let convention = CryptoBridge.classifyOwnerContent(
+        masterKeyHandle: masterKey, fileId: cached.id, firstChunkFrame: chunk.body
+      ) else { return .unknown }
+      return convention == "upper_repair" ? .readOnly : .writable
+    } catch {
+      return .unknown
+    }
+  }
+
+  /// The Keep-both device label, matching the app's `deviceNoun()` as closely
+  /// as the extension can. The name is a display name only.
+  static var deviceLabel: String {
+    #if canImport(UIKit)
+    return UIDevice.current.name
+    #else
+    return "this device"
+    #endif
+  }
+
+  private static func signalWorkingSet() {
+    NSFileProviderManager(for: BeebeebConstants.fileProviderDomain)?
+      .signalEnumerator(for: .workingSet) { error in
+        if let error { NSLog("[Beebeeb] signalEnumerator workingSet failed: \(error)") }
+      }
   }
 
   // MARK: - Delete

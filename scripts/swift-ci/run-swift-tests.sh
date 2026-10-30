@@ -43,6 +43,9 @@ MANIFEST=(
   "thumbnail-queue-purge-test.swift|modules/beebeeb-crypto/ios/ThumbnailQueueDB.swift modules/beebeeb-crypto/ios/ThumbnailErrorCategory.swift modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift modules/beebeeb-crypto/ios/RuntimeTrace.swift"
   "legacy-url-cache-cleanup-test.swift|modules/beebeeb-crypto/ios/LegacyURLCacheCleanup.swift"
   "thumbnail-purge-generation-test.swift|modules/beebeeb-crypto/ios/ThumbnailPurgeGeneration.swift"
+  "file-provider-owner-write-test.swift|targets/file-provider/FileProviderEditPolicy.swift"
+  "file-provider-cache-schema-test.swift|targets/file-provider/FileProviderCacheSchema.swift"
+  "owner-read-key-test.swift|modules/beebeeb-crypto/ios/SharedKeyRegistry.swift modules/beebeeb-crypto/ios/OwnerReadKey.swift modules/beebeeb-crypto/ios/SharedKeyOps.swift modules/beebeeb-crypto/ios/OwnerContentClassifier.swift modules/beebeeb-crypto/ios/ProvenanceHeaders.swift modules/beebeeb-crypto/ios/beebeeb_uniffi.swift"
 )
 
 LOG_DIR="${SWIFT_CI_LOG_DIR:-$(mktemp -d)}"
@@ -162,6 +165,26 @@ SWIFT
         continue
       fi
       extra_objs+=("$VANILLA_SQLITE_OBJ")
+      ;;
+    owner-read-key-test.swift)
+      # SF-0002: this driver needs the REAL UniFFI host dylib (it drives the
+      # uppercase-repair vector through the owner resolvers). BB_CORE_REPO
+      # names the core build; ../core is the monorepo default.
+      core_repo="${BB_CORE_REPO:-../core}"
+      dylib_dir="$core_repo/target/release"
+      if [ ! -f "$dylib_dir/libbeebeeb_uniffi.dylib" ] ||
+         [ ! -f "$core_repo/beebeeb-uniffi/bindings/beebeeb_uniffiFFI.h" ] ||
+         [ ! -f "$core_repo/beebeeb-uniffi/bindings/beebeeb_uniffiFFI.modulemap" ]; then
+        echo "MISSING core host dylib/headers under $core_repo (set BB_CORE_REPO)"
+        echo "TEST FAILED: $base (no core build)"
+        rc=1
+        continue
+      fi
+      mkdir -p "$tmp/mod"
+      cp "$core_repo/beebeeb-uniffi/bindings/beebeeb_uniffiFFI.h" "$tmp/mod/"
+      cp "$core_repo/beebeeb-uniffi/bindings/beebeeb_uniffiFFI.modulemap" "$tmp/mod/module.modulemap"
+      flags+=(-I "$tmp/mod")
+      extra_objs+=(-L "$dylib_dir" -lbeebeeb_uniffi -Xlinker -rpath -Xlinker "$dylib_dir")
       ;;
     thumbnail-queue-purge-test.swift)
       # Task 1962 round 5 (P2.2): link the same vanilla SQLite object the app

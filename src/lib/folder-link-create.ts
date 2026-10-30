@@ -31,7 +31,11 @@ export interface CreateFolderLinkInput {
   onProgress?: (p: { phase: 'preparing' | 'securing'; done: number; total: number }) => void;
   signal?: AbortSignal;
 }
-export interface CreatedLink { id: string; token: string; url: string; level: FolderAccessLevel; passphraseProtected: boolean; keyVersion: number }
+export interface CreatedLink {
+  id: string; token: string; url: string; level: FolderAccessLevel; passphraseProtected: boolean; keyVersion: number;
+  /** SF-0002 M2a run 3: descendants left out because their name is Binary/UpperRepair. */
+  excludedCount?: number;
+}
 export interface CreateFolderLinkPorts {
   masterHandleId(): number;
   native: FolderLinkNative;
@@ -46,6 +50,11 @@ export interface CreateFolderLinkPorts {
   publishSharedFolderKeys: typeof api.publishSharedFolderKeys;
   createFolderLink: typeof api.createFolderLink;
   getWebAppUrl: typeof api.getWebAppUrl;
+  /**
+   * SF-0002 M2a run 3: true for a descendant whose NAME resolves Binary or
+   * UpperRepair. Such an item is left out of the link's key set and counted.
+   */
+  excluded?(fileId: string): boolean;
 }
 export type RecoverPorts = Pick<CreateFolderLinkPorts, 'masterHandleId' | 'native' | 'getWebAppUrl'>;
 /** The UI binds the existing CryptoProvider handle; never re-read the Keychain. */
@@ -91,8 +100,10 @@ export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, por
   const checked = async <T,>(work: Promise<T>): Promise<T> => { const value = await work; assertCurrent(); return value; };
   assertCurrent();
   // Local, request-free size preflight enforces the plan's 100,000-item bound.
-  const ids = [...new Set(ports.subtreeIds(input.folderId))];
-  if (ids.length > 100_000) throw new FolderTooLargeError();
+  const allIds = [...new Set(ports.subtreeIds(input.folderId))];
+  if (allIds.length > 100_000) throw new FolderTooLargeError();
+  const ids = ports.excluded ? allIds.filter(id => !ports.excluded!(id)) : allIds;
+  const excludedCount = allIds.length - ids.length;
   if (!ports.native.isSharedKeysNativeReady?.()) throw new FolderLinksUnavailableError();
   const master = ports.masterHandleId();
   // 409 upgrade_required (contract 2237 §2, L11) is the owner-must-convert state: remembered for the
@@ -195,7 +206,7 @@ export async function createFolderLinkWithKeys(input: CreateFolderLinkInput, por
           ...(input.capBytes !== null ? { cap_bytes: input.capBytes } : {}),
           ...(input.passphrase ? { passphrase: input.passphrase } : {}),
         }));
-        return { id: result.id, token, url: buildFullShareLink(ports.getWebAppUrl(), token, mint.kc, 'f'), level: input.accessLevel, passphraseProtected: !!input.passphrase, keyVersion: result.key_version };
+        return { id: result.id, token, url: buildFullShareLink(ports.getWebAppUrl(), token, mint.kc, 'f'), level: input.accessLevel, passphraseProtected: !!input.passphrase, keyVersion: result.key_version, excludedCount };
       } catch (err) {
         assertCurrent();
         await refuseIfUpgradeRequired(err);

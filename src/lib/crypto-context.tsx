@@ -4,6 +4,7 @@ import * as ReactNative from 'react-native'
 import { adoptVerified, adoptDecryptedNames } from './shared-folder-adoption'
 import * as SharedNative from '../../modules/beebeeb-crypto'
 import { configureSharedKeys, clearSharedKeys, assertFileKeyExportable, resolveSharedNames, retrySharedDecrypt, type SharedKeysApi, type SharedKeysNative } from './shared-folder-keys'
+import { nonForeignFileIds } from './shared-folder-tree'
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import * as Device from 'expo-device'
 import * as FileSystem from 'expo-file-system/legacy'
@@ -33,7 +34,22 @@ import {
   storeKeyInKeychain,
   unwrapRequestPrivateWithHandle,
 } from '../../modules/beebeeb-crypto'
-import type { BatchNameItem, BatchNameResult, EncryptedData, RequestKeypairResult } from '../../modules/beebeeb-crypto'
+import {
+  classifyOwnerContent as classifyOwnerContentNative,
+  type BatchNameItem,
+  type BatchNameResult,
+  type EncryptedData,
+  type OwnerNameConvention,
+  type RequestKeypairResult,
+} from '../../modules/beebeeb-crypto'
+import {
+  fileWriteState as derivedFileWriteState,
+  noteObjectVersion,
+  recordContentConvention,
+  recordNameConvention,
+  type ContentConvention,
+  type FileWriteState,
+} from './sf-0002-write-state'
 import { setBackupEncryption, getKeepVaultUnlocked } from '../services/BackupService'
 import { recordRuntimeTrace } from './runtime-trace'
 import {
@@ -620,6 +636,22 @@ interface CryptoContextValue {
    * match `items`; a failed item yields `error` for that item only.
    */
   decryptNames: (items: BatchNameItem[]) => Promise<BatchNameResult[]>
+  /**
+   * SF-0002 M2a: classify an owned content version (bounded chunk-0 read, no
+   * UI uses this yet). Records the content half and returns its convention.
+   */
+  classifyOwnerContent: (fileId: string, objectVersionId: string, createdAt: string) => Promise<ContentConvention>
+  /**
+   * SF-0002 M2a: the derived write verdict for a file from its name convention
+   * plus the classified content half. `unknown` is never writable. No UI reads
+   * this yet; run 3 wires it.
+   */
+  fileWriteState: (fileId: string) => FileWriteState
+  /**
+   * SF-0002 M2a run 3: one owned name's exact convention (the batch path only
+   * proves `string_or_binary`). `null` when it cannot be resolved.
+   */
+  resolveOwnerNameConvention: (fileId: string, nameEncrypted: string) => Promise<OwnerNameConvention | null>
   /**
    * Derive and return the raw 32-byte file key for a given fileId.
    * Used for ZK share creation where we need to wrap the key client-side.
@@ -1328,9 +1360,57 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
 
   const decryptNamesFn = useCallback(
     async (items: BatchNameItem[]): Promise<BatchNameResult[]> => {
-      const results = await resolveSharedNames(items, batch => decryptNames(requireHandleId(), batch))
+      // SF-0002: only this account's own rows may fall through to the owner
+      // resolver after a table-key failure; a foreign row's key stays final.
+      const owned = nonForeignFileIds(items, accountEpoch().accountId)
+      const results = await resolveSharedNames(items, batch => decryptNames(requireHandleId(), batch, owned))
       void adoptDecryptedNames(items, results)
       return results
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
+  const classifyOwnerContentFn = useCallback(
+    async (fileId: string, objectVersionId: string, createdAt: string): Promise<ContentConvention> => {
+      // A move keeps the same objectVersionId and therefore the content half;
+      // a new version resets it to unknown until re-classified.
+      noteObjectVersion(fileId, objectVersionId)
+      try {
+        const { getApiUrl, getToken } = await import('./api')
+        const token = await getToken()
+        if (!token) return 'unknown'
+        const convention = await classifyOwnerContentNative(
+          requireHandleId(), fileId, objectVersionId, createdAt, getApiUrl(), token,
+        )
+        recordContentConvention(fileId, objectVersionId, convention)
+        return convention
+      } catch {
+        return 'unknown'
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
+  const fileWriteStateFn = useCallback((fileId: string): FileWriteState => derivedFileWriteState(fileId), [])
+
+  /**
+   * SF-0002 M2a run 3: one owned name's exact convention, for share gating.
+   * Records the name half. `null` = the name could not be resolved (treated as
+   * a check failure by the callers, never as writable/shareable).
+   */
+  const resolveOwnerNameConventionFn = useCallback(
+    async (fileId: string, nameEncrypted: string): Promise<OwnerNameConvention | null> => {
+      try {
+        // Imported lazily so module mocks that predate this bridge still load.
+        const { resolveOwnerNameConvention: resolveNative } = await import('../../modules/beebeeb-crypto')
+        const convention = await resolveNative(requireHandleId(), fileId, nameEncrypted)
+        if (convention) recordNameConvention(fileId, convention)
+        return convention
+      } catch {
+        return null
+      }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -1597,6 +1677,9 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
         encryptMetadata: encryptMetadataFn,
         decryptMetadata: decryptMetadataFn,
         decryptNames: decryptNamesFn,
+        classifyOwnerContent: classifyOwnerContentFn,
+        fileWriteState: fileWriteStateFn,
+        resolveOwnerNameConvention: resolveOwnerNameConventionFn,
         getFileKeyBytes: getFileKeyBytesFn,
         getMasterKeyHandleId: getMasterKeyHandleIdFn,
         deriveX25519PrivateFromHandle: deriveX25519PrivateFromHandleFn,

@@ -30,11 +30,12 @@ import java.security.MessageDigest
 import uniffi.beebeeb_uniffi.MasterKeyHandle
 import uniffi.beebeeb_uniffi.FileKeyHandle
 import uniffi.beebeeb_uniffi.ChunkDecryptorHandle
+import uniffi.beebeeb_uniffi.OwnerKeyConvention
 
 /**
  * Android half of the core known-answer-vector gate (task 1683, mirroring the
  * iOS `CoreVectorsKATTests.swift` from task 1382). Drives `beebeeb-core`'s
- * cross-platform vectors (`test-vectors/vectors.json`, v11, 31 families through
+ * cross-platform vectors (`test-vectors/vectors.json`, v13, 37 families through
  * the SAME production UniFFI Kotlin bindings the app links — the generated
  * `uniffi.beebeeb_uniffi` sources and the deployed `libbeebeeb_uniffi.so`).
  *
@@ -52,11 +53,11 @@ import uniffi.beebeeb_uniffi.ChunkDecryptorHandle
  *    same file to `targets/native-tests/Vectors/core-vectors.json`.
  * 2. `shasum -a 256` the new copy and update [EXPECTED_SHA256] (see the task file).
  * 3. If core bumped the version, update [EXPECTED_VERSION] and [EXPECTED_FAMILY_ROW_COUNTS].
- *    `src/lib/1943-core-vectors-v11.guard.test.ts` pins the same bytes, version and row counts
+ *    `src/lib/1943-core-vectors-v13.guard.test.ts` pins the same bytes, version and row counts
  *    and compares this table with the TS one.
  *
  * ## Families decrypted here, and the ones only counted
- * All 31 families are required by name with their row count in [vectorsFileIntegrity]. 22 are
+ * All 37 families are required by name with their row count in [vectorsFileIntegrity]. 22 are
  * decrypted or derived through the binding: `file_key_derivation`, `chunk_encrypt_decrypt`,
  * `x25519_identity_keypair`, `x25519_share_key_exchange`, `recovery_check`,
  * `metadata_encrypt_decrypt`, `file_request_seal_open`, `chunk_v2_stream`,
@@ -79,14 +80,14 @@ import uniffi.beebeeb_uniffi.ChunkDecryptorHandle
 class CoreVectorsKATTest {
 
     companion object {
-        /** `sha256sum` of the vendored asset (v11, matching merged core c08defc7). */
+        /** `sha256sum` of the vendored asset (v13, matching merged core f8ee8e4). */
         private const val EXPECTED_SHA256 =
-            "11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a"
-        private const val EXPECTED_VERSION = 11
+            "71fb633774fcb13d7cca0613603282ea47ab77e265abd09b3a2ec189689c1464"
+        private const val EXPECTED_VERSION = 13
 
         /**
-         * Every family core ships at this revision with the number of rows it carries — 31 families,
-         * 31 rows. The row count is asserted, not just presence: a truncated or half-refreshed asset
+         * Every family core ships at this revision with the number of rows it carries — 37 families,
+         * 37 rows. The row count is asserted, not just presence: a truncated or half-refreshed asset
          * would otherwise pass. `envelope_serialization` is present here but is an explicit skip on
          * both platforms (no UniFFI export), same as before.
          */
@@ -114,6 +115,7 @@ class CoreVectorsKATTest {
             "key_wrap_v1" to 1,
             "folder_link_passphrase" to 1,
             "folder_link_passphrase_nfd" to 1,
+            "invite_owner_copy_v1" to 1,
             "folder_custody_v1" to 1,
             "link_owner_key_v1" to 1,
             "link_owner_token_v1" to 1,
@@ -122,6 +124,11 @@ class CoreVectorsKATTest {
             "owner_wrapped_file_key" to 1,
             "owner_wrapped_folder_key" to 1,
             "folder_wrapped_file_key" to 1,
+            "upper_repair_v1" to 1,
+            "upper_repair_split_v1" to 1,
+            "client_meta_device_hostname" to 1,
+            "client_meta_session_paths" to 1,
+            "client_meta_padding_buckets" to 1,
         )
 
         /**
@@ -406,6 +413,97 @@ class CoreVectorsKATTest {
             assertEquals("$name: pin", expectedPin, meta.chunkFormat)
             println("[CoreVectorsKAT] $name: 1 row (file-key name reader)")
         }
+    }
+
+    // MARK: - SF-0002 owner resolvers
+
+    /**
+     * `upper_repair_v1` through the real binding: the owner resolver reports the uppercase repair
+     * convention and its key opens both the sealed name and the single content version.
+     */
+    @Test
+    fun upperRepairNameAndContentResolveThroughTheBinding() {
+        val v = vector(loadRoot(), "upper_repair_v1")
+        val master = MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes())
+        val fileId = v.getString("file_id")
+        val nameEncrypted = v.getString("name_encrypted")
+
+        val nameResolved = master.ownerFileKeyForName(fileId, nameEncrypted)
+        assertEquals("upper_repair_v1: name convention", OwnerKeyConvention.UPPER_REPAIR, nameResolved.convention)
+        val meta = nameResolved.key.decryptFileMetadata(nameEncrypted)
+        assertEquals("upper_repair_v1: name", v.getString("expected_name"), meta.name)
+        assertEquals("upper_repair_v1: mime", v.getString("expected_mime_type"), meta.mimeType)
+
+        val frame = v.getString("content_frame_hex").hexToBytes()
+        val contentResolved = master.ownerFileKeyForContent(fileId, frame)
+        assertEquals(
+            "upper_repair_v1: content convention",
+            OwnerKeyConvention.UPPER_REPAIR,
+            contentResolved.convention,
+        )
+        val plaintext = contentResolved.key.decryptChunk(
+            frame.copyOfRange(0, 12), frame.copyOfRange(12, frame.size))
+        assertHexEquals("upper_repair_v1: plaintext", v.getString("content_plaintext_hex"), plaintext)
+        println("[CoreVectorsKAT] upper_repair_v1: 1 row (owner resolver)")
+    }
+
+    /**
+     * `upper_repair_split_v1`: the name and version 1 resolve under the uppercase repair
+     * convention, version 2 under the canonical string convention, and the name's key does not
+     * open version 2.
+     */
+    @Test
+    fun splitUpperRepairResolvesEachVersionIndependently() {
+        val v = vector(loadRoot(), "upper_repair_split_v1")
+        val master = MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes())
+        val fileId = v.getString("file_id")
+        val nameEncrypted = v.getString("name_encrypted")
+
+        val nameResolved = master.ownerFileKeyForName(fileId, nameEncrypted)
+        assertEquals(
+            "upper_repair_split_v1: name convention",
+            OwnerKeyConvention.UPPER_REPAIR,
+            nameResolved.convention,
+        )
+        assertEquals(
+            "upper_repair_split_v1: name",
+            v.getString("expected_name"),
+            nameResolved.key.decryptFileMetadata(nameEncrypted).name,
+        )
+
+        val v1Frame = v.getString("content_v1_frame_hex").hexToBytes()
+        val v1Resolved = master.ownerFileKeyForContent(fileId, v1Frame)
+        assertEquals(
+            "upper_repair_split_v1: v1 convention",
+            OwnerKeyConvention.UPPER_REPAIR,
+            v1Resolved.convention,
+        )
+        assertHexEquals(
+            "upper_repair_split_v1: v1 plaintext",
+            v.getString("content_v1_plaintext_hex"),
+            v1Resolved.key.decryptChunk(v1Frame.copyOfRange(0, 12), v1Frame.copyOfRange(12, v1Frame.size)),
+        )
+
+        val v2Frame = v.getString("content_v2_frame_hex").hexToBytes()
+        val v2Resolved = master.ownerFileKeyForContent(fileId, v2Frame)
+        assertEquals(
+            "upper_repair_split_v1: v2 convention",
+            OwnerKeyConvention.STRING,
+            v2Resolved.convention,
+        )
+        assertHexEquals(
+            "upper_repair_split_v1: v2 plaintext",
+            v.getString("content_v2_plaintext_hex"),
+            v2Resolved.key.decryptChunk(v2Frame.copyOfRange(0, 12), v2Frame.copyOfRange(12, v2Frame.size)),
+        )
+
+        assertThrows(
+            "upper_repair_split_v1: version 2 must not open under the name's uppercase key",
+            Exception::class.java,
+        ) {
+            nameResolved.key.decryptChunk(v2Frame.copyOfRange(0, 12), v2Frame.copyOfRange(12, v2Frame.size))
+        }
+        println("[CoreVectorsKAT] upper_repair_split_v1: 1 row (owner resolver)")
     }
 
     // MARK: - 2. file_key_derivation (HKDF-SHA256)
