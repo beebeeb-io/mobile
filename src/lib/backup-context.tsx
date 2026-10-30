@@ -21,6 +21,7 @@ import {
   type NativeBackupProgress,
 } from '../../modules/beebeeb-crypto';
 import { startAccountRefusalPoll } from './account-refusal-poll';
+import { isPhoneBackupSupported } from './backup-platform-support';
 import { syncBackupDeviceIdToNative } from './backup-device-id-handoff';
 import { ensureBackupFolders, reconcileDerivedStateAgainstServer, type BackupCategory } from '../services/BackupService';
 import { isVaultKeyMismatchError } from '../services/vault-key-mismatch';
@@ -204,6 +205,9 @@ export function canEnableNativeCameraBackup(userId: string | undefined | null): 
  */
 export async function stopBackupEngines(): Promise<void> {
   if (Platform.OS === 'web') return;
+  // Task 2303 — no native backup bridge on Android, so there is nothing to
+  // tear down (and calling one would throw).
+  if (!isPhoneBackupSupported()) return;
   await Promise.all([
     teardownAllBackup().catch(() => {}),
     clearMobileIosBackupClientSession().catch(() => {}),
@@ -773,12 +777,17 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
   const refreshNativeProgress = useCallback(async () => {
     if (Platform.OS === 'web') return;
+    // Task 2303 — the Android module registers no `getBackupProgress`.
+    if (!isPhoneBackupSupported()) return;
     const p: NativeBackupProgress = await getBackupProgress();
     applyNativeProgress(p);
   }, [applyNativeProgress]);
 
   const enableNativeBackup = useCallback(async (category: BackupCategory, options: { runNow?: boolean } = {}) => {
     if (Platform.OS === 'web') return;
+    // Task 2303 — the ONE gate: no Android UI path may reach a backup native
+    // function the Android module does not register.
+    if (!isPhoneBackupSupported()) return;
     if (accountBlockedRef.current) {
       setBackupBlockedReason(accountBlockedRef.current);
       recordRuntimeTrace('backup.native.enable.blocked', { category, reason: 'account_read_only' });
@@ -895,9 +904,12 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
           SecureStore.getItemAsync(backupPrefKey(BACKUP_WIFI_ONLY_KEY, userId)),
           SecureStore.getItemAsync(backupPrefKey(BACKUP_BG_UPLOAD_KEY, userId)),
         ]);
-        setIsPhotoBackupEnabled(photo === 'true');
-        setIsContactsBackupEnabled(contacts === 'true');
-        setIsCalendarBackupEnabled(calendar === 'true');
+        // Task 2303 — Android has no native backup engine, so a preference
+        // that somehow says "on" (restored store, an old install) must not
+        // present backup as enabled there.
+        setIsPhotoBackupEnabled(photo === 'true' && isPhoneBackupSupported());
+        setIsContactsBackupEnabled(contacts === 'true' && isPhoneBackupSupported());
+        setIsCalendarBackupEnabled(calendar === 'true' && isPhoneBackupSupported());
         // Defaults: videos on, wifi-only off, background on
         let includeVideosValue = videos !== null ? videos === 'true' : true;
         if (Platform.OS === 'ios') {
@@ -1103,6 +1115,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
   const togglePhotoBackup = useCallback(async () => {
     if (!userId) return; // signed-out instance — nothing to persist against
+    // Task 2303 — Android has no native backup engine: the control is not
+    // shown there, and this guard keeps any stale caller from flipping a
+    // preference that would claim backup is on.
+    if (!isPhoneBackupSupported()) return;
     const next = !isPhotoBackupEnabled;
     setIsPhotoBackupEnabled(next);
     // Task 1667 (sim rung 5b): turning backup on shows nothing until native
@@ -1129,6 +1145,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
   const toggleContactsBackup = useCallback(async () => {
     if (!userId) return;
+    // Task 2303 — Android has no native backup engine: the control is not
+    // shown there, and this guard keeps any stale caller from flipping a
+    // preference that would claim backup is on.
+    if (!isPhoneBackupSupported()) return;
     const next = !isContactsBackupEnabled;
     setIsContactsBackupEnabled(next);
     try {
@@ -1149,6 +1169,10 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
 
   const toggleCalendarBackup = useCallback(async () => {
     if (!userId) return;
+    // Task 2303 — Android has no native backup engine: the control is not
+    // shown there, and this guard keeps any stale caller from flipping a
+    // preference that would claim backup is on.
+    if (!isPhoneBackupSupported()) return;
     const next = !isCalendarBackupEnabled;
     setIsCalendarBackupEnabled(next);
     try {
@@ -1199,6 +1223,8 @@ export function BackupProvider({ children }: { children: React.ReactNode }) {
   }, [userId]);
 
   const triggerBackupNow = useCallback(async () => {
+    // Task 2303 — no native backup bridge on Android.
+    if (!isPhoneBackupSupported()) return;
     if (accountBlockedRef.current) {
       setBackupBlockedReason(accountBlockedRef.current);
       return;
