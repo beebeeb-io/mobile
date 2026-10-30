@@ -422,7 +422,11 @@ private final class PreviewStreamingDownloadDelegate: NSObject, URLSessionDataDe
       let queue = OperationQueue()
       queue.maxConcurrentOperationCount = 1
       queue.qualityOfService = .utility
-      let session = URLSession(configuration: .default, delegate: self, delegateQueue: queue)
+      // Task 1962 round 4 (Bug 6d) — preview downloads must not touch the
+      // response cache either: an explicit configuration with `urlCache = nil`.
+      let previewConfiguration = URLSessionConfiguration.default
+      previewConfiguration.urlCache = nil
+      let session = URLSession(configuration: previewConfiguration, delegate: self, delegateQueue: queue)
       self.session = session
       let task = session.dataTask(with: request)
       progress.setTask(task)
@@ -2369,6 +2373,12 @@ public class BeebeebCryptoModule: Module {
         RuntimeTrace.event("storage.purge.failed", ["stage": "pending_marker"])
         failed += 1
       }
+      // Task 1962 round 4 (Bug 6b) — belt. With 6a the shared cache has zero
+      // capacity, so this stores nothing anyway; it stays so a build ever
+      // shipping without 6a still drops the previous account's API responses
+      // on every sign-out path. Placed AFTER the marker-failure check so the
+      // fail-closed marker stays the first thing this purge reports.
+      URLCache.shared.removeAllCachedResponses()
       // Task 1593 round 6 (new-4, privacy consent) — a forced sign-out
       // (session expiry, account deleted elsewhere, a startup 401) reaches
       // this function but never the ordinary in-app `removeFileProviderAccess`
@@ -2445,9 +2455,18 @@ public class BeebeebCryptoModule: Module {
       let manifest = NativeBackupEngine.shared.prepareForStoragePurge(
         mode: purgeMode, deletedAccountIds: Set(deletedAccountIds ?? [])
       )
+      // Task 1962 round 4 (Bug 7b) — the thumbnail queue reaches the purge
+      // from EVERY sign-out path (forced ones never call the JS
+      // `clearQueueOnSignOut`). Stop in-flight workers, then reset the queue
+      // THROUGH its own open handle. The three files it owns are added to
+      // `preserving` in every outcome, so the registry sweep below never
+      // unlinks a database under a live connection (the DB closes and
+      // unlinks them itself on a failed reset, 7d).
+      ThumbnailWorkerPool.shared.cancelAll()
+      failed += ThumbnailQueueDB.prepareForStoragePurge()
       // Task 1593 round 7 (C1) — moved LAST (was first). See the block
       // comment above this AsyncFunction for why.
-      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept)
+      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept.union(ThumbnailQueueDB.storagePurgePaths()))
       failed += result.failed
       return [
         "removed": result.removed,

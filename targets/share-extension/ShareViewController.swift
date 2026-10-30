@@ -88,6 +88,13 @@ final class ShareViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // Task 1962 round 4 (Bug 6c) — this extension process has its OWN
+        // `URLCache.shared` and container, which a sign-out in the app cannot
+        // reach. Before the first request: a zero-capacity shared cache rooted
+        // at an explicit extension directory, then an off-main clear of
+        // whatever an older build left in this process's default cache.
+        URLCache.shared = LegacyURLCacheCleanup.zeroCapacityURLCache(directoryName: "bb-no-http-cache-share")
+        LegacyURLCacheCleanup.clearLegacyDefaultStoreOffMainThread()
         view.backgroundColor = UIColor.black.withAlphaComponent(0.5)
         loadSharedConfig()
         setupContainerUI()
@@ -97,6 +104,7 @@ final class ShareViewController: UIViewController {
         super.viewDidAppear(animated)
         performSetup()
     }
+
 
     // MARK: - Setup
 

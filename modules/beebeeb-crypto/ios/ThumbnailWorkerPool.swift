@@ -40,6 +40,9 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
     private(set) var slots: [WorkerSlot] = Array(repeating: WorkerSlot(), count: normalConcurrency)
     let stateLock = NSLock()
     private(set) var paused: Bool = false
+    /// Task 1962 round 5 (P2.6) — bumped by every purge, re-bound by the next
+    /// account enqueue. Guarded by `stateLock`.
+    private var purgeGate = PurgeGenerationGate()
     private(set) var isThermalThrottled: Bool = false
 
     // MARK: - Rolling throughput window (30s)
@@ -56,6 +59,11 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
 
     private var statsTimer: DispatchSourceTimer?
     private let statsTimerQueue = DispatchQueue(label: "io.beebeeb.thumbnail.stats-timer")
+    /// Task 1962 round 5 (P2.7) — `statsTimer` is read/written from the main
+    /// thread, the worker threads and the timer's own queue. Every access goes
+    /// through `statsTimerQueue`; this key avoids deadlocking the timer handler,
+    /// which already runs on that queue.
+    private let statsTimerQueueKey = DispatchSpecificKey<Void>()
 
     // MARK: - Callbacks (set by ThumbnailServiceModule)
 
@@ -90,6 +98,7 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
 
     private override init() {
         super.init()
+        statsTimerQueue.setSpecific(key: statsTimerQueueKey, value: ())
     }
 
     // MARK: - Observers
@@ -173,6 +182,10 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
     // MARK: - Enqueue
 
     public func enqueue(fileIds: [String], qualityPreset: String) {
+        // A new apply is the account bind: it re-enables the pool after a
+        // sign-out purge (P2.6). The JS epoch guard keeps a late enqueue from
+        // the outgoing account from reaching here.
+        bindAccount()
         ThumbnailQueueDB.shared.enqueue(fileIds: fileIds, qualityPreset: qualityPreset)
         pump()
         startStatsTimerIfNeeded()
@@ -183,11 +196,23 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
     public func cancelAll() {
         queue.cancelAllOperations()
         stateLock.lock()
+        // P2.6 — invalidate every in-flight worker's result and keep pump()
+        // idle until the next account bind.
+        purgeGate.purge()
         for i in 0..<slots.count {
             slots[i] = WorkerSlot()
         }
         stateLock.unlock()
         stopStatsTimer()
+    }
+
+    /// Re-enables the pool for the account that just started using it (called
+    /// by `enqueue`). A stale generation from the previous account stays
+    /// uncommit-able.
+    public func bindAccount() {
+        stateLock.lock()
+        purgeGate.bind()
+        stateLock.unlock()
     }
 
     // MARK: - Snapshot
@@ -286,7 +311,23 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
 
     // MARK: - Stats timer
 
+    /// Runs `body` on `statsTimerQueue` (directly when already on it, so the
+    /// timer handler can stop itself without deadlocking).
+    private func onStatsTimerQueue<T>(_ body: () -> T) -> T {
+        if DispatchQueue.getSpecific(key: statsTimerQueueKey) != nil {
+            return body()
+        }
+        return statsTimerQueue.sync(execute: body)
+    }
+
     private func startStatsTimerIfNeeded() {
+        onStatsTimerQueue {
+            startStatsTimerLocked()
+        }
+    }
+
+    /// Must run on `statsTimerQueue`.
+    private func startStatsTimerLocked() {
         guard statsTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: statsTimerQueue)
         timer.schedule(deadline: .now(), repeating: .milliseconds(250))
@@ -304,8 +345,10 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
     }
 
     private func stopStatsTimer() {
-        statsTimer?.cancel()
-        statsTimer = nil
+        onStatsTimerQueue {
+            statsTimer?.cancel()
+            statsTimer = nil
+        }
     }
 
     // MARK: - Pump — drain SQLite queue into NSOperationQueue
@@ -313,8 +356,11 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
     func pump() {
         stateLock.lock()
         let isPaused = paused
+        // P2.6 — after a purge (and before the next account bind) a finishing
+        // or resumed worker must not start work for the outgoing account.
+        let mayPump = purgeGate.allowsPump
         stateLock.unlock()
-        if isPaused { return }
+        if isPaused || !mayPump { return }
         let capacity = queue.maxConcurrentOperationCount - queue.operationCount
         guard capacity > 0 else { return }
         let ready = ThumbnailQueueDB.shared.popReady(limit: capacity)
@@ -325,16 +371,29 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
     }
 
     private func enqueueOperation(item: ThumbnailQueueDB.Item) {
+        let generation = currentPurgeGeneration()
         let op = AsyncOperation { [weak self] finish in
             guard let self else { finish(); return }
-            await self.runOne(item: item)
+            await self.runOne(item: item, generation: generation)
             finish()
         }
         queue.addOperation(op)
     }
 
+    private func currentPurgeGeneration() -> UInt64 {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return purgeGate.generation
+    }
+
+    private func isPurgeGenerationCurrent(_ generation: UInt64) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return purgeGate.isCurrent(generation)
+    }
+
     /// Execute a single thumbnail regeneration pipeline with a 45-second deadline.
-    private func runOne(item: ThumbnailQueueDB.Item) async {
+    private func runOne(item: ThumbnailQueueDB.Item, generation: UInt64) async {
         let slotIndex = self.claimSlot(fileId: item.fileId) ?? -1
         let startedAt = Date()
         var success = false
@@ -360,6 +419,14 @@ public final class ThumbnailWorkerPool: NSObject, @unchecked Sendable {
         } catch {
             category = .unknown
             errMsg = "\(error)"
+        }
+
+        // P2.6 — the purge bumped the generation while this worker was
+        // awaiting PhotoKit/upload. Discard the result: no DB write, no
+        // callbacks, no cache invalidation, no pump for the old account.
+        guard self.isPurgeGenerationCurrent(generation) else {
+            if slotIndex >= 0 { self.releaseSlot(slotIndex) }
+            return
         }
 
         let totalMs = Int(Date().timeIntervalSince(startedAt) * 1000)

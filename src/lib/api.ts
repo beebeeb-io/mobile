@@ -4278,9 +4278,9 @@ export async function getPlans(): Promise<Plan[]> {
   }
 }
 
-// Billing checkout + management moved to the web (app.beebeeb.io/settings/billing)
-// when billing migrated off Stripe to Mollie — the mobile app no longer creates
-// checkout/portal sessions itself (task 0958).
+// Billing checkout + management runs on the web billing page
+// (app.beebeeb.io/settings/billing), backed by Mollie — the mobile app no longer
+// creates checkout/portal sessions itself (task 0958).
 
 // ─── Data residency (tasks 0051, 1919) ────────────────────────────────────────
 

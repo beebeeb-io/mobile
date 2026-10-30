@@ -81,6 +81,10 @@ const CRYPTO_SHARED_FILES = [
   // `ShareUploadRequestPolicy.swift`'s `isAccountMismatchResponse` can call
   // the exact same, already-tested detection.
   { path: '../targets/file-provider/AccountMismatchDetection.swift', name: 'AccountMismatchDetection.swift' },
+  // Task 1962 round 5: one shared legacy-URLCache helper for the app and both
+  // extensions (the round-4 helper was copied three times and cleared the old
+  // store through a zero-capacity instance, which never opens it).
+  { path: '../modules/beebeeb-crypto/ios/LegacyURLCacheCleanup.swift', name: 'LegacyURLCacheCleanup.swift' },
 ];
 
 function withShareExtension(config) {

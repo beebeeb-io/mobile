@@ -112,6 +112,16 @@ public enum PlaintextStorageProtection {
             kind: .file, contains: "fileId to PHAsset localIdentifier map"),
       Entry(url: docs.appendingPathComponent("thumbnail_queue.sqlite", isDirectory: false),
             kind: .file, contains: "thumbnail work queue"),
+      // Task 1962 round 4 (7g) — SQLite sidecars of the thumbnail queue
+      // (WAL mode). They are separate inodes and are only removed through the
+      // queue's own reset (this file is also compiled into the File Provider
+      // extension, which has no queue DB); the registry keeps them
+      // backup-excluded and their names mirrored in JS
+      // (`PROTECTED_LEAF_NAMES`).
+      Entry(url: docs.appendingPathComponent("thumbnail_queue.sqlite-wal", isDirectory: false),
+            kind: .file, contains: "thumbnail work queue write-ahead log"),
+      Entry(url: docs.appendingPathComponent("thumbnail_queue.sqlite-shm", isDirectory: false),
+            kind: .file, contains: "thumbnail work queue shared-memory index"),
       Entry(url: docs.appendingPathComponent("beebeeb-simulator-master-key.txt", isDirectory: false),
             kind: .file, contains: "raw master key — simulator-only, gated on Device.isDevice"),
       Entry(url: support.appendingPathComponent("NativeBackupStaging", isDirectory: true),
@@ -1238,7 +1248,7 @@ public enum PlaintextStorageProtection {
     // VACUUM's outcome.
     // This database is never put into WAL mode anywhere in this codebase
     // (`grep -rn "journal_mode" modules/ targets/ src/` finds it set only for
-    // NativeBackupEngine's, ThumbnailQueueDB's and BackupDatabase's own
+    // NativeBackupEngine's, the thumbnail queue's and BackupDatabase's own
     // separate databases) — it always uses the default rollback journal. The
     // `PRAGMA wal_checkpoint(TRUNCATE)` this comment used to describe as
     // "truncating the WAL" was therefore a silent no-op on this file. VACUUM

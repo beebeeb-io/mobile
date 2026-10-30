@@ -100,6 +100,8 @@ const CRYPTO_SHARED_FILES = [
   },
   { path: '../modules/beebeeb-crypto/ios/RuntimeTrace.swift', name: 'RuntimeTrace.swift' },
   { path: '../modules/beebeeb-crypto/ios/ProvenanceHeaders.swift', name: 'ProvenanceHeaders.swift' },
+  // Task 1962 round 5: shared with the app and the Share extension.
+  { path: '../modules/beebeeb-crypto/ios/LegacyURLCacheCleanup.swift', name: 'LegacyURLCacheCleanup.swift' },
 ];
 const EXTENSION_FILES = [
   ...SOURCE_FILES.map((file) => ({

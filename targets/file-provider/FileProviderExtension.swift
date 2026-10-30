@@ -42,12 +42,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   private var cachedForSignedInUser: String?
 
   required init(domain: NSFileProviderDomain) {
+    // Task 1962 round 4 (Bug 6c) — this extension process has its OWN
+    // `URLCache.shared` and container, which a sign-out in the app cannot
+    // reach. Before the first request: a zero-capacity shared cache rooted at
+    // an explicit extension directory, then an off-main clear of whatever an
+    // older build left in this process's default cache directory.
+    URLCache.shared = LegacyURLCacheCleanup.zeroCapacityURLCache(directoryName: "bb-no-http-cache-file-provider")
+    LegacyURLCacheCleanup.clearLegacyDefaultStoreOffMainThread()
     super.init()
     _ = domain
     _ = CacheManager.shared
     _ = Self.leftoverContentSweep
     _ = Self.materializedSetBootstrap
   }
+
 
   /// Task 1722 round 4 (review round 2, minor 6): once per extension process, read the system's
   /// materialized set. A phone upgraded from a build that did not track it (TestFlight 236) has
@@ -384,7 +392,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         let owned = try self.masterKey()
         let masterKey = owned.handle
-        let fileId = UUID().uuidString
+        // SF-0002 part 1: Swift's uuidString is uppercase, and the same id
+        // string is the bytes of every key derivation below. ApiClient sends
+        // `fileId.lowercased()` as `file_id`, and every reader derives from
+        // that stored lowercase id, so mint it lowercase ONCE here.
+        let fileId = UUID().uuidString.lowercased()
         let nameEncrypted = try CryptoBridge.encryptFilename(
           masterKeyHandle: masterKey,
           fileId: fileId,

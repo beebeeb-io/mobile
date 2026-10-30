@@ -167,6 +167,9 @@ final class NativeManualUploader {
 
   init() {
     let config = URLSessionConfiguration.default
+    // Task 1962 round 4 (Bug 6d): never let the manual uploader's responses
+    // reach the shared HTTP cache.
+    config.urlCache = nil
     config.timeoutIntervalForRequest = 60
     config.timeoutIntervalForResource = 6 * 60 * 60
     config.httpMaximumConnectionsPerHost = 2
