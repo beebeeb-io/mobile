@@ -16,10 +16,11 @@
  *   (and tests) use it to prove nothing is silently lost.
  *
  * This is deliberately a separate primitive from thumbnail-cache.ts's
- * `enqueueThumbnailLoad`: that one is Android-only (it throws on iOS, where the
- * BeebeebThumbnails native service owns LOAD-side concurrency) and its cap is
- * about download/decrypt of server blobs — the UPLOAD-side generation queue has
- * different bounds and must also work on iOS.
+ * `enqueueThumbnailLoad`: that one serves LOAD-side download/decrypt of server
+ * blobs (iOS uses it only for files shared with you, whose loader decrypts via
+ * the native handle callback; iOS files of your own use the BeebeebThumbnails
+ * native service), and the UPLOAD-side generation queue has different bounds
+ * and must also work on iOS.
  */
 
 export const THUMBNAIL_UPLOAD_CONCURRENCY = 2;
