@@ -2369,15 +2369,16 @@ public class BeebeebCryptoModule: Module {
       let pendingNonce = PlaintextStorageProtection.markPurgePending()
       self.sharedKeys.clear()
       self.cancelAllPreviewStreams()
-      // Task 1962 round 4 (Bug 6b) — belt. With 6a the shared cache has zero
-      // capacity and stores nothing, so this is a no-op; it stays so that a
-      // build ever shipping without 6a still drops the previous account's
-      // API responses at every sign-out path.
-      URLCache.shared.removeAllCachedResponses()
       if pendingNonce == nil {
         RuntimeTrace.event("storage.purge.failed", ["stage": "pending_marker"])
         failed += 1
       }
+      // Task 1962 round 4 (Bug 6b) — belt. With 6a the shared cache has zero
+      // capacity, so this stores nothing anyway; it stays so a build ever
+      // shipping without 6a still drops the previous account's API responses
+      // on every sign-out path. Placed AFTER the marker-failure check so the
+      // fail-closed marker stays the first thing this purge reports.
+      URLCache.shared.removeAllCachedResponses()
       // Task 1593 round 6 (new-4, privacy consent) — a forced sign-out
       // (session expiry, account deleted elsewhere, a startup 401) reaches
       // this function but never the ordinary in-app `removeFileProviderAccess`
@@ -2465,10 +2466,7 @@ public class BeebeebCryptoModule: Module {
       ThumbnailQueueDB.prepareForStoragePurge()
       // Task 1593 round 7 (C1) — moved LAST (was first). See the block
       // comment above this AsyncFunction for why.
-      let result = PlaintextStorageProtection.purgeAll(
-        pendingNonce: pendingNonce,
-        preserving: manifest.kept.union(ThumbnailQueueDB.storagePurgePaths())
-      )
+      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept.union(ThumbnailQueueDB.storagePurgePaths()))
       failed += result.failed
       return [
         "removed": result.removed,

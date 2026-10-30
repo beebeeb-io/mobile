@@ -160,3 +160,30 @@ describe('sign-out native functions stay synchronous on Expo\'s shared serial qu
     expect(body).toContain('clearAll()');
   });
 });
+
+describe('the app-process purge resets the thumbnail queue and keeps its files (7b)', () => {
+  const cryptoModule = readFileSync(CRYPTO_MODULE, 'utf8');
+  const body = stripLineComments(
+    extractBody(cryptoModule, /AsyncFunction\("purgePlaintextStorage"\)/),
+  );
+
+  test('workers are stopped, then the queue is reset, both BEFORE the registry purge', () => {
+    const cancel = body.indexOf('ThumbnailWorkerPool.shared.cancelAll()');
+    const reset = body.indexOf('ThumbnailQueueDB.prepareForStoragePurge()');
+    const purgeAll = body.indexOf('PlaintextStorageProtection.purgeAll(');
+    expect(cancel).toBeGreaterThan(-1);
+    expect(reset).toBeGreaterThan(cancel);
+    expect(purgeAll).toBeGreaterThan(reset);
+  });
+
+  test('the registry purge keeps all three queue files in every outcome', () => {
+    // `preserving:` is the manifest's kept set UNION the queue's own
+    // [.sqlite, -wal, -shm] — so neither a successful nor a failed reset can
+    // let the sweep unlink a database under a live connection (7d closes and
+    // unlinks them itself).
+    expect(body).toMatch(
+      /PlaintextStorageProtection\.purgeAll\(pendingNonce: pendingNonce, preserving: manifest\.kept\.union\(ThumbnailQueueDB\.storagePurgePaths\(\)\)\)/,
+    );
+  });
+
+});
