@@ -25,6 +25,7 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$DIR/.." && pwd)"
+SWIFT_TEST_FILE="$REPO_ROOT/targets/native-tests/CoreVectorsKATTests.swift"
 
 # Resolve the workspace root via git-common-dir, NOT a naive "../.." — this script must work both
 # from the primary checkout (repos/mobile) and from any `git worktree` (e.g.
@@ -61,7 +62,24 @@ fi
 DERIVED_DATA="${KAT_IOS_DERIVED_DATA:-/tmp/dd-kat-ios}"
 LOG="${KAT_IOS_LOG:-/tmp/kat-ios-$(date +%s).log}"
 
+# Workspace rule: assert a COUNT, never a terminator string. The default is the number of
+# `func test` methods in the Swift file, so a test that disappears in a merge makes this gate
+# RED instead of quietly shrinking the suite. Override with KAT_IOS_EXPECTED_TESTS only when
+# you deliberately added or removed a test method.
+if [ -n "${KAT_IOS_EXPECTED_TESTS:-}" ]; then
+  EXPECTED_TESTS="$KAT_IOS_EXPECTED_TESTS"
+else
+  # `grep -c` exits 1 on zero matches; with `set -e` that must not abort before the check below.
+  EXPECTED_TESTS="$(grep -cE '^[[:space:]]*func test[A-Za-z0-9_]*[[:space:]]*\(' "$SWIFT_TEST_FILE" || true)"
+fi
+
+if ! printf '%s' "$EXPECTED_TESTS" | grep -qE '^[1-9][0-9]*$'; then
+  echo "kat-ios.sh: cannot determine the expected test count (KAT_IOS_EXPECTED_TESTS='${EXPECTED_TESTS}', file '$SWIFT_TEST_FILE') — treat as RED" >&2
+  exit 66
+fi
+
 echo "kat-ios.sh: running CoreVectorsKATTests on sim $UDID"
+echo "kat-ios.sh: expecting exactly $EXPECTED_TESTS executed tests"
 echo "kat-ios.sh: log at $LOG"
 
 attempt=0
@@ -111,6 +129,20 @@ if [ -z "$SUMMARY_LINE" ]; then
 fi
 
 echo "$SUMMARY_LINE"
+
+# Assert the COUNT (workspace rule): a summary line with fewer executed tests than the file
+# defines means tests silently vanished — RED even when every remaining test passed.
+if ! grep -qE "Executed ${EXPECTED_TESTS} tests?([,.]|$)" "$LOG"; then
+  echo "kat-ios.sh: RED — expected 'Executed ${EXPECTED_TESTS} tests' (KAT_IOS_EXPECTED_TESTS / number of 'func test' methods in $(basename "$SWIFT_TEST_FILE")), got: $SUMMARY_LINE" >&2
+  tail -n 80 "$LOG" >&2
+  exit 1
+fi
+
+if ! echo "$SUMMARY_LINE" | grep -qE "(^|[^0-9])0 failures"; then
+  echo "kat-ios.sh: RED — expected '0 failures' in the summary line, got: $SUMMARY_LINE" >&2
+  tail -n 80 "$LOG" >&2
+  exit 1
+fi
 
 if echo "$SUMMARY_LINE" | grep -qE "[1-9][0-9]* failures?"; then
   echo "kat-ios.sh: RED — summary line reports a nonzero failure count (process exit was $status, not trusted — see comment above)" >&2

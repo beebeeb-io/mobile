@@ -49,30 +49,43 @@ function runGuard(opts: { script?: string; args?: string[]; env?: Record<string,
   };
 }
 
+/**
+ * A refusal is not just exit 1: the guard must SAY it refused and why. An unbound variable or a
+ * crash in the refusal path also exits 1, and without this check that would count as a refusal.
+ */
+function expectRefused(result: { code: number; stderr: string }, reason: string) {
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain('REFUSED');
+  expect(result.stderr).toContain(reason);
+}
+
+const ANDROID_REASON = 'an Android build';
+const NO_PLATFORM_REASON = 'no build platform (failing closed)';
+
 describe('android-release-guard.sh (task 1943 M1 / S6)', () => {
   for (const profile of PROFILES) {
     test(`android under an EAS build is refused with profile ${profile}`, () => {
       const result = runGuard({
         env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'android', EAS_BUILD_PROFILE: profile },
       });
-      expect(result.code).toBe(1);
+      expectRefused(result, ANDROID_REASON);
     });
   }
 
   test('android is refused under an EAS build with no profile at all', () => {
     const result = runGuard({ env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'android' } });
-    expect(result.code).toBe(1);
+    expectRefused(result, ANDROID_REASON);
   });
 
   test('an EAS build with no EAS_BUILD_PLATFORM fails closed', () => {
     const result = runGuard({ env: { EAS_BUILD: 'true' } });
-    expect(result.code).toBe(1);
+    expectRefused(result, NO_PLATFORM_REASON);
   });
 
   test('an unknown EAS_BUILD_PLATFORM fails closed', () => {
     for (const platform of ['windows', 'web', 'ANDROID-PREVIEW']) {
       const result = runGuard({ env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: platform } });
-      expect({ platform, code: result.code }).toEqual({ platform, code: 1 });
+      expectRefused(result, `unknown platform '${platform.toLowerCase()}' (failing closed)`);
     }
   });
 
@@ -87,16 +100,16 @@ describe('android-release-guard.sh (task 1943 M1 / S6)', () => {
 
   test('an uppercase ANDROID platform is still refused', () => {
     const result = runGuard({ env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'ANDROID' } });
-    expect(result.code).toBe(1);
+    expectRefused(result, ANDROID_REASON);
   });
 
   test('outside an EAS build, the positional platform uses the same rule', () => {
-    expect(runGuard({ args: ['android'] }).code).toBe(1);
+    expectRefused(runGuard({ args: ['android'] }), ANDROID_REASON);
     expect(runGuard({ args: ['ios'] }).code).toBe(0);
   });
 
   test('outside an EAS build, no platform fails closed', () => {
-    expect(runGuard({}).code).toBe(1);
+    expectRefused(runGuard({}), NO_PLATFORM_REASON);
   });
 
   test('an evidence file in the script directory cannot unlock an Android build', () => {
@@ -113,7 +126,7 @@ describe('android-release-guard.sh (task 1943 M1 / S6)', () => {
         script: join(dir, 'scripts/android-release-guard.sh'),
         env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'android' },
       });
-      expect(result.code).toBe(1);
+      expectRefused(result, ANDROID_REASON);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
