@@ -15,7 +15,10 @@
  * Git LFS was pulled (CI's unit job checks out the .so files as pointer stubs). One test checks the
  * REAL repo state: allowed when the binaries are present, a clear LFS refusal when they are stubs.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, setDefaultTimeout, test } from 'bun:test';
+
+// Each case shells out to the guard several times; on a loaded build host 5 s (bun's default) is too short.
+setDefaultTimeout(30_000);
 import { createHash } from 'node:crypto';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -114,7 +117,12 @@ function withTree(
       for (const { rel, sha } of pinnedFiles()) {
         src = src.replace(`${rel} ${sha}`, `${rel} ${sha256(join(dir, MOD, rel))}`);
       }
+      // The core-rev pin too: the logic tests must not depend on the SHIPPED pin, which 1943 M2 sets to
+      // "unverified" (s3-lead's review of #247: with a shipped sentinel these tests went 8 pass / 9 fail).
+      const treeRev = readFileSync(join(dir, MOD, 'CORE_REV'), 'utf8').trim();
+      src = src.replace(/^ANDROID_VERIFIED_CORE_REV="[^"]*"$/m, `ANDROID_VERIFIED_CORE_REV="${treeRev}"`);
       writeFileSync(script, src);
+      expect(scriptPin(script)).toBe(treeRev);
       expect(pinnedFiles(script).every(({ rel, sha }) => sha === sha256(join(dir, MOD, rel)))).toBe(true);
     }
     mutate(dir, script);
@@ -260,6 +268,37 @@ describe('android-release-guard.sh (task 1943 M1 / S6, D15 amendment 2026-10-30)
       },
       (script) => expectRefused(runGuard({ script, env: ANDROID_EAS }), NOT_VERIFIED),
     );
+  });
+
+  test('an exported CDPATH cannot redirect the tree the guard checks', () => {
+    withTree(() => {}, (script, dir) => {
+      // A decoy that `cd scripts/..` would find through CDPATH: it has no binding at all.
+      const decoy = mkdtempSync(join(tmpdir(), 'bb-d15-cdpath-'));
+      try {
+        mkdirSync(join(decoy, 'scripts'), { recursive: true });
+        const proc = Bun.spawnSync(['bash', 'scripts/android-release-guard.sh'], {
+          cwd: dir,
+          env: { ...cleanEnv(), ...ANDROID_EAS, CDPATH: decoy },
+        });
+        expectAllowed({ code: proc.exitCode, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() });
+      } finally {
+        rmSync(decoy, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test('the tree is resolved only AFTER the iOS exit (nothing about the tree can refuse iOS)', () => {
+    const src = readFileSync(SCRIPT, 'utf8');
+    const iosExit = src.indexOf(`echo "android-release-guard: platform 'ios'`);
+    const rootLine = src.search(/^ROOT=/m);
+    expect(iosExit).toBeGreaterThan(-1);
+    expect(rootLine).toBeGreaterThan(iosExit);
+    expect(src).toMatch(/^ROOT="\$\(CDPATH= cd -- /m);
+  });
+
+  test('shell scripts are checked out with LF endings (a CRLF checkout breaks `set -o pipefail`)', () => {
+    const attrs = readFileSync(join(ROOT, '.gitattributes'), 'utf8');
+    expect(attrs).toMatch(/^\*\.sh\s+text\s+eol=lf\s*$/m);
   });
 
   test('an EAS build with no EAS_BUILD_PLATFORM fails closed', () => {

@@ -53,9 +53,6 @@ android/src/main/java/expo/modules/beebeebcrypto/NativeManualUploader.kt 3d2a1ca
 "
 # ----------------------------------------------------------------------------------------------------------
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MOD="$ROOT/modules/beebeeb-crypto"
-
 # Prefix expansion, no pipe. `${!EAS_BUILD@}` would split the names into separate words and
 # break `[ -n ... ]` once two or more are set; `${!EAS_BUILD*}` quotes into one string.
 if [ -n "${!EAS_BUILD*}" ]; then
@@ -78,6 +75,11 @@ if [ "$PLATFORM" = "ios" ]; then
   echo "android-release-guard: platform 'ios' — not an Android build, allowed"
   exit 0
 fi
+
+# Resolved only AFTER the iOS exit, so nothing about the tree can refuse an iOS build. `CDPATH=` and
+# `>/dev/null` keep an exported CDPATH from printing the target or resolving a different directory.
+ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)"
+MOD="$ROOT/modules/beebeeb-crypto"
 
 case "$PLATFORM" in
   android) ;;
