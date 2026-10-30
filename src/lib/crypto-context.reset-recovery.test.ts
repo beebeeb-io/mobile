@@ -147,6 +147,7 @@ const cryptoMock = {
   confirmMasterKeyHandle: async () => true,
   createRequestKeypairWithHandle: async () => ({}),
   decryptNames: async () => [],
+  classifyOwnerContent: async () => 'unknown',
   mirrorSessionUserId: async () => true,
   mirrorSimulatorFileProviderMasterKey: async () => true,
   deriveX25519PublicFromPrivate: async (priv: Uint8Array) => priv.map((x) => x ^ 0x77 ^ 0x33),

@@ -3,6 +3,7 @@ package expo.modules.beebeebcrypto
 import java.io.ByteArrayOutputStream
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import uniffi.beebeeb_uniffi.FileKeyHandle
 import uniffi.beebeeb_uniffi.MasterKeyHandle
 
 /**

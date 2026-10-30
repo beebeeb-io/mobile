@@ -65,6 +65,7 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   createMasterKeyHandle: () => undefined,
   createRequestKeypairWithHandle: () => undefined,
   decryptNames: () => undefined,
+  classifyOwnerContent: async () => 'unknown',
   deriveX25519PublicFromPrivate: () => undefined,
   handleComputeRecoveryCheck: () => undefined,
   handleDecryptChunk: () => undefined,

@@ -41,8 +41,8 @@ const { accountEpoch, advanceAccountEpoch } = await import('./account-epoch');
 const tick = () => new Promise((r) => setTimeout(r, 1));
 
 const A_NAMES = {
-  a1: { name: 'A tax return 2025.pdf', mime: 'application/pdf', version: 1 },
-  a2: { name: 'A passport scan.jpg', mime: 'image/jpeg', version: 1 },
+  a1: { name: 'A tax return 2025.pdf', mime: 'application/pdf', version: 1, convention: 'string_or_binary' },
+  a2: { name: 'A passport scan.jpg', mime: 'image/jpeg', version: 1, convention: 'string_or_binary' },
 };
 
 beforeEach(() => {

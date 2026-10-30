@@ -204,6 +204,7 @@ const cryptoMock = {
   },
   createRequestKeypairWithHandle: async () => ({}),
   decryptNames: async () => [],
+  classifyOwnerContent: async () => 'unknown',
   mirrorSessionUserId: async (userId: string | null) => { calls.mirroredSignedInUser.push(userId); return true; },
   deriveX25519PublicFromPrivate: async (priv: Uint8Array) => priv.map((x) => x ^ 0x77 ^ 0x33),
   handleComputeRecoveryCheck: async (h: number) => checkOf(handles.get(h)!),
