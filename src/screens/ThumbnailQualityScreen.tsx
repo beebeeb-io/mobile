@@ -33,6 +33,7 @@ import { loadFileIndex } from '../lib/file-index-loader';
 import { getRemoteToLocalMap } from '../services/BackupDatabase';
 import { seedLocalIdentifierMap } from '../lib/local-identifier-map';
 import { accountEpoch, isCurrentAccountEpoch } from '../lib/account-epoch';
+import { seedAndEnqueueThumbnailApply } from '../lib/thumbnail-apply-sequence';
 import { formatBytes } from '../lib/format';
 import { useTheme } from '../lib/theme-context';
 
@@ -238,10 +239,18 @@ export default function ThumbnailQualityScreen() {
       // native backup engine landed), so every file failed 404 "no local
       // identifier mapping" → permanent fail (task 0883). Seeding here makes the
       // worker and the eligibility set agree by construction.
-      const localMap = await getRemoteToLocalMap();
-      await seedLocalIdentifierMap(Object.fromEntries(localMap));
-      if (!isCurrentAccountEpoch(epoch)) return;
-      await BeebeebThumbnails.enqueueApplyQuality(eligibleIds, preset);
+      const outcome = await seedAndEnqueueThumbnailApply(
+        {
+          capturedEpoch: epoch,
+          getRemoteToLocalMap,
+          seedLocalIdentifierMap,
+          enqueue: (ids, qualityPreset) => BeebeebThumbnails.enqueueApplyQuality(ids, qualityPreset),
+          isCurrentEpoch: isCurrentAccountEpoch,
+        },
+        eligibleIds,
+        preset,
+      );
+      if (outcome === 'epoch-advanced') return;
       navigation.navigate('ThumbnailWorker');
     } catch {
       // Non-fatal: native module may be unavailable on Android / Expo Go.
