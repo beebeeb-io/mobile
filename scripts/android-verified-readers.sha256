@@ -1,0 +1,7 @@
+# Task 1943 D15: Android readers at the M7-verified state (pin ANDROID_VERIFIED_CORE_REV in scripts/android-release-guard.sh).
+# Changing a listed file requires setting the pin to 'unverified' in the same commit. Only the M7 PR rewrites this file.
+838e4a5d8b1897f778403a1584f51b83a5dce8fb1bba8c9af61d39a78dbfe094  modules/beebeeb-crypto/android/src/main/java/expo/modules/beebeebcrypto/BeebeebCryptoModule.kt
+8701b3d6b07a5bc96c11fa6a39cdc5b8ae64b7a16d52e301e8f64475e5c32cf9  modules/beebeeb-crypto/android/src/main/java/expo/modules/beebeebcrypto/SharedKeyOps.kt
+b20937abdbe00416f22845bf5c6ce6894e860bdfba3342bea77d86093ba2edf3  modules/beebeeb-crypto/android/src/main/java/expo/modules/beebeebcrypto/VideoChunkMath.kt
+e51bc23e5ecf28001dc19e3ef358bdec821fe63970d2f6745276a61b57f71cf5  modules/beebeeb-crypto/android/src/main/java/expo/modules/beebeebcrypto/VideoStreamer.kt
+042176240f99e9444a6f3a09ca6132290bf988a74be97a96f518d7fa759d38e3  modules/beebeeb-crypto/android/src/main/java/uniffi/beebeeb_uniffi/beebeeb_uniffi.kt

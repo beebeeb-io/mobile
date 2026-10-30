@@ -1,50 +1,79 @@
 #!/usr/bin/env bash
-# Task 1943 mobile M1 — Android release guard (spec S6, decision D15).
+# Task 1943 D15 — the structural Android build guard (workspace lead ruling, 2026-10-30;
+# workspace docs/superpowers/plans/2026-10-25-1943-mobile-chunk-format.md, "Amendment 2026-10-30 (2)").
 #
-# Android ships nothing until task 1943 M7 passes. The PR that records M7's evidence removes
-# this guard from `eas-build-pre-install`, reviewed. `eas submit` and direct Gradle
-# `bundleRelease`/`assembleRelease` are not covered (a follow-up in the PR body).
+# An Android build may only carry Android readers and a binding that task 1943 M7 verified.
+# `ANDROID_VERIFIED_CORE_REV` below pins the last core revision whose Android readers M7 verified.
+#   - An Android EAS build is REFUSED when the build's `modules/beebeeb-crypto/CORE_REV` differs
+#     from the pin, when the pin is the sentinel `unverified`, or when CORE_REV cannot be read.
+#   - Any PR that changes an Android content reader (the files listed in
+#     `scripts/android-verified-readers.sha256`) sets the pin to `unverified` IN THE SAME COMMIT;
+#     `src/lib/android-verified-readers.test.ts` fails otherwise. The binding at the pinned
+#     revision already exports the pin-aware readers, so a reader change needs no CORE_REV bump.
+#   - Only the reviewed M7 PR sets a real revision (and records the readers' new hashes).
+#   - iOS is never refused.
 #
-# Runs from `package.json`'s `eas-build-pre-install` hook on EVERY EAS build, cloud or
-# `--local`. It fails closed: inside an EAS build (any `EAS_BUILD*` variable set) only an
-# `EAS_BUILD_PLATFORM` of `ios` is allowed. `android`, an unset platform and an unknown
-# platform are all refused — every Android profile (`production`, `production-local`,
-# `preview`, `development`, `simulator`) is refused, because `preview` is an installable APK
-# for testers and spec §2 says no Android build reaches a tester before M7.
-#
-# There is deliberately NO evidence-file unlock: a text check on a repo file can be satisfied
-# by anything ("0 passed / 33 failed" unlocked an earlier version), so the guard cannot fail
-# open. Removing it is a reviewed code change in the PR that records M7's evidence.
-#
-# Local use: `EAS_BUILD_PLATFORM=android scripts/android-release-guard.sh`
-# Test: `src/lib/android-release-guard.test.ts`, which drives this script through `bash` with
-# the EAS_* variables EAS sets. Outside an EAS build, positional `$1` is a test convenience
-# only, with the same rule; `$2` is accepted and ignored.
+# Runs from `package.json`'s `eas-build-pre-install` hook on every EAS build, cloud or `--local`.
+# Inside an EAS build (any `EAS_BUILD*` variable set) the platform is `EAS_BUILD_PLATFORM`;
+# outside one, positional `$1` (a test convenience; `$2` is ignored). An unset or unknown
+# platform fails closed. `eas submit` and direct Gradle `bundleRelease`/`assembleRelease` are
+# not covered (follow-up S3-0001). Test: `src/lib/android-release-guard.test.ts`.
 set -euo pipefail
 
-# Prefix expansion, no pipe. `${!EAS_BUILD@}` would split the names into separate words and
-# break `[ -n ... ]` once two or more are set; `${!EAS_BUILD*}` quotes into one string.
+# The last core revision whose Android readers task 1943 M7 verified. M7's reviewed PR moves it.
+ANDROID_VERIFIED_CORE_REV=c08defc70c35428926be6784d18ff091be6d004c
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CORE_REV_FILE="$ROOT/modules/beebeeb-crypto/CORE_REV"
+
+# Prefix expansion, no pipe. `${!EAS_BUILD*}` quotes into one string, safe for `[ -n ]`.
 if [ -n "${!EAS_BUILD*}" ]; then
   PLATFORM="$(printf '%s' "${EAS_BUILD_PLATFORM:-}" | tr '[:upper:]' '[:lower:]')"
 else
   PLATFORM="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
 fi
 
-if [ "$PLATFORM" = "ios" ]; then
-  echo "android-release-guard: platform 'ios' — not an Android build, allowed"
-  exit 0
-fi
+refuse() {
+  cat >&2 <<EOF
+android-release-guard: REFUSED — $1.
+An Android build may only carry Android readers and a binding that task 1943 M7 verified
+(pinned ANDROID_VERIFIED_CORE_REV=${ANDROID_VERIFIED_CORE_REV} in scripts/android-release-guard.sh).
+Only the reviewed M7 PR moves that pin. iOS builds are not affected.
+EOF
+  exit 1
+}
 
 case "$PLATFORM" in
-  android) REASON="an Android build" ;;
-  "") REASON="no build platform (failing closed)" ;;
-  *) REASON="unknown platform '${PLATFORM}' (failing closed)" ;;
+  ios)
+    echo "android-release-guard: platform 'ios' — not an Android build, allowed"
+    exit 0
+    ;;
+  android) ;;
+  "") refuse "no build platform (failing closed)" ;;
+  *) refuse "unknown platform '${PLATFORM}' (failing closed)" ;;
 esac
 
-cat >&2 <<EOF
-android-release-guard: REFUSED — ${REASON}.
-Android ships nothing until task 1943 M7 passes. The PR that records M7's evidence removes
-this guard from \`eas-build-pre-install\`, reviewed. \`eas submit\` and direct Gradle
-\`bundleRelease\`/\`assembleRelease\` are not covered (a follow-up in the PR body).
-EOF
-exit 1
+if [ "$ANDROID_VERIFIED_CORE_REV" = "unverified" ]; then
+  refuse "Android readers changed since the last M7 verification (pin is 'unverified')"
+fi
+
+if [ ! -f "$CORE_REV_FILE" ] || [ ! -r "$CORE_REV_FILE" ]; then
+  refuse "cannot read ${CORE_REV_FILE#"$ROOT"/} (failing closed)"
+fi
+
+# Exactly one line holding a full 40-hex revision; anything else fails closed.
+CORE_REV="$(tr -d '\r' < "$CORE_REV_FILE")"
+CORE_REV="${CORE_REV%$'\n'}"
+case "$CORE_REV" in
+  *[!0-9a-f]* | "") refuse "CORE_REV '${CORE_REV}' is not a core revision (failing closed)" ;;
+esac
+if [ "${#CORE_REV}" -ne 40 ]; then
+  refuse "CORE_REV '${CORE_REV}' is not a core revision (failing closed)"
+fi
+
+if [ "$CORE_REV" != "$ANDROID_VERIFIED_CORE_REV" ]; then
+  refuse "CORE_REV differs from the Android-verified revision (build ${CORE_REV}, verified ${ANDROID_VERIFIED_CORE_REV})"
+fi
+
+echo "android-release-guard: Android build at the M7-verified core revision ${CORE_REV}, allowed"
+exit 0
