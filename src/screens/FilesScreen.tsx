@@ -40,6 +40,7 @@ import { lockedToastMessage } from '../lib/lock-copy';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { gatedPlaintextWrite } from '../lib/plaintext-gate';
+import { prepareExportShareCopy } from '../lib/export-share-copy';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Clipboard from 'expo-clipboard';
@@ -3945,26 +3946,24 @@ export default function FilesScreen() {
         Alert.alert('Not available', 'Saving is not available on this device.');
         return;
       }
-      const safeName = (name.replace(/[^a-zA-Z0-9._()-]/g, '_') || 'file');
-      // Task 1593 — under a registered caches dir (lib/caches-plaintext-registry.ts)
-      // so a copy a crash left behind is swept on sign-out.
-      const exportDir = `${FileSystem.cacheDirectory}beebeeb-export/`;
-      const namedUri = `${exportDir}${safeName}`;
+      const idBasedName = `${item.id}.${extForSave()}`;
       setExporting({ name });
+      // Task 2253 — a fresh per-export folder under the registered
+      // `beebeeb-export/` plaintext leaf, named with the file's real name
+      // (sanitized for the filesystem only — accents/CJK are kept exactly).
+      let cleanupExport: (() => Promise<void>) | null = null;
       try {
-        await FileSystem.makeDirectoryAsync(exportDir, { intermediates: true }).catch(() => {});
         const decryptedUri = await decryptForSave();
-        // Copy to a correctly-named temp so the saved file keeps its real name
-        // (the decrypt cache keys files by id), then drop the copy afterwards.
-        await FileSystem.deleteAsync(namedUri, { idempotent: true }).catch(() => {});
-        // Task 1593 round 3 — plaintext writer, gated by the sign-out purge.
-        await gatedPlaintextWrite('Save to Files copy', namedUri, FileSystem, () =>
-          FileSystem.copyAsync({ from: decryptedUri, to: namedUri }),
-        );
+        const prepared = await prepareExportShareCopy({
+          sourceUri: decryptedUri,
+          displayName: name,
+          idBasedName,
+        });
+        cleanupExport = prepared.cleanup;
         // Prepare phase done — dismiss the indicator the moment the native
         // sheet opens (shareAsync only resolves once it's dismissed).
         setExporting(null);
-        await Sharing.shareAsync(namedUri, {
+        await Sharing.shareAsync(prepared.uri, {
           mimeType: itemMimeType ?? 'application/octet-stream',
           UTI: itemMimeType ?? 'public.data',
           dialogTitle: `Save "${name}"`,
@@ -3973,7 +3972,9 @@ export default function FilesScreen() {
         showToast({ type: 'error', message: `Could not save: ${friendlyError(err)}` });
       } finally {
         setExporting(null);
-        FileSystem.deleteAsync(namedUri, { idempotent: true }).catch(() => {});
+        // The per-export folder holds the plaintext copy — remove it (and the
+        // copy it contains) once the sheet closes.
+        if (cleanupExport) void cleanupExport();
       }
     };
 
