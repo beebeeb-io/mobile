@@ -6,8 +6,8 @@
  * binding is the last Android-verified one: `modules/beebeeb-crypto/CORE_REV` equals the pinned
  * rev AND the Kotlin binding and both `.so` files hash to their pinned sha256. Any binding bump
  * (a new CORE_REV or rebuilt artifacts) re-arms the guard without anyone having to remember;
- * the reviewed M7 PR moves the pins. An EMPTY pin refuses every Android build (how a PR that
- * changes the Android readers without a binding bump re-arms it). iOS is always allowed; an
+ * the reviewed M7 PR moves the pins. The sentinel pin `unverified` (or an empty one) refuses every
+ * Android build: how a PR that changes the Android readers without a binding bump re-arms it. iOS is always allowed; an
  * unset or unknown platform fails closed. There is no evidence-file unlock.
  *
  * Every test drives the shipped script through `bash` with the `EAS_*` variables EAS sets.
@@ -125,17 +125,19 @@ describe('android-release-guard.sh (task 1943 M1 / S6, D15 amendment 2026-10-30)
     );
   });
 
-  test('an EMPTY pin (re-armed) refuses android even at the current binding', () => {
-    withTree(
-      (dir) => {
-        const p = join(dir, 'scripts/android-release-guard.sh');
-        const src = readFileSync(p, 'utf8').replace(/^ANDROID_VERIFIED_CORE_REV="[0-9a-f]*"$/m, 'ANDROID_VERIFIED_CORE_REV=""');
-        expect(src).toContain('ANDROID_VERIFIED_CORE_REV=""');
-        writeFileSync(p, src);
-      },
-      (script) => expectRefused(runGuard({ script, env: ANDROID_EAS }), 're-armed'),
-    );
-  });
+  for (const pin of ['unverified', '']) {
+    test(`the re-arm pin '${pin}' refuses android even at the current binding`, () => {
+      withTree(
+        (dir) => {
+          const p = join(dir, 'scripts/android-release-guard.sh');
+          const src = readFileSync(p, 'utf8').replace(/^ANDROID_VERIFIED_CORE_REV="[0-9a-f]*"$/m, `ANDROID_VERIFIED_CORE_REV="${pin}"`);
+          expect(src).toContain(`ANDROID_VERIFIED_CORE_REV="${pin}"`);
+          writeFileSync(p, src);
+        },
+        (script) => expectRefused(runGuard({ script, env: ANDROID_EAS }), 're-armed'),
+      );
+    });
+  }
 
   test('an EAS build with no EAS_BUILD_PLATFORM fails closed', () => {
     const result = runGuard({ env: { EAS_BUILD: 'true' } });

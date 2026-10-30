@@ -14,8 +14,9 @@
 #                                 hash to their pinned sha256; anything else (a new CORE_REV, a rebuilt
 #                                 artifact, a missing file, an empty pin) is REFUSED;
 #   - unset / unknown           → refused (failing closed).
-# An EMPTY ANDROID_VERIFIED_CORE_REV refuses every Android build: that is how a PR that changes the
-# Android readers WITHOUT a binding bump re-arms the guard.
+# ANDROID_VERIFIED_CORE_REV="unverified" (the sentinel; an empty value counts the same) refuses every
+# Android build: that is how a PR that changes the Android readers WITHOUT a binding bump re-arms the
+# guard (1943 M2 does this; plan "Amendment 2026-10-30 (2)"). Only the M7 PR sets a real revision.
 #
 # There is deliberately NO evidence-file unlock: a text check on a repo file can be satisfied by
 # anything. Moving a pin is a reviewed code change. `eas submit` and direct Gradle
@@ -75,7 +76,9 @@ case "$PLATFORM" in
   *) refuse "unknown platform '${PLATFORM}' (failing closed)" ;;
 esac
 
-[ -n "$ANDROID_VERIFIED_CORE_REV" ] || refuse "the guard is re-armed (empty Android-verified pin)"
+case "$ANDROID_VERIFIED_CORE_REV" in
+  ""|unverified) refuse "the guard is re-armed (Android-verified pin is '${ANDROID_VERIFIED_CORE_REV:-<empty>}')" ;;
+esac
 
 CORE_REV_FILE="$MOD/CORE_REV"
 [ -f "$CORE_REV_FILE" ] || refuse "CORE_REV is missing, so this is not the last Android-verified binding (failing closed)"
