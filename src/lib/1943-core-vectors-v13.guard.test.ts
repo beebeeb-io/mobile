@@ -4,7 +4,7 @@
  *
  * The native KATs cannot run in this lane (the iOS one needs a simulator, the Android one an
  * emulator), so this is the runnable half of the vendoring: it pins the exact bytes of core
- * `c08defc7`'s `test-vectors/vectors.json` in both bundles, checks the version and every family's
+ * `f8ee8e4`'s `test-vectors/vectors.json` in both bundles, checks the version and every family's
  * row count, and proves no stale copy and no stale project reference survives.
  *
  * The vendored file has a STABLE name, `core-vectors.json`; the version and the sha256 pinned
@@ -40,9 +40,9 @@ const STALE = [
   'modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v4.json',
 ];
 
-/** `shasum -a 256` of core `c08defc7:test-vectors/vectors.json`. */
-const EXPECTED_SHA256 = '11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a';
-const EXPECTED_VERSION = 11;
+/** `shasum -a 256` of core `f8ee8e4:test-vectors/vectors.json`. */
+const EXPECTED_SHA256 = '71fb633774fcb13d7cca0613603282ea47ab77e265abd09b3a2ec189689c1464';
+const EXPECTED_VERSION = 13;
 
 /** Every family core ships at this revision, with the number of rows it carries. */
 const EXPECTED_FAMILIES: Record<string, number> = {
@@ -69,6 +69,7 @@ const EXPECTED_FAMILIES: Record<string, number> = {
   key_wrap_v1: 1,
   folder_link_passphrase: 1,
   folder_link_passphrase_nfd: 1,
+  invite_owner_copy_v1: 1,
   folder_custody_v1: 1,
   link_owner_key_v1: 1,
   link_owner_token_v1: 1,
@@ -77,6 +78,11 @@ const EXPECTED_FAMILIES: Record<string, number> = {
   owner_wrapped_file_key: 1,
   owner_wrapped_folder_key: 1,
   folder_wrapped_file_key: 1,
+  upper_repair_v1: 1,
+  upper_repair_split_v1: 1,
+  client_meta_device_hostname: 1,
+  client_meta_session_paths: 1,
+  client_meta_padding_buckets: 1,
 };
 
 const TOTAL_ROWS = Object.values(EXPECTED_FAMILIES).reduce((sum, rows) => sum + rows, 0);
@@ -301,7 +307,7 @@ describe('vendored core vectors (task 1943 M1)', () => {
     expect(createHash('sha256').update(android).digest('hex')).toBe(EXPECTED_SHA256);
   });
 
-  test('theVendoredFileIsVersion11', () => {
+  test('theVendoredFileIsVersion13', () => {
     const root = JSON.parse(readFileSync(join(ROOT, IOS_VECTORS), 'utf8')) as {
       version: number;
       vectors: { name: string }[];

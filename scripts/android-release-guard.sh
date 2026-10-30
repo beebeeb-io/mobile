@@ -43,7 +43,7 @@ set -euo pipefail
 # --- Android-verified pins: move ONLY in a reviewed PR that records Android verification (M7) -----------
 # c08defc is GRANDFATHERED: it is the binding Android shipped through internal testing up to versionCode 10,
 # before M7 existed; it was not M7-measured. The M7 PR replaces it with a measured revision.
-ANDROID_VERIFIED_CORE_REV="c08defc70c35428926be6784d18ff091be6d004c"
+ANDROID_VERIFIED_CORE_REV="unverified"
 # "<path under modules/beebeeb-crypto> <sha256>", one per line.
 ANDROID_VERIFIED_FILES="
 android/src/main/java/uniffi/beebeeb_uniffi/beebeeb_uniffi.kt 042176240f99e9444a6f3a09ca6132290bf988a74be97a96f518d7fa759d38e3

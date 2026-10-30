@@ -2,7 +2,7 @@ import XCTest
 import CryptoKit
 
 /// Task 1382 (audit item K2) — mobile half. Drives `beebeeb-core`'s cross-platform known-answer
-/// vectors (`test-vectors/vectors.json`, version 11, 31 families) through the SAME production UniFFI
+/// vectors (`test-vectors/vectors.json`, version 13, 37 families) through the SAME production UniFFI
 /// Swift bindings the app links (`modules/beebeeb-crypto/ios/beebeeb_uniffi.swift`, compiled directly
 /// into this target's Sources build phase — see the `CoreVectorsKATTests` target in
 /// `Beebeeb.xcodeproj`, mirroring the host-less `ProvenanceHeadersTests` target added in task 1439).
@@ -19,7 +19,7 @@ import CryptoKit
 /// minutes reasons, so this suite does NOT run in CI. See `CLAUDE.md` "Tests" section.
 ///
 /// ## What is decrypted and what is only counted
-/// All 31 families are required by name with their row count, in
+/// All 37 families are required by name with their row count, in
 /// `testVectorFileVersionAndEveryFamilyRowCount`. 26 of them are then decrypted or derived through
 /// the binding: `master_key_from_password`, `file_key_derivation`, `chunk_encrypt_decrypt`,
 /// `x25519_identity_keypair`, `x25519_share_key_exchange`, `recovery_check`,
@@ -52,12 +52,12 @@ final class CoreVectorsKATTests: XCTestCase {
 
     // MARK: - Pin
 
-    /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v11, core c08defc7).
+    /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v13, core f8ee8e4).
     private static let expectedSha256Hex =
-        "11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a"
-    private static let expectedVersion = 11
-    /// Every family core ships at this revision, with the number of rows it carries — 31 families,
-    /// 31 rows. Asserting the row count (not just presence) catches a truncated or half-refreshed
+        "71fb633774fcb13d7cca0613603282ea47ab77e265abd09b3a2ec189689c1464"
+    private static let expectedVersion = 13
+    /// Every family core ships at this revision, with the number of rows it carries — 37 families,
+    /// 37 rows. Asserting the row count (not just presence) catches a truncated or half-refreshed
     /// vendored file, which presence alone would wave through. `envelope_serialization` stays an
     /// explicit skip (`testEnvelopeSerialization`), exactly as before.
     private static let expectedFamilyRowCounts: [(family: String, rows: Int)] = [
@@ -84,6 +84,7 @@ final class CoreVectorsKATTests: XCTestCase {
         ("key_wrap_v1", 1),
         ("folder_link_passphrase", 1),
         ("folder_link_passphrase_nfd", 1),
+        ("invite_owner_copy_v1", 1),
         ("folder_custody_v1", 1),
         ("link_owner_key_v1", 1),
         ("link_owner_token_v1", 1),
@@ -92,6 +93,11 @@ final class CoreVectorsKATTests: XCTestCase {
         ("owner_wrapped_file_key", 1),
         ("owner_wrapped_folder_key", 1),
         ("folder_wrapped_file_key", 1),
+        ("upper_repair_v1", 1),
+        ("upper_repair_split_v1", 1),
+        ("client_meta_device_hostname", 1),
+        ("client_meta_session_paths", 1),
+        ("client_meta_padding_buckets", 1),
     ]
 
     /// The chunk-v2 families, in one place: the positive test and the `versionId` negative both
@@ -420,6 +426,83 @@ final class CoreVectorsKATTests: XCTestCase {
             expectEqual(meta.chunkFormat, expectedPin, "\(name): pin", allPassed: &allPassed)
         }
         if allPassed { Self.logPass("\(name) (\(reader))") }
+    }
+
+    // MARK: - SF-0002 owner resolvers
+
+    /// The uppercase repair convention is reachable only through the owner resolver, and the key
+    /// it returns opens both the sealed name and the file's single content version. Drives
+    /// `upper_repair_v1` through the real binding.
+    func testUpperRepairNameAndContentResolveThroughTheBinding() throws {
+        let v = try Self.vector(try Self.loadVectors(), named: "upper_repair_v1")
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(v, "master_key_hex"))
+        let fileId = try Self.str(v, "file_id")
+        let nameEncrypted = try Self.str(v, "name_encrypted")
+
+        let nameResolved = try master.ownerFileKeyForName(fileId: fileId, nameEncrypted: nameEncrypted)
+        guard case .upperRepair = nameResolved.convention else {
+            XCTFail("upper_repair_v1: name convention was \(nameResolved.convention), expected upperRepair")
+            return
+        }
+        let meta = try nameResolved.key.decryptFileMetadata(nameEncrypted: nameEncrypted)
+        XCTAssertEqual(meta.name, try Self.str(v, "expected_name"))
+        XCTAssertEqual(meta.mimeType, Optional(try Self.str(v, "expected_mime_type")))
+
+        let frame = try Self.hex(v, "content_frame_hex")
+        let contentResolved = try master.ownerFileKeyForContent(fileId: fileId, firstChunkFrame: frame)
+        guard case .upperRepair = contentResolved.convention else {
+            XCTFail("upper_repair_v1: content convention was \(contentResolved.convention), expected upperRepair")
+            return
+        }
+        let plaintext = try contentResolved.key.decryptChunk(
+            nonce: Data(frame.prefix(12)), ciphertext: Data(frame.dropFirst(12)))
+        XCTAssertEqual(plaintext, try Self.hex(v, "content_plaintext_hex"))
+        Self.logPass("upper_repair_v1 (owner resolver)")
+    }
+
+    /// A split file resolves each version independently: the name and version 1 use the uppercase
+    /// repair convention, version 2 uses the canonical string convention, and the name's key must
+    /// not open version 2. Drives `upper_repair_split_v1` through the real binding.
+    func testSplitUpperRepairResolvesEachVersionIndependently() throws {
+        let v = try Self.vector(try Self.loadVectors(), named: "upper_repair_split_v1")
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(v, "master_key_hex"))
+        let fileId = try Self.str(v, "file_id")
+        let nameEncrypted = try Self.str(v, "name_encrypted")
+
+        let nameResolved = try master.ownerFileKeyForName(fileId: fileId, nameEncrypted: nameEncrypted)
+        guard case .upperRepair = nameResolved.convention else {
+            XCTFail("upper_repair_split_v1: name convention was \(nameResolved.convention), expected upperRepair")
+            return
+        }
+        let meta = try nameResolved.key.decryptFileMetadata(nameEncrypted: nameEncrypted)
+        XCTAssertEqual(meta.name, try Self.str(v, "expected_name"))
+
+        let v1Frame = try Self.hex(v, "content_v1_frame_hex")
+        let v1Resolved = try master.ownerFileKeyForContent(fileId: fileId, firstChunkFrame: v1Frame)
+        guard case .upperRepair = v1Resolved.convention else {
+            XCTFail("upper_repair_split_v1: v1 convention was \(v1Resolved.convention), expected upperRepair")
+            return
+        }
+        XCTAssertEqual(
+            try v1Resolved.key.decryptChunk(nonce: Data(v1Frame.prefix(12)), ciphertext: Data(v1Frame.dropFirst(12))),
+            try Self.hex(v, "content_v1_plaintext_hex"))
+
+        let v2Frame = try Self.hex(v, "content_v2_frame_hex")
+        let v2Resolved = try master.ownerFileKeyForContent(fileId: fileId, firstChunkFrame: v2Frame)
+        guard case .string = v2Resolved.convention else {
+            XCTFail("upper_repair_split_v1: v2 convention was \(v2Resolved.convention), expected string")
+            return
+        }
+        XCTAssertEqual(
+            try v2Resolved.key.decryptChunk(nonce: Data(v2Frame.prefix(12)), ciphertext: Data(v2Frame.dropFirst(12))),
+            try Self.hex(v, "content_v2_plaintext_hex"))
+
+        // The split's shape: the name's uppercase key cannot open version 2.
+        XCTAssertThrowsError(
+            try nameResolved.key.decryptChunk(
+                nonce: Data(v2Frame.prefix(12)), ciphertext: Data(v2Frame.dropFirst(12))),
+            "upper_repair_split_v1: version 2 must not open under the name's uppercase key")
+        Self.logPass("upper_repair_split_v1 (owner resolver)")
     }
 
     // MARK: - 1. master_key_from_password (Argon2id)
