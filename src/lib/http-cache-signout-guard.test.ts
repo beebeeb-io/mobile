@@ -1,6 +1,6 @@
 // @ts-nocheck
 /**
- * Task 1962 round 4 — Bug 6 guards (matrix 5, 7, 8).
+ * Task 1962 round 4/5 — Bug 6 guards (matrix 5, 7, 8).
  *
  * Bug 6: RN networking builds its session from `defaultSessionConfiguration`
  * on the first request, so it stores authenticated API responses in
@@ -10,21 +10,25 @@
  * extensions are separate processes with their own `URLCache.shared` and
  * their own containers, unreachable from an app sign-out.
  *
- * This file reads the shipped sources off disk (no native module) and fails
- * if any of those rules is undone:
+ * Round 5: the legacy default store is cleared by ONE shared helper that
+ * opens it with a NON-zero disk capacity (a 0-capacity instance never opens
+ * the store, so `removeAllCachedResponses()` was a measured no-op). This file
+ * reads the shipped sources off disk (no native module) and fails if any rule
+ * is undone:
  *   6a  the app assigns a zero-capacity `URLCache.shared` at launch, before
  *       anything can read it, and clears the legacy default store OFF main.
  *   6b  `purgePlaintextStorage` clears `URLCache.shared` (belt).
- *   6c  both extension principal classes do the same, with their own dirs,
- *       and every extension `URLSessionConfiguration` sets `urlCache = nil`.
- *   6d  every `URLSessionConfiguration` the app builds sets `urlCache = nil`;
- *       no `configuration: .default` session remains.
+ *   6c  both extension principal classes do the same through the shared
+ *       helper, with their own dirs, and every extension
+ *       `URLSessionConfiguration` sets `urlCache = nil`.
+ *   6d  every `URLSessionConfiguration` in the FOUR scanned directories sets
+ *       `urlCache = nil`; no `configuration: .default` session remains.
  *   7b  `PlaintextStorageProtection.swift` does not reference
  *       `ThumbnailQueueDB` (it is also compiled into the File Provider).
  */
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
 const ROOT = join(import.meta.dir, '../..');
 const NATIVE_DIR = join(ROOT, 'modules/beebeeb-crypto/ios');
@@ -32,13 +36,35 @@ const FILE_PROVIDER_DIR = join(ROOT, 'targets/file-provider');
 const SHARE_DIR = join(ROOT, 'targets/share-extension');
 const SHARE_COPY_DIR = join(ROOT, 'ios/BeebeebShare');
 
+const SCANNED_DIRS = [NATIVE_DIR, FILE_PROVIDER_DIR, SHARE_DIR, SHARE_COPY_DIR];
+
 const APP_DELEGATE = join(NATIVE_DIR, 'BeebeebAppDelegate.swift');
 const CRYPTO_MODULE = join(NATIVE_DIR, 'BeebeebCryptoModule.swift');
 const PLAINTEXT_PROTECTION = join(NATIVE_DIR, 'PlaintextStorageProtection.swift');
+const SHARED_HELPER = join(NATIVE_DIR, 'LegacyURLCacheCleanup.swift');
+const FILE_PROVIDER = join(FILE_PROVIDER_DIR, 'FileProviderExtension.swift');
+const SHARE_VIEW = join(SHARE_DIR, 'ShareViewController.swift');
 
 function read(path: string): string {
   return readFileSync(path, 'utf8');
 }
+
+/** Every `.swift` file under the four shipped source trees. The row-7 guard
+ *  scans directories, not a fixed file list, so a new session in a new file
+ *  cannot slip past it. */
+function swiftSources(): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (const dir of SCANNED_DIRS) {
+    for (const name of readdirSync(dir, { recursive: true }) as string[]) {
+      if (!name.endsWith('.swift')) continue;
+      const path = join(dir, name);
+      out.push([relative(ROOT, path), read(path)]);
+    }
+  }
+  return out;
+}
+
+const SOURCES = swiftSources();
 
 function extractBody(source: string, signature: RegExp): string {
   const sigMatch = signature.exec(source);
@@ -115,19 +141,17 @@ const didFinishLaunchingBody = extractBody(
   /func\s+application\(\s*_\s+application:\s*UIApplication,\s*didFinishLaunchingWithOptions[^)]*\)\s*->\s*Bool/,
 );
 const didFinishLaunchingLive = stripLineComments(didFinishLaunchingBody);
+const sharedHelperLive = stripLineComments(read(SHARED_HELPER));
 
 describe('6a + matrix 5: the app launch assigns a zero-capacity URLCache.shared and clears the legacy store off-main', () => {
-  test('the launch handler assigns URLCache.shared a 0/0 cache in an explicit Caches directory', () => {
+  test('the launch handler assigns URLCache.shared through the shared helper', () => {
     expect(didFinishLaunchingLive).toMatch(
-      /URLCache\s*\.\s*shared\s*=\s*Self\s*\.\s*zeroCapacityURLCache\s*\(\s*directoryName:\s*"[^"]+"\s*\)/,
+      /URLCache\s*\.\s*shared\s*=\s*LegacyURLCacheCleanup\s*\.\s*zeroCapacityURLCache\s*\(\s*directoryName:\s*"[^"]+"\s*\)/,
     );
-    const helper = extractBody(appDelegateSource, /static func zeroCapacityURLCache\(directoryName: String\) -> URLCache/);
-    expect(stripLineComments(helper)).toContain('URLCache(memoryCapacity: 0, diskCapacity: 0, directory: directory)');
-    expect(stripLineComments(helper)).toContain('cachesDirectory');
+    expect(didFinishLaunchingLive).toContain('LegacyURLCacheCleanup.clearLegacyDefaultStoreOffMainThread()');
   });
 
   test('it never reads the URLCache.shared getter before the assignment', () => {
-    // First non-comment mention of `URLCache` must be the assignment itself.
     const firstMention = didFinishLaunchingLive.search(/\bURLCache\b/);
     expect(firstMention).toBeGreaterThanOrEqual(0);
     const assignment = didFinishLaunchingLive.search(/URLCache\s*\.\s*shared\s*=/);
@@ -135,12 +159,50 @@ describe('6a + matrix 5: the app launch assigns a zero-capacity URLCache.shared 
     expect(firstMention).toBeGreaterThanOrEqual(assignment);
   });
 
-  test('the legacy default store is cleared on a utility background queue, never on the main thread', () => {
+  test('the legacy default store is cleared off the main thread, never synchronously', () => {
     const synchronous = stripBackgroundQueueClosures(didFinishLaunchingLive);
     expect(synchronous).not.toContain('removeAllCachedResponses');
-    expect(didFinishLaunchingLive).toMatch(
-      /DispatchQueue\s*\.\s*global\s*\(\s*qos:\s*\.\s*utility\s*\)\s*\.\s*async\s*\{[\s\S]*?URLCache\(memoryCapacity: 0, diskCapacity: 0, directory: nil\)\s*\.\s*removeAllCachedResponses\(\)/,
+    // The helper itself does the hop; the launch body only calls it.
+    expect(didFinishLaunchingLive).not.toContain('removeAllCachedResponses');
+  });
+});
+
+describe('the shared helper actually opens the legacy store (non-zero disk capacity)', () => {
+  test('the zero-capacity cache is 0/0 in an explicit Caches directory', () => {
+    const helper = extractBody(read(SHARED_HELPER), /static func zeroCapacityURLCache\(directoryName: String\) -> URLCache/);
+    const live = stripLineComments(helper);
+    expect(live).toContain('URLCache(memoryCapacity: 0, diskCapacity: 0, directory: directory)');
+    expect(live).toContain('cachesDirectory');
+  });
+
+  test('the legacy sweep uses a NON-zero disk capacity (a 0-capacity instance never opens the store)', () => {
+    const sweep = extractBody(read(SHARED_HELPER), /static func clearLegacyDefaultStore\(directory: URL\? = nil\)/);
+    const live = stripLineComments(sweep);
+    expect(sharedHelperLive).toMatch(/static let legacyDiskCapacity = 50 \* 1024 \* 1024/);
+    expect(live).toContain('diskCapacity: legacyDiskCapacity');
+    expect(live).toContain('removeAllCachedResponses()');
+    expect(live).not.toMatch(/diskCapacity:\s*0/);
+  });
+
+  test('the off-main entry point dispatches to a utility queue', () => {
+    const entry = extractBody(read(SHARED_HELPER), /static func clearLegacyDefaultStoreOffMainThread\(\)/);
+    expect(stripLineComments(entry)).toMatch(
+      /DispatchQueue\s*\.\s*global\s*\(\s*qos:\s*\.\s*utility\s*\)\s*\.\s*async\s*\{[\s\S]*?clearLegacyDefaultStore\(\)/,
     );
+  });
+
+  test('no source defines its own zero-capacity helper (the round-4 3x copy is gone)', () => {
+    const definers = SOURCES.filter(([, source]) =>
+      /func\s+zeroCapacityURLCache\s*\(/.test(stripLineComments(source)),
+    ).map(([name]) => name);
+    expect(definers).toEqual(['modules/beebeeb-crypto/ios/LegacyURLCacheCleanup.swift']);
+  });
+
+  test('no shipped source clears the default store through a 0/0 instance', () => {
+    const offenders = SOURCES.filter(([, source]) =>
+      /diskCapacity:\s*0\s*,\s*directory:\s*nil/.test(stripLineComments(source)),
+    ).map(([name]) => name);
+    expect(offenders).toEqual([]);
   });
 });
 
@@ -153,32 +215,24 @@ describe('6b: purgePlaintextStorage clears the shared cache (belt)', () => {
   });
 
   test('the call is synchronous (no queue hop wrapping it)', () => {
-    // The reminder survives while the surrounding `DispatchQueue...async`
-    // closures (none should contain it) are stripped.
     expect(stripBackgroundQueueClosures(live)).toContain('URLCache.shared.removeAllCachedResponses()');
   });
 });
 
 describe('6c: both extension principal classes assign their own zero-capacity URLCache.shared', () => {
-  const cases: Array<[string, string]> = [
-    ['File Provider', join(FILE_PROVIDER_DIR, 'FileProviderExtension.swift')],
-    ['Share extension', join(SHARE_DIR, 'ShareViewController.swift')],
+  const cases: Array<[string, string, string]> = [
+    ['File Provider', FILE_PROVIDER, 'bb-no-http-cache-file-provider'],
+    ['Share extension', SHARE_VIEW, 'bb-no-http-cache-share'],
   ];
 
-  for (const [label, path] of cases) {
+  for (const [label, path, directory] of cases) {
     test(`${label} assigns URLCache.shared before its first request and clears the default store off-main`, () => {
-      const source = read(path);
-      expect(source).toMatch(
-        /URLCache\s*\.\s*shared\s*=\s*Self\s*\.\s*zeroCapacityURLCache\(\)/,
+      const live = stripLineComments(read(path));
+      expect(live).toContain(
+        `URLCache.shared = LegacyURLCacheCleanup.zeroCapacityURLCache(directoryName: "${directory}")`,
       );
-      const helper = extractBody(source, /private static func zeroCapacityURLCache\(\) -> URLCache/);
-      const liveHelper = stripLineComments(helper);
-      expect(liveHelper).toContain('URLCache(memoryCapacity: 0, diskCapacity: 0, directory: directory)');
-      expect(liveHelper).toMatch(/bb-no-http-cache-/);
-      const liveSource = stripLineComments(source);
-      expect(liveSource).toMatch(
-        /DispatchQueue\s*\.\s*global\s*\(\s*qos:\s*\.\s*utility\s*\)\s*\.\s*async\s*\{[\s\S]*?URLCache\(memoryCapacity: 0, diskCapacity: 0, directory: nil\)\s*\.\s*removeAllCachedResponses\(\)/,
-      );
+      expect(live).toContain('LegacyURLCacheCleanup.clearLegacyDefaultStoreOffMainThread()');
+      expect(live).not.toContain('removeAllCachedResponses');
     });
   }
 
@@ -189,37 +243,25 @@ describe('6c: both extension principal classes assign their own zero-capacity UR
   });
 });
 
-describe('6c + 6d: every URLSessionConfiguration in the app and both extensions sets urlCache = nil', () => {
-  const sources: Array<[string, string]> = [
-    ['BeebeebCryptoModule.swift', join(NATIVE_DIR, 'BeebeebCryptoModule.swift')],
-    ['NativeBackupEngine.swift', join(NATIVE_DIR, 'NativeBackupEngine.swift')],
-    ['NativeManualUploader.swift', join(NATIVE_DIR, 'NativeManualUploader.swift')],
-    ['ApiClient.swift', join(FILE_PROVIDER_DIR, 'ApiClient.swift')],
-  ];
+describe('6c + 6d: every URLSessionConfiguration in the four source trees sets urlCache = nil', () => {
+  test('the scan sees the shipped trees (guard is not blind)', () => {
+    expect(SOURCES.length).toBeGreaterThan(50);
+    expect(SOURCES.some(([name]) => name.endsWith('BeebeebAppDelegate.swift'))).toBe(true);
+    expect(SOURCES.some(([name]) => name.endsWith('FileProviderExtension.swift'))).toBe(true);
+    expect(SOURCES.some(([name]) => name.endsWith('ShareViewController.swift'))).toBe(true);
+  });
 
-  for (const [name, path] of sources) {
+  for (const [name, source] of SOURCES) {
     test(`${name} has no configuration without urlCache = nil`, () => {
-      expect(configurationsWithoutNilCache(read(path))).toEqual([]);
+      expect(configurationsWithoutNilCache(source)).toEqual([]);
     });
   }
 
-  test('no `URLSession(configuration: .default, ...)` remains in the app or the extensions', () => {
-    const offenders: string[] = [];
-    for (const [name, path] of sources) {
-      if (/configuration:\s*\.\s*default\b/.test(stripLineComments(read(path)))) offenders.push(name);
-    }
+  test('no `URLSession(configuration: .default, ...)` remains in the four source trees', () => {
+    const offenders = SOURCES.filter(([, source]) =>
+      /configuration:\s*\.\s*default\b/.test(stripLineComments(source)),
+    ).map(([name]) => name);
     expect(offenders).toEqual([]);
-  });
-
-  test('every extension source file is scanned (guard is not blind)', () => {
-    // The share extension builds no configuration of its own today; its two
-    // URLSession.shared call sites are covered by the zero-capacity shared
-    // cache above. If one is ever added, the scan list above must grow.
-    const shareSources = ['ShareUploader.swift', 'FolderFetcher.swift', 'ShareViewController.swift'];
-    for (const name of shareSources) {
-      const source = stripLineComments(read(join(SHARE_DIR, name)));
-      expect(source).not.toMatch(/(?:let|var)\s+\w+\s*=\s*URLSessionConfiguration\s*\./);
-    }
   });
 });
 

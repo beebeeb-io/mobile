@@ -47,10 +47,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     // reach. Before the first request: a zero-capacity shared cache rooted at
     // an explicit extension directory, then an off-main clear of whatever an
     // older build left in this process's default cache directory.
-    URLCache.shared = Self.zeroCapacityURLCache()
-    DispatchQueue.global(qos: .utility).async {
-      URLCache(memoryCapacity: 0, diskCapacity: 0, directory: nil).removeAllCachedResponses()
-    }
+    URLCache.shared = LegacyURLCacheCleanup.zeroCapacityURLCache(directoryName: "bb-no-http-cache-file-provider")
+    LegacyURLCacheCleanup.clearLegacyDefaultStoreOffMainThread()
     super.init()
     _ = domain
     _ = CacheManager.shared
@@ -58,12 +56,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     _ = Self.materializedSetBootstrap
   }
 
-  /// A `URLCache` that stores nothing, in its own directory under `Caches/`.
-  private static func zeroCapacityURLCache() -> URLCache {
-    let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-    let directory = cachesDirectory?.appendingPathComponent("bb-no-http-cache-file-provider", isDirectory: true)
-    return URLCache(memoryCapacity: 0, diskCapacity: 0, directory: directory)
-  }
 
   /// Task 1722 round 4 (review round 2, minor 6): once per extension process, read the system's
   /// materialized set. A phone upgraded from a build that did not track it (TestFlight 236) has

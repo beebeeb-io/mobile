@@ -52,6 +52,8 @@
 		DEFFBF38DA1A49CC9ABC1CC7 /* BeebeebCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B7E8D1477F84A4584DDCD33 /* BeebeebCore.xcframework */; };
 		E4AA133C8F21D8C8D5CA9B0E /* beebeeb_uniffi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C14135685514A8EB4E55316 /* beebeeb_uniffi.swift */; };
 		E4DFFE5E660F2F3CA4C2B60C /* ProvenanceHeaders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C68A4E414B8A7F5FBD26837F /* ProvenanceHeaders.swift */; };
+		B1C2D3E4F5A60718293A4B5D /* LegacyURLCacheCleanup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* LegacyURLCacheCleanup.swift */; };
+		C1D2E3F4A5B60718293A4B5E /* LegacyURLCacheCleanup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* LegacyURLCacheCleanup.swift */; };
 		EC3B62F526E54811AD145949 /* RuntimeTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 933B199EF3464E86BCBE6052 /* RuntimeTrace.swift */; };
 		F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.swift */; };
 		FBD7ABDD371246952840112B /* libPods-Beebeeb.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 72EE02093869AAC5E338128F /* libPods-Beebeeb.a */; };
@@ -144,6 +146,7 @@
 		BB2F792C24A3F905000567C9 /* Expo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Expo.plist; sourceTree = "<group>"; };
 		C41949E1B523455388B78A1D /* BeebeebWidget.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; name = BeebeebWidget.entitlements; path = BeebeebWidget/BeebeebWidget.entitlements; sourceTree = "<group>"; };
 		C68A4E414B8A7F5FBD26837F /* ProvenanceHeaders.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = ProvenanceHeaders.swift; path = "../modules/beebeeb-crypto/ios/ProvenanceHeaders.swift"; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5C /* LegacyURLCacheCleanup.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = LegacyURLCacheCleanup.swift; path = "../modules/beebeeb-crypto/ios/LegacyURLCacheCleanup.swift"; sourceTree = "<group>"; };
 		D2406572F70C4D4AA4648688 /* BeebeebWidget.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = BeebeebWidget.swift; path = BeebeebWidget/BeebeebWidget.swift; sourceTree = "<group>"; };
 		DF77A18E4B974F4FBFB8E374 /* FileProviderItem.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; name = FileProviderItem.swift; path = "../targets/file-provider/FileProviderItem.swift"; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
@@ -226,6 +229,7 @@
 				0F12C74BB3AC4E1BB12CD1DF /* PlaintextStorageProtection.swift */,
 				933B199EF3464E86BCBE6052 /* RuntimeTrace.swift */,
 				C68A4E414B8A7F5FBD26837F /* ProvenanceHeaders.swift */,
+				A1B2C3D4E5F60718293A4B5C /* LegacyURLCacheCleanup.swift */,
 				329117D739344957AE687286 /* Info.plist */,
 				02B24B018D434B488ECE949D /* BeebeebFileProvider.entitlements */,
 			);
@@ -801,6 +805,7 @@
 				A0A3BFA5E3AA437992C186BB /* FolderFetcher.swift in Sources */,
 				822D3A12265B41CDB9F95A33 /* beebeeb_uniffi.swift in Sources */,
 				E4DFFE5E660F2F3CA4C2B60C /* ProvenanceHeaders.swift in Sources */,
+				B1C2D3E4F5A60718293A4B5D /* LegacyURLCacheCleanup.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -823,6 +828,7 @@
 				EC3B62F526E54811AD145949 /* RuntimeTrace.swift in Sources */,
 				2F39996DA7DB4CD9B11F0208 /* beebeeb_uniffi.swift in Sources */,
 				8D3B58D4E244814A61B36AA7 /* ProvenanceHeaders.swift in Sources */,
+				C1D2E3F4A5B60718293A4B5E /* LegacyURLCacheCleanup.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
