@@ -15,6 +15,7 @@ import org.junit.Before
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.Executor
 
 /**
  * Task 1962 round 4, adversarial matrix row 6 (Bug 6e): with the lifecycle
@@ -44,6 +45,9 @@ class HttpCacheLifecycleTest {
 
   @After
   fun tearDown() {
+    // The static factory outlives the test class; reset it so another test
+    // class never inherits a client holding this test's context.
+    OkHttpClientProvider.setOkHttpClientFactory(null)
     cacheRoot.deleteRecursively()
   }
 
@@ -68,10 +72,28 @@ class HttpCacheLifecycleTest {
 
     BeebeebCryptoLifecycleListener().onCreate(FakeApplication(cacheRoot))
 
+    val dir = BeebeebHttpCache.httpCacheDirectory(cacheRoot)
+    val deadline = System.currentTimeMillis() + 5_000
+    while (dir.exists() && System.currentTimeMillis() < deadline) Thread.sleep(10)
     assertFalse(
-      "cacheDir/http-cache must be gone after onCreate",
-      BeebeebHttpCache.httpCacheDirectory(cacheRoot).exists()
+      "cacheDir/http-cache must be gone after the background cleanup",
+      dir.exists()
     )
+  }
+
+  @Test
+  fun `install hands the legacy delete to the background executor, not the caller`() {
+    val legacy = File(BeebeebHttpCache.httpCacheDirectory(cacheRoot), "entries")
+    assertTrue(legacy.mkdirs())
+    File(legacy, "Cache.db").writeText("previous account")
+    val queued = mutableListOf<Runnable>()
+
+    BeebeebHttpCache.install(context, Executor { queued.add(it) })
+
+    assertTrue("the delete must not run on the caller thread", legacy.exists())
+    assertEquals(1, queued.size)
+    queued.single().run()
+    assertFalse("the queued cleanup removes the legacy directory", legacy.exists())
   }
 
   @Test

@@ -6,6 +6,8 @@ import com.facebook.react.modules.network.OkHttpClientProvider
 import expo.modules.core.BasePackage
 import expo.modules.core.interfaces.ApplicationLifecycleListener
 import java.io.File
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /**
  * Task 1962 round 4 (Bug 6e) — RN's `NetworkingModule` asks
@@ -42,12 +44,26 @@ class BeebeebCryptoLifecyclePackage : BasePackage() {
 }
 
 internal object BeebeebHttpCache {
+  /** The factory must be installed synchronously; the legacy delete must not
+   *  block Application.onCreate. */
+  private val cleanupExecutor: Executor by lazy {
+    Executors.newSingleThreadExecutor { runnable ->
+      Thread(runnable, "beebeeb-http-cache-cleanup").apply { isDaemon = true }
+    }
+  }
+
   /** Must run before RN creates its networking client. */
-  internal fun install(context: Context) {
+  internal fun install(context: Context) = install(context, cleanupExecutor)
+
+  internal fun install(context: Context, cleanupExecutor: Executor) {
     OkHttpClientProvider.setOkHttpClientFactory {
       OkHttpClientProvider.createClientBuilder(context, 0).build()
     }
-    httpCacheDirectory(context.cacheDir).deleteRecursively()
+    // The factory install above must stay synchronous (RN asks for its client
+    // during startup), but deleting a large legacy cache tree must not block
+    // Application.onCreate (round 5 review finding).
+    val legacy = httpCacheDirectory(context.cacheDir)
+    cleanupExecutor.execute { legacy.deleteRecursively() }
   }
 
   internal fun httpCacheDirectory(cacheDir: File): File = File(cacheDir, "http-cache")
