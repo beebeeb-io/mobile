@@ -29,6 +29,7 @@ import uniffi.beebeeb_uniffi.x25519SharedSecret
 import java.security.MessageDigest
 import uniffi.beebeeb_uniffi.MasterKeyHandle
 import uniffi.beebeeb_uniffi.FileKeyHandle
+import uniffi.beebeeb_uniffi.ChunkDecryptorHandle
 
 /**
  * Android half of the core known-answer-vector gate (task 1683, mirroring the
@@ -43,21 +44,36 @@ import uniffi.beebeeb_uniffi.FileKeyHandle
  * the pinning decision in the design spec — UniFFI 0.31.1).
  *
  * ## Refreshing the vendored vector file
- * `src/androidTest/assets/core-vectors.v10.json` is a vendored COPY of
- * `repos/core/test-vectors/vectors.json`. To refresh after core bumps it:
- * 1. `cp ../../../core/test-vectors/vectors.json modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v10.json`
- * 2. `sha256sum` the new copy and update [EXPECTED_SHA256] (see the task file).
- * 3. If core bumped the version, update [EXPECTED_VERSION] and [REQUIRED_VECTOR_NAMES].
+ * `src/androidTest/assets/core-vectors.json` is a vendored COPY of core's
+ * `test-vectors/vectors.json`; the filename is stable and [EXPECTED_VERSION] plus
+ * [EXPECTED_SHA256] guard its content. From the mobile repo root:
+ * 1. `git -C ../core show $(cat modules/beebeeb-crypto/CORE_REV):test-vectors/vectors.json`
+ *    > `modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.json`, then copy that
+ *    same file to `targets/native-tests/Vectors/core-vectors.json`.
+ * 2. `shasum -a 256` the new copy and update [EXPECTED_SHA256] (see the task file).
+ * 3. If core bumped the version, update [EXPECTED_VERSION] and [EXPECTED_FAMILY_ROW_COUNTS].
+ *    `src/lib/1943-core-vectors-v11.guard.test.ts` pins the same bytes, version and row counts
+ *    and compares this table with the TS one.
  *
- * ## Families not implemented (documented follow-ups, by design)
- * - `master_key_from_password`, `recovery_phrase_roundtrip`: Argon2id
- *   (256 MiB / 4 iter) — deliberately excluded from the M0 smoke because of
- *   device runtime; add with generous timeouts when the suite is promoted to
- *   a full mirror of the iOS gate.
+ * ## Families decrypted here, and the ones only counted
+ * All 31 families are required by name with their row count in [vectorsFileIntegrity]. 22 are
+ * decrypted or derived through the binding: `file_key_derivation`, `chunk_encrypt_decrypt`,
+ * `x25519_identity_keypair`, `x25519_share_key_exchange`, `recovery_check`,
+ * `metadata_encrypt_decrypt`, `file_request_seal_open`, `chunk_v2_stream`,
+ * `chunk_v2_single_frame`, `metadata_v2_name`, `metadata_v2_name_filekey`,
+ * `metadata_v1_name_filekey`, `folder_key_id`, `key_wrap_v1`, `folder_link_passphrase`,
+ * `folder_link_passphrase_nfd`, `folder_custody_v1`, `link_owner_key_v1`,
+ * `link_owner_token_v1`, `folder_child_file_v1`, `folder_child_folder_v1` and
+ * `owner_wrapped_file_key`. The other 9 are only counted:
+ * - `master_key_from_password`, `recovery_phrase_roundtrip`: Argon2id (256 MiB / 4 iter) —
+ *   deliberately excluded from the emulator smoke because of device runtime; add with
+ *   generous timeouts when the suite is promoted to a full mirror of the iOS gate.
  * - `envelope_serialization`: not exposed by UniFFI (same skip as iOS).
- * - `share_key_wrap`, `thumbnail_encrypt`: their decrypt primitives need the
- *   exact call mapping confirmed (AES-GCM key/nonce/ciphertext shapes differ
- *   from `decryptChunk` inputs); add with the full mirror.
+ * - `share_key_wrap`, `thumbnail_encrypt`: their decrypt primitives need the exact call mapping
+ *   confirmed (AES-GCM key/nonce/ciphertext shapes differ from `decryptChunk` inputs); add with
+ *   the full mirror.
+ * - `shared_folder_index_key`, `combine_folder_link_key`,
+ *   `owner_wrapped_folder_key`, `folder_wrapped_file_key`: no mobile reader uses them yet.
  */
 @RunWith(AndroidJUnit4::class)
 class CoreVectorsKATTest {
@@ -66,49 +82,80 @@ class CoreVectorsKATTest {
         /** `sha256sum` of the vendored asset (v11, matching merged core c08defc7). */
         private const val EXPECTED_SHA256 =
             "11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a"
-        // The v10 asset filename is retained; contents track the pinned core version.
         private const val EXPECTED_VERSION = 11
-        private val REQUIRED_VECTOR_NAMES = listOf(
-            "master_key_from_password",
-            "file_key_derivation",
-            "chunk_encrypt_decrypt",
-            "x25519_identity_keypair",
-            "x25519_share_key_exchange",
-            "recovery_check",
-            "envelope_serialization",
-            "recovery_phrase_roundtrip",
-            "metadata_encrypt_decrypt",
-            "file_request_seal_open",
-            "share_key_wrap",
-            "thumbnail_encrypt",
-        "chunk_v2_stream",
-        "chunk_v2_single_frame",
-        "metadata_v2_name",
-        "metadata_v2_name_filekey",
-        "metadata_v1_name_filekey",
-        "folder_key_id",
-        "shared_folder_index_key",
-        "combine_folder_link_key",
-        "key_wrap_v1",
-        "folder_link_passphrase",
-        "folder_link_passphrase_nfd",
-        "folder_custody_v1",
-        "link_owner_key_v1",
-        "link_owner_token_v1",
-        "folder_child_file_v1",
-        "folder_child_folder_v1",
-        "owner_wrapped_file_key",
-        "owner_wrapped_folder_key",
-        "folder_wrapped_file_key",
+
+        /**
+         * Every family core ships at this revision with the number of rows it carries — 31 families,
+         * 31 rows. The row count is asserted, not just presence: a truncated or half-refreshed asset
+         * would otherwise pass. `envelope_serialization` is present here but is an explicit skip on
+         * both platforms (no UniFFI export), same as before.
+         */
+        private val EXPECTED_FAMILY_ROW_COUNTS = linkedMapOf(
+            "master_key_from_password" to 1,
+            "file_key_derivation" to 1,
+            "chunk_encrypt_decrypt" to 1,
+            "x25519_identity_keypair" to 1,
+            "x25519_share_key_exchange" to 1,
+            "recovery_check" to 1,
+            "envelope_serialization" to 1,
+            "recovery_phrase_roundtrip" to 1,
+            "metadata_encrypt_decrypt" to 1,
+            "file_request_seal_open" to 1,
+            "share_key_wrap" to 1,
+            "thumbnail_encrypt" to 1,
+            "chunk_v2_stream" to 1,
+            "chunk_v2_single_frame" to 1,
+            "metadata_v2_name" to 1,
+            "metadata_v2_name_filekey" to 1,
+            "metadata_v1_name_filekey" to 1,
+            "folder_key_id" to 1,
+            "shared_folder_index_key" to 1,
+            "combine_folder_link_key" to 1,
+            "key_wrap_v1" to 1,
+            "folder_link_passphrase" to 1,
+            "folder_link_passphrase_nfd" to 1,
+            "folder_custody_v1" to 1,
+            "link_owner_key_v1" to 1,
+            "link_owner_token_v1" to 1,
+            "folder_child_file_v1" to 1,
+            "folder_child_folder_v1" to 1,
+            "owner_wrapped_file_key" to 1,
+            "owner_wrapped_folder_key" to 1,
+            "folder_wrapped_file_key" to 1,
         )
+
+        /**
+         * The chunk-v2 families, in one place: the positive test and the [v2DecryptRefusesAnotherVersionId]
+         * negative both iterate this, so adding a family cannot leave the negative one family behind.
+         */
+        private val CHUNK_V2_FAMILIES = listOf("chunk_v2_single_frame", "chunk_v2_stream")
+
+        /** The name families, each decrypted by a different reader (see `assertNameFamilyDecrypts`). */
+        private val NAME_FAMILIES =
+            listOf("metadata_v2_name", "metadata_v2_name_filekey", "metadata_v1_name_filekey")
+
+        /**
+         * One parse of a chunk-v2 family, shared by the positive decrypt test and the version-id
+         * negative so the two cannot drift apart in how they read the fixture.
+         */
+        private fun chunkV2Fixture(name: String): ChunkV2Fixture {
+            val v = vector(loadRoot(), name)
+            return ChunkV2Fixture(
+                vector = v,
+                fileId = v.getString("file_id"),
+                versionId = v.getString("version_id_hex").hexToBytes(),
+                fileKey = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes()),
+                frames = v.getJSONArray("frames"),
+            )
+        }
 
         private fun loadRoot(): JSONObject {
             val assets = InstrumentationRegistry.getInstrumentation().context.assets
-            val bytes = assets.open("core-vectors.v10.json").readBytes()
+            val bytes = assets.open("core-vectors.json").readBytes()
             val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
             val hex = digest.joinToString("") { "%02x".format(it) }
             assertEquals(
-                "vendored core-vectors.v10.json drifted from the pinned sha256 — see this file's header",
+                "vendored core-vectors.json drifted from the pinned sha256 — see this file's header",
                 EXPECTED_SHA256,
                 hex,
             )
@@ -121,7 +168,7 @@ class CoreVectorsKATTest {
                 val v = vectors.getJSONObject(i)
                 if (v.optString("name") == name) return v
             }
-            throw AssertionError("vector '$name' not found in core-vectors.v10.json")
+            throw AssertionError("vector '$name' not found in core-vectors.json")
         }
 
         private fun String.hexToBytes(): ByteArray {
@@ -149,13 +196,215 @@ class CoreVectorsKATTest {
     fun vectorsFileIntegrity() {
         val root = loadRoot() // includes the SHA-256 pin check
         assertEquals("vectors.json version mismatch", EXPECTED_VERSION, root.getInt("version"))
-        val names = mutableSetOf<String>()
+        val counts = mutableMapOf<String, Int>()
         val vectors = root.getJSONArray("vectors")
         for (i in 0 until vectors.length()) {
-            names.add(vectors.getJSONObject(i).getString("name"))
+            val name = vectors.getJSONObject(i).getString("name")
+            counts[name] = (counts[name] ?: 0) + 1
         }
-        for (name in REQUIRED_VECTOR_NAMES) {
-            assertTrue("vectors.json is missing required vector '$name'", names.contains(name))
+        for ((family, rows) in EXPECTED_FAMILY_ROW_COUNTS) {
+            assertEquals(
+                "vectors.json family '$family' row count mismatch",
+                rows,
+                counts[family] ?: 0,
+            )
+        }
+        assertEquals(
+            "vectors.json carries a family this KAT does not assert by name",
+            EXPECTED_FAMILY_ROW_COUNTS.keys,
+            counts.keys,
+        )
+        assertEquals(
+            "vectors.json total row count mismatch",
+            EXPECTED_FAMILY_ROW_COUNTS.values.sum(),
+            vectors.length(),
+        )
+    }
+
+    // MARK: - 21/22. The 1908 chunk and name families, decrypted through the binding
+
+    /**
+     * `chunk_v2_stream` and `chunk_v2_single_frame`: the sequential reader under the V2 pin
+     * reproduces the published plaintext and finishes on the last frame, and every frame also
+     * opens on its own through the random-access reader at its published index. A wrong key,
+     * nonce, index or format fails here.
+     */
+    @Test
+    fun chunkV2FamiliesDecryptThroughTheBinding() {
+        // Each family is isolated: collect a failure per family and assert once at the end, so
+        // an exception in the first family (round 4: the binding threw "Decryption") still lets
+        // the second family run and every failure names its family and exception type.
+        val failures = mutableListOf<String>()
+        for (name in CHUNK_V2_FAMILIES) {
+            try {
+                assertChunkV2FamilyDecrypts(name)
+            } catch (t: Throwable) {
+                failures += "$name: ${t.javaClass.simpleName}: ${t.message.orEmpty()}"
+            }
+        }
+        assertTrue(
+            "chunk v2 families failed (each family isolated; all were attempted):\n" +
+                failures.joinToString("\n"),
+            failures.isEmpty(),
+        )
+    }
+
+    private fun assertChunkV2FamilyDecrypts(name: String) {
+        val fixture = chunkV2Fixture(name)
+        val master = MasterKeyHandle.fromKeychainBytes(fixture.vector.getString("master_key_hex").hexToBytes())
+        val frames = fixture.frames
+        assertEquals("$name: frame count", fixture.chunkCount, frames.length())
+
+        val decryptor = ChunkDecryptorHandle.forPush(master, fixture.fileId, 2u)
+        val streamed = java.io.ByteArrayOutputStream()
+        for (position in 0 until frames.length()) {
+            val frame = frames.getJSONObject(position)
+            val frameData = frame.getString("frame_hex").hexToBytes()
+            val index = frame.getInt("index")
+            val isLast = frame.getBoolean("is_last")
+            assertEquals("$name: frames must be ordered by index", position, index)
+            val opened = decryptor.pushFrame(frameData)
+            assertEquals("$name: pushed frame index", index.toUInt(), opened.index)
+            streamed.write(opened.data)
+            val randomAccess = fixture.fileKey.decryptChunkFrame(
+                fixture.fileId, fixture.versionId, index.toUInt(), isLast, 2u, frameData)
+            assertHexEquals("$name: frame $index random access", frame.getString("plaintext_hex"), randomAccess)
+        }
+        // `finish()` takes the handle's state, so `versionId()` MUST be read FIRST (as Swift
+        // does): after `finish()` every call throws "handle has been cleared".
+        val actualVersionId = decryptor.versionId()
+        assertNotNull("$name: version id is null after the frames", actualVersionId)
+        assertHexEquals("$name: version id after the frames", fixture.vector.getString("version_id_hex"), actualVersionId!!)
+        val summary = decryptor.finish()
+        assertEquals("$name: detected format", 2, summary.format.toInt())
+        assertEquals("$name: finished chunk count", frames.length().toUInt(), summary.chunkCount)
+        assertHexEquals("$name: streamed plaintext", fixture.plaintextHex, streamed.toByteArray())
+        println("[CoreVectorsKAT] $name: 1 row (streamed + per-frame open)")
+    }
+
+    /**
+     * The AAD version binding as a negative: for every V2 family, frame 0 opens under the
+     * vector's own version id and MUST be refused when one bit of that id flips. Isolated the
+     * same way as the positive test, so each family's result is reported separately.
+     */
+    @Test
+    fun v2DecryptRefusesAnotherVersionId() {
+        val failures = mutableListOf<String>()
+        for (name in CHUNK_V2_FAMILIES) {
+            try {
+                assertV2RefusesAnotherVersionId(name)
+            } catch (t: Throwable) {
+                failures += "$name: ${t.javaClass.simpleName}: ${t.message.orEmpty()}"
+            }
+        }
+        assertTrue(
+            "chunk v2 versionId negatives failed (each family isolated; all were attempted):\n" +
+                failures.joinToString("\n"),
+            failures.isEmpty(),
+        )
+    }
+
+    private fun assertV2RefusesAnotherVersionId(name: String) {
+        val fixture = chunkV2Fixture(name)
+        assertTrue("$name: version_id_hex must not be empty", fixture.versionId.isNotEmpty())
+        val frame = fixture.frames.getJSONObject(0)
+        val frameData = frame.getString("frame_hex").hexToBytes()
+        val index = frame.getInt("index")
+        val isLast = frame.getBoolean("is_last")
+
+        val otherVersionId = fixture.versionId.copyOf()
+        otherVersionId[0] = (otherVersionId[0].toInt() xor 0x01).toByte()
+        assertFalse("$name: the negative version id must differ in one bit", otherVersionId.contentEquals(fixture.versionId))
+
+        // Positive control: the vector's own version id opens frame 0.
+        val opened = fixture.fileKey.decryptChunkFrame(fixture.fileId, fixture.versionId, index.toUInt(), isLast, 2u, frameData)
+        assertHexEquals("$name: frame 0 opens under the vector version id", frame.getString("plaintext_hex"), opened)
+
+        // Negative: the same frame under a one-bit-different version id must throw.
+        assertThrows(Exception::class.java) {
+            fixture.fileKey.decryptChunkFrame(fixture.fileId, otherVersionId, index.toUInt(), isLast, 2u, frameData)
+        }
+    }
+
+    /**
+     * The two negatives the iOS KAT has. A V2 stream that stops before its authenticated last
+     * frame must refuse promotion at `finish()`, and a legacy V1 frame replayed under the V2
+     * pin must be refused at `pushFrame()` — the pin is authenticated, not advisory.
+     */
+    @Test
+    fun truncatedV2StreamRejectsMissingLastFrame() {
+        val v = vector(loadRoot(), "chunk_v2_stream")
+        val key = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
+        val decryptor = ChunkDecryptorHandle.forPushWithFileKeyHandle(key, v.getString("file_id"), 2u)
+        val frames = v.getJSONArray("frames")
+        assertEquals("chunk_v2_stream: frame count", 3, frames.length())
+        for (position in 0 until 2) {
+            val frame = frames.getJSONObject(position)
+            val opened = decryptor.pushFrame(frame.getString("frame_hex").hexToBytes())
+            assertEquals("chunk_v2_stream: opened frame size", 32, opened.data.size)
+        }
+        assertThrows(Exception::class.java) { decryptor.finish() }
+    }
+
+    @Test
+    fun v1FrameIsRefusedUnderTheV2Pin() {
+        val v = vector(loadRoot(), "chunk_v2_single_frame")
+        val key = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
+        val fileId = v.getString("file_id")
+        // The v1 wire comes from the production wire helper, not hand-assembled bytes.
+        val wire = SharedKeyOps.wire(key.encryptChunk("replayed v1".toByteArray()))
+        val v2 = ChunkDecryptorHandle.forPushWithFileKeyHandle(key, fileId, 2u)
+        assertThrows(Exception::class.java) { v2.pushFrame(wire) }
+        // Positive control: the SAME wire opens under the v1 pin 0 — so the refusal above is the
+        // pin, not the frame being malformed.
+        val v1 = ChunkDecryptorHandle.forPushWithFileKeyHandle(key, fileId, 0u)
+        assertTrue(v1.pushFrame(wire).data.contentEquals("replayed v1".toByteArray()))
+    }
+
+    /**
+     * `metadata_v2_name` through the master-key name reader, and the two per-file-key name
+     * vectors through the file-key reader: name, MIME type and the returned pin must match the
+     * vector. The pin is what every later content reader of that file must use.
+     */
+    @Test
+    fun nameFamiliesDecryptThroughTheBinding() {
+        // Each family is isolated (its own try/catch) and only prints its row line once every
+        // assertion in it held, so a failed family can never be logged as a pass.
+        val failures = mutableListOf<String>()
+        for (name in NAME_FAMILIES) {
+            try {
+                assertNameFamilyDecrypts(name)
+            } catch (t: Throwable) {
+                failures += "$name: ${t.javaClass.simpleName}: ${t.message.orEmpty()}"
+            }
+        }
+        assertTrue(
+            "name families failed (each family isolated; all were attempted):\n" +
+                failures.joinToString("\n"),
+            failures.isEmpty(),
+        )
+    }
+
+    private fun assertNameFamilyDecrypts(name: String) {
+        val v = vector(loadRoot(), name)
+        val expectedName = v.getString("expected_name")
+        val expectedMime = v.getString("expected_mime_type")
+        val expectedPin = v.getInt("expected_chunk_format").toUByte()
+        if (name == "metadata_v2_name") {
+            val master = MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes())
+            val meta = master.decryptFileMetadata(
+                v.getString("file_id"), v.getString("name_encrypted"))
+            assertEquals("$name: name", expectedName, meta.name)
+            assertEquals("$name: mime", expectedMime, meta.mimeType)
+            assertEquals("$name: pin", expectedPin, meta.chunkFormat)
+            println("[CoreVectorsKAT] $name: 1 row (master-key name reader)")
+        } else {
+            val meta = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
+                .decryptFileMetadata(v.getString("name_encrypted"))
+            assertEquals("$name: name", expectedName, meta.name)
+            assertEquals("$name: mime", expectedMime, meta.mimeType)
+            assertEquals("$name: pin", expectedPin, meta.chunkFormat)
+            println("[CoreVectorsKAT] $name: 1 row (file-key name reader)")
         }
     }
 
@@ -311,6 +560,14 @@ class CoreVectorsKATTest {
         val expected = FileKeyHandle.fromKeyBytes(v.getString("inner_key_hex").hexToBytes())
         assertTrue(opened.keyId().contentEquals(expected.keyId()))
         println("[CoreVectorsKAT] key_wrap_v1: 1 row")
+    }
+
+    @Test
+    fun folderKeyId() {
+        val v = vector(loadRoot(), "folder_key_id")
+        val key = FileKeyHandle.fromKeyBytes(v.getString("folder_key_hex").hexToBytes())
+        assertHexEquals("folder_key_id: key id mismatch", v.getString("expected_key_id_hex"), key.keyId())
+        println("[CoreVectorsKAT] folder_key_id: 1 row")
     }
 
     @Test
@@ -566,4 +823,16 @@ class CoreVectorsKATTest {
     assertEquals(60, wrapped.size)
     return wrapper.unwrapKey(wrapped.copyOfRange(0, 12), wrapped.copyOfRange(12, wrapped.size))
   }
+}
+
+/** One parse of a chunk-v2 family, shared by the positive decrypt test and the version-id negative. */
+private class ChunkV2Fixture(
+    val vector: JSONObject,
+    val fileId: String,
+    val versionId: ByteArray,
+    val fileKey: FileKeyHandle,
+    val frames: JSONArray,
+) {
+    val chunkCount: Int get() = vector.getInt("chunk_count")
+    val plaintextHex: String get() = vector.getString("plaintext_hex")
 }

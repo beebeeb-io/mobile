@@ -102,7 +102,7 @@ for (const [path, fn] of [['ios/SharedKeyOps.swift', 'func'], ['android/src/main
 test('core_pin_and_fixtures_are_the_exact_L8_merge', () => {
   expect(readFileSync(resolve(root, 'modules/beebeeb-crypto/CORE_REV'), 'utf8').trim()).toBe('c08defc70c35428926be6784d18ff091be6d004c')
   const { createHash } = require('node:crypto')
-  for (const path of ['targets/native-tests/Vectors/core-vectors.v10.json', 'modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.v10.json'])
+  for (const path of ['targets/native-tests/Vectors/core-vectors.json', 'modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.json'])
     expect(createHash('sha256').update(readFileSync(resolve(root,path))).digest('hex')).toBe('11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a')
 })
 

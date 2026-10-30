@@ -12,6 +12,7 @@
   "main": "src/App.tsx",
   "scripts": {
     "prepare": "bash scripts/install-prebuild-guard.sh",
+    "eas-build-pre-install": "bash scripts/android-release-guard.sh",
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",

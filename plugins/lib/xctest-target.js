@@ -32,10 +32,10 @@
 //     bundleId: 'io.beebeeb.app.CoreVectorsKATTests',
 //     groupChildren: [
 //       { path: 'BeebeebNativeTests/CoreVectorsKATTests.swift', name: '...' },
-//       { name: 'Vectors', files: [{ path: '...core-vectors.v4.json', name: '...', fileType: 'text.json' }] },
+//       { name: 'Vectors', files: [{ path: '...core-vectors.json', name: '...', fileType: 'text.json' }] },
 //     ],
 //     sources: [{ path: 'BeebeebNativeTests/CoreVectorsKATTests.swift', name: '...' }, …],
-//     resources: [{ path: '...core-vectors.v4.json', name: '...' }],
+//     resources: [{ path: '...core-vectors.json', name: '...' }],
 //     linkRustFramework: true,   // links BeebeebCore.xcframework + per-SDK header/ldflags, like extension-target.js
 //     deploymentTarget: '16.0',
 //   }

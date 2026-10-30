@@ -2,15 +2,15 @@ import XCTest
 import CryptoKit
 
 /// Task 1382 (audit item K2) — mobile half. Drives `beebeeb-core`'s cross-platform known-answer
-/// vectors (`test-vectors/vectors.json`, v11, 31 families) through the SAME production UniFFI Swift
-/// bindings the app links (`modules/beebeeb-crypto/ios/beebeeb_uniffi.swift`, compiled directly into
-/// this target's Sources build phase — see the `CoreVectorsKATTests` target in `Beebeeb.xcodeproj`,
-/// mirroring the host-less `ProvenanceHeadersTests` target added in task 1439). This file lives at
-/// `targets/native-tests/` — OUTSIDE `ios/` — because `expo prebuild --clean` wipes the whole `ios/`
-/// tree before regenerating it; `plugins/native-tests/withNativeTestTargets.js` (task 1562) wires the
-/// target into the project on every prebuild, referencing this file directly. No app host, no
-/// Pods, no Expo — this is deliberately the smallest possible harness that still exercises the real
-/// linked `.a` (not a mock). Semantic reference for what each family proves:
+/// vectors (`test-vectors/vectors.json`, version 11, 31 families) through the SAME production UniFFI
+/// Swift bindings the app links (`modules/beebeeb-crypto/ios/beebeeb_uniffi.swift`, compiled directly
+/// into this target's Sources build phase — see the `CoreVectorsKATTests` target in
+/// `Beebeeb.xcodeproj`, mirroring the host-less `ProvenanceHeadersTests` target added in task 1439).
+/// This file lives at `targets/native-tests/` — OUTSIDE `ios/` — because `expo prebuild --clean`
+/// wipes the whole `ios/` tree before regenerating it; `plugins/native-tests/withNativeTestTargets.js`
+/// (task 1562) wires the target into the project on every prebuild, referencing this file directly.
+/// No app host, no Pods, no Expo — this is deliberately the smallest possible harness that still
+/// exercises the real linked `.a` (not a mock). Semantic reference for what each family proves:
 /// `repos/core/beebeeb-core/tests/cross_platform_vectors.rs`.
 ///
 /// Run: `scripts/kat-ios.sh` (wraps the `xcodebuild test -scheme CoreVectorsKATTests` invocation
@@ -18,17 +18,34 @@ import CryptoKit
 /// repo's GitHub Actions workflow runs `typecheck` only; macOS runners are not enabled for Actions
 /// minutes reasons, so this suite does NOT run in CI. See `CLAUDE.md` "Tests" section.
 ///
+/// ## What is decrypted and what is only counted
+/// All 31 families are required by name with their row count, in
+/// `testVectorFileVersionAndEveryFamilyRowCount`. 26 of them are then decrypted or derived through
+/// the binding: `master_key_from_password`, `file_key_derivation`, `chunk_encrypt_decrypt`,
+/// `x25519_identity_keypair`, `x25519_share_key_exchange`, `recovery_check`,
+/// `recovery_phrase_roundtrip`, `metadata_encrypt_decrypt`, `file_request_seal_open`,
+/// `share_key_wrap`, `thumbnail_encrypt`, `chunk_v2_stream`, `chunk_v2_single_frame`,
+/// `metadata_v2_name`, `metadata_v2_name_filekey`, `metadata_v1_name_filekey`, `folder_key_id`,
+/// `key_wrap_v1`, `folder_link_passphrase`, `folder_link_passphrase_nfd`, `folder_custody_v1`,
+/// `link_owner_key_v1`, `link_owner_token_v1`, `folder_child_file_v1`, `folder_child_folder_v1`
+/// and `owner_wrapped_file_key`.
+/// The other 5 are only counted: `envelope_serialization` (explicit `XCTSkip` — no UniFFI
+/// export), and `shared_folder_index_key`, `combine_folder_link_key`,
+/// `owner_wrapped_folder_key`, `folder_wrapped_file_key` (no mobile reader uses them yet).
+///
 /// ## Refreshing the vendored vector file
-/// `Vectors/core-vectors.v10.json` is a vendored COPY of `repos/core/test-vectors/vectors.json` — it
-/// has to be a copy (not a symlink out of the repo) so this xctest bundle can embed it as a Resource.
-/// To refresh after core bumps the vector file:
-/// 1. `cp ../core/test-vectors/vectors.json targets/native-tests/Vectors/core-vectors.v10.json`
-///    (run from the mobile repo root in the standard `<workspace>/repos/{core,mobile}` layout — NOT
-///    from an isolated `git worktree`, which has no sibling `repos/core` checkout).
-/// 2. `shasum -a 256 targets/native-tests/Vectors/core-vectors.v10.json` and paste the new hex into
+/// `Vectors/core-vectors.json` is a vendored COPY of core's `test-vectors/vectors.json` — it has
+/// to be a copy (not a symlink out of the repo) so this xctest bundle can embed it as a Resource.
+/// The filename is stable; `expectedVersion` and `expectedSha256Hex` guard its content.
+/// To refresh after core bumps the vector file, from the mobile repo root:
+/// 1. `git -C ../core show $(cat modules/beebeeb-crypto/CORE_REV):test-vectors/vectors.json`
+///    > `targets/native-tests/Vectors/core-vectors.json`, then copy that file to
+///    `modules/beebeeb-crypto/android/src/androidTest/assets/core-vectors.json`.
+/// 2. `shasum -a 256 targets/native-tests/Vectors/core-vectors.json` and paste the new hex into
 ///    `expectedSha256Hex` below.
-/// 3. If core bumped `version`, update `expectedVersion` and `requiredVectorNames` here to match
-///    `vector_file_version_check` in `cross_platform_vectors.rs`.
+/// 3. If core bumped `version`, update `expectedVersion` and `expectedFamilyRowCounts` here to match
+///    `vector_file_version_check` in `cross_platform_vectors.rs`; `src/lib/1943-core-vectors-v11.guard.test.ts`
+///    pins the same bytes, version and row counts for the JS-side gate and compares the native tables.
 /// 4. Re-run this target; `testVendoredVectorsShaPin` enforces the new pin, and every family test
 ///    re-validates against the refreshed data automatically (no other code change needed).
 final class CoreVectorsKATTests: XCTestCase {
@@ -38,50 +55,62 @@ final class CoreVectorsKATTests: XCTestCase {
     /// `shasum -a 256 repos/core/test-vectors/vectors.json` (v11, core c08defc7).
     private static let expectedSha256Hex =
         "11f7522056d0c12eff92d2f37a5fa6975ce460cf36899e3a6a92f3455a4d754a"
-    // The v10 resource filename is retained; contents track the pinned core version.
     private static let expectedVersion = 11
-    private static let requiredVectorNames = [
-        "master_key_from_password",
-        "file_key_derivation",
-        "chunk_encrypt_decrypt",
-        "x25519_identity_keypair",
-        "x25519_share_key_exchange",
-        "recovery_check",
-        "envelope_serialization",
-        "recovery_phrase_roundtrip",
-        "metadata_encrypt_decrypt",
-        "file_request_seal_open",
-        "share_key_wrap",
-        "thumbnail_encrypt",
-        "chunk_v2_stream",
-        "chunk_v2_single_frame",
-        "metadata_v2_name",
-        "metadata_v2_name_filekey",
-        "metadata_v1_name_filekey",
-        "folder_key_id",
-        "shared_folder_index_key",
-        "combine_folder_link_key",
-        "key_wrap_v1",
-        "folder_link_passphrase",
-        "folder_link_passphrase_nfd",
-        "folder_custody_v1",
-        "link_owner_key_v1",
-        "link_owner_token_v1",
-        "folder_child_file_v1",
-        "folder_child_folder_v1",
-        "owner_wrapped_file_key",
-        "owner_wrapped_folder_key",
-        "folder_wrapped_file_key",
+    /// Every family core ships at this revision, with the number of rows it carries — 31 families,
+    /// 31 rows. Asserting the row count (not just presence) catches a truncated or half-refreshed
+    /// vendored file, which presence alone would wave through. `envelope_serialization` stays an
+    /// explicit skip (`testEnvelopeSerialization`), exactly as before.
+    private static let expectedFamilyRowCounts: [(family: String, rows: Int)] = [
+        ("master_key_from_password", 1),
+        ("file_key_derivation", 1),
+        ("chunk_encrypt_decrypt", 1),
+        ("x25519_identity_keypair", 1),
+        ("x25519_share_key_exchange", 1),
+        ("recovery_check", 1),
+        ("envelope_serialization", 1),
+        ("recovery_phrase_roundtrip", 1),
+        ("metadata_encrypt_decrypt", 1),
+        ("file_request_seal_open", 1),
+        ("share_key_wrap", 1),
+        ("thumbnail_encrypt", 1),
+        ("chunk_v2_stream", 1),
+        ("chunk_v2_single_frame", 1),
+        ("metadata_v2_name", 1),
+        ("metadata_v2_name_filekey", 1),
+        ("metadata_v1_name_filekey", 1),
+        ("folder_key_id", 1),
+        ("shared_folder_index_key", 1),
+        ("combine_folder_link_key", 1),
+        ("key_wrap_v1", 1),
+        ("folder_link_passphrase", 1),
+        ("folder_link_passphrase_nfd", 1),
+        ("folder_custody_v1", 1),
+        ("link_owner_key_v1", 1),
+        ("link_owner_token_v1", 1),
+        ("folder_child_file_v1", 1),
+        ("folder_child_folder_v1", 1),
+        ("owner_wrapped_file_key", 1),
+        ("owner_wrapped_folder_key", 1),
+        ("folder_wrapped_file_key", 1),
+    ]
+
+    /// The chunk-v2 families, in one place: the positive test and the `versionId` negative both
+    /// iterate this, so adding a family cannot leave the negative silently one family behind.
+    private static let chunkV2Families = ["chunk_v2_single_frame", "chunk_v2_stream"]
+
+    /// The name families, each decrypted by a different reader (see `assertNameFamilyDecrypts`).
+    private static let nameFamilies = [
+        "metadata_v2_name", "metadata_v2_name_filekey", "metadata_v1_name_filekey",
     ]
 
     // MARK: - Vector loading
 
     private static func bundledVectorsURL() throws -> URL {
         guard let url = Bundle(for: CoreVectorsKATTests.self)
-            .url(forResource: "core-vectors.v10", withExtension: "json") else {
+            .url(forResource: "core-vectors", withExtension: "json") else {
             throw NSError(
                 domain: "CoreVectorsKATTests", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json missing from test bundle resources"]
+                userInfo: [NSLocalizedDescriptionKey: "core-vectors.json missing from test bundle resources"]
             )
         }
         return url
@@ -95,7 +124,7 @@ final class CoreVectorsKATTests: XCTestCase {
         let data = try loadVectorsData()
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw NSError(domain: "CoreVectorsKATTests", code: 2,
-                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json did not decode to an object"])
+                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.json did not decode to an object"])
         }
         return root
     }
@@ -103,7 +132,7 @@ final class CoreVectorsKATTests: XCTestCase {
     private static func loadVectors() throws -> [[String: Any]] {
         guard let vectors = try loadRoot()["vectors"] as? [[String: Any]] else {
             throw NSError(domain: "CoreVectorsKATTests", code: 3,
-                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.v10.json 'vectors' is not an array"])
+                           userInfo: [NSLocalizedDescriptionKey: "core-vectors.json 'vectors' is not an array"])
         }
         return vectors
     }
@@ -139,19 +168,29 @@ final class CoreVectorsKATTests: XCTestCase {
         return data
     }
 
-    /// `<repo>/targets/native-tests/CoreVectorsKATTests.swift` -> four levels up (this file,
-    /// `native-tests/`, `targets/`, repo root) lands on `repos/`, then `core/test-vectors/vectors.json`
-    /// — the standard `<workspace>/repos/{core,mobile}` sibling layout. An isolated worktree may have
-    /// an unrelated `../core` checkout; only the documented `repos/` layout participates in this
-    /// optional comparison. The SHA pin is enforced in every layout.
-    private static func siblingCoreVectorsURL() -> URL? {
-        let parent = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // BeebeebNativeTests/
-            .deletingLastPathComponent() // ios/
-            .deletingLastPathComponent() // repo root
-            .deletingLastPathComponent() // parent of repo root (sibling of repos/core)
-        guard parent.lastPathComponent == "repos" else { return nil }
-        return parent.appendingPathComponent("core/test-vectors/vectors.json")
+    /// One parse of a chunk-v2 family, shared by the positive decrypt test and the `versionId`
+    /// negative so the two cannot drift apart in how they read the fixture.
+    private struct ChunkV2Fixture {
+        let name: String
+        let vector: [String: Any]
+        let fileId: String
+        let versionId: Data
+        let fileKey: FileKeyHandle
+        let frames: [[String: Any]]
+
+        var chunkCount: Int? { vector["chunk_count"] as? Int }
+    }
+
+    private static func chunkV2Fixture(_ name: String, vectors: [[String: Any]]) throws -> ChunkV2Fixture {
+        let v = try vector(vectors, named: name)
+        return ChunkV2Fixture(
+            name: name,
+            vector: v,
+            fileId: try str(v, "file_id"),
+            versionId: try hex(v, "version_id_hex"),
+            fileKey: try FileKeyHandle.fromKeyBytes(key: hex(v, "file_key_hex")),
+            frames: try XCTUnwrap(v["frames"] as? [[String: Any]], "\(name): frames")
+        )
     }
 
     private static func logPass(_ family: String) {
@@ -200,37 +239,187 @@ final class CoreVectorsKATTests: XCTestCase {
         let hex = digest.map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(
             hex, Self.expectedSha256Hex,
-            "vendored Vectors/core-vectors.v10.json drifted from the pinned sha256 — see this file's " +
+            "vendored Vectors/core-vectors.json drifted from the pinned sha256 — see this file's " +
             "header for the refresh procedure before changing expectedSha256Hex"
         )
     }
 
-    func testVendoredVectorsMatchSiblingCoreRepoWhenPresent() throws {
-        guard let siblingURL = Self.siblingCoreVectorsURL(),
-              FileManager.default.fileExists(atPath: siblingURL.path) else {
-            throw XCTSkip(
-                "no sibling repos/core/test-vectors/vectors.json next to this checkout " +
-                "— expected only in the standard <workspace>/repos/{core,mobile} layout, " +
-                "not in an isolated git worktree; the sha256 pin test above is the enforced guard here"
-            )
-        }
-        let siblingData = try Data(contentsOf: siblingURL)
-        let bundledData = try Self.loadVectorsData()
-        XCTAssertEqual(
-            siblingData, bundledData,
-            "vendored Vectors/core-vectors.v10.json diverged from repos/core/test-vectors/vectors.json " +
-            "— re-vendor the copy and re-pin the sha256 (see this file's header)"
-        )
-    }
-
-    func testVectorFileVersionAndRequiredNames() throws {
+    func testVectorFileVersionAndEveryFamilyRowCount() throws {
         let root = try Self.loadRoot()
         XCTAssertEqual(root["version"] as? Int, Self.expectedVersion, "vectors.json version mismatch")
         let vectors = try Self.loadVectors()
-        let names = Set(vectors.compactMap { $0["name"] as? String })
-        for name in Self.requiredVectorNames {
-            XCTAssertTrue(names.contains(name), "vectors.json is missing required vector '\(name)'")
+        var counts: [String: Int] = [:]
+        for vector in vectors {
+            guard let name = vector["name"] as? String else {
+                XCTFail("vectors.json carries a row with no name")
+                continue
+            }
+            counts[name, default: 0] += 1
         }
+        for (family, rows) in Self.expectedFamilyRowCounts {
+            XCTAssertEqual(counts[family], rows, "vectors.json family '\(family)' row count mismatch")
+            print("[CoreVectorsKAT] \(family): \(counts[family] ?? 0) row(s)")
+        }
+        XCTAssertEqual(
+            Set(counts.keys), Set(Self.expectedFamilyRowCounts.map(\.family)),
+            "vectors.json carries a family this KAT does not assert by name"
+        )
+        XCTAssertEqual(vectors.count, Self.expectedFamilyRowCounts.reduce(0) { $0 + $1.rows },
+                       "vectors.json total row count mismatch")
+        print("[CoreVectorsKAT] \(Self.expectedFamilyRowCounts.count) families, \(vectors.count) rows, version \(Self.expectedVersion)")
+    }
+
+    // MARK: - 21/22. The 1908 chunk and name families, decrypted through the binding
+
+    /// `chunk_v2_stream` and `chunk_v2_single_frame`: the sequential reader under the V2 pin
+    /// reproduces the published plaintext and finishes on the last frame, and every frame also
+    /// opens on its own through the random-access reader at its published index. A wrong key,
+    /// nonce, index or format fails here.
+    func testChunkV2FamiliesDecryptThroughTheBinding() throws {
+        let vectors = try Self.loadVectors()
+        for name in Self.chunkV2Families {
+            // Each family runs in its own activity and its own do/catch: a throw is recorded as
+            // THAT family's failure (named here and in the message) and the next family still
+            // runs. Before round 4 the first family's throw aborted the method, so the second
+            // family's plaintext and version-id comparisons were never reached.
+            _ = XCTContext.runActivity(named: "chunk v2 family: \(name)") { _ in
+                do {
+                    try assertChunkV2FamilyDecrypts(name, vectors: vectors)
+                } catch {
+                    XCTFail("\(name): threw before the family completed — \(error)")
+                }
+            }
+        }
+    }
+
+    private func assertChunkV2FamilyDecrypts(_ name: String, vectors: [[String: Any]]) throws {
+        let fixture = try Self.chunkV2Fixture(name, vectors: vectors)
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(fixture.vector, "master_key_hex"))
+        let frames = fixture.frames
+        var allPassed = true
+        expectEqual(frames.count, try XCTUnwrap(fixture.chunkCount), "\(name): frame count", allPassed: &allPassed)
+
+        let decryptor = try ChunkDecryptorHandle.forPush(
+            masterKey: master, fileId: fixture.fileId, expectedChunkFormat: 2)
+        var streamed = Data()
+        for (position, frame) in frames.enumerated() {
+            let frameData = try Self.hex(frame, "frame_hex")
+            let index = try XCTUnwrap(frame["index"] as? Int)
+            let isLast = try XCTUnwrap(frame["is_last"] as? Bool)
+            expectEqual(index, position, "\(name): frames must be ordered by index", allPassed: &allPassed)
+            let opened = try decryptor.pushFrame(frame: frameData)
+            expectEqual(opened.index, UInt32(index), "\(name): pushed frame index", allPassed: &allPassed)
+            streamed.append(opened.data)
+            let randomAccess = try fixture.fileKey.decryptChunkFrame(
+                fileId: fixture.fileId, versionId: fixture.versionId, index: UInt32(index), isLast: isLast,
+                format: 2, frame: frameData)
+            let expectedFrame = try Self.hex(frame, "plaintext_hex")
+            expectEqual(randomAccess, expectedFrame, "\(name): frame \(index) random access", allPassed: &allPassed)
+        }
+        expectEqual(try XCTUnwrap(decryptor.versionId()), fixture.versionId,
+                    "\(name): version id after the frames", allPassed: &allPassed)
+        let summary = try decryptor.finish()
+        expectEqual(summary.format, 2, "\(name): detected format", allPassed: &allPassed)
+        expectEqual(summary.chunkCount, UInt32(frames.count), "\(name): finished chunk count", allPassed: &allPassed)
+        let expectedStream = try Self.hex(fixture.vector, "plaintext_hex")
+        expectEqual(streamed, expectedStream, "\(name): streamed plaintext", allPassed: &allPassed)
+        if allPassed { Self.logPass("\(name) (streamed + per-frame open)") }
+    }
+
+    /// The AAD version binding, asserted as a negative: for every V2 family, frame 0 opens with
+    /// the vector's own version id and MUST be refused when one bit of that version id flips.
+    /// The positive `versionId()` comparison above proves what the reader reports; this proves a
+    /// different id cannot open the same frame, which is the binding itself.
+    func testV2DecryptRefusesAnotherVersionId() throws {
+        let vectors = try Self.loadVectors()
+        for name in Self.chunkV2Families {
+            _ = XCTContext.runActivity(named: "chunk v2 versionId negative: \(name)") { _ in
+                do {
+                    try assertV2RefusesAnotherVersionId(name, vectors: vectors)
+                } catch {
+                    XCTFail("\(name): versionId negative threw before it could assert — \(error)")
+                }
+            }
+        }
+    }
+
+    private func assertV2RefusesAnotherVersionId(_ name: String, vectors: [[String: Any]]) throws {
+        let fixture = try Self.chunkV2Fixture(name, vectors: vectors)
+        // A guard, not an index-before-check: an empty `version_id_hex` must be a recorded
+        // failure, not a trap in `otherVersionId[startIndex]`.
+        guard !fixture.versionId.isEmpty else {
+            XCTFail("\(name): version_id_hex is empty — cannot build the one-bit negative")
+            return
+        }
+        let versionId = fixture.versionId
+        let frame = try XCTUnwrap(fixture.frames.first, "\(name): frame 0")
+        let frameData = try Self.hex(frame, "frame_hex")
+        let index = try XCTUnwrap(frame["index"] as? Int)
+        let isLast = try XCTUnwrap(frame["is_last"] as? Bool)
+        let expectedFrame = try Self.hex(frame, "plaintext_hex")
+
+        var otherVersionId = versionId
+        otherVersionId[otherVersionId.startIndex] ^= 0x01
+        XCTAssertNotEqual(otherVersionId, versionId, "\(name): the negative version id must differ in one bit")
+
+        // Positive control: the vector's own version id opens frame 0.
+        let opened = try fixture.fileKey.decryptChunkFrame(
+            fileId: fixture.fileId, versionId: versionId, index: UInt32(index), isLast: isLast,
+            format: 2, frame: frameData)
+        XCTAssertEqual(opened, expectedFrame, "\(name): frame 0 opens under the vector version id")
+
+        // Negative: the same frame under a one-bit-different version id must throw.
+        XCTAssertThrowsError(
+            try fixture.fileKey.decryptChunkFrame(
+                fileId: fixture.fileId, versionId: otherVersionId, index: UInt32(index), isLast: isLast,
+                format: 2, frame: frameData),
+            "\(name): frame 0 must be refused under a version id that differs in one bit"
+        )
+    }
+
+    /// `metadata_v2_name` through the master-key name reader, and the two per-file-key name
+    /// vectors through the file-key reader: name, MIME type and the returned pin must match the
+    /// vector. The pin is what every later content reader of that file must use.
+    func testNameFamiliesDecryptThroughTheBinding() throws {
+        let vectors = try Self.loadVectors()
+        for name in Self.nameFamilies {
+            // Each family is isolated in its own activity and do/catch: a throw is recorded as
+            // THAT family's failure and the remaining families still run.
+            _ = XCTContext.runActivity(named: "name family: \(name)") { _ in
+                do {
+                    try assertNameFamilyDecrypts(name, vectors: vectors)
+                } catch {
+                    XCTFail("\(name): threw before the family completed — \(error)")
+                }
+            }
+        }
+    }
+
+    private func assertNameFamilyDecrypts(_ name: String, vectors: [[String: Any]]) throws {
+        let v = try Self.vector(vectors, named: name)
+        let expectedName = try Self.str(v, "expected_name")
+        let expectedMime = try Self.str(v, "expected_mime_type")
+        let expectedPin = UInt8(try XCTUnwrap(v["expected_chunk_format"] as? Int))
+        var allPassed = true
+        // `allPassed` keeps a failed family from printing PASS: `expectEqual` only flips it.
+        let reader: String
+        if name == "metadata_v2_name" {
+            let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(v, "master_key_hex"))
+            let meta = try master.decryptFileMetadata(
+                fileId: Self.str(v, "file_id"), nameEncrypted: Self.str(v, "name_encrypted"))
+            reader = "master-key name reader"
+            expectEqual(meta.name, expectedName, "\(name): name", allPassed: &allPassed)
+            expectEqual(meta.mimeType, Optional(expectedMime), "\(name): mime", allPassed: &allPassed)
+            expectEqual(meta.chunkFormat, expectedPin, "\(name): pin", allPassed: &allPassed)
+        } else {
+            let key = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
+            let meta = try key.decryptFileMetadata(nameEncrypted: Self.str(v, "name_encrypted"))
+            reader = "file-key name reader"
+            expectEqual(meta.name, expectedName, "\(name): name", allPassed: &allPassed)
+            expectEqual(meta.mimeType, Optional(expectedMime), "\(name): mime", allPassed: &allPassed)
+            expectEqual(meta.chunkFormat, expectedPin, "\(name): pin", allPassed: &allPassed)
+        }
+        if allPassed { Self.logPass("\(name) (\(reader))") }
     }
 
     // MARK: - 1. master_key_from_password (Argon2id)
@@ -557,6 +746,17 @@ final class CoreVectorsKATTests: XCTestCase {
         let expected = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "inner_key_hex"))
         XCTAssertEqual(try opened.keyId(), try expected.keyId())
         print("[CoreVectorsKAT] key_wrap_v1: 1 row")
+    }
+
+    // v11: folder_key_id is the HKDF-SHA256 id a server compares folder keys by; assert the
+    // handle's own `keyId()` against the vector instead of only counting the family.
+    func testFolderKeyId() throws {
+        let v = try Self.vector(Self.loadVectors(), named: "folder_key_id")
+        let key = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "folder_key_hex"))
+        let expected = try Self.hex(v, "expected_key_id_hex")
+        var allPassed = true
+        expectEqual(try key.keyId(), expected, "folder_key_id: key id does not match vector", allPassed: &allPassed)
+        if allPassed { Self.logPass("folder_key_id") }
     }
 
     func testFolderLinkPassphrase() throws {
