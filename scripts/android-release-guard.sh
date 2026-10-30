@@ -33,9 +33,16 @@
 # Local use: `EAS_BUILD=true EAS_BUILD_PLATFORM=android bash scripts/android-release-guard.sh`
 # Test: `src/lib/android-release-guard.test.ts`. Outside an EAS build, positional `$1` is a test
 # convenience only, with the same rule; `$2` is accepted and ignored. bash 3.2 compatible.
+# iOS exits FIRST, before `set -euo pipefail` and before anything multi-line: each of these two lines
+# ends in ` #`, so even a CRLF copy of this script (a trailing \r lands inside the comment) still allows
+# an iOS build. Inside an EAS build only EAS_BUILD_PLATFORM counts; outside, positional $1.
+__p="${EAS_BUILD_PLATFORM:-}"; [ -n "${!EAS_BUILD*}" ] || __p="${1:-}"; __p="$(printf '%s' "$__p" | tr '[:upper:]' '[:lower:]')" #
+[ "$__p" = "ios" ] && { echo "android-release-guard: platform 'ios' — not an Android build, allowed"; exit 0; } #
 set -euo pipefail
 
 # --- Android-verified pins: move ONLY in a reviewed PR that records Android verification (M7) -----------
+# c08defc is GRANDFATHERED: it is the binding Android shipped through internal testing up to versionCode 10,
+# before M7 existed; it was not M7-measured. The M7 PR replaces it with a measured revision.
 ANDROID_VERIFIED_CORE_REV="c08defc70c35428926be6784d18ff091be6d004c"
 # "<path under modules/beebeeb-crypto> <sha256>", one per line.
 ANDROID_VERIFIED_FILES="
@@ -52,9 +59,6 @@ android/src/main/java/expo/modules/beebeebcrypto/BeebeebCryptoHandleRegistry.kt 
 android/src/main/java/expo/modules/beebeebcrypto/NativeManualUploader.kt 3d2a1ca9e2a1bcf241d3ddd4e81e2e6524e23ad2f6d65d45803b7209e09b7b7f
 "
 # ----------------------------------------------------------------------------------------------------------
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MOD="$ROOT/modules/beebeeb-crypto"
 
 # Prefix expansion, no pipe. `${!EAS_BUILD@}` would split the names into separate words and
 # break `[ -n ... ]` once two or more are set; `${!EAS_BUILD*}` quotes into one string.
@@ -78,6 +82,11 @@ if [ "$PLATFORM" = "ios" ]; then
   echo "android-release-guard: platform 'ios' — not an Android build, allowed"
   exit 0
 fi
+
+# Resolved only AFTER the iOS exit, so nothing about the tree can refuse an iOS build. `CDPATH=` and
+# `>/dev/null` keep an exported CDPATH from printing the target or resolving a different directory.
+ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)"
+MOD="$ROOT/modules/beebeeb-crypto"
 
 case "$PLATFORM" in
   android) ;;
