@@ -114,7 +114,7 @@ describe('uploadEncryptedFileNative — re-init on a swept v2 session (task 1589
     const { uploadEncryptedFileNative } = await loadFreshApi()
     const result = await uploadEncryptedFileNative({
       masterKeyHandleId: 1,
-      fileId: 'CLIENT-ID',
+      fileId: 'F',
       inputUri: 'file:///tmp/photo.jpg',
       nameEncrypted: 'name-cipher',
       plaintextSizeBytes: 2_000_000,
@@ -148,7 +148,7 @@ describe('uploadEncryptedFileNative — re-init on a swept v2 session (task 1589
     const { uploadEncryptedFileNative } = await loadFreshApi()
     const result = await uploadEncryptedFileNative({
       masterKeyHandleId: 1,
-      fileId: 'CLIENT-ID',
+      fileId: 'F',
       inputUri: 'file:///tmp/photo.jpg',
       nameEncrypted: 'name-cipher',
       plaintextSizeBytes: 2_000_000,
@@ -173,7 +173,7 @@ describe('uploadEncryptedFileNative — re-init on a swept v2 session (task 1589
     const { uploadEncryptedFileNative, UploadRestartFailedError } = await loadFreshApi()
     await expect(uploadEncryptedFileNative({
       masterKeyHandleId: 1,
-      fileId: 'CLIENT-ID',
+      fileId: 'F',
       inputUri: 'file:///tmp/photo.jpg',
       nameEncrypted: 'name-cipher',
       plaintextSizeBytes: 2_000_000,
@@ -191,7 +191,7 @@ describe('uploadEncryptedFileNative — re-init on a swept v2 session (task 1589
     const { uploadEncryptedFileNative } = await loadFreshApi()
     await expect(uploadEncryptedFileNative({
       masterKeyHandleId: 1,
-      fileId: 'CLIENT-ID',
+      fileId: 'F',
       inputUri: 'file:///tmp/photo.jpg',
       nameEncrypted: 'name-cipher',
       plaintextSizeBytes: 2_000_000,
@@ -225,7 +225,7 @@ describe('uploadEncryptedFileNative — re-init on a swept v2 session (task 1589
     const { uploadEncryptedFileNative, ApiError } = await loadFreshApi()
     await expect(uploadEncryptedFileNative({
       masterKeyHandleId: 1,
-      fileId: 'CLIENT-ID',
+      fileId: 'F',
       inputUri: 'file:///tmp/photo.jpg',
       nameEncrypted: 'name-cipher',
       plaintextSizeBytes: 2_000_000,

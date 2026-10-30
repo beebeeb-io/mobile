@@ -4372,12 +4372,21 @@ final class NativeBackupEngine: NSObject {
     // row that has a file_id but no session id is a pre-migration remnant or a
     // half-written init — re-stage cleanly rather than guessing a session id.
     if let existing = asset.remoteFileId, !existing.isEmpty,
-       let existingSession = asset.stagedUploadSessionId, !existingSession.isEmpty {
+       let existingSession = asset.stagedUploadSessionId, !existingSession.isEmpty,
+       // Task SF-0001 (2275 L13/A7c): resumable ONLY when the stored remote id
+       // is the id this engine minted (`stagedFileId`). A pre-update session
+       // stored whatever id the server echoed — it must never be resumed.
+       existing == fileId {
       serverFileId = existing
       uploadSessionId = existingSession
       isResumingExistingRemote = true
     } else if let existing = asset.remoteFileId, !existing.isEmpty {
-      // Stale file_id without a session id — drop it and re-init below.
+      // Task SF-0001 (2275 L13/A7c): the stored id is not the one this client
+      // minted (pre-update state, or the server changed it) — abandon it
+      // server-side and stage a fresh upload under our own id. Never resumed.
+      await abandonUpload(fileId: existing, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)
+      // Stale file_id without a session id (or with a foreign id) — drop it
+      // and re-init below.
       dbQueue.sync {
         guard admitsWrite(ticket, "clearStagedStateForRestage") else { return }
         clearStagedStateForRestage(
@@ -4413,6 +4422,9 @@ final class NativeBackupEngine: NSObject {
         baseURL: baseURL,
         accountId: batchAccountId
       )
+      // Task SF-0001 (2275 L13/A7): the init answer must name the id this
+      // engine proposed, and encrypted under — checked before ANY chunk PUT.
+      try UploadItemIdEcho.assertEchoedId(chosen: fileId, echoed: session.fileId)
       serverFileId = session.fileId
       uploadSessionId = session.uploadSessionId
       heartbeatIntervalSecs = session.heartbeatIntervalSecs
@@ -4766,6 +4778,7 @@ final class NativeBackupEngine: NSObject {
     await heartbeatIfDue(pacer: pacer, sessionId: sessionId, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)
     try await completeUpload(
       uploadSessionId: sessionId,
+      expectedFileId: serverFileId,
       authToken: authToken,
       baseURL: baseURL,
       accountId: batchAccountId
@@ -5183,6 +5196,9 @@ final class NativeBackupEngine: NSObject {
 
   private func completeUpload(
     uploadSessionId: String,
+    /// Task SF-0001 (2275 L13/A7): the id this engine proposed. The completion
+    /// answer must name it before the row is marked done.
+    expectedFileId: String,
     authToken: String,
     baseURL: String,
     /// Task 1599: the caller's confirmed batch/account id — see
@@ -5231,6 +5247,35 @@ final class NativeBackupEngine: NSObject {
       let body = String(data: data, encoding: .utf8) ?? ""
       throw BackupError.httpStatus(statusCode, body)
     }
+
+    // Task SF-0001 (2275 L13/A7): the completion answer names the item it
+    // finalized. It must be the id this client proposed — otherwise abort
+    // before the row is marked complete under someone else's identity.
+    let echoedId = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    try UploadItemIdEcho.assertEchoedId(
+      chosen: expectedFileId,
+      echoed: (echoedId?["id"] as? String)
+    )
+  }
+
+  /// Task SF-0001 (2275 L13/A7c): best-effort abandonment of a persisted
+  /// upload session whose id this client did not mint. Never throws — an
+  /// expired session is already gone server-side.
+  private func abandonUpload(
+    fileId: String,
+    authToken: String,
+    baseURL: String,
+    accountId: String
+  ) async {
+    guard let url = URL(string: "\(baseURL)/api/v1/files/\(fileId)/upload/abandon") else { return }
+    var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
+    applyExpectedUserHeader(to: &request, accountId: accountId)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+    request.httpBody = Data("{}".utf8)
+    _ = try? await metadataSession.data(for: request)
   }
 
   // MARK: - SQLite Database

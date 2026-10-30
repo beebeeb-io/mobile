@@ -141,7 +141,7 @@ describe('uploadEncryptedFileNative — completion guard is real, not a tautolog
       // mismatch, the next fetch call would throw "unexpected fetch"
       // instead of the mismatch error asserted below.
       async () => jsonResponse({
-        file_id: 'SERVER-ID',
+        file_id: 'CLIENT-ID',
         upload_session_id: 'upload-session-1',
         chunk_size_bytes: 4_194_304,
         chunk_count: 1,

@@ -537,8 +537,10 @@ async function ensureFolder(parentId: string | undefined, name: string): Promise
     if (existing) return existing.id;
     const folderId = await generateFileId();
     const nameEncrypted = await encryptFolderName(folderId, name);
-    const created = await createFolder(nameEncrypted, parentId, folderId);
-    return created.id;
+    // Task SF-0001 (2275 L13/A8): `createFolder` aborts when the answer names
+    // another folder — nothing is ever written into an id we did not mint.
+    await createFolder(nameEncrypted, parentId, folderId);
+    return folderId;
   })();
 
   _ensureFolderInFlight.set(key, promise);

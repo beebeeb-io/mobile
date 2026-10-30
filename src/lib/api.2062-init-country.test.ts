@@ -122,7 +122,7 @@ async function run(location) {
   const events = []
   const { uploadEncryptedChunked } = await loadFreshApi()
   await uploadEncryptedChunked({
-    fileId: 'client-id',
+    fileId: 'F',
     nameEncrypted: 'n',
     plaintextSizeBytes: 1_000,
     readEncryptedChunk: async () => new Uint8Array(10),
@@ -162,7 +162,7 @@ describe('v1 fallback init (task 2062)', () => {
     fetchQueue.push(async () => jsonResponse({ id: 'F', name_encrypted: 'n' })) // complete
     uploadAsyncQueue.push({ status: 200, body: '{}' })
     await uploadEncryptedChunked({
-      fileId: 'client-id',
+      fileId: 'F',
       nameEncrypted: 'n',
       plaintextSizeBytes: 1_000,
       readEncryptedChunk: async () => new Uint8Array(10),
