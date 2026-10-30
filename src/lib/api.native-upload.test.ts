@@ -103,18 +103,18 @@ beforeEach(() => {
 });
 
 describe('uploadEncryptedFileNative — encrypts under the server file id (task 1351)', () => {
-  test('fresh upload: bridge receives the SERVER-minted file id, not the client id', async () => {
+  test('fresh upload: the bridge receives the id this client proposed (echoed by the server)', async () => {
     store.set('beebeeb_session_token', 'test-token');
     fetchQueue.push(
       // POST /api/v1/uploads/init
       async () => jsonResponse({
-        file_id: 'SERVER-ID',
+        file_id: 'CLIENT-ID',
         upload_session_id: 'upload-session-1',
         chunk_size_bytes: 4_194_304,
         chunk_count: 1,
       }),
       // POST /api/v1/uploads/:id/complete
-      async () => jsonResponse({ id: 'SERVER-ID', name_encrypted: 'name-cipher' }),
+      async () => jsonResponse({ id: 'CLIENT-ID', name_encrypted: 'name-cipher' }),
     );
 
     const { uploadEncryptedFileNative } = await loadFreshApi();
@@ -127,17 +127,16 @@ describe('uploadEncryptedFileNative — encrypts under the server file id (task 
       plaintextSizeBytes: 2_000_000,
     });
 
-    expect(result?.id).toBe('SERVER-ID');
+    expect(result?.id).toBe('CLIENT-ID');
     expect(nativeUploadCalls).toHaveLength(1);
-    expect(nativeUploadCalls[0].fileId).toBe('SERVER-ID');
-    expect(nativeUploadCalls[0].fileId).not.toBe('CLIENT-ID');
+    expect(nativeUploadCalls[0].fileId).toBe('CLIENT-ID');
   });
 
-  test('resumed upload: bridge receives the STORED server file id, not a fresh client id', async () => {
+  test('resumed upload: the bridge receives the stored client-minted id, and a mismatched stored id is abandoned', async () => {
     store.set('beebeeb_session_token', 'test-token');
     store.set('beebeeb_upload_resume_resume-key-1', JSON.stringify({
       protocol: 'v2',
-      fileId: 'STORED-SERVER-ID',
+      fileId: 'FRESH-CLIENT-ID-2',
       uploadSessionId: 'upload-session-resume',
       chunkSizeBytes: 4_194_304,
       chunkCount: 1,
@@ -145,10 +144,11 @@ describe('uploadEncryptedFileNative — encrypts under the server file id (task 
       parentId: null,
       mimeType: null,
       lastUploadedChunkIndex: -1,
+      selfMinted: true,
     }));
     fetchQueue.push(
       // POST /api/v1/uploads/:id/complete — no init call, this is a resume
-      async () => jsonResponse({ id: 'STORED-SERVER-ID', name_encrypted: 'name-cipher' }),
+      async () => jsonResponse({ id: 'FRESH-CLIENT-ID-2', name_encrypted: 'name-cipher' }),
     );
 
     const { uploadEncryptedFileNative } = await loadFreshApi();
@@ -162,9 +162,9 @@ describe('uploadEncryptedFileNative — encrypts under the server file id (task 
       resumeKey: 'resume-key-1',
     });
 
-    expect(result?.id).toBe('STORED-SERVER-ID');
+    expect(result?.id).toBe('FRESH-CLIENT-ID-2');
+    expect(fetchCalls.filter((c) => c.url.endsWith('/uploads/init'))).toHaveLength(0);
     expect(nativeUploadCalls).toHaveLength(1);
-    expect(nativeUploadCalls[0].fileId).toBe('STORED-SERVER-ID');
-    expect(nativeUploadCalls[0].fileId).not.toBe('FRESH-CLIENT-ID-2');
+    expect(nativeUploadCalls[0].fileId).toBe('FRESH-CLIENT-ID-2');
   });
 });

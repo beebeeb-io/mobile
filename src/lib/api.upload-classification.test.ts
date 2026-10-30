@@ -121,7 +121,7 @@ describe('JS uploads record their is_media for the index loader (1959 round 4)',
     const { uploadEncryptedFileNative } = await loadFreshApi();
     await uploadEncryptedFileNative({
       masterKeyHandleId: 1,
-      fileId: 'CLIENT-ID',
+      fileId: 'SERVER-ID',
       inputUri: 'file:///tmp/photo.jpg',
       nameEncrypted: 'name-cipher',
       plaintextSizeBytes: 2_000_000,
@@ -147,7 +147,7 @@ describe('JS uploads record their is_media for the index loader (1959 round 4)',
     );
     const { uploadEncryptedChunked } = await loadFreshApi();
     await uploadEncryptedChunked({
-      fileId: 'client-doc',
+      fileId: 'server-doc',
       nameEncrypted: 'n',
       plaintextSizeBytes: 1,
       readEncryptedChunk: async () => new Uint8Array(29),
