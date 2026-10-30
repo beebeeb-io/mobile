@@ -61,9 +61,9 @@ function cleanEnv(): Record<string, string> {
 }
 
 /** Run a script with `bash` (no exec bit needed) and capture both streams. */
-function runGuard(opts: { script?: string; args?: string[]; env?: Record<string, string> } = {}) {
+function runGuard(opts: { script?: string; args?: string[]; env?: Record<string, string>; cwd?: string } = {}) {
   const proc = Bun.spawnSync(['bash', opts.script ?? SCRIPT, ...(opts.args ?? [])], {
-    cwd: ROOT,
+    cwd: opts.cwd ?? ROOT,
     env: { ...cleanEnv(), ...(opts.env ?? {}) },
   });
   return { code: proc.exitCode, stdout: proc.stdout?.toString() ?? '', stderr: proc.stderr?.toString() ?? '' };
@@ -84,6 +84,13 @@ function expectAllowed(result: { code: number; stdout: string; stderr: string })
   expect(result.stdout).toContain('allowed');
 }
 
+/** Replace the guard's `ANDROID_VERIFIED_CORE_REV` line; throws if the line is not there. */
+function setPin(src: string, pin: string): string {
+  const re = /^ANDROID_VERIFIED_CORE_REV="[^"]*"$/m;
+  if (!re.test(src)) throw new Error('ANDROID_VERIFIED_CORE_REV line not found');
+  return src.replace(re, `ANDROID_VERIFIED_CORE_REV="${pin}"`);
+}
+
 /**
  * A temp tree with a copy of the script and every pinned file (whatever is on disk: real binaries or
  * LFS stubs). Unless told otherwise, the copy's pins are rewritten to the tree's OWN hashes and CORE_REV,
@@ -92,13 +99,17 @@ function expectAllowed(result: { code: number; stdout: string; stderr: string })
 function withTree(
   mutate: (dir: string, script: string) => void,
   run: (script: string, dir: string) => void,
-  opts: { repin?: boolean } = {},
+  opts: { repin?: boolean; sourcePin?: string } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'bb-d15-guard-'));
   try {
     const script = join(dir, 'scripts/android-release-guard.sh');
     mkdirSync(join(dir, 'scripts'), { recursive: true });
     copyFileSync(SCRIPT, script);
+    if (opts.sourcePin !== undefined) {
+      // Simulate a shipped pin (e.g. M2's required `unverified`) before anything else.
+      writeFileSync(script, setPin(readFileSync(script, 'utf8'), opts.sourcePin));
+    }
     const files = [{ rel: 'CORE_REV' }, ...pinnedFiles()];
     for (const { rel } of files) {
       mkdirSync(join(dir, MOD, rel, '..'), { recursive: true });
@@ -114,6 +125,9 @@ function withTree(
       for (const { rel, sha } of pinnedFiles()) {
         src = src.replace(`${rel} ${sha}`, `${rel} ${sha256(join(dir, MOD, rel))}`);
       }
+      // The core-rev pin follows the tree too, so the logic tests hold whatever the shipped pin is
+      // (M2 must ship `unverified`; D15 amendment 2026-10-30 (2)).
+      src = setPin(src, readFileSync(join(dir, MOD, 'CORE_REV'), 'utf8').trim());
       writeFileSync(script, src);
       expect(pinnedFiles(script).every(({ rel, sha }) => sha === sha256(join(dir, MOD, rel)))).toBe(true);
     }
@@ -288,5 +302,42 @@ describe('android-release-guard.sh (task 1943 M1 / S6, D15 amendment 2026-10-30)
 
   test('outside an EAS build, no platform fails closed', () => {
     expectRefused(runGuard({}), 'no build platform (failing closed)');
+  });
+  test('the logic holds when the SHIPPED pin is the sentinel (M2 ships `unverified`)', () => {
+    withTree(() => {}, (script) => expectAllowed(runGuard({ script, env: ANDROID_EAS })), { sourcePin: 'unverified' });
+    withTree(
+      (dir) => writeFileSync(join(dir, MOD, 'CORE_REV'), OTHER_REV),
+      (script) => expectRefused(runGuard({ script, env: ANDROID_EAS }), NOT_VERIFIED),
+      { sourcePin: 'unverified' },
+    );
+    withTree(
+      (dir) => writeFileSync(join(dir, MOD, KT, 'VideoStreamer.kt'), '// changed reader\n', { flag: 'a' }),
+      (script) => expectRefused(runGuard({ script, env: ANDROID_EAS }), NOT_VERIFIED),
+      { sourcePin: 'unverified' },
+    );
+  });
+
+  test('iOS is allowed even from a CRLF copy of the script (the early exit survives CRLF)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bb-d15-crlf-'));
+    try {
+      const crlf = join(dir, 'android-release-guard.sh');
+      writeFileSync(crlf, readFileSync(SCRIPT, 'utf8').replace(/\r?\n/g, '\r\n'));
+      expectAllowed(runGuard({ script: crlf, env: { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'ios' } }));
+      expectAllowed(runGuard({ script: crlf, args: ['ios'] }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('.gitattributes keeps shell scripts LF so the guard parses on every checkout', () => {
+    const attrs = readFileSync(join(ROOT, '.gitattributes'), 'utf8');
+    expect(attrs).toMatch(/^\*\.sh\s+text\s+eol=lf\s*$/m);
+  });
+
+  test('a relative invocation with CDPATH exported still finds the repo (the npm hook form)', () => {
+    withTree(() => {}, (_script, dir) => {
+      const result = runGuard({ script: 'scripts/android-release-guard.sh', cwd: dir, env: { ...ANDROID_EAS, CDPATH: '.:/tmp' } });
+      expectAllowed(result);
+    });
   });
 });

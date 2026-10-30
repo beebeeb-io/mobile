@@ -2,7 +2,11 @@
 # Task 1943 mobile M1 — Android release guard (spec S6, decision D15).
 #
 # D15 amendment 2026-10-30 (workspace lead ruling; guard owner s3-lead; plan "Amendment 2026-10-30 (2)"):
-# the guard ships WITH the change it protects. An Android build may reach a tester only while its UniFFI
+# the guard ships WITH the change it protects.
+# The current pins (CORE_REV c08defc and the hashes below) are GRANDFATHERED by the 2026-10-30 ruling: they
+# are the binding and readers Android builds shipped at when this guard was introduced. Task 1943 M7 has not
+# run yet; "Android-verified" below means "accepted by that ruling or, later, verified by M7".
+# An Android build may reach a tester only while its UniFFI
 # binding AND its Android content readers are the last Android-verified ones. Any change to them re-arms
 # the guard on its own until the reviewed PR that records Android verification (M7) moves the pins.
 #
@@ -33,6 +37,11 @@
 # Local use: `EAS_BUILD=true EAS_BUILD_PLATFORM=android bash scripts/android-release-guard.sh`
 # Test: `src/lib/android-release-guard.test.ts`. Outside an EAS build, positional `$1` is a test
 # convenience only, with the same rule; `$2` is accepted and ignored. bash 3.2 compatible.
+# iOS is decided FIRST, on ONE line that ends in a comment: a CRLF checkout of this file then still
+# reaches it (the trailing comment swallows the CR), and nothing below (set -o pipefail, ROOT, cd)
+# can refuse an iOS build. Outside an EAS build the positional platform counts (test convenience).
+if [ "${EAS_BUILD_PLATFORM:-}" = "ios" ] || { [ -z "${!EAS_BUILD*}" ] && [ "${1:-}" = "ios" ]; }; then echo "android-release-guard: platform 'ios' — not an Android build, allowed"; exit 0; fi # task 1943 D15
+
 set -euo pipefail
 
 # --- Android-verified pins: move ONLY in a reviewed PR that records Android verification (M7) -----------
@@ -53,7 +62,7 @@ android/src/main/java/expo/modules/beebeebcrypto/NativeManualUploader.kt 3d2a1ca
 "
 # ----------------------------------------------------------------------------------------------------------
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null && pwd)"
 MOD="$ROOT/modules/beebeeb-crypto"
 
 # Prefix expansion, no pipe. `${!EAS_BUILD@}` would split the names into separate words and
