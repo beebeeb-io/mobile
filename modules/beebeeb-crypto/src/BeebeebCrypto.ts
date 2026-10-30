@@ -705,14 +705,22 @@ export interface BatchNameItem {
 }
 
 /**
+ * The convention a name was authenticated with (SF-0002). `string_or_binary` is
+ * a batch hit (both id conventions are accepted); `upper_repair` is read-only.
+ */
+export type OwnerNameConvention = 'string_or_binary' | 'string' | 'binary' | 'upper_repair'
+
+/**
  * One result of the batch name decrypt. On success `name` is set (mime optional)
  * and `error` is null; on failure `error` is set and the others null. A single
- * failed item never fails the whole batch.
+ * failed item never fails the whole batch. `convention` is the SF-0002
+ * convention the name resolved under (null on failure).
  */
 export interface BatchNameResult {
   name: string | null
   mimeType: string | null
   error: string | null
+  convention?: OwnerNameConvention | null
 }
 
 /**
@@ -728,17 +736,46 @@ export interface BatchNameResult {
 export async function decryptNames(
   handleId: number,
   items: BatchNameItem[],
+  ownedFileIds: string[] = [],
 ): Promise<BatchNameResult[]> {
   if (typeof BeebeebCryptoModule.decryptNames !== 'function') {
-    return items.map(() => ({ name: null, mimeType: null, error: 'decryptNames unavailable' }))
+    return items.map(() => ({ name: null, mimeType: null, error: 'decryptNames unavailable', convention: null }))
   }
-  const results = await BeebeebCryptoModule.decryptNames(handleId, items)
+  const results = await BeebeebCryptoModule.decryptNames(handleId, items, ownedFileIds)
   if (!Array.isArray(results)) return []
-  return results.map((r: { name?: unknown; mimeType?: unknown; error?: unknown }) => ({
+  const conventions = new Set(['string_or_binary', 'string', 'binary', 'upper_repair'])
+  return results.map((r: { name?: unknown; mimeType?: unknown; error?: unknown; convention?: unknown }) => ({
     name: typeof r?.name === 'string' ? r.name : null,
     mimeType: typeof r?.mimeType === 'string' ? r.mimeType : null,
     error: typeof r?.error === 'string' ? r.error : null,
+    convention: typeof r?.convention === 'string' && conventions.has(r.convention)
+      ? (r.convention as OwnerNameConvention) : null,
   }))
+}
+
+/**
+ * SF-0002 M2a: classify one owned content version's id convention. The native
+ * side reads chunk 0 ONCE (bounded) and reports `string`, `binary`,
+ * `string_or_binary`, `upper_repair` or `unknown`; it also caches a resolved
+ * convention by `(epoch, fileId, objectVersionId)`. A JS-only build degrades to
+ * `unknown`, which never makes a file writable.
+ */
+export type OwnerContentConvention = 'string' | 'binary' | 'string_or_binary' | 'upper_repair' | 'unknown'
+
+export async function classifyOwnerContent(
+  handleId: number,
+  fileId: string,
+  objectVersionId: string,
+  createdAt: string,
+  apiUrl: string,
+  token: string,
+): Promise<OwnerContentConvention> {
+  if (typeof BeebeebCryptoModule.classifyOwnerContent !== 'function') return 'unknown'
+  const value = await BeebeebCryptoModule.classifyOwnerContent(
+    handleId, fileId, objectVersionId, createdAt, apiUrl, token,
+  )
+  return value === 'string' || value === 'binary' || value === 'string_or_binary'
+    || value === 'upper_repair' ? value : 'unknown'
 }
 
 /**

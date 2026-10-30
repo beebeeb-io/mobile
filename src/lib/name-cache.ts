@@ -19,15 +19,25 @@ import { gatedPlaintextWrite } from './plaintext-gate';
 
 import { notePlaintextPathCreated } from './plaintext-storage';
 import { isCurrentAccountEpoch, StaleAccountError, type AccountEpoch } from './account-epoch';
+import type { OwnerNameConvention } from '../../modules/beebeeb-crypto/src/BeebeebCrypto';
 
 export interface CachedName {
   name: string;
   mime: string | null;
   /** `version_number` the name was decrypted at; stale when the row's bumps. */
   version: number;
+  /**
+   * SF-0002: the convention the name was authenticated with. An entry written
+   * before this field existed has none, and is a MISS on load — the first
+   * launch after the upgrade re-decrypts once rather than trusting a name whose
+   * write verdict is unknown.
+   */
+  convention: OwnerNameConvention;
 }
 
 export type NameCache = Record<string, CachedName>;
+
+const CONVENTIONS = new Set<string>(['string_or_binary', 'string', 'binary', 'upper_repair']);
 
 const CACHE_FILE = `${FileSystem.documentDirectory ?? ''}beebeeb-name-cache-v1.json`;
 // Soft cap so a huge vault can't grow the JSON unboundedly. Oldest-inserted keys
@@ -53,10 +63,13 @@ export async function loadNameCache(): Promise<NameCache> {
       if (!value || typeof value !== 'object') continue;
       const v = value as Record<string, unknown>;
       if (typeof v.name !== 'string') continue;
+      // SF-0002: an entry without a valid convention is a miss.
+      if (typeof v.convention !== 'string' || !CONVENTIONS.has(v.convention)) continue;
       out[id] = {
         name: v.name,
         mime: typeof v.mime === 'string' ? v.mime : null,
         version: typeof v.version === 'number' ? v.version : 0,
+        convention: v.convention as OwnerNameConvention,
       };
     }
     return out;

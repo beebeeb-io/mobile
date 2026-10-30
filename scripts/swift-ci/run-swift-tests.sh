@@ -43,7 +43,7 @@ MANIFEST=(
   "thumbnail-queue-purge-test.swift|modules/beebeeb-crypto/ios/ThumbnailQueueDB.swift modules/beebeeb-crypto/ios/ThumbnailErrorCategory.swift modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift modules/beebeeb-crypto/ios/RuntimeTrace.swift"
   "legacy-url-cache-cleanup-test.swift|modules/beebeeb-crypto/ios/LegacyURLCacheCleanup.swift"
   "thumbnail-purge-generation-test.swift|modules/beebeeb-crypto/ios/ThumbnailPurgeGeneration.swift"
-  "owner-read-key-test.swift|modules/beebeeb-crypto/ios/SharedKeyRegistry.swift modules/beebeeb-crypto/ios/OwnerReadKey.swift modules/beebeeb-crypto/ios/SharedKeyOps.swift modules/beebeeb-crypto/ios/beebeeb_uniffi.swift"
+  "owner-read-key-test.swift|modules/beebeeb-crypto/ios/SharedKeyRegistry.swift modules/beebeeb-crypto/ios/OwnerReadKey.swift modules/beebeeb-crypto/ios/SharedKeyOps.swift modules/beebeeb-crypto/ios/OwnerContentClassifier.swift modules/beebeeb-crypto/ios/ProvenanceHeaders.swift modules/beebeeb-crypto/ios/beebeeb_uniffi.swift"
 )
 
 LOG_DIR="${SWIFT_CI_LOG_DIR:-$(mktemp -d)}"

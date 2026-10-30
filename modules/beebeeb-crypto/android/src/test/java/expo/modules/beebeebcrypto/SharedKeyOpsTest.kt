@@ -42,6 +42,21 @@ class SharedKeyOpsTest {
   }
 
   @Test
+  fun theBatchRetryHappensOnlyForFailedOwnedItems() {
+    assertTrue(SharedKeyOps.ownerRetryPlan(batchFailed = true, owned = true))
+    assertFalse(SharedKeyOps.ownerRetryPlan(batchFailed = false, owned = true))
+    assertFalse(SharedKeyOps.ownerRetryPlan(batchFailed = true, owned = false))
+    assertFalse(SharedKeyOps.ownerRetryPlan(batchFailed = false, owned = false))
+  }
+
+  @Test
+  fun conventionsMapToTheirBridgeCodes() {
+    assertEquals("string", SharedKeyOps.conventionCode(OwnerKeyConvention.STRING))
+    assertEquals("binary", SharedKeyOps.conventionCode(OwnerKeyConvention.BINARY))
+    assertEquals("upper_repair", SharedKeyOps.conventionCode(OwnerKeyConvention.UPPER_REPAIR))
+  }
+
+  @Test
   fun aResolverKeyCanNeitherEncryptNorWrap() {
     val methods = OwnerReadKey::class.java.declaredMethods
       .filter { !it.isSynthetic }

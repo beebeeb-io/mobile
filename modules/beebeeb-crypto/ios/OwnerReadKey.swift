@@ -63,6 +63,14 @@ final class OwnerConventionCache {
     private let lock = NSLock()
     private var names: [NameKey: OwnerKeyConvention] = [:]
     private var contents: [ContentKey: OwnerKeyConvention] = [:]
+    /// Which files are known to carry an uppercase-repair NAME. Needed by
+    /// `classifyOwnerContent` rule 3, which has no sealed name to hash.
+    private var upperRepairNames: Set<FileKey> = []
+
+    private struct FileKey: Hashable {
+        let epoch: UInt64
+        let fileId: String
+    }
 
     func name(epoch: UInt64, fileId: String, nameEncrypted: String) -> OwnerKeyConvention? {
         let key = NameKey(epoch: epoch, fileId: fileId, nameHash: Self.hash(nameEncrypted))
@@ -73,9 +81,20 @@ final class OwnerConventionCache {
 
     func storeName(_ convention: OwnerKeyConvention, epoch: UInt64, fileId: String, nameEncrypted: String) {
         let key = NameKey(epoch: epoch, fileId: fileId, nameHash: Self.hash(nameEncrypted))
+        let fileKey = FileKey(epoch: epoch, fileId: fileId)
         lock.lock()
         defer { lock.unlock() }
         names[key] = convention
+        if case .upperRepair = convention { upperRepairNames.insert(fileKey) }
+        else { upperRepairNames.remove(fileKey) }
+    }
+
+    /// True when this epoch has already learned that `fileId`'s NAME is
+    /// uppercase-repair sealed (read-only, and zero content requests).
+    func isUpperRepairName(epoch: UInt64, fileId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return upperRepairNames.contains(FileKey(epoch: epoch, fileId: fileId))
     }
 
     func content(epoch: UInt64, fileId: String, objectVersionId: String) -> OwnerKeyConvention? {
@@ -97,6 +116,7 @@ final class OwnerConventionCache {
         defer { lock.unlock() }
         names.removeAll()
         contents.removeAll()
+        upperRepairNames.removeAll()
     }
 
     var count: Int {

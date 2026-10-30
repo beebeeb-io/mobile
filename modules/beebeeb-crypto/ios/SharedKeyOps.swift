@@ -27,9 +27,22 @@ enum NameResolutionPlan: Equatable {
     case tableFinal, ownerResolve, errorFinal
 }
 
+/// One bridge-facing name result: the decrypted fields plus the convention the
+/// name was authenticated with (SF-0002). `nil` means the item failed.
+struct SharedNameResult {
+    let name: String?
+    let mimeType: String?
+    let error: String?
+    let convention: String?
+}
+
 enum SharedKeyOps {
     static let registry = SharedKeyRegistry<FileKeyHandle>()
     static let ownerConventions = OwnerConventionCache()
+    /// Test-visible count of owner-resolver attempts. Production callers never
+    /// read it; the Swift harness uses it to prove a batch hit costs none.
+    private(set) static var ownerResolveAttempts = 0
+    static func resetOwnerResolveAttempts() { ownerResolveAttempts = 0 }
     static func folder(_ id: Int, registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> (handle: FileKeyHandle, folderId: String) {
         guard let folder = registry.folder(id) else { throw SharedKeyError.locked }
         return folder
@@ -95,6 +108,7 @@ enum SharedKeyOps {
     static func resolveOwnerName(master: MasterKeyHandle, fileId: String, nameEncrypted: String,
                                  registry: SharedKeyRegistry<FileKeyHandle> = registry)
         throws -> (readKey: OwnerReadKey, convention: OwnerKeyConvention) {
+        ownerResolveAttempts += 1
         let resolved = try master.ownerFileKeyForName(fileId: fileId, nameEncrypted: nameEncrypted)
         ownerConventions.storeName(
             resolved.convention, epoch: registry.generation, fileId: fileId, nameEncrypted: nameEncrypted)
@@ -102,14 +116,13 @@ enum SharedKeyOps {
     }
 
     /// Resolve one content version independently of the name: the first frame decides
-    /// which id convention that version's key came from.
+    /// which id convention that version's key came from. The caller (`classifyOwnerContent`)
+    /// caches the convention under the REAL `objectVersionId`; this function never
+    /// invents one from the frame bytes.
     static func resolveOwnerContent(master: MasterKeyHandle, fileId: String, firstFrame: Data,
                                     registry: SharedKeyRegistry<FileKeyHandle> = registry)
         throws -> (readKey: OwnerReadKey, convention: OwnerKeyConvention) {
         let resolved = try master.ownerFileKeyForContent(fileId: fileId, firstChunkFrame: firstFrame)
-        ownerConventions.storeContent(
-            resolved.convention, epoch: registry.generation, fileId: fileId,
-            objectVersionId: firstFrame.base64EncodedString())
         return (OwnerReadKey(resolved.key), resolved.convention)
     }
 
@@ -178,35 +191,69 @@ enum SharedKeyOps {
         if try FileKeyHandle.fromKeyBytes(key: candidate).keyId() == key.keyId() { return nil }
         return base64url(candidate)
     }
+    /// `ownedFileIds` is the caller's declaration of which rows this account owns.
+    /// Only those may fall through to the owner resolver; an id not listed is
+    /// treated as foreign, so a wrong table key stays final (SF-0002 boundary).
+    /// Every result carries the convention its name was authenticated with: a
+    /// core batch hit is `string_or_binary` (it accepts both id conventions); an
+    /// item the batch failed is retried through `resolveOwnerName` for OWNED ids
+    /// and reports that exact convention.
     static func decryptNames(master: MasterKeyHandle, items: [BatchNameItem],
-                             foreignFileIds: Set<String> = [],
-                             registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> [BatchNameResult] {
-        var fromTable: [(index: Int, value: BatchNameResult)] = []
+                             ownedFileIds: Set<String> = [],
+                             registry: SharedKeyRegistry<FileKeyHandle> = registry) throws -> [SharedNameResult] {
+        var fromTable: [(index: Int, value: SharedNameResult)] = []
         var remaining: [BatchNameItem] = [], indices: [Int] = []
         for (index, item) in items.enumerated() {
             if let key = registry.file(item.fileId) {
                 do {
                     let value = try key.decryptNameMetadata(nameEncrypted: item.nameEncrypted)
-                    fromTable.append((index, BatchNameResult(name: value.name, mimeType: value.mimeType, error: nil)))
+                    fromTable.append((index, SharedNameResult(name: value.name, mimeType: value.mimeType,
+                                                              error: nil, convention: "string_or_binary")))
                 } catch {
                     // A present but wrong table key is final for a FOREIGN shared file. For
                     // this account's own file it may be the uppercase-repair convention,
                     // which only the owner resolver can authenticate — retry there.
                     if nameResolutionPlan(tablePresent: true, tableFailed: true,
-                                          isForeign: foreignFileIds.contains(item.fileId)) == .ownerResolve,
+                                          isForeign: !ownedFileIds.contains(item.fileId)) == .ownerResolve,
                        let owner = try? resolveOwnerName(
                             master: master, fileId: item.fileId, nameEncrypted: item.nameEncrypted,
                             registry: registry),
                        let value = try? owner.readKey.decryptNameMetadata(nameEncrypted: item.nameEncrypted) {
-                        fromTable.append((index, BatchNameResult(name: value.name, mimeType: value.mimeType, error: nil)))
+                        fromTable.append((index, SharedNameResult(name: value.name, mimeType: value.mimeType,
+                                                                  error: nil, convention: conventionCode(owner.convention))))
                     } else {
-                        fromTable.append((index, BatchNameResult(name: nil, mimeType: nil, error: String(describing: error))))
+                        fromTable.append((index, SharedNameResult(name: nil, mimeType: nil,
+                                                                  error: String(describing: error), convention: nil)))
                     }
                 }
             } else { remaining.append(item); indices.append(index) }
         }
         let results = remaining.isEmpty ? [] : try master.decryptNames(items: remaining)
-        return mergeNameResults(count: items.count, fromTable: fromTable, fromMaster: Array(zip(indices, results)))
+        let fromMaster: [(index: Int, value: SharedNameResult)] = zip(indices, results).map { index, result in
+            if result.error == nil {
+                return (index, SharedNameResult(name: result.name, mimeType: result.mimeType,
+                                                error: nil, convention: "string_or_binary"))
+            }
+            if ownedFileIds.contains(items[index].fileId),
+               let owner = try? resolveOwnerName(master: master, fileId: items[index].fileId,
+                                                 nameEncrypted: items[index].nameEncrypted, registry: registry),
+               let value = try? owner.readKey.decryptNameMetadata(nameEncrypted: items[index].nameEncrypted) {
+                return (index, SharedNameResult(name: value.name, mimeType: value.mimeType,
+                                                error: nil, convention: conventionCode(owner.convention)))
+            }
+            return (index, SharedNameResult(name: result.name, mimeType: result.mimeType,
+                                            error: result.error, convention: nil))
+        }
+        return mergeNameResults(count: items.count, fromTable: fromTable, fromMaster: fromMaster)
+    }
+    /// The bridge code for a resolved convention. Canonical `string`/`binary`
+    /// stay distinct so rename/overwrite can be decided exactly.
+    static func conventionCode(_ convention: OwnerKeyConvention) -> String {
+        switch convention {
+        case .string: return "string"
+        case .binary: return "binary"
+        case .upperRepair: return "upper_repair"
+        }
     }
     private static func base64url(_ data: Data) -> String {
         data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")

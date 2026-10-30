@@ -116,11 +116,14 @@ do {
     let results = try SharedKeyOps.decryptNames(
         master: master,
         items: [BatchNameItem(fileId: fileId, nameEncrypted: v["name_encrypted"] as! String)],
+        ownedFileIds: [fileId],
         registry: registry)
     check(results.count == 1, "anOwnedFileInAnOwnedSharedFolderFallsThroughToTheOwnerResolver: result count")
     check(results[0].name == v["expected_name"] as! String,
           "anOwnedFileInAnOwnedSharedFolderFallsThroughToTheOwnerResolver: owner retry wins")
     check(results[0].error == nil, "anOwnedFileInAnOwnedSharedFolderFallsThroughToTheOwnerResolver: no error")
+    check(results[0].convention == "upper_repair",
+          "anOwnedFileInAnOwnedSharedFolderFallsThroughToTheOwnerResolver: exact convention")
     check(SharedKeyOps.nameResolutionPlan(tablePresent: true, tableFailed: true, isForeign: false)
             == .ownerResolve,
           "anOwnedFileInAnOwnedSharedFolderFallsThroughToTheOwnerResolver: plan")
@@ -141,14 +144,21 @@ do {
     let results = try SharedKeyOps.decryptNames(
         master: master,
         items: [BatchNameItem(fileId: fileId, nameEncrypted: v["name_encrypted"] as! String)],
-        foreignFileIds: [fileId],
         registry: registry)
     check(results.count == 1, "aForeignWrongTableKeyStaysFinal: result count")
     check(results[0].name == nil, "aForeignWrongTableKeyStaysFinal: no name")
     check(results[0].error != nil, "aForeignWrongTableKeyStaysFinal: error is final")
+    check(results[0].convention == nil, "aForeignWrongTableKeyStaysFinal: no convention")
     check(SharedKeyOps.nameResolutionPlan(tablePresent: true, tableFailed: true, isForeign: true)
             == .errorFinal,
           "aForeignWrongTableKeyStaysFinal: plan")
+    // Declaring the id foreign is the same verdict as not declaring it owned.
+    let declaredForeign = try SharedKeyOps.decryptNames(
+        master: master,
+        items: [BatchNameItem(fileId: fileId, nameEncrypted: v["name_encrypted"] as! String)],
+        ownedFileIds: [],
+        registry: registry)
+    check(declaredForeign[0].name == nil, "aForeignWrongTableKeyStaysFinal: default set is final")
 } catch {
     print("FAIL: aForeignWrongTableKeyStaysFinal threw \(error)")
     exit(1)
@@ -178,6 +188,191 @@ do {
           "theConventionCacheHoldsNoKeysAndClearsOnLock: cleared with sharedKeysClear")
 } catch {
     print("FAIL: theConventionCacheHoldsNoKeysAndClearsOnLock threw \(error)")
+    exit(1)
+}
+
+// MARK: - 6. Names carry their convention; a canonical row costs no owner attempt
+
+do {
+    let v = try vector("metadata_v2_name")
+    let master = try MasterKeyHandle.fromKeychainBytes(bytes: hex(v["master_key_hex"] as! String))
+    let fileId = v["file_id"] as! String
+    SharedKeyOps.resetOwnerResolveAttempts()
+    let results = try SharedKeyOps.decryptNames(
+        master: master,
+        items: [BatchNameItem(fileId: fileId, nameEncrypted: v["name_encrypted"] as! String)],
+        ownedFileIds: [fileId])
+    check(results.count == 1, "aCanonicalNameCostsNoExtraAttemptInTheBatch: result count")
+    check(results[0].name == v["expected_name"] as! String,
+          "aCanonicalNameCostsNoExtraAttemptInTheBatch: name")
+    check(results[0].convention == "string_or_binary",
+          "aCanonicalNameCostsNoExtraAttemptInTheBatch: batch hit is string_or_binary")
+    check(SharedKeyOps.ownerResolveAttempts == 0,
+          "aCanonicalNameCostsNoExtraAttemptInTheBatch: no owner resolver attempt")
+} catch {
+    print("FAIL: aCanonicalNameCostsNoExtraAttemptInTheBatch threw \(error)")
+    exit(1)
+}
+
+// MARK: - 7. An owned item the core batch fails retries through the owner resolver
+
+do {
+    let v = try vector("upper_repair_v1")
+    let master = try MasterKeyHandle.fromKeychainBytes(bytes: hex(v["master_key_hex"] as! String))
+    let fileId = v["file_id"] as! String
+    SharedKeyOps.resetOwnerResolveAttempts()
+    let results = try SharedKeyOps.decryptNames(
+        master: master,
+        items: [BatchNameItem(fileId: fileId, nameEncrypted: v["name_encrypted"] as! String)],
+        ownedFileIds: [fileId])
+    check(results[0].name == v["expected_name"] as! String,
+          "anOwnedFailedBatchItemRetriesThroughTheOwnerResolver: name")
+    check(results[0].convention == "upper_repair",
+          "anOwnedFailedBatchItemRetriesThroughTheOwnerResolver: exact convention")
+    check(SharedKeyOps.ownerResolveAttempts == 1,
+          "anOwnedFailedBatchItemRetriesThroughTheOwnerResolver: one attempt")
+    // Not declared owned: the batch failure is final and never reaches the resolver.
+    SharedKeyOps.resetOwnerResolveAttempts()
+    let foreign = try SharedKeyOps.decryptNames(
+        master: master,
+        items: [BatchNameItem(fileId: fileId, nameEncrypted: v["name_encrypted"] as! String)])
+    check(foreign[0].name == nil, "anOwnedFailedBatchItemRetriesThroughTheOwnerResolver: undeclared stays failed")
+    check(SharedKeyOps.ownerResolveAttempts == 0,
+          "anOwnedFailedBatchItemRetriesThroughTheOwnerResolver: undeclared costs no attempt")
+} catch {
+    print("FAIL: anOwnedFailedBatchItemRetriesThroughTheOwnerResolver threw \(error)")
+    exit(1)
+}
+
+// MARK: - 8. classifyOwnerContent caps its chunk-0 read at C
+
+final class FakeChunkZeroTransport: ChunkZeroTransport {
+    var body: Data
+    var declaredLength: Int?
+    var throwsError = false
+    var calls = 0
+    var lastURL = ""
+    var lastMaxBytes = -1
+    var vendedBytes = 0
+
+    init(body: Data = Data(), declaredLength: Int? = nil) {
+        self.body = body
+        self.declaredLength = declaredLength
+    }
+
+    func fetch(apiUrl: String, fileId: String, token: String, maxBytes: Int) throws -> ChunkZeroResponse {
+        calls += 1
+        lastURL = "\(apiUrl)/api/v1/files/\(fileId)/chunks/0"
+        lastMaxBytes = maxBytes
+        if throwsError { throw NSError(domain: "classify", code: 1) }
+        if let declaredLength, declaredLength > maxBytes {
+            return ChunkZeroResponse(status: 200, contentLength: declaredLength, body: Data(), tooLarge: true)
+        }
+        if body.count > maxBytes {
+            return ChunkZeroResponse(status: 200, contentLength: nil, body: Data(), tooLarge: true)
+        }
+        vendedBytes = body.count
+        return ChunkZeroResponse(status: 200, contentLength: declaredLength, body: body, tooLarge: false)
+    }
+}
+
+do {
+    let v = try vector("upper_repair_v1")
+    let master = try MasterKeyHandle.fromKeychainBytes(bytes: hex(v["master_key_hex"] as! String))
+    let fileId = v["file_id"] as! String
+    SharedKeyOps.ownerConventions.clear()
+    let registry = SharedKeyRegistry<FileKeyHandle>()
+    check(OwnerContentClassifier.maxChunkZeroBytes == 4 * 1024 * 1024 + 28,
+          "classifyReadsAtMostCBytesFromChunks0: C is the pinned 4 MiB chunk plus AEAD overhead")
+
+    // A declared length over C: the body is never read.
+    let declared = FakeChunkZeroTransport(declaredLength: OwnerContentClassifier.maxChunkZeroBytes + 1)
+    let declaredCode = OwnerContentClassifier(transport: declared).classify(
+        master: master, fileId: fileId, objectVersionId: "v-big", createdAt: "2026-06-01T00:00:00Z",
+        apiUrl: "https://api.example.test", token: "t", registry: registry)
+    check(declaredCode == "string_or_binary", "classifyReadsAtMostCBytesFromChunks0: over-cap length is string_or_binary")
+    check(declared.lastURL == "https://api.example.test/api/v1/files/\(fileId)/chunks/0",
+          "classifyReadsAtMostCBytesFromChunks0: URL is /chunks/0")
+    check(declared.lastMaxBytes == OwnerContentClassifier.maxChunkZeroBytes,
+          "classifyReadsAtMostCBytesFromChunks0: cap is handed to the transport")
+    check(declared.vendedBytes == 0, "classifyReadsAtMostCBytesFromChunks0: no body read past C")
+
+    // An unbounded (chunked) body over C: also never vended past the cap.
+    let chunked = FakeChunkZeroTransport(body: Data(count: OwnerContentClassifier.maxChunkZeroBytes + 64))
+    let chunkedCode = OwnerContentClassifier(transport: chunked).classify(
+        master: master, fileId: fileId, objectVersionId: "v-chunked", createdAt: "2026-06-01T00:00:00Z",
+        apiUrl: "https://api.example.test", token: "t", registry: registry)
+    check(chunkedCode == "string_or_binary", "classifyReadsAtMostCBytesFromChunks0: chunked over-cap is string_or_binary")
+    check(chunked.vendedBytes == 0, "classifyReadsAtMostCBytesFromChunks0: bounded read stops at C")
+} catch {
+    print("FAIL: classifyReadsAtMostCBytesFromChunks0 threw \(error)")
+    exit(1)
+}
+
+// MARK: - 9. A pre-cutover file or a known UpperRepair name costs zero requests
+
+do {
+    let v = try vector("upper_repair_v1")
+    let master = try MasterKeyHandle.fromKeychainBytes(bytes: hex(v["master_key_hex"] as! String))
+    let fileId = v["file_id"] as! String
+    SharedKeyOps.ownerConventions.clear()
+    let registry = SharedKeyRegistry<FileKeyHandle>()
+    let transport = FakeChunkZeroTransport(declaredLength: 1)
+    let classifier = OwnerContentClassifier(transport: transport)
+
+    let preCutover = classifier.classify(
+        master: master, fileId: fileId, objectVersionId: "v-pre", createdAt: "2026-04-30T23:59:59Z",
+        apiUrl: "https://api.example.test", token: "t", registry: registry)
+    check(preCutover == "string_or_binary", "classifyIsZeroRequestsForAPreMayFileOrAnUpperRepairName: pre-cutover verdict")
+    check(transport.calls == 0, "classifyIsZeroRequestsForAPreMayFileOrAnUpperRepairName: pre-cutover requests")
+
+    SharedKeyOps.ownerConventions.storeName(.upperRepair, epoch: registry.generation, fileId: fileId,
+                                             nameEncrypted: "sealed-name")
+    let upper = classifier.classify(
+        master: master, fileId: fileId, objectVersionId: "v-upper", createdAt: "2026-06-01T00:00:00Z",
+        apiUrl: "https://api.example.test", token: "t", registry: registry)
+    check(upper == "upper_repair", "classifyIsZeroRequestsForAPreMayFileOrAnUpperRepairName: upper-repair verdict")
+    check(transport.calls == 0, "classifyIsZeroRequestsForAPreMayFileOrAnUpperRepairName: upper-repair requests")
+} catch {
+    print("FAIL: classifyIsZeroRequestsForAPreMayFileOrAnUpperRepairName threw \(error)")
+    exit(1)
+}
+
+// MARK: - 10. A failed classify is unknown and not cached
+
+do {
+    let v = try vector("upper_repair_v1")
+    let master = try MasterKeyHandle.fromKeychainBytes(bytes: hex(v["master_key_hex"] as! String))
+    let fileId = v["file_id"] as! String
+    SharedKeyOps.ownerConventions.clear()
+    let registry = SharedKeyRegistry<FileKeyHandle>()
+    let failing = FakeChunkZeroTransport()
+    failing.throwsError = true
+    let failedCode = OwnerContentClassifier(transport: failing).classify(
+        master: master, fileId: fileId, objectVersionId: "v-fail", createdAt: "2026-06-01T00:00:00Z",
+        apiUrl: "https://api.example.test", token: "t", registry: registry)
+    check(failedCode == "unknown", "aFailedClassifyIsUnknownAndNotCached: verdict")
+    check(SharedKeyOps.ownerConventions.content(epoch: registry.generation, fileId: fileId,
+                                                objectVersionId: "v-fail") == nil,
+          "aFailedClassifyIsUnknownAndNotCached: failure not cached")
+
+    let good = FakeChunkZeroTransport(body: hex(v["content_frame_hex"] as! String))
+    let classifier = OwnerContentClassifier(transport: good)
+    let code = classifier.classify(
+        master: master, fileId: fileId, objectVersionId: "v-ok", createdAt: "2026-06-01T00:00:00Z",
+        apiUrl: "https://api.example.test", token: "t", registry: registry)
+    check(code == "upper_repair", "aFailedClassifyIsUnknownAndNotCached: content convention")
+    check(SharedKeyOps.ownerConventions.content(epoch: registry.generation, fileId: fileId,
+                                                objectVersionId: "v-ok") != nil,
+          "aFailedClassifyIsUnknownAndNotCached: success cached by objectVersionId")
+    let calls = good.calls
+    check(classifier.classify(
+        master: master, fileId: fileId, objectVersionId: "v-ok", createdAt: "2026-06-01T00:00:00Z",
+        apiUrl: "https://api.example.test", token: "t", registry: registry) == "upper_repair",
+          "aFailedClassifyIsUnknownAndNotCached: cache hit verdict")
+    check(good.calls == calls, "aFailedClassifyIsUnknownAndNotCached: cache hit costs no request")
+} catch {
+    print("FAIL: aFailedClassifyIsUnknownAndNotCached threw \(error)")
     exit(1)
 }
 

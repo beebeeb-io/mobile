@@ -1837,7 +1837,7 @@ export default function FilesScreen() {
     for (const f of encrypted) {
       const version = f.version_number ?? 0;
       const cached = cache[f.id];
-      if (cached && cached.version === version) {
+      if (cached && cached.version === version && cached.convention) {
         // Valid persistent-cache hit — surface it if not already shown.
         if (knownNames[f.id] == null) seedNames[f.id] = cached.name;
         if (cached.mime != null && knownMimes[f.id] == null) seedMimes[f.id] = cached.mime;
@@ -1873,6 +1873,7 @@ export default function FilesScreen() {
       const normal = misses.filter((f) => !isRequestUpload(f));
       const appliedNames: Record<string, string> = {};
       const appliedMimes: Record<string, string | null> = {};
+      const appliedConventions: Record<string, string | null> = {};
       const failedNames: Record<string, true> = {};
 
       if (normal.length > 0) {
@@ -1900,6 +1901,7 @@ export default function FilesScreen() {
             }
             appliedNames[f.id] = r.name;
             appliedMimes[f.id] = r.mimeType ?? null;
+            appliedConventions[f.id] = r.convention ?? null;
           });
         } catch {
           // Batch unavailable (JS-only build / locked) — leave misses unresolved;
@@ -1944,10 +1946,15 @@ export default function FilesScreen() {
       for (const f of misses) {
         const nm = appliedNames[f.id];
         if (nm == null) continue;
+        // SF-0002: only persist an entry that knows its convention; one without
+        // is a miss anyway (see name-cache loadNameCache).
+        const convention = appliedConventions[f.id];
+        if (!convention) continue;
         nameCacheRef.current[f.id] = {
           name: nm,
           mime: appliedMimes[f.id] ?? null,
           version: f.version_number ?? 0,
+          convention: convention as 'string_or_binary' | 'string' | 'binary' | 'upper_repair',
         };
         cacheChanged = true;
       }

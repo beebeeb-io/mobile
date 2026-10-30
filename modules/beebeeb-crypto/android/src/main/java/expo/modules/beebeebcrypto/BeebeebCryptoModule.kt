@@ -897,20 +897,30 @@ class BeebeebCryptoModule : Module() {
       SharedKeyOps.fileKey(handles.get(handleId), fileId).decryptMetadata(nonce, ciphertext)
     }
 
-    AsyncFunction("decryptNames") { handleId: Int, items: List<Map<String, Any?>> ->
+    AsyncFunction("decryptNames") { handleId: Int, items: List<Map<String, Any?>>, ownedFileIds: List<String> ->
       val batch = items.map { item ->
         BatchNameItem(
           fileId = item["fileId"] as? String ?: "",
           nameEncrypted = item["nameEncrypted"] as? String ?: "",
         )
       }
-      SharedKeyOps.decryptNames(handles.get(handleId), batch).map { result ->
+      SharedKeyOps.decryptNames(handles.get(handleId), batch, ownedFileIds.toSet()).map { result ->
         mapOf(
           "name" to result.name,
           "mimeType" to result.mimeType,
           "error" to result.error,
+          "convention" to result.convention,
         )
       }
+    }
+
+    // SF-0002 M2a: one bounded GET on chunk 0 decides an owned content version's
+    // id convention. Rules and C live in OwnerContentClassifier; an over-cap
+    // chunk 0 is `string_or_binary` without reading the body.
+    AsyncFunction("classifyOwnerContent") { handleId: Int, fileId: String, objectVersionId: String,
+      createdAt: String, apiUrl: String, token: String ->
+      OwnerContentClassifier.classify(
+        handles.get(handleId), fileId, objectVersionId, createdAt, apiUrl, token, clientVersion())
     }
 
     // Task 2263: read a name encrypted under a file key the app holds but did

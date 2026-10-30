@@ -1,6 +1,7 @@
 import { gatedPlaintextWrite } from './plaintext-gate';
 import { accountEpoch, onAccountEpochAdvance, sameAccountEpoch } from './account-epoch';
 import { isOwnerWrapLoaded, sharedFileKeyIsLoaded, sharedMasterHandleId } from './shared-folder-keys';
+import { recordNameConvention } from './sf-0002-write-state';
 
 export interface AdoptionPorts {
   loaded(id: string): boolean; fromOwnerWrap(id: string): boolean;
@@ -47,9 +48,19 @@ export function createSharedFolderAdopter(p: AdoptionPorts) {
 }
 
 export async function adoptDecryptedNames(
-  items: { fileId: string }[], results: { name: string | null; error: string | null }[],
+  items: { fileId: string }[], results: { name: string | null; error: string | null; convention?: string | null }[],
   adopt: (ids: string[]) => Promise<void> = adoptVerified,
 ): Promise<void> {
+  // SF-0002: a name result carries the convention it authenticated under; keep
+  // it so the write verdict can be computed without another owner attempt.
+  for (let i = 0; i < items.length; i++) {
+    const result = results[i];
+    if (result?.name == null || result.error) continue;
+    if (result.convention === 'string' || result.convention === 'binary'
+      || result.convention === 'upper_repair' || result.convention === 'string_or_binary') {
+      recordNameConvention(items[i].fileId, result.convention);
+    }
+  }
   await adopt(items.filter((_,i)=>results[i]?.name != null && !results[i]?.error).map(item=>item.fileId));
 }
 

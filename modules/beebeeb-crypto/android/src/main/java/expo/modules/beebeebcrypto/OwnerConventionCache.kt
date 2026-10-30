@@ -11,9 +11,12 @@ import uniffi.beebeeb_uniffi.OwnerKeyConvention
 class OwnerConventionCache {
   private data class NameKey(val epoch: Long, val fileId: String, val nameHash: String)
   private data class ContentKey(val epoch: Long, val fileId: String, val objectVersionId: String)
+  private data class FileKey(val epoch: Long, val fileId: String)
 
   private val names = HashMap<NameKey, OwnerKeyConvention>()
   private val contents = HashMap<ContentKey, OwnerKeyConvention>()
+  /** Files whose NAME is known uppercase-repair sealed (classify rule 3). */
+  private val upperRepairNames = HashSet<FileKey>()
 
   @Synchronized
   fun name(epoch: Long, fileId: String, nameEncrypted: String): OwnerKeyConvention? =
@@ -22,7 +25,14 @@ class OwnerConventionCache {
   @Synchronized
   fun storeName(convention: OwnerKeyConvention, epoch: Long, fileId: String, nameEncrypted: String) {
     names[NameKey(epoch, fileId, hash(nameEncrypted))] = convention
+    if (convention == OwnerKeyConvention.UPPER_REPAIR) upperRepairNames.add(FileKey(epoch, fileId))
+    else upperRepairNames.remove(FileKey(epoch, fileId))
   }
+
+  /** True when this epoch already knows `fileId`'s name is uppercase-repair sealed. */
+  @Synchronized
+  fun isUpperRepairName(epoch: Long, fileId: String): Boolean =
+    upperRepairNames.contains(FileKey(epoch, fileId))
 
   @Synchronized
   fun content(epoch: Long, fileId: String, objectVersionId: String): OwnerKeyConvention? =
@@ -37,6 +47,7 @@ class OwnerConventionCache {
   fun clear() {
     names.clear()
     contents.clear()
+    upperRepairNames.clear()
   }
 
   @Synchronized

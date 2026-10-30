@@ -3043,19 +3043,31 @@ public class BeebeebCryptoModule: Module {
     // perf). Delegates to core's `MasterKeyHandle.decryptNames` (0806) — the master
     // key stays native (0556); a bad item yields a per-item error, never failing the
     // batch. Order + length match `items`.
-    AsyncFunction("decryptNames") { [self] (handleId: Int, items: [[String: String]]) throws -> [[String: Any]] in
+    AsyncFunction("decryptNames") { [self] (handleId: Int, items: [[String: String]], ownedFileIds: [String]) throws -> [[String: Any]] in
       let master = try self.getHandle(handleId)
       let batchItems = items.map { item in
         BatchNameItem(fileId: item["fileId"] ?? "", nameEncrypted: item["nameEncrypted"] ?? "")
       }
-      let results = try SharedKeyOps.decryptNames(master: master, items: batchItems)
+      let results = try SharedKeyOps.decryptNames(master: master, items: batchItems, ownedFileIds: Set(ownedFileIds))
       return results.map { result -> [String: Any] in
         [
           "name": result.name as Any,
           "mimeType": result.mimeType as Any,
           "error": result.error as Any,
+          "convention": result.convention as Any,
         ]
       }
+    }
+
+    // SF-0002 M2a: one bounded GET on chunk 0 decides an owned content version's
+    // id convention. Rules and C live in OwnerContentClassifier; an over-cap
+    // chunk 0 is `string_or_binary` without reading the body.
+    AsyncFunction("classifyOwnerContent") { [self] (handleId: Int, fileId: String, objectVersionId: String,
+                                                    createdAt: String, apiUrl: String, token: String) throws -> String in
+      let master = try self.getHandle(handleId)
+      return OwnerContentClassifier().classify(
+        master: master, fileId: fileId, objectVersionId: objectVersionId,
+        createdAt: createdAt, apiUrl: apiUrl, token: token)
     }
 
     // Task 2263: read a name encrypted under a file key the app holds but did
