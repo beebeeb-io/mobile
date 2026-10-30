@@ -67,6 +67,8 @@ import {
 } from '../lib/text-file-save';
 import { decryptToTempFile, invalidatePreviewCache, materializeVideoPreviewForExport, releasePreviewCopy } from '../lib/native-decrypt';
 import { isLoopbackStreamUri, streamBufferPctFromEvent } from '../lib/video-stream';
+import { isExportableDisplayName, parseExportDisplayName } from '../lib/export-file-name';
+import { prepareExportShareCopy } from '../lib/export-share-copy';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
@@ -3346,8 +3348,53 @@ export default function PreviewScreen() {
     reloadNonce,
   ]);
 
-  const getExportUri = useCallback(async (signal?: AbortSignal, onExportProgress?: (event: PreviewLoadProgressEvent) => void): Promise<ExportUriResult> => {
-    return resolvePreviewExportUri({
+  // Task 2253 — the name the share sheet must show for an exported file.
+  // The route / photo-list name is normally the decrypted display name
+  // already; when it is missing, or is still the `{cipher_suite…}` envelope,
+  // decrypt it HERE (the export waits for the name instead of guessing one).
+  // A name that cannot be decrypted returns null and the export falls back to
+  // today's id-based name.
+  const decryptExportName = useCallback(async (nameEncrypted: string | null | undefined): Promise<string | null> => {
+    if (!nameEncrypted?.trim()) return null;
+    if (!nameEncrypted.trim().startsWith('{')) {
+      return isExportableDisplayName(nameEncrypted) ? nameEncrypted : null;
+    }
+    const payload = encryptedMetadataPayloadToBytes(nameEncrypted);
+    if (!payload) return null;
+    try {
+      const plaintext = await decryptMetadata(currentFileId, payload.nonce, payload.ciphertext);
+      return parseExportDisplayName(plaintext);
+    } catch {
+      return null;
+    }
+  }, [currentFileId, decryptMetadata]);
+
+  const resolveExportDisplayName = useCallback(async (): Promise<string | null> => {
+    // Swipe-pager entry: it carries the file's own encrypted name. When that
+    // is ciphertext the entry's display_name is a placeholder, so decrypt.
+    if (currentEntry?.name_encrypted) {
+      if (isExportableDisplayName(currentEntry.name_encrypted)) {
+        return isExportableDisplayName(currentFileName) ? currentFileName : currentEntry.name_encrypted;
+      }
+      return decryptExportName(currentEntry.name_encrypted);
+    }
+    if (isExportableDisplayName(currentFileName)) return currentFileName;
+    // Single-file open: the route param can be blank when the name had not
+    // been decrypted yet — fetch the file's own metadata and decrypt it now.
+    try {
+      const fresh = await getFile(currentFileId);
+      return decryptExportName(fresh.name_encrypted);
+    } catch {
+      return null;
+    }
+  }, [currentEntry?.name_encrypted, currentFileName, currentFileId, decryptExportName]);
+
+  const getExportUri = useCallback(async (
+    signal?: AbortSignal,
+    onExportProgress?: (event: PreviewLoadProgressEvent) => void,
+    exportName?: string | null,
+  ): Promise<ExportUriResult> => {
+    const resolved = await resolvePreviewExportUri({
       isImage,
       imageUri,
       imagePreviewKind,
@@ -3361,6 +3408,28 @@ export default function PreviewScreen() {
       materializeStreamVideoForExport: materializeVideoPreviewForExport,
       signal,
     });
+    // Task 2253 — hand the sheet `<cache>/beebeeb-export/<random>/<real name>`
+    // in a fresh per-export folder instead of the id-named preview cache file.
+    const decryptExtension = previewDecryptExtension(currentMimeType, currentFileName);
+    const idBasedName = decryptExtension ? `${currentFileId}.${decryptExtension}` : currentFileId;
+    try {
+      const prepared = await prepareExportShareCopy({
+        sourceUri: resolved.uri,
+        displayName: exportName ?? null,
+        idBasedName,
+      });
+      return {
+        uri: prepared.uri,
+        reusedPreview: resolved.reusedPreview,
+        release: async () => {
+          await prepared.cleanup();
+          await resolved.release?.();
+        },
+      };
+    } catch (error) {
+      await resolved.release?.();
+      throw error;
+    }
   }, [
     currentFileId,
     currentFileName,
@@ -4108,9 +4177,15 @@ export default function PreviewScreen() {
         return;
       }
 
-      const { uri: shareUri, release } = await getExportUri(exportController.signal, (event) => {
-        exportProgressRef.current?.setProgress(event);
-      });
+      const { uri: shareUri, release } = await getExportUri(
+        exportController.signal,
+        (event) => {
+          exportProgressRef.current?.setProgress(event);
+        },
+        // Task 2253 — the sheet shows the file's real name, so resolve (and
+        // wait for) the decrypted display name before naming the copy.
+        await resolveExportDisplayName(),
+      );
       releaseExportCopy = release ?? null;
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -4138,7 +4213,7 @@ export default function PreviewScreen() {
       setDownloadProgress(0);
       setPreparingExport(false);
     }
-  }, [category, currentFileId, currentMimeType, getExportUri, previewFileName]);
+  }, [category, currentFileId, currentMimeType, getExportUri, previewFileName, resolveExportDisplayName]);
 
   const handleViewOriginal = useCallback(async () => {
     if (!isImage) return;
