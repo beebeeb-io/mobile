@@ -222,6 +222,29 @@ describe('vendored core vectors (task 1943 M1)', () => {
     expect(familiesFromNativeTable(kotlin, 'EXPECTED_FAMILY_ROW_COUNTS')).toEqual(EXPECTED_FAMILIES);
   });
 
+  test('bothNativeKatsCarryTheVersionIdNegativeAndIsolateTheV2Families', () => {
+    const swift = readFileSync(join(ROOT, SWIFT_KAT), 'utf8');
+    const kotlin = readFileSync(join(ROOT, KOTLIN_KAT), 'utf8');
+    // Round 4: the version binding is asserted by its own negative, not only by a positive
+    // `versionId()` comparison, and a throw in one chunk-v2 family must not stop the next one.
+    expect({ path: SWIFT_KAT, negative: /func testV2DecryptRefusesAnotherVersionId\(/.test(swift) }).toEqual({
+      path: SWIFT_KAT,
+      negative: true,
+    });
+    expect({ path: KOTLIN_KAT, negative: /fun v2DecryptRefusesAnotherVersionId\(/.test(kotlin) }).toEqual({
+      path: KOTLIN_KAT,
+      negative: true,
+    });
+    expect({ path: SWIFT_KAT, isolated: swift.includes('XCTContext.runActivity') }).toEqual({
+      path: SWIFT_KAT,
+      isolated: true,
+    });
+    expect({ path: KOTLIN_KAT, isolated: kotlin.includes('failures.isEmpty()') }).toEqual({
+      path: KOTLIN_KAT,
+      isolated: true,
+    });
+  });
+
   test.skipIf(!HAVE_CORE_REV)('theVendoredBytesMatchCoreAtThePinnedRevision', () => {
     const proc = runCaptured(['git', '-C', CORE_DIR, 'show', `${CORE_REV}:test-vectors/vectors.json`]);
     expect({ code: proc.code, stderr: proc.stderr.toString() }).toEqual({ code: 0, stderr: '' });

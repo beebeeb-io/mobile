@@ -244,42 +244,104 @@ final class CoreVectorsKATTests: XCTestCase {
     func testChunkV2FamiliesDecryptThroughTheBinding() throws {
         let vectors = try Self.loadVectors()
         for name in ["chunk_v2_single_frame", "chunk_v2_stream"] {
-            let v = try Self.vector(vectors, named: name)
-            let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(v, "master_key_hex"))
-            let fileId = try Self.str(v, "file_id")
-            let versionId = try Self.hex(v, "version_id_hex")
-            let fileKey = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
-            let frames = try XCTUnwrap(v["frames"] as? [[String: Any]], "\(name): frames")
-            let chunkCount = try XCTUnwrap(v["chunk_count"] as? Int)
-            var allPassed = true
-            expectEqual(frames.count, chunkCount, "\(name): frame count", allPassed: &allPassed)
-
-            let decryptor = try ChunkDecryptorHandle.forPush(
-                masterKey: master, fileId: fileId, expectedChunkFormat: 2)
-            var streamed = Data()
-            for (position, frame) in frames.enumerated() {
-                let frameData = try Self.hex(frame, "frame_hex")
-                let index = try XCTUnwrap(frame["index"] as? Int)
-                let isLast = try XCTUnwrap(frame["is_last"] as? Bool)
-                expectEqual(index, position, "\(name): frames must be ordered by index", allPassed: &allPassed)
-                let opened = try decryptor.pushFrame(frame: frameData)
-                expectEqual(opened.index, UInt32(index), "\(name): pushed frame index", allPassed: &allPassed)
-                streamed.append(opened.data)
-                let randomAccess = try fileKey.decryptChunkFrame(
-                    fileId: fileId, versionId: versionId, index: UInt32(index), isLast: isLast,
-                    format: 2, frame: frameData)
-                let expectedFrame = try Self.hex(frame, "plaintext_hex")
-                expectEqual(randomAccess, expectedFrame, "\(name): frame \(index) random access", allPassed: &allPassed)
+            // Each family runs in its own activity and its own do/catch: a throw is recorded as
+            // THAT family's failure (named here and in the message) and the next family still
+            // runs. Before round 4 the first family's throw aborted the method, so the second
+            // family's plaintext and version-id comparisons were never reached.
+            _ = XCTContext.runActivity(named: "chunk v2 family: \(name)") { _ in
+                do {
+                    try assertChunkV2FamilyDecrypts(name, vectors: vectors)
+                } catch {
+                    XCTFail("\(name): threw before the family completed — \(error)")
+                }
             }
-            expectEqual(try XCTUnwrap(decryptor.versionId()), versionId,
-                        "\(name): version id after the frames", allPassed: &allPassed)
-            let summary = try decryptor.finish()
-            expectEqual(summary.format, 2, "\(name): detected format", allPassed: &allPassed)
-            expectEqual(summary.chunkCount, UInt32(frames.count), "\(name): finished chunk count", allPassed: &allPassed)
-            let expectedStream = try Self.hex(v, "plaintext_hex")
-            expectEqual(streamed, expectedStream, "\(name): streamed plaintext", allPassed: &allPassed)
-            if allPassed { Self.logPass("\(name) (streamed + per-frame open)") }
         }
+    }
+
+    private func assertChunkV2FamilyDecrypts(_ name: String, vectors: [[String: Any]]) throws {
+        let v = try Self.vector(vectors, named: name)
+        let master = try MasterKeyHandle.fromKeychainBytes(bytes: Self.hex(v, "master_key_hex"))
+        let fileId = try Self.str(v, "file_id")
+        let versionId = try Self.hex(v, "version_id_hex")
+        let fileKey = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
+        let frames = try XCTUnwrap(v["frames"] as? [[String: Any]], "\(name): frames")
+        let chunkCount = try XCTUnwrap(v["chunk_count"] as? Int)
+        var allPassed = true
+        expectEqual(frames.count, chunkCount, "\(name): frame count", allPassed: &allPassed)
+
+        let decryptor = try ChunkDecryptorHandle.forPush(
+            masterKey: master, fileId: fileId, expectedChunkFormat: 2)
+        var streamed = Data()
+        for (position, frame) in frames.enumerated() {
+            let frameData = try Self.hex(frame, "frame_hex")
+            let index = try XCTUnwrap(frame["index"] as? Int)
+            let isLast = try XCTUnwrap(frame["is_last"] as? Bool)
+            expectEqual(index, position, "\(name): frames must be ordered by index", allPassed: &allPassed)
+            let opened = try decryptor.pushFrame(frame: frameData)
+            expectEqual(opened.index, UInt32(index), "\(name): pushed frame index", allPassed: &allPassed)
+            streamed.append(opened.data)
+            let randomAccess = try fileKey.decryptChunkFrame(
+                fileId: fileId, versionId: versionId, index: UInt32(index), isLast: isLast,
+                format: 2, frame: frameData)
+            let expectedFrame = try Self.hex(frame, "plaintext_hex")
+            expectEqual(randomAccess, expectedFrame, "\(name): frame \(index) random access", allPassed: &allPassed)
+        }
+        expectEqual(try XCTUnwrap(decryptor.versionId()), versionId,
+                    "\(name): version id after the frames", allPassed: &allPassed)
+        let summary = try decryptor.finish()
+        expectEqual(summary.format, 2, "\(name): detected format", allPassed: &allPassed)
+        expectEqual(summary.chunkCount, UInt32(frames.count), "\(name): finished chunk count", allPassed: &allPassed)
+        let expectedStream = try Self.hex(v, "plaintext_hex")
+        expectEqual(streamed, expectedStream, "\(name): streamed plaintext", allPassed: &allPassed)
+        if allPassed { Self.logPass("\(name) (streamed + per-frame open)") }
+    }
+
+    /// The AAD version binding, asserted as a negative: for every V2 family, frame 0 opens with
+    /// the vector's own version id and MUST be refused when one bit of that version id flips.
+    /// The positive `versionId()` comparison above proves what the reader reports; this proves a
+    /// different id cannot open the same frame, which is the binding itself.
+    func testV2DecryptRefusesAnotherVersionId() throws {
+        let vectors = try Self.loadVectors()
+        for name in ["chunk_v2_single_frame", "chunk_v2_stream"] {
+            _ = XCTContext.runActivity(named: "chunk v2 versionId negative: \(name)") { _ in
+                do {
+                    try assertV2RefusesAnotherVersionId(name, vectors: vectors)
+                } catch {
+                    XCTFail("\(name): versionId negative threw before it could assert — \(error)")
+                }
+            }
+        }
+    }
+
+    private func assertV2RefusesAnotherVersionId(_ name: String, vectors: [[String: Any]]) throws {
+        let v = try Self.vector(vectors, named: name)
+        let fileId = try Self.str(v, "file_id")
+        let versionId = try Self.hex(v, "version_id_hex")
+        let fileKey = try FileKeyHandle.fromKeyBytes(key: Self.hex(v, "file_key_hex"))
+        let frames = try XCTUnwrap(v["frames"] as? [[String: Any]], "\(name): frames")
+        let frame = try XCTUnwrap(frames.first, "\(name): frame 0")
+        let frameData = try Self.hex(frame, "frame_hex")
+        let index = try XCTUnwrap(frame["index"] as? Int)
+        let isLast = try XCTUnwrap(frame["is_last"] as? Bool)
+        let expectedFrame = try Self.hex(frame, "plaintext_hex")
+
+        var otherVersionId = versionId
+        otherVersionId[otherVersionId.startIndex] ^= 0x01
+        XCTAssertNotEqual(otherVersionId, versionId, "\(name): the negative version id must differ in one bit")
+
+        // Positive control: the vector's own version id opens frame 0.
+        let opened = try fileKey.decryptChunkFrame(
+            fileId: fileId, versionId: versionId, index: UInt32(index), isLast: isLast,
+            format: 2, frame: frameData)
+        XCTAssertEqual(opened, expectedFrame, "\(name): frame 0 opens under the vector version id")
+
+        // Negative: the same frame under a one-bit-different version id must throw.
+        XCTAssertThrowsError(
+            try fileKey.decryptChunkFrame(
+                fileId: fileId, versionId: otherVersionId, index: UInt32(index), isLast: isLast,
+                format: 2, frame: frameData),
+            "\(name): frame 0 must be refused under a version id that differs in one bit"
+        )
     }
 
     /// `metadata_v2_name` through the master-key name reader, and the two per-file-key name

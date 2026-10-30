@@ -206,38 +206,101 @@ class CoreVectorsKATTest {
      */
     @Test
     fun chunkV2FamiliesDecryptThroughTheBinding() {
+        // Each family is isolated: collect a failure per family and assert once at the end, so
+        // an exception in the first family (round 4: the binding threw "Decryption") still lets
+        // the second family run and every failure names its family.
+        val failures = mutableListOf<String>()
         for (name in listOf("chunk_v2_single_frame", "chunk_v2_stream")) {
-            val v = vector(loadRoot(), name)
-            val master = MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes())
-            val fileId = v.getString("file_id")
-            val versionId = v.getString("version_id_hex").hexToBytes()
-            val fileKey = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
-            val frames = v.getJSONArray("frames")
-            assertEquals("$name: frame count", v.getInt("chunk_count"), frames.length())
-
-            val decryptor = ChunkDecryptorHandle.forPush(master, fileId, 2u)
-            val streamed = java.io.ByteArrayOutputStream()
-            for (position in 0 until frames.length()) {
-                val frame = frames.getJSONObject(position)
-                val frameData = frame.getString("frame_hex").hexToBytes()
-                val index = frame.getInt("index")
-                val isLast = frame.getBoolean("is_last")
-                assertEquals("$name: frames must be ordered by index", position, index)
-                val opened = decryptor.pushFrame(frameData)
-                assertEquals("$name: pushed frame index", index.toUInt(), opened.index)
-                streamed.write(opened.data)
-                val randomAccess = fileKey.decryptChunkFrame(
-                    fileId, versionId, index.toUInt(), isLast, 2u, frameData)
-                assertHexEquals("$name: frame $index random access", frame.getString("plaintext_hex"), randomAccess)
+            try {
+                assertChunkV2FamilyDecrypts(name)
+            } catch (t: Throwable) {
+                failures += "$name: ${t.message ?: t.javaClass.simpleName}"
             }
-            val summary = decryptor.finish()
-            assertEquals("$name: detected format", 2, summary.format.toInt())
-            val actualVersionId = decryptor.versionId()
-            assertNotNull("$name: version id is null after the frames", actualVersionId)
-            assertHexEquals("$name: version id after the frames", v.getString("version_id_hex"), actualVersionId!!)
-            assertEquals("$name: finished chunk count", frames.length().toUInt(), summary.chunkCount)
-            assertHexEquals("$name: streamed plaintext", v.getString("plaintext_hex"), streamed.toByteArray())
-            println("[CoreVectorsKAT] $name: 1 row (streamed + per-frame open)")
+        }
+        assertTrue(
+            "chunk v2 families failed (each family isolated; all were attempted):\n" +
+                failures.joinToString("\n"),
+            failures.isEmpty(),
+        )
+    }
+
+    private fun assertChunkV2FamilyDecrypts(name: String) {
+        val v = vector(loadRoot(), name)
+        val master = MasterKeyHandle.fromKeychainBytes(v.getString("master_key_hex").hexToBytes())
+        val fileId = v.getString("file_id")
+        val versionId = v.getString("version_id_hex").hexToBytes()
+        val fileKey = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
+        val frames = v.getJSONArray("frames")
+        assertEquals("$name: frame count", v.getInt("chunk_count"), frames.length())
+
+        val decryptor = ChunkDecryptorHandle.forPush(master, fileId, 2u)
+        val streamed = java.io.ByteArrayOutputStream()
+        for (position in 0 until frames.length()) {
+            val frame = frames.getJSONObject(position)
+            val frameData = frame.getString("frame_hex").hexToBytes()
+            val index = frame.getInt("index")
+            val isLast = frame.getBoolean("is_last")
+            assertEquals("$name: frames must be ordered by index", position, index)
+            val opened = decryptor.pushFrame(frameData)
+            assertEquals("$name: pushed frame index", index.toUInt(), opened.index)
+            streamed.write(opened.data)
+            val randomAccess = fileKey.decryptChunkFrame(
+                fileId, versionId, index.toUInt(), isLast, 2u, frameData)
+            assertHexEquals("$name: frame $index random access", frame.getString("plaintext_hex"), randomAccess)
+        }
+        val summary = decryptor.finish()
+        assertEquals("$name: detected format", 2, summary.format.toInt())
+        val actualVersionId = decryptor.versionId()
+        assertNotNull("$name: version id is null after the frames", actualVersionId)
+        assertHexEquals("$name: version id after the frames", v.getString("version_id_hex"), actualVersionId!!)
+        assertEquals("$name: finished chunk count", frames.length().toUInt(), summary.chunkCount)
+        assertHexEquals("$name: streamed plaintext", v.getString("plaintext_hex"), streamed.toByteArray())
+        println("[CoreVectorsKAT] $name: 1 row (streamed + per-frame open)")
+    }
+
+    /**
+     * The AAD version binding as a negative: for every V2 family, frame 0 opens under the
+     * vector's own version id and MUST be refused when one bit of that id flips. Isolated the
+     * same way as the positive test, so each family's result is reported separately.
+     */
+    @Test
+    fun v2DecryptRefusesAnotherVersionId() {
+        val failures = mutableListOf<String>()
+        for (name in listOf("chunk_v2_single_frame", "chunk_v2_stream")) {
+            try {
+                assertV2RefusesAnotherVersionId(name)
+            } catch (t: Throwable) {
+                failures += "$name: ${t.message ?: t.javaClass.simpleName}"
+            }
+        }
+        assertTrue(
+            "chunk v2 versionId negatives failed (each family isolated; all were attempted):\n" +
+                failures.joinToString("\n"),
+            failures.isEmpty(),
+        )
+    }
+
+    private fun assertV2RefusesAnotherVersionId(name: String) {
+        val v = vector(loadRoot(), name)
+        val fileId = v.getString("file_id")
+        val versionId = v.getString("version_id_hex").hexToBytes()
+        val fileKey = FileKeyHandle.fromKeyBytes(v.getString("file_key_hex").hexToBytes())
+        val frame = v.getJSONArray("frames").getJSONObject(0)
+        val frameData = frame.getString("frame_hex").hexToBytes()
+        val index = frame.getInt("index")
+        val isLast = frame.getBoolean("is_last")
+
+        val otherVersionId = versionId.copyOf()
+        otherVersionId[0] = (otherVersionId[0].toInt() xor 0x01).toByte()
+        assertFalse("$name: the negative version id must differ in one bit", otherVersionId.contentEquals(versionId))
+
+        // Positive control: the vector's own version id opens frame 0.
+        val opened = fileKey.decryptChunkFrame(fileId, versionId, index.toUInt(), isLast, 2u, frameData)
+        assertHexEquals("$name: frame 0 opens under the vector version id", frame.getString("plaintext_hex"), opened)
+
+        // Negative: the same frame under a one-bit-different version id must throw.
+        assertThrows(Exception::class.java) {
+            fileKey.decryptChunkFrame(fileId, otherVersionId, index.toUInt(), isLast, 2u, frameData)
         }
     }
 

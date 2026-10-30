@@ -75,6 +75,7 @@ while true; do
       -scheme CoreVectorsKATTests \
       -destination "id=$UDID" \
       -derivedDataPath "$DERIVED_DATA" \
+      -collect-test-diagnostics never \
       > "$LOG" 2>&1
   status=$?
   set -e
