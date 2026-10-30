@@ -34,6 +34,7 @@ const SECURITY_SCREEN = join(ROOT, 'src/screens/ThumbnailQualityScreen.tsx');
 const APPLY_SEQUENCE = join(ROOT, 'src/lib/thumbnail-apply-sequence.ts');
 const THUMBNAIL_MODULE = join(ROOT, 'modules/beebeeb-crypto/ios/ThumbnailServiceModule.swift');
 const CRYPTO_MODULE = join(ROOT, 'modules/beebeeb-crypto/ios/BeebeebCryptoModule.swift');
+const WORKER_POOL = join(ROOT, 'modules/beebeeb-crypto/ios/ThumbnailWorkerPool.swift');
 
 function extractBody(source: string, signature: RegExp): string {
   const sigMatch = signature.exec(source);
@@ -222,4 +223,47 @@ describe('the app-process purge resets the thumbnail queue and keeps its files (
     );
   });
 
+});
+
+describe('a purge generation stops in-flight workers and pump() (round 5, P2.6)', () => {
+  const pool = stripLineComments(readFileSync(WORKER_POOL, 'utf8'));
+
+  test('cancelAll bumps the generation and pump() refuses a stale one', () => {
+    const cancelAll = extractBody(pool, /public func cancelAll\(\)/);
+    expect(cancelAll).toContain('purgeGate.purge()');
+    const pumpBody = extractBody(pool, /func pump\(\)/);
+    expect(pumpBody).toContain('purgeGate.allowsPump');
+    expect(pumpBody).toMatch(/if isPaused \|\| !mayPump \{ return \}/);
+  });
+
+  test('the next account bind re-enables the pool', () => {
+    const bind = extractBody(pool, /public func bindAccount\(\)/);
+    expect(bind).toContain('purgeGate.bind()');
+    const enqueue = extractBody(pool, /public func enqueue\(fileIds: \[String\], qualityPreset: String\)/);
+    expect(enqueue).toContain('bindAccount()');
+  });
+
+  test('a worker captures its generation and discards a stale result before any write', () => {
+    const enqueueOp = extractBody(pool, /private func enqueueOperation\(item: ThumbnailQueueDB\.Item\)/);
+    expect(enqueueOp).toContain('let generation = currentPurgeGeneration()');
+    expect(enqueueOp).toContain('runOne(item: item, generation: generation)');
+    const runOne = extractBody(pool, /private func runOne\(item: ThumbnailQueueDB\.Item, generation: UInt64\) async/);
+    const guardIndex = runOne.indexOf('guard self.isPurgeGenerationCurrent(generation) else');
+    expect(guardIndex).toBeGreaterThanOrEqual(0);
+    expect(guardIndex).toBeLessThan(runOne.indexOf('ThumbnailQueueDB.shared.markSucceeded'));
+    expect(guardIndex).toBeLessThan(runOne.indexOf('onFileCompleted?('));
+  });
+});
+
+describe('the stats timer is serialized on one queue (round 5, P2.7)', () => {
+  const pool = stripLineComments(readFileSync(WORKER_POOL, 'utf8'));
+
+  test('all timer access goes through the stats queue, with a specific key for the handler', () => {
+    expect(pool).toContain('statsTimerQueue.setSpecific(key: statsTimerQueueKey');
+    expect(pool).toContain('DispatchQueue.getSpecific(key: statsTimerQueueKey)');
+    const start = extractBody(pool, /private func startStatsTimerIfNeeded\(\)/);
+    expect(start).toContain('onStatsTimerQueue');
+    const stop = extractBody(pool, /private func stopStatsTimer\(\)/);
+    expect(stop).toContain('onStatsTimerQueue');
+  });
 });

@@ -2463,7 +2463,7 @@ public class BeebeebCryptoModule: Module {
       // unlinks a database under a live connection (the DB closes and
       // unlinks them itself on a failed reset, 7d).
       ThumbnailWorkerPool.shared.cancelAll()
-      ThumbnailQueueDB.prepareForStoragePurge()
+      failed += ThumbnailQueueDB.prepareForStoragePurge()
       // Task 1593 round 7 (C1) — moved LAST (was first). See the block
       // comment above this AsyncFunction for why.
       let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept.union(ThumbnailQueueDB.storagePurgePaths()))
