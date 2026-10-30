@@ -172,6 +172,13 @@ describe('android-release-guard.sh (task 1943 M1 / S6, D15 amendment 2026-10-30)
     } else {
       expectAllowed(result);
     }
+    // CI checks the .so files out as LFS stubs, so the guard refuses on the stub before it reaches the
+    // reader files. Compare every NON-.so pin here directly, so a reader (or binding .kt / CORE_REV) change
+    // made without setting the pin to "unverified" still turns CI red (s3-lead, #250 owner review).
+    expect(readFileSync(join(ROOT, MOD, 'CORE_REV'), 'utf8').trim()).toBe(pin);
+    for (const { rel, sha } of pinnedFiles().filter(({ rel }) => !rel.endsWith('.so'))) {
+      expect({ rel, sha256: sha256(join(ROOT, MOD, rel)) }).toEqual({ rel, sha256: sha });
+    }
   });
 
   test('android on a fully matching binding + readers is allowed with every profile', () => {
