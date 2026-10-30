@@ -14,6 +14,7 @@
  * Tests that need a different binding copy the script plus the pinned files into a temp tree.
  */
 import { describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -84,6 +85,29 @@ function withTree(mutate: (dir: string) => void, run: (script: string) => void) 
   }
 }
 
+/**
+ * Lead ruling 2026-10-30: the Android content-reader sources are frozen while the pin is a real
+ * revision. Changing one of them means the Android readers are no longer the M7-verified ones, so
+ * the same PR must set ANDROID_VERIFIED_CORE_REV="unverified" (re-arming the guard) — or, if the
+ * change is provably not a reader change, update the hash here in a reviewed PR that says why.
+ */
+const KT = 'modules/beebeeb-crypto/android/src/main/java/expo/modules/beebeebcrypto';
+const FROZEN_ANDROID_READERS: Record<string, string> = {
+  [`${KT}/BeebeebCryptoModule.kt`]: '838e4a5d8b1897f778403a1584f51b83a5dce8fb1bba8c9af61d39a78dbfe094',
+  [`${KT}/VideoStreamer.kt`]: 'e51bc23e5ecf28001dc19e3ef358bdec821fe63970d2f6745276a61b57f71cf5',
+  [`${KT}/VideoChunkMath.kt`]: 'b20937abdbe00416f22845bf5c6ce6894e860bdfba3342bea77d86093ba2edf3',
+  [`${KT}/PreviewDownloadProgress.kt`]: 'ab17d5fe4c1e58700609db24998ea41ed9828601b0ad46c116d11b6db627b8dd',
+  [`${KT}/SharedKeyOps.kt`]: '8701b3d6b07a5bc96c11fa6a39cdc5b8ae64b7a16d52e301e8f64475e5c32cf9',
+  [`${KT}/SharedKeyRegistry.kt`]: '714b8dfea48a7960784ce0cfec5ee68866163321a462945288ca39d699515427',
+  [`${KT}/BeebeebCryptoHandleRegistry.kt`]: '6534d83e1d453ac26a72139e208fa4ea823236f187ade8739ca3d8aa31e69c4b',
+};
+
+function scriptPin(script: string): string {
+  const m = readFileSync(script, 'utf8').match(/^ANDROID_VERIFIED_CORE_REV="([^"]*)"$/m);
+  if (!m) throw new Error('ANDROID_VERIFIED_CORE_REV line not found in the guard script');
+  return m[1];
+}
+
 const ANDROID_EAS = { EAS_BUILD: 'true', EAS_BUILD_PLATFORM: 'android' };
 
 const ANDROID_REASON = 'not the last Android-verified binding';
@@ -138,6 +162,15 @@ describe('android-release-guard.sh (task 1943 M1 / S6, D15 amendment 2026-10-30)
       );
     });
   }
+
+  test('frozen Android reader sources: a change requires the pin to be "unverified"', () => {
+    const pin = scriptPin(SCRIPT);
+    if (pin === 'unverified' || pin === '') return; // re-armed: Android readers may change
+    for (const [rel, expected] of Object.entries(FROZEN_ANDROID_READERS)) {
+      const actual = createHash('sha256').update(readFileSync(join(ROOT, rel))).digest('hex');
+      expect({ rel, sha256: actual }).toEqual({ rel, sha256: expected });
+    }
+  });
 
   test('an EAS build with no EAS_BUILD_PLATFORM fails closed', () => {
     const result = runGuard({ env: { EAS_BUILD: 'true' } });

@@ -16,7 +16,11 @@
 #   - unset / unknown           → refused (failing closed).
 # ANDROID_VERIFIED_CORE_REV="unverified" (the sentinel; an empty value counts the same) refuses every
 # Android build: that is how a PR that changes the Android readers WITHOUT a binding bump re-arms the
-# guard (1943 M2 does this; plan "Amendment 2026-10-30 (2)"). Only the M7 PR sets a real revision.
+# guard (plan "Amendment 2026-10-30 (2)"). 1943 M2 needs no CORE_REV bump — the binding at c08defc
+# already exports the pin-aware readers (decryptChunkFrame, ChunkDecryptorHandle, decryptThumbnail,
+# decryptChunksToFile) — so M2 sets the pin to "unverified" in the SAME commit as its Android reader
+# changes. Only the M7 PR sets a real revision. A test (`android-release-guard.test.ts`) freezes the
+# sha256 of the Android content-reader sources and fails if one changes while the pin is a real revision.
 #
 # There is deliberately NO evidence-file unlock: a text check on a repo file can be satisfied by
 # anything. Moving a pin is a reviewed code change. `eas submit` and direct Gradle
