@@ -4600,6 +4600,7 @@ final class NativeBackupEngine: NSObject {
       try await runChunksAndComplete(
         chunks,
         sessionId: uploadSessionId,
+        expectedFileId: fileId,
         asset: asset,
         authToken: authToken,
         baseURL: baseURL,
@@ -4685,6 +4686,7 @@ final class NativeBackupEngine: NSObject {
         try await runChunksAndComplete(
           allStaged,
           sessionId: uploadSessionId,
+          expectedFileId: fileId,
           asset: asset,
           authToken: authToken,
           baseURL: baseURL,
@@ -4769,6 +4771,9 @@ final class NativeBackupEngine: NSObject {
   private func runChunksAndComplete(
     _ chunksToSend: [StagedChunkRow],
     sessionId: String,
+    /// Task SF-0001: the id this engine minted for the asset; the completion
+    /// answer must name it.
+    expectedFileId: String,
     asset: BackupAssetRow,
     authToken: String,
     baseURL: String,
@@ -4831,7 +4836,7 @@ final class NativeBackupEngine: NSObject {
     await heartbeatIfDue(pacer: pacer, sessionId: sessionId, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)
     try await completeUpload(
       uploadSessionId: sessionId,
-      expectedFileId: serverFileId,
+      expectedFileId: expectedFileId,
       authToken: authToken,
       baseURL: baseURL,
       accountId: batchAccountId
