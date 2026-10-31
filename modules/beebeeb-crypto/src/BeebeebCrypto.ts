@@ -2193,7 +2193,11 @@ export async function downloadPhotoPreviewNative(
   return BeebeebCryptoModule.downloadPhotoPreviewNative(handleId, apiUrl, token, fileId, destPath)
 }
 
-/** Encode a library photo as a preview sample (plaintext, Caches only) for the compare view. */
+/**
+ * Encode a library photo as a preview sample (plaintext, Caches only) for the compare view.
+ * A plaintext writer: call it through `src/lib/photo-compare-samples.ts`, which holds a
+ * plaintext lease for the whole encode (the PhotoKit fetch may wait on iCloud).
+ */
 export async function encodePhotoPreviewSample(
   localIdentifier: string,
   format: 'heic' | 'jpeg',
@@ -2214,6 +2218,7 @@ export async function estimatePhotoPreviewBytes(
 /**
  * Downsampled original (JPEG q1.0 in the samples dir) for the compare view.
  * `originalBytes` is the size of the original file in the library, when PhotoKit reports it.
+ * Same plaintext rule as `encodePhotoPreviewSample`: go through `photo-compare-samples.ts`.
  */
 export async function originalPhotoForCompare(
   localIdentifier: string,

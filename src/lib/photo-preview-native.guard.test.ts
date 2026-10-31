@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
 const root = join(import.meta.dir, '..', '..', 'modules', 'beebeeb-crypto', 'ios');
 const swift = readFileSync(join(root, 'BeebeebCryptoModule.swift'), 'utf8');
@@ -161,5 +161,87 @@ describe('photo preview setting is account-scoped', () => {
     expect(body('uploadPhotoPreviewNative')).toContain('expectedUser: expectedUser');
     expect(body('uploadPhotoPreviewNative')).toContain('PhotoPreviewEncoder.encodeFittingCap');
     expect(swift.slice(swift.indexOf('enum PhotoPreviewAfterUpload'))).toContain('PhotoPreviewEncoder.encodeFittingCap');
+  });
+});
+
+// Task 260 (P2-1) — the compare view's samples are plaintext copies of a library
+// photo, written under Caches/beebeeb-previews-v1/samples/ after a PhotoKit fetch
+// that may wait on an iCloud download. Without a plaintext lease such an encode can
+// land its write AFTER sign-out's purge swept that directory, and nothing waits for
+// it. Both native calls therefore have exactly one entry point — the gated wrapper —
+// and this guard fails if a sample write becomes reachable outside a lease.
+describe('compare samples are written under a plaintext lease', () => {
+  const SRC = join(import.meta.dir, '..');
+  const GATED_WRAPPER = 'lib/photo-compare-samples.ts';
+  // The generated bridge module (the pass-through the wrapper calls) is not a writer.
+  const BRIDGE = join('..', 'modules', 'beebeeb-crypto', 'src', 'BeebeebCrypto.ts');
+  const NATIVE_CALL_RE = /\b(?:encodePhotoPreviewSample|originalPhotoForCompare)\b/;
+
+  function sourceFiles(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) return sourceFiles(path);
+      return /\.[jt]sx?$/.test(entry.name) && !/\.test\./.test(entry.name) ? [path] : [];
+    });
+  }
+
+  function nativeSampleCallSites(): string[] {
+    const found: string[] = [];
+    for (const file of sourceFiles(SRC)) {
+      readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+        if (NATIVE_CALL_RE.test(line)) found.push(`${relative(SRC, file)}:${i + 1}`);
+      });
+    }
+    const bridgePath = join(SRC, BRIDGE);
+    readFileSync(bridgePath, 'utf8').split('\n').forEach((line, i) => {
+      if (NATIVE_CALL_RE.test(line)) found.push(`${BRIDGE}:${i + 1}`);
+    });
+    return found;
+  }
+
+  test('the scan finds the native calls through the gated wrapper (a scan that matches nothing proves nothing)', () => {
+    const sites = nativeSampleCallSites();
+    expect(sites.some((s) => s.startsWith(`${GATED_WRAPPER}:`))).toBe(true);
+  });
+
+  test('every call site is the gated wrapper or the bridge definition — no screen calls the native encode', () => {
+    const offenders = nativeSampleCallSites()
+      .filter((s) => !s.startsWith(`${GATED_WRAPPER}:`) && !s.startsWith(`${BRIDGE}:`));
+    expect(offenders).toEqual([]);
+  });
+
+  test('the wrapper leases the whole async span and discards a sample that lands after the purge', () => {
+    const src = readFileSync(join(SRC, GATED_WRAPPER), 'utf8');
+    expect(src).toMatch(/from '\.\/plaintext-gate'/);
+    // Both entries, each under its own lease.
+    expect((src.match(/withPlaintextLease\(/g) ?? []).length).toBe(2);
+    for (const fn of ['encodePreviewSample', 'originalForCompare']) {
+      const start = src.indexOf(`export function ${fn}(`);
+      expect(start).toBeGreaterThan(-1);
+      const body = src.slice(start, src.indexOf('\n}', start));
+      expect(body).toMatch(/withPlaintextLease\(/);
+      expect(body).toMatch(/encodeUnderLease\(/);
+    }
+    // Validity checked BEFORE and AFTER the native call, and a late write deleted.
+    const helper = src.slice(src.indexOf('async function encodeUnderLease'));
+    const helperBody = helper.slice(0, helper.indexOf('\n}\n'));
+    expect(helperBody.indexOf('lease.assertValid()')).toBeGreaterThan(-1);
+    expect(helperBody.indexOf('lease.assertValid()')).toBeLessThan(helperBody.indexOf('await encode()'));
+    expect(helperBody).toContain('!lease.valid');
+    expect(helperBody).toContain('discardSample(result.path)');
+    expect(helperBody).toContain('throw new PlaintextGateClosedError');
+    // The discard only ever touches the samples folder.
+    const discard = src.slice(src.indexOf('async function discardSample'), src.indexOf('async function encodeUnderLease'));
+    expect(discard).toContain('SAMPLES_DIR_MARK');
+    expect(discard).toContain('idempotent: true');
+  });
+
+  test('both native sample writers still write only inside the Caches samples folder', () => {
+    for (const name of ['encodePhotoPreviewSample', 'originalPhotoForCompare']) {
+      const b = body(name);
+      expect(b).toContain('photoPreviewSamplesDirectory()');
+      expect(b).toContain('options: .atomic');
+      expect(b).not.toContain('NSTemporaryDirectory');
+    }
   });
 });

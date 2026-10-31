@@ -19,7 +19,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { RootStackParamList } from '../App';
-import { estimatePhotoPreviewBytes, encodePhotoPreviewSample } from '../../modules/beebeeb-crypto';
+import { estimatePhotoPreviewBytes } from '../../modules/beebeeb-crypto';
 import { NativeSwitch } from '../components/NativeSwitch';
 import { serverSupportsPhotoPreviews, getPhotoPreviewSummary, type FileEntry } from '../lib/api';
 import { mapInBatches } from '../lib/async-batch';
@@ -29,6 +29,7 @@ import { loadFileIndex } from '../lib/file-index-loader';
 import { formatBytes } from '../lib/format';
 import { ensurePhotoPermission } from '../lib/photo-permissions';
 import { mediaMimeType } from '../lib/photo-candidates';
+import { encodePreviewSample } from '../lib/photo-compare-samples';
 import { planApply, turnOffPreviews } from '../lib/photo-preview-apply';
 import {
   clearPreviewCache,
@@ -323,7 +324,7 @@ export default function PhotoPreviewsScreen() {
     }
     let cancelled = false;
     const forPreview = newestId ?? imageIdsOnPhone[0];
-    void encodePhotoPreviewSample(forPreview, setting.format, setting.px)
+    void encodePreviewSample(forPreview, setting.format, setting.px)
       .then((r) => { if (!cancelled) setSample({ uri: r.path.startsWith('file://') ? r.path : `file://${r.path}`, bytes: r.bytes }); })
       .catch(() => { if (!cancelled) setSample(null); });
     return () => { cancelled = true; };
