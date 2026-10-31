@@ -31,14 +31,15 @@ const MASTER_HANDLE = 42;
 const SHARED_HANDLE = 7;
 
 const state = {
-  platform: { OS: 'ios', select: (o: any) => o.ios ?? o.default },
+  platform: { OS: 'ios', select: (o: any) => o[state.platform.OS] ?? o.default } as any,
   sharedLoaded: new Set<string>(),
   nativeThumbnailHit: true,
   // What the crypto context's real getFileKeyBytes does: export the raw key
   // into JS, then push it back to native with ThumbnailService.setFileKey.
   rawKeyExports: [] as string[],
   setFileKeyCalls: 0,
-  nativeThumbnailCalls: [] as string[],
+  nativeThumbnailCalls: [] as string[], // PreviewScreen's BeebeebThumbnails rung
+  tailNativeReads: [] as string[], // fetchThumbnailUriOnce routed to ThumbnailService
   handleDecrypts: [] as Array<{ handle: number; fileId: string }>,
   normalTailKeys: [] as string[], // 'bytes' | 'native-handle' passed to fetchThumbnailUriOnce
   largeTailKeys: [] as string[], // ... to fetchDecryptedLargeThumbnailUri
@@ -86,12 +87,26 @@ const colors = new Proxy({}, { get: () => '#000' });
 const themeValue = { colors };
 defineMock('../lib/theme-context', () => ({ useTheme: () => themeValue }));
 // Stable identities (PhotoPage lists these in effect deps).
+// The native ThumbnailService module, as the real crypto context reaches it
+// (`requireOptionalNativeModule('ThumbnailService').setFileKey`): any route to
+// it counts, not only the one through getFileKeyBytes.
+mock.module('expo-modules-core', () => ({
+  NativeModulesProxy: {},
+  requireOptionalNativeModule: (name: string) =>
+    name === 'ThumbnailService'
+      ? { setFileKey: async () => { state.setFileKeyCalls += 1; } }
+      : null,
+}));
+const { requireOptionalNativeModule } = await import('expo-modules-core');
 const cryptoValue = {
   isUnlocked: true,
+  // What the real getFileKeyBytes does: derive natively, return the raw key
+  // into JS, push it back with ThumbnailService.setFileKey.
   getFileKeyBytes: async (fileId: string) => {
     state.rawKeyExports.push(fileId);
-    state.setFileKeyCalls += 1;
-    return new Uint8Array(32);
+    const key = new Uint8Array(32);
+    await (requireOptionalNativeModule('ThumbnailService') as any)?.setFileKey?.(fileId, key);
+    return key;
   },
   getMasterKeyHandleId: () => MASTER_HANDLE,
 };
@@ -114,9 +129,16 @@ defineMock('../../modules/beebeeb-crypto', () => ({
   },
 }));
 const keyKind = (k: unknown) => (typeof k === 'function' ? 'native-handle' : k instanceof Uint8Array ? 'bytes' : String(k));
+// Routes as the real one does (use-thumbnail.ts): on iOS a file that is not a
+// loaded foreign shared file goes to the native ThumbnailService and the key
+// argument is never used; otherwise the key decrypts in JS.
 defineMock('../lib/use-thumbnail', () => ({
   fetchThumbnailUriOnce: async (fileId: string, fileKey: unknown) => {
     state.normalTailKeys.push(keyKind(fileKey));
+    if (state.platform.OS === 'ios' && !state.sharedLoaded.has(fileId)) {
+      state.tailNativeReads.push(fileId);
+      return state.nativeThumbnailHit ? `file:///native/${fileId}.webp` : null;
+    }
     if (typeof fileKey === 'function') await fileKey(new Uint8Array(12), new Uint8Array(8));
     return `file:///remote/${fileId}.medium.webp`;
   },
@@ -255,6 +277,7 @@ beforeEach(() => {
   state.rawKeyExports = [];
   state.setFileKeyCalls = 0;
   state.nativeThumbnailCalls = [];
+  state.tailNativeReads = [];
   state.handleDecrypts = [];
   state.normalTailKeys = [];
   state.largeTailKeys = [];
@@ -279,6 +302,7 @@ describe('MB-0005: Preview never exports an own file key into JS on iOS', () => 
     state.nativeThumbnailHit = false;
     await openPreview([entry('own-miss')]);
     expect(state.normalTailKeys).toEqual(['native-handle']);
+    expect(state.tailNativeReads).toEqual(['own-miss']); // the real routing: native, key unused
     expect(state.rawKeyExports).toEqual([]);
     expect(state.setFileKeyCalls).toBe(0);
   });
@@ -294,11 +318,13 @@ describe('MB-0005: Preview never exports an own file key into JS on iOS', () => 
     expect(state.rawKeyExports).toEqual([]);
   });
 
-  test('iOS, request upload: keeps its provided key (it is not derived from the master key)', async () => {
+  test('iOS, request upload in the pager: no key at all (a master-derived one is wrong AND an export)', async () => {
     state.nativeThumbnailHit = false;
     await openPreview([entry('request-1', { is_request_upload: true })]);
-    expect(state.normalTailKeys).toEqual(['bytes']);
-    expect(state.rawKeyExports).toContain('request-1');
+    expect(state.normalTailKeys).toEqual([]);
+    expect(state.largeTailKeys).toEqual([]);
+    expect(state.rawKeyExports).toEqual([]);
+    expect(state.setFileKeyCalls).toBe(0);
     expect(state.handleDecrypts).toEqual([]);
   });
 
@@ -309,6 +335,7 @@ describe('MB-0005: Preview never exports an own file key into JS on iOS', () => 
     expect(state.normalTailKeys).toEqual(['bytes']);
     expect(state.largeTailKeys).toEqual(['bytes']);
     expect(state.rawKeyExports.length).toBeGreaterThan(0);
+    expect(state.setFileKeyCalls).toBe(state.rawKeyExports.length); // the observer really observes
     expect(state.handleDecrypts).toEqual([]);
   });
 });
@@ -328,37 +355,57 @@ function body(src: string, signature: string): string {
   }
   throw new Error(`unbalanced: ${signature}`);
 }
-/** Both Preview thumbnail tails get their key only from `previewThumbnailKey`, which returns before any raw-key export on iOS. */
+/**
+ * Both Preview thumbnail tails get their key only from `previewThumbnailKey`,
+ * which returns on iOS before its one raw-key export (a request upload takes
+ * the explicit request-key loader or nothing). Scope: the two thumbnail tails.
+ * The self-repair upload (`thumbnail.ts` generateAndUploadThumbnail) is a
+ * separate, tracked follow-up and is NOT covered here.
+ */
 function previewKeyRuleHolds(src: string): boolean {
   const key = body(src, 'async function previewThumbnailKey(');
-  const iosRule = key.indexOf("if (Platform.OS === 'ios' && !entry.is_request_upload) {");
-  const iosReturn = key.indexOf('return (nonce: Uint8Array, ciphertext: Uint8Array) => handleDecryptChunk(handleId, entry.id, nonce, ciphertext);', iosRule);
+  const iosRule = key.indexOf("if (Platform.OS === 'ios') {");
+  const requestRule = key.indexOf('if (entry.is_request_upload) return getRequestKey ? getRequestKey(entry.id) : null;', iosRule);
+  const iosReturn = key.indexOf('return (nonce: Uint8Array, ciphertext: Uint8Array) => handleDecryptChunk(handleId, entry.id, nonce, ciphertext);', requestRule);
   const rawExport = key.indexOf('getFileKeyBytes(');
   const tails = ['async function loadNormalPreviewThumbnail(', 'async function loadLargePreviewThumbnail('].map((sig) => body(src, sig));
   return (
     iosRule >= 0 &&
-    iosReturn > iosRule &&
+    requestRule > iosRule &&
+    iosReturn > requestRule &&
     rawExport > iosReturn &&
     (key.match(/getFileKeyBytes\(/g) ?? []).length === 1 &&
-    tails.every((t) => !t.includes('getFileKeyBytes(') && t.includes('await previewThumbnailKey(entry, getFileKeyBytes, getMasterKeyHandleId)'))
+    tails.every((t) => !t.includes('getFileKeyBytes(') && t.includes('await previewThumbnailKey(entry, getFileKeyBytes, getMasterKeyHandleId, getRequestKey)')) &&
+    // only the single-file screen (which holds the request content key) passes one
+    (src.match(/getRequestKey: getPreviewFileKeyBytes,/g) ?? []).length === 1 &&
+    (src.match(/controller\.signal, getPreviewFileKeyBytes\)/g) ?? []).length === 1
   );
 }
 
 describe('MB-0005 source guard', () => {
-  test('no getFileKeyBytes( in an iOS-reachable Preview thumbnail path except behind the platform rule', () => {
+  test('no getFileKeyBytes( in either Preview thumbnail tail on iOS, except behind the platform rule', () => {
     expect(previewKeyRuleHolds(source)).toBe(true);
   });
   test('MUTATION: the pre-fix tail (raw key unless shared) is RED', () => {
     const mutated = source.replace(
-      '    const fileKey = await previewThumbnailKey(entry, getFileKeyBytes, getMasterKeyHandleId);\n    const remote = await fetchDecryptedLargeThumbnailUri(',
+      '    const fileKey = await previewThumbnailKey(entry, getFileKeyBytes, getMasterKeyHandleId, getRequestKey);\n    if (!fileKey) return null;\n    const remote = await fetchDecryptedLargeThumbnailUri(',
       '    const fileKey = sharedFileKeyIsLoaded(entry.id)\n      ? (nonce: Uint8Array, ciphertext: Uint8Array) => handleDecryptChunk(sharedMasterHandleId(), entry.id, nonce, ciphertext)\n      : await getFileKeyBytes(entry.id);\n    const remote = await fetchDecryptedLargeThumbnailUri(',
     );
     expect(mutated).not.toBe(source);
     expect(previewKeyRuleHolds(mutated)).toBe(false);
   });
   test('MUTATION: dropping the iOS rule from previewThumbnailKey is RED', () => {
-    const mutated = source.replace("if (Platform.OS === 'ios' && !entry.is_request_upload) {", 'if (false) {');
+    const mutated = source.replace("if (Platform.OS === 'ios') {\n    if (entry.is_request_upload)", 'if (false) {\n    if (entry.is_request_upload)');
     expect(mutated).not.toBe(source);
     expect(previewKeyRuleHolds(mutated)).toBe(false);
   });
+});
+
+test('MUTATION: the pager falling back to the master-derived key for a request upload is RED', () => {
+  const mutated = source.replace(
+    'if (entry.is_request_upload) return getRequestKey ? getRequestKey(entry.id) : null;',
+    'if (entry.is_request_upload) return getFileKeyBytes(entry.id);',
+  );
+  expect(mutated).not.toBe(source);
+  expect(previewKeyRuleHolds(mutated)).toBe(false);
 });

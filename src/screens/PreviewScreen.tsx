@@ -562,6 +562,8 @@ interface PhotoPreviewLoadOptions {
   profile: PerformanceStorageProfile;
   allowOriginal: boolean;
   forceOriginal?: boolean;
+  /** MB-0005: the request content key, from the single-file screen only. */
+  getRequestKey?: FileKeyLoader;
 }
 
 interface PreviewProgressState {
@@ -762,19 +764,24 @@ async function loadNativeThumbnail(
  * derives and uses its key natively), as a foreign shared file does through its
  * loaded key: no raw file key enters the JS heap, and none goes back to native
  * through `setFileKey`. Before, both Preview tails called `getFileKeyBytes` for
- * the current and the neighbouring pages. A request upload keeps its provided
- * key (it is not derived from the master key). Android keeps the raw key its JS
- * thumbnail path uses by design.
+ * the current and the neighbouring pages. A request upload is encrypted under
+ * its request content key, which only the single-file screen holds
+ * (`getRequestKey`); without it (the swipe pager) there is no thumbnail key at
+ * all, since a master-derived key would be both wrong and an export (#263
+ * review). Android keeps the raw key its JS thumbnail path uses by design. nil =
+ * no JS thumbnail for this file.
  */
 async function previewThumbnailKey(
   entry: PhotoPageEntry,
   getFileKeyBytes: FileKeyLoader,
   getMasterKeyHandleId: MasterKeyHandleLoader,
-): Promise<Uint8Array | ThumbnailDecrypt> {
+  getRequestKey?: FileKeyLoader,
+): Promise<Uint8Array | ThumbnailDecrypt | null> {
   if (sharedFileKeyIsLoaded(entry.id)) {
     return (nonce: Uint8Array, ciphertext: Uint8Array) => handleDecryptChunk(sharedMasterHandleId(), entry.id, nonce, ciphertext);
   }
-  if (Platform.OS === 'ios' && !entry.is_request_upload) {
+  if (Platform.OS === 'ios') {
+    if (entry.is_request_upload) return getRequestKey ? getRequestKey(entry.id) : null;
     const handleId = getMasterKeyHandleId();
     return (nonce: Uint8Array, ciphertext: Uint8Array) => handleDecryptChunk(handleId, entry.id, nonce, ciphertext);
   }
@@ -791,6 +798,7 @@ async function loadNormalPreviewThumbnail(
   // the remote fetch tail is skipped. Used for offline-pinned files, which must never touch the
   // network for a preview.
   allowRemote: boolean = true,
+  getRequestKey?: FileKeyLoader,
 ): Promise<ThumbnailPreviewResult | null> {
   throwIfPreviewAborted(signal);
   if (entry.thumbnail_uri) {
@@ -825,7 +833,8 @@ async function loadNormalPreviewThumbnail(
   if (!allowRemote) return null;
   if (!isUnlocked) return null;
   try {
-    const fileKey = await previewThumbnailKey(entry, getFileKeyBytes, getMasterKeyHandleId);
+    const fileKey = await previewThumbnailKey(entry, getFileKeyBytes, getMasterKeyHandleId, getRequestKey);
+    if (!fileKey) return null;
     // 1321 — was fetchDecryptedThumbnailUri, which on iOS refuses a raw JS file
     // key (own files are read only by the native ThumbnailService). The catch
     // below turned that refusal into a silently missing preview thumbnail.
@@ -843,6 +852,7 @@ async function loadLargePreviewThumbnail(
   getFileKeyBytes: FileKeyLoader,
   getMasterKeyHandleId: MasterKeyHandleLoader,
   signal?: AbortSignal,
+  getRequestKey?: FileKeyLoader,
 ): Promise<ThumbnailPreviewResult | null> {
   throwIfPreviewAborted(signal);
 
@@ -857,7 +867,8 @@ async function loadLargePreviewThumbnail(
 
   if (!isUnlocked) return null;
   try {
-    const fileKey = await previewThumbnailKey(entry, getFileKeyBytes, getMasterKeyHandleId);
+    const fileKey = await previewThumbnailKey(entry, getFileKeyBytes, getMasterKeyHandleId, getRequestKey);
+    if (!fileKey) return null;
     const remote = await fetchDecryptedLargeThumbnailUri(entry.id, fileKey, signal);
     throwIfPreviewAborted(signal);
     return remote ? { uri: remote, kind: 'large', source: 'remote' } : null;
@@ -983,7 +994,7 @@ async function loadDecryptedPhotoForViewer(
         // No stored preview any more (new version, Off): never show a cached old one.
         forgetStoredPreviewIfGone({ id: entry.id, has_preview: false });
       }
-      const normal = await loadNormalPreviewThumbnail(entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, signal, !pinnedLocal);
+      const normal = await loadNormalPreviewThumbnail(entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, signal, !pinnedLocal, options.getRequestKey);
       if (normal?.source === 'photoKit' || normal?.source === 'local') {
         recordRuntimeTrace('preview.photo_page.thumbnail.success', {
           fileId: entry.id,
@@ -3613,6 +3624,7 @@ export default function PreviewScreen() {
           profile: performanceStorageProfile,
           allowOriginal: false,
           forceOriginal: false,
+          getRequestKey: getPreviewFileKeyBytes,
         },
         (nextStage) => {
           if (!cancelled) setLoadProgress((prev) => ({ ...prev, stage: nextStage }));
@@ -3681,7 +3693,7 @@ export default function PreviewScreen() {
     const startedAt = Date.now();
     recordRuntimeTrace('preview.image.large_thumbnail.upgrade_request', { fileId: currentFileId });
 
-    loadLargePreviewThumbnail(currentPhotoPageEntry, isUnlocked, getPreviewFileKeyBytes, getMasterKeyHandleId, controller.signal)
+    loadLargePreviewThumbnail(currentPhotoPageEntry, isUnlocked, getPreviewFileKeyBytes, getMasterKeyHandleId, controller.signal, getPreviewFileKeyBytes)
       .then((large) => {
         if (cancelled || !large) {
           if (!cancelled) recordRuntimeTrace('preview.image.large_thumbnail.empty', { fileId: currentFileId });
