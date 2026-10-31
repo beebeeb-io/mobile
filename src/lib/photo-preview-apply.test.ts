@@ -136,6 +136,33 @@ describe('runApply', () => {
     expect(progress.at(-1)).toBe(4);
   });
 
+  test('a quota 413 stops the run after one file instead of failing every photo on size', async () => {
+    uploadImpl = async () => {
+      const e: any = new Error('Preview upload failed (HTTP 413)');
+      e.code = 'preview_quota_exceeded';
+      throw e;
+    };
+    const r = await runApply(plan(6), opts({ concurrency: 1 }));
+    expect(uploads.length).toBe(1);
+    expect(r).toEqual({ done: 0, failed: 0, quotaExceeded: true });
+    // Nothing is lost: the refused photo and the rest wait for a run with room.
+    expect(JSON.parse(store.get(KEY)!).remaining.length).toBe(6);
+  });
+
+  test('a size 413 is still one photo failing, and the run goes on', async () => {
+    uploadImpl = async (...a: any[]) => {
+      if (a[3] === 'f1') {
+        const e: any = new Error('Preview upload failed (HTTP 413)');
+        e.code = 'preview_too_large';
+        throw e;
+      }
+      return { bytes: 1 };
+    };
+    const r = await runApply(plan(4), opts());
+    expect(r).toEqual({ done: 3, failed: 1 });
+    expect(uploads.length).toBe(4);
+  });
+
   test('stops when the account changes', async () => {
     uploadImpl = async () => { generation += 1; return { bytes: 1 }; };
     const r = await runApply(plan(6), opts());

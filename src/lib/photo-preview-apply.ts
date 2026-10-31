@@ -41,6 +41,8 @@ export interface ApplyResult {
   failed: number;
   /** The vault locked during the run: the rest is saved for later, not failed. */
   stoppedLocked?: boolean;
+  /** The account's preview storage is full: the run stopped after one refusal, not per photo. */
+  quotaExceeded?: boolean;
 }
 
 const MAX_APPLY_CONCURRENCY = 2;
@@ -122,6 +124,17 @@ function vaultUnlocked(): boolean {
 }
 
 /**
+ * The typed code of a native preview error. `preview_quota_exceeded` means the
+ * account's storage is full, which no other photo can get past either.
+ */
+function previewErrorCode(err: unknown): string | null {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  if (typeof e?.code === 'string' && e.code) return e.code;
+  const msg = typeof e?.message === 'string' ? e.message : '';
+  return msg.match(/preview_[a-z_]+/)?.[0] ?? null;
+}
+
+/**
  * Create previews for the planned files, at most 2 at a time. Remaining ids are saved
  * (every 25 files or 5 s, and when the run stops) so an aborted or killed run
  * continues on the next call with the same setting. A failed file is counted and
@@ -141,6 +154,7 @@ export async function runApply(plan: ApplyPlan, opts: ApplyOptions): Promise<App
   let done = 0;
   let failed = 0;
   let stoppedLocked = false;
+  let quotaExceeded = false;
   const inFlight = new Set<string>();
   let sinceSave = 0;
   let savedAt = now();
@@ -156,7 +170,7 @@ export async function runApply(plan: ApplyPlan, opts: ApplyOptions): Promise<App
   opts.onProgress(0, total);
 
   const worker = async () => {
-    while (!opts.signal.aborted && isCurrentAccountEpoch(epoch) && !stoppedLocked) {
+    while (!opts.signal.aborted && isCurrentAccountEpoch(epoch) && !stoppedLocked && !quotaExceeded) {
       if (!vaultUnlocked()) {
         stoppedLocked = true;
         return;
@@ -179,6 +193,13 @@ export async function runApply(plan: ApplyPlan, opts: ApplyOptions): Promise<App
           // Interrupted, not failed: keep it for the next run.
           queue.unshift(fileId);
           if (!opts.signal.aborted) stoppedLocked = true;
+        } else if (previewErrorCode(err) === 'preview_quota_exceeded') {
+          // The account is out of Beebeeb storage. That is not this photo's fault and
+          // no other photo can get past it either: stop the run after the first
+          // refusal instead of blaming (and failing) every remaining photo on size.
+          // This file and the rest of the queue stay for a run after space is freed.
+          queue.unshift(fileId);
+          quotaExceeded = true;
         } else {
           failed += 1;
           console.warn('[photo-preview-apply] preview failed', err);
@@ -195,7 +216,10 @@ export async function runApply(plan: ApplyPlan, opts: ApplyOptions): Promise<App
   await Promise.all(Array.from({ length: concurrency }, worker));
   // Finished, aborted or stopped: the remainder (empty when finished) is saved now.
   await persist();
-  return stoppedLocked ? { done, failed, stoppedLocked } : { done, failed };
+  const result: ApplyResult = { done, failed };
+  if (stoppedLocked) result.stoppedLocked = true;
+  if (quotaExceeded) result.quotaExceeded = true;
+  return result;
 }
 
 /**

@@ -188,6 +188,7 @@ async function execute(request: PhotoPreviewRunRequest, resumed: boolean): Promi
       done: result.done,
       failed: result.failed,
       ...(result.stoppedLocked ? { stoppedLocked: true } : {}),
+      ...(result.quotaExceeded ? { quotaExceeded: true } : {}),
       aborted: controller.signal.aborted,
       resumed,
     };

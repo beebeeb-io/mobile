@@ -226,12 +226,21 @@ func photoPreviewEncryptAndPut(
   request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
   request.httpBody = wire
 
-  let (_, response) = try await URLSession.shared.data(for: request)
+  let (body, response) = try await URLSession.shared.data(for: request)
   let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
   guard (200..<300).contains(statusCode) else {
     NSLog("[BeebeebCrypto] Photo preview upload HTTP \(statusCode)")
-    throw photoPreviewError(statusCode == 413 ? "preview_too_large" : "preview_upload_failed",
-                            "Preview upload failed (HTTP \(statusCode))")
+    if statusCode == 413 {
+      // Two different refusals share 413. A preview above the wire cap is this photo's
+      // fault (`preview_too_large`). A 413 whose body says `quota_exceeded` (server #372)
+      // is the ACCOUNT's storage being full: every remaining photo would be refused the
+      // same way, so it must not be reported as a size problem the person can fix by
+      // choosing a smaller size.
+      let serverError = photoPreviewServerErrorCode(body)
+      throw photoPreviewError(serverError == "quota_exceeded" ? "preview_quota_exceeded" : "preview_too_large",
+                              "Preview upload failed (HTTP 413)")
+    }
+    throw photoPreviewError("preview_upload_failed", "Preview upload failed (HTTP \(statusCode))")
   }
   return wire.count
 }
@@ -274,9 +283,19 @@ private func photoPreviewCachePath(_ destPath: String) throws -> URL {
   return dest
 }
 
+/// The server's typed `error` code in a refusal body, when it sent one.
+/// An unreadable or untyped body gives nil, which every caller treats as "no opinion".
+private func photoPreviewServerErrorCode(_ body: Data) -> String? {
+  guard !body.isEmpty,
+        let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+  else { return nil }
+  return object["error"] as? String
+}
+
 private func photoPreviewError(_ code: String, _ message: String) -> Exception {
   Exception(name: "PhotoPreviewError", description: message, code: code)
 }
+
 
 private func isVideoMediaHint(_ value: String?) -> Bool {
   guard let value = value?.lowercased() else { return false }

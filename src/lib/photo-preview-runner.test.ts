@@ -101,6 +101,21 @@ describe('photo preview runner', () => {
     expect(calls.cleared).toBe(1);
   });
 
+  test('a run stopped by the account storage limit reaches the screen as quotaExceeded', async () => {
+    // The flag comes from runApply; the outcome must carry it, or the screen shows the
+    // generic "N could not be made" toast instead of the storage message.
+    runner.__setPhotoPreviewRunnerDepsForTests(deps({
+      runApply: async () => ({ done: 4, failed: 0, quotaExceeded: true }),
+    }));
+    const finished: any[] = [];
+    runner.onPhotoPreviewRun((e) => finished.push(e));
+    const outcome = await runner.startPhotoPreviewRun({
+      kind: 'apply', plan: { toCreate: ['a', 'b'], skippedNotOnPhone: 0 }, setting, localIds: new Map(),
+    });
+    expect(outcome).toMatchObject({ kind: 'apply', done: 4, quotaExceeded: true });
+    expect(finished.at(-1)).toEqual({ type: 'finished', outcome });
+  });
+
   test('sign-out aborts the run and no finished event reaches the next account', async () => {
     const done = runner.startPhotoPreviewRun({ kind: 'apply', plan: { toCreate: ['a'], skippedNotOnPhone: 0 }, setting, localIds: new Map() });
     await tick();

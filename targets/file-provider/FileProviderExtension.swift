@@ -764,6 +764,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   /// the first byte.
   private static let maxAttemptsPerChunk = 4
 
+  /// One chunk PUT's own deadline. `ApiClient`'s session is configured for
+  /// whole-file work (60 s per request, 600 s per resource); a single 4 MiB
+  /// chunk that black-holes must not be allowed to spend that, four times over
+  /// (~247 s) — iOS kills a File Provider extension long before then, so the
+  /// upload would die with no retry at all instead of failing over quickly.
+  /// Every attempt sets this as its own request timeout.
+  static let chunkAttemptTimeout: TimeInterval = 15
+
+  /// Everything ONE chunk may spend, its attempts and their backoff included.
+  /// Each attempt's timeout is clamped to what is left of this budget, so a
+  /// black-holed host costs at most this much before the chunk fails for real
+  /// (the caller then reports the upload as unreachable).
+  static let chunkRetryBudget: TimeInterval = 20
+
   /// Streams a plaintext file to the v2 chunked-upload endpoints. Reads one
   /// chunk at a time via `FileHandle`, encrypts via `CryptoBridge`, and PUTs
   /// it to the server. No full-file `Data` buffer ever exists in the
@@ -853,27 +867,47 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
   /// PUTs one chunk, retrying a timeout, a dropped connection, 429 or 5xx with
   /// exponential backoff (1, 2, 4 s). Anything else — auth, account mismatch,
   /// another 4xx, cancellation — fails at once.
+  ///
+  /// Each attempt carries `chunkAttemptTimeout` as its own request timeout and
+  /// the whole chunk is bounded by `chunkRetryBudget`, so a host that never
+  /// answers costs ~20 s here instead of the shared 60 s resource timeout per
+  /// attempt.
   private static func uploadChunkWithRetry(
     uploadSessionId: String,
     index: Int,
     encryptedChunk: Data,
     expectedUser: String?
   ) async throws {
+    let deadline = Date().addingTimeInterval(Self.chunkRetryBudget)
     var attempt = 0
+    var lastError: Error?
     while true {
       attempt += 1
+      let remaining = deadline.timeIntervalSinceNow
+      // Out of budget (a slow attempt plus its backoff used it all): report the
+      // chunk's real failure rather than starting an attempt with no time left.
+      guard remaining > 0 else {
+        throw lastError ?? NSFileProviderError(.serverUnreachable)
+      }
       do {
         try await ApiClient.shared.uploadChunkV2(
           uploadSessionId: uploadSessionId,
           index: index,
           encryptedChunk: encryptedChunk,
-          expectedUser: expectedUser
+          expectedUser: expectedUser,
+          timeout: min(Self.chunkAttemptTimeout, remaining)
         )
         return
       } catch {
+        lastError = error
         guard attempt < Self.maxAttemptsPerChunk, isRetryableChunkError(error) else { throw error }
+        // A fast refusal (an RST, a dropped connection) retries right away in
+        // practice; the backoff is only capped so that sleeping past the
+        // deadline cannot make the chunk outlive its budget.
+        let backoff = TimeInterval(1 << (attempt - 1))
+        guard deadline.timeIntervalSinceNow > backoff else { throw error }
         NSLog("[Beebeeb] chunk \(index) attempt \(attempt) failed, retrying: \(error)")
-        try await Task.sleep(nanoseconds: UInt64(1 << (attempt - 1)) * 1_000_000_000)
+        try await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
       }
     }
   }

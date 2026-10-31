@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   applyConfirmMessage,
   photoPreviewStorageLine,
+  previewQuotaExceededMessage,
   rebuildConfirmMessage,
   turnOffConfirmMessage,
 } from './photo-preview-copy';
@@ -60,5 +61,18 @@ describe('Storage screen line', () => {
     expect(photoPreviewStorageLine({ count: 13, total_bytes: 9_000_000, by_setting: [] })).toBe('Photo previews: 9 MB');
     expect(photoPreviewStorageLine({ count: 0, total_bytes: 0, by_setting: [] })).toBeNull();
     expect(photoPreviewStorageLine(null)).toBeNull();
+  });
+});
+
+describe('a run stopped by the account storage limit', () => {
+  test('says storage, not size, and keeps the count when some were made', () => {
+    expect(previewQuotaExceededMessage(0)).toBe(
+      'This account has reached its storage limit. Free up space to make the remaining previews.');
+    expect(previewQuotaExceededMessage(12)).toBe(
+      '12 previews made; the rest could not be made. This account has reached its storage limit. Free up space to make the remaining previews.');
+  });
+  test('never blames the photo size (choosing a smaller size cannot help)', () => {
+    expect(previewQuotaExceededMessage(0)).not.toContain('too large');
+    expect(previewQuotaExceededMessage(0)).not.toContain('smaller');
   });
 });
