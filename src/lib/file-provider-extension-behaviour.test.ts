@@ -325,7 +325,7 @@ final class ApiClient {
   /// Scenario hook: each chunk PUT throws the next queued error, then succeeds.
   var chunkFailures: [Error] = []
 
-  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); callsLock.lock(); recordedCalls = []; callsLock.unlock(); patchedNames = []; uploadInitFileIds = []; chunkFailures = [] }
+  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); callsLock.lock(); recordedCalls = []; callsLock.unlock(); patchedNames = []; uploadInitFileIds = []; chunkFailures = []; chunkTimeoutsLock.lock(); recordedChunkTimeouts = []; chunkTimeoutsLock.unlock() }
   func count(_ prefix: String) -> Int { calls.filter { $0.hasPrefix(prefix) }.count }
 
   func listFiles(parentId: String?) async throws -> [FileEntryDto] {
@@ -351,8 +351,14 @@ final class ApiClient {
     uploadInitFileIds.append(fileId.lowercased())
     return UploadV2InitResponse(file_id: fileId.lowercased(), upload_session_id: "session", chunk_size_bytes: chunkSizeBytes, chunk_count: chunkCount)
   }
-  func uploadChunkV2(uploadSessionId: String, index: Int, encryptedChunk: Data, expectedUser: String?) async throws {
+  /// Task 260 (P2-3): every chunk attempt names its OWN request timeout, so the
+  /// extension never inherits the session's 60 s one. Recorded for the budget checks.
+  private let chunkTimeoutsLock = NSLock()
+  private var recordedChunkTimeouts: [TimeInterval] = []
+  var chunkTimeouts: [TimeInterval] { chunkTimeoutsLock.lock(); defer { chunkTimeoutsLock.unlock() }; return recordedChunkTimeouts }
+  func uploadChunkV2(uploadSessionId: String, index: Int, encryptedChunk: Data, expectedUser: String?, timeout: TimeInterval) async throws {
     record("upload-chunk \(index)")
+    chunkTimeoutsLock.lock(); recordedChunkTimeouts.append(timeout); chunkTimeoutsLock.unlock()
     if !chunkFailures.isEmpty { throw chunkFailures.removeFirst() }
   }
   func completeUploadV2(uploadSessionId: String, expectedUser: String?) async throws -> UploadResponseDto {
@@ -1208,6 +1214,31 @@ func createRetriesADroppedChunkAndStopsOnARefusal() async {
   check(ApiClient.shared.count("upload-init") == 1, "a timed-out chunk does not restart the upload, got \(ApiClient.shared.calls)")
   check(ApiClient.shared.count("upload-complete") == 1, "a timed-out chunk: the upload completes once, got \(ApiClient.shared.calls)")
 
+  // Task 260 (P2-3): a chunk attempt gives up on its OWN deadline, not on the
+  // session's 60 s request timeout, and one chunk's attempts stay inside
+  // the chunk budget. A whole upload stuck here used to cost ~247 s
+  // (4 x 60 s + 1+2+4 s backoff) and got the extension killed with no retry.
+  let timeouts = ApiClient.shared.chunkTimeouts
+  check(!timeouts.isEmpty, "a chunk attempt names its own timeout, got none")
+  check(timeouts.allSatisfy { $0 > 0 && $0 <= FileProviderExtension.chunkAttemptTimeout },
+        "every chunk attempt times out within \(FileProviderExtension.chunkAttemptTimeout) s, got \(timeouts)")
+  check(FileProviderExtension.chunkRetryBudget <= 20 && FileProviderExtension.chunkRetryBudget < 30,
+        "one chunk's total budget stays under 30 s, got \(FileProviderExtension.chunkRetryBudget)")
+  check(FileProviderExtension.chunkAttemptTimeout < FileProviderExtension.chunkRetryBudget,
+        "an attempt is shorter than the whole chunk budget, got \(FileProviderExtension.chunkAttemptTimeout) vs \(FileProviderExtension.chunkRetryBudget)")
+  check(FileProviderExtension.chunkRetryBudget < 60,
+        "one chunk's whole budget is under a single inherited 60 s request timeout, got \(FileProviderExtension.chunkRetryBudget)")
+
+  // A fast reset (connection dropped, not a hang) is retried at once: the
+  // budget must not be spent waiting on an attempt that already failed.
+  reset()
+  ApiClient.shared.chunkFailures = [URLError(.networkConnectionLost)]
+  let reset0 = await createItemFromFilesApp("Reset.mov", bytes: 1024)
+  check(reset0.0 != nil && reset0.1 == nil, "a reset chunk: the create still finishes, got \(describe(reset0.1))")
+  check(ApiClient.shared.count("upload-chunk 0") == 2, "a chunk reset by the peer is sent again, got \(ApiClient.shared.calls)")
+  check(ApiClient.shared.chunkTimeouts.count == 2 && ApiClient.shared.chunkTimeouts.allSatisfy { $0 <= FileProviderExtension.chunkAttemptTimeout },
+        "the retried attempt carries its own timeout too, got \(ApiClient.shared.chunkTimeouts)")
+
   reset()
   ApiClient.shared.chunkFailures = [ApiError.statusCode(400)]
   let refused = await createItemFromFilesApp("Refused.mov", bytes: 1024)
@@ -1456,6 +1487,32 @@ describe('SF-0002 part 1: a Files-app create derives keys from the lowercase id 
 
 describe('a Files-app upload survives a dropped chunk request', () => {
   nativeSwiftHarnessTest('a timed-out chunk is sent again without restarting the upload; a refused one fails at once', () => {
-    expectScenario('chunk-retry', 7);
+    expectScenario('chunk-retry', 15);
   }, 300_000);
+
+  // Task 260 (P2-3) — runs anywhere: the harness substitutes its own ApiClient, so
+  // the SHIPPED request timeout can only be checked at the source.
+  test('the shipped chunk PUT sets its own request timeout instead of inheriting the 60 s one', () => {
+    const put = declaration(apiClient, 'func uploadChunkV2(');
+    // The harness's double declares this same signature; a drift fails here, not only on macOS.
+    expect(put).toContain('timeout: TimeInterval');
+    expect(put).toContain('request.timeoutInterval = timeout');
+    // The shared session still configures the long whole-file timeout: the chunk
+    // deadline must not come from it.
+    expect(apiClient).toContain('cfg.timeoutIntervalForRequest = 60');
+    const ext = read(join(EXT, 'FileProviderExtension.swift'));
+    const retry = declaration(ext, 'private static func uploadChunkWithRetry(');
+    // Per attempt: its own timeout, clamped to the budget that is left.
+    expect(retry).toContain('timeout: min(Self.chunkAttemptTimeout, remaining)');
+    expect(retry).toContain('let deadline = Date().addingTimeInterval(Self.chunkRetryBudget)');
+    // No sleep that would outlast the budget, and no attempt started with none left.
+    expect(retry).toContain('guard remaining > 0');
+    expect(retry).toContain('guard deadline.timeIntervalSinceNow > backoff');
+    const attempt = Number(ext.match(/static let chunkAttemptTimeout: TimeInterval = ([\d.]+)/)?.[1]);
+    const budget = Number(ext.match(/static let chunkRetryBudget: TimeInterval = ([\d.]+)/)?.[1]);
+    expect(attempt).toBe(15);
+    expect(budget).toBeLessThanOrEqual(20);
+    // The old ladder (4 x the shared 60 s + 7 s backoff) is what got the extension killed.
+    expect(attempt * 4 + 7).toBeGreaterThan(budget);
+  });
 });
