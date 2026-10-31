@@ -33,17 +33,18 @@ function render(os) {
   return { nodes: elements(Component()), navigations };
 }
 
-test('both platforms offer loading profiles; only iOS offers the working quality action', () => {
+test('both platforms offer loading profiles; only iOS offers photo previews, and no thumbnail quality setting remains', () => {
   for (const os of ['ios', 'android']) {
     const m = render(os);
-    const quality = m.nodes.filter((n) => n.props.accessibilityLabel === 'Thumbnail quality settings');
-    expect(quality).toHaveLength(os === 'ios' ? 1 : 0);
+    const previews = m.nodes.filter((n) => n.props.accessibilityLabel === 'Photo previews settings');
+    expect(previews).toHaveLength(os === 'ios' ? 1 : 0);
+    expect(m.nodes.some((n) => n.props.accessibilityLabel === 'Thumbnail quality settings')).toBe(false);
     for (const label of ['Data saver', 'Balanced', 'Smooth']) {
       expect(m.nodes.some((n) => n.type === 'Text' && n.props.children === label)).toBe(true);
     }
     if (os === 'ios') {
-      quality[0].props.onPress();
-      expect(m.navigations).toEqual(['ThumbnailQuality']);
+      previews[0].props.onPress();
+      expect(m.navigations).toEqual(['PhotoPreviews']);
     }
   }
 });

@@ -6,6 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   ensurePhotoPermission,
+  photoAccessNotice,
   getPhotoPermission,
   photoPermissionGranted,
 } from './photo-permissions';
@@ -112,5 +113,48 @@ describe('ensurePhotoPermission (task 1688)', () => {
     });
     expect(response).toEqual(LIMITED);
     expect(requestCalled).toBe(false);
+  });
+});
+// Backup was on, the camera-roll line said "Waiting for
+// first scan" (or "0 photos on device") and nothing ever said why: the
+// photos were simply not shared with Beebeeb (iOS "Selected photos"
+// access with none or few selected, or access turned off).
+describe('photoAccessNotice (limited / revoked photo access)', () => {
+  test('full access needs no notice', () => {
+    expect(photoAccessNotice(FULL, 120)).toBeNull();
+    expect(photoAccessNotice({ status: 'granted' }, 0)).toBeNull();
+  });
+
+  test('limited access with nothing selected says nothing is shared and offers the picker', () => {
+    expect(photoAccessNotice(LIMITED, 0)).toEqual({
+      summary: 'Paused · no photos shared with Beebeeb',
+      message: 'iOS shares no photos with Beebeeb, so there is nothing to back up.',
+      actionLabel: 'Choose photos',
+      action: 'picker',
+    });
+  });
+
+  test('limited access with a selection says only those are backed up', () => {
+    expect(photoAccessNotice(LIMITED, 1)).toEqual({
+      summary: null,
+      message: 'Only 1 selected photo is shared with Beebeeb.',
+      actionLabel: 'Change',
+      action: 'picker',
+    });
+    expect(photoAccessNotice(LIMITED, 2400)?.message).toBe('Only 2,400 selected photos are shared with Beebeeb.');
+  });
+
+  test('access turned off says so and points to iOS Settings', () => {
+    expect(photoAccessNotice(DENIED, 0)).toEqual({
+      summary: 'Paused · no access to Photos',
+      message: 'Beebeeb is not allowed to read your photos.',
+      actionLabel: 'Open Settings',
+      action: 'settings',
+    });
+  });
+
+  test('an unknown or missing permission shows nothing (no false alarm)', () => {
+    expect(photoAccessNotice(null, 0)).toBeNull();
+    expect(photoAccessNotice(UNDETERMINED, 0)).toBeNull();
   });
 });

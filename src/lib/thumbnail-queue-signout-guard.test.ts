@@ -2,23 +2,13 @@
 /**
  * Task 1962 round 4 — Bug 7f/7h guard.
  *
- * `enqueueApplyQuality` is the only INSERT into the thumbnail queue
- * (`ThumbnailQueueDB.swift`). A JS call that was already in flight when the
- * account epoch advanced must not hand its ids to the native queue: a forced
- * sign-out resets and purges the queue, and a late enqueue would leave the
- * OUTGOING account's file ids in the new session's queue.
+ * A forced sign-out resets and purges the native thumbnail queue
+ * (`ThumbnailQueueDB.swift`) and the app-process storage.
  *
- * Two invariants, both checked against the shipped sources:
- *   1. The apply sequence (`seedAndEnqueueThumbnailApply`) checks the epoch
- *      immediately before its FIRST write (`seedLocalIdentifierMap`) and again
- *      immediately before `enqueueApplyQuality` — no `await` may sit between
- *      either check and its call (an await yields the JS thread, and the
- *      sign-out could land in that gap). Round 4 only checked after the seed,
- *      which always writes local-id-map.json + the native map.
- *   2. `enqueueApplyQuality`, `clearQueueOnSignOut` and
- *      `purgePlaintextStorage` stay plain synchronous `AsyncFunction`s on
- *      Expo's shared serial queue (no `runOnQueue`, no `async` closure), so
- *      the native order matches the JS order of the sign-out.
+ * Invariant: `clearQueueOnSignOut` and
+ * `purgePlaintextStorage` stay plain synchronous `AsyncFunction`s on
+ * Expo's shared serial queue (no `runOnQueue`, no `async` closure), so
+ * the native order matches the JS order of the sign-out.
  *
  * Matrix 4's behavioural half (an advanced epoch makes the check fail) runs
  * against the real `account-epoch` module; this file mocks nothing else.
@@ -30,8 +20,6 @@ import { join } from 'node:path';
 import { accountEpoch, advanceAccountEpoch, isCurrentAccountEpoch } from './account-epoch';
 
 const ROOT = join(import.meta.dir, '../..');
-const SECURITY_SCREEN = join(ROOT, 'src/screens/ThumbnailQualityScreen.tsx');
-const APPLY_SEQUENCE = join(ROOT, 'src/lib/thumbnail-apply-sequence.ts');
 const THUMBNAIL_MODULE = join(ROOT, 'modules/beebeeb-crypto/ios/ThumbnailServiceModule.swift');
 const CRYPTO_MODULE = join(ROOT, 'modules/beebeeb-crypto/ios/BeebeebCryptoModule.swift');
 const WORKER_POOL = join(ROOT, 'modules/beebeeb-crypto/ios/ThumbnailWorkerPool.swift');
@@ -66,102 +54,6 @@ function stripLineComments(text: string): string {
     .join('\n');
 }
 
-const screenSource = readFileSync(SECURITY_SCREEN, 'utf8');
-const screenLines = screenSource.split('\n');
-
-/** Every live (non-comment) line index that calls `enqueueApplyQuality(`. */
-function enqueueCallLineIndexes(): number[] {
-  const indexes: number[] = [];
-  screenLines.forEach((line, index) => {
-    const live = stripLineComments(line);
-    if (!live.includes('enqueueApplyQuality(')) return;
-    if (live.trimStart().startsWith('*') || live.trimStart().startsWith('import')) return;
-    indexes.push(index);
-  });
-  return indexes;
-}
-
-/** The previous live (non-blank, non-comment) line before `index`. */
-function previousLiveLine(index: number): { lineNumber: number; text: string } {
-  for (let i = index - 1; i >= 0; i -= 1) {
-    const live = stripLineComments(screenLines[i]).trim();
-    if (live === '' || live.startsWith('*') || live.startsWith('/*')) continue;
-    return { lineNumber: i, text: live };
-  }
-  throw new Error(`no live line before ${index}`);
-}
-
-describe('the apply sequence is account-epoch guarded before every write (7f)', () => {
-  const sequenceSource = readFileSync(APPLY_SEQUENCE, 'utf8');
-  const sequenceLines = sequenceSource.split('\n');
-
-  function callLineIndexes(needle: string): number[] {
-    const indexes: number[] = [];
-    sequenceLines.forEach((line, index) => {
-      const live = stripLineComments(line);
-      if (!live.includes(needle)) return;
-      if (live.trimStart().startsWith('*') || live.trimStart().startsWith('import')) return;
-      indexes.push(index);
-    });
-    return indexes;
-  }
-
-  function previousLiveLine(index: number): { lineNumber: number; text: string } {
-    for (let i = index - 1; i >= 0; i -= 1) {
-      const live = stripLineComments(sequenceLines[i]).trim();
-      if (live === '' || live.startsWith('*') || live.startsWith('/*')) continue;
-      return { lineNumber: i, text: live };
-    }
-    throw new Error(`no live line before ${index}`);
-  }
-
-  const seedCalls = callLineIndexes('seedLocalIdentifierMap(');
-  const enqueueCalls = callLineIndexes('enqueue(');
-
-  test('the extractors find the seed and enqueue call sites (sanity)', () => {
-    expect(seedCalls.length).toBe(1);
-    expect(enqueueCalls.length).toBe(1);
-  });
-
-  test('the epoch check is the statement immediately before the seed call', () => {
-    for (const index of seedCalls) {
-      const previous = previousLiveLine(index);
-      expect(previous.text).toMatch(/if\s*\(!deps\.isCurrentEpoch\(deps\.capturedEpoch\)\)\s*return 'epoch-advanced';?$/);
-      expect(previous.lineNumber).toBe(index - 1);
-    }
-  });
-
-  test('the epoch check is the statement immediately before the enqueue call', () => {
-    for (const index of enqueueCalls) {
-      const previous = previousLiveLine(index);
-      expect(previous.text).toMatch(/if\s*\(!deps\.isCurrentEpoch\(deps\.capturedEpoch\)\)\s*return 'epoch-advanced';?$/);
-      expect(previous.lineNumber).toBe(index - 1);
-    }
-  });
-
-  test('no await sits between either check and its call', () => {
-    for (const indexes of [seedCalls, enqueueCalls]) {
-      for (const index of indexes) {
-        const previous = previousLiveLine(index);
-        expect(previous.text).not.toContain('await');
-      }
-    }
-  });
-
-  test('the screen captures the account epoch before the work starts and delegates the writes', () => {
-    const body = stripLineComments(
-      extractBody(screenSource, /const handleApply = useCallback\(async \(\) =>/),
-    ).replace(/\/\*[\s\S]*?\*\//g, '');
-    const capture = body.search(/const\s+epoch\s*=\s*accountEpoch\(\)/);
-    expect(capture).toBeGreaterThanOrEqual(0);
-    const firstAwait = body.indexOf('await ');
-    expect(firstAwait).toBeGreaterThanOrEqual(0);
-    expect(capture).toBeLessThan(firstAwait);
-    expect(body).toContain('seedAndEnqueueThumbnailApply(');
-    expect(body).not.toMatch(/await\s+BeebeebThumbnails\.enqueueApplyQuality/);
-  });
-});
-
 describe('matrix 4: an enqueue after the epoch advanced is dropped by the guard', () => {
   test('isCurrentAccountEpoch is false once the account epoch advances', () => {
     const captured = accountEpoch();
@@ -176,7 +68,6 @@ describe('sign-out native functions stay synchronous on Expo\'s shared serial qu
   const cryptoModule = readFileSync(CRYPTO_MODULE, 'utf8');
 
   const cases: Array<[string, string, RegExp]> = [
-    ['enqueueApplyQuality', thumbnailModule, /AsyncFunction\("enqueueApplyQuality"\)/],
     ['clearQueueOnSignOut', thumbnailModule, /AsyncFunction\("clearQueueOnSignOut"\)/],
     ['purgePlaintextStorage', cryptoModule, /AsyncFunction\("purgePlaintextStorage"\)/],
   ];

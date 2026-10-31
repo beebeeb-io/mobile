@@ -1024,6 +1024,9 @@ export class SyncClient {
             (payload.has_thumbnail as boolean | undefined) ?? existing.has_thumbnail,
           content_hash:
             (payload.content_hash as string | undefined) ?? existing.content_hash,
+          // Photo preview PUT/DELETE: the op carries all four fields (explicit
+          // nulls after a delete). An op without them leaves them as they were.
+          ...previewFieldsFromPayload(payload),
           updated_at: new Date().toISOString(),
         });
         break;
@@ -1090,6 +1093,11 @@ export class SyncClient {
       case 'share_create':
       case 'share_revoke':
         // Notification-only — UI listens for these to refresh share state.
+        break;
+      case 'preference_update':
+        // Not a tree change. A handled key (photo_previews) is mirrored by its
+        // owner; any other key is ignored.
+        notifyPreferenceUpdate(payload);
         break;
       default:
         // Unknown op type — ignore for forward compatibility.
@@ -1266,6 +1274,12 @@ function syncNodeToFileEntry(node: SyncNode): FileEntry {
     storage_pool_id: node.storage_pool_id ?? null,
     has_thumbnail: node.has_thumbnail,
     is_starred: node.is_starred,
+    // Left undefined when the tree does not know them, so the loader restores
+    // the server's value instead of a guessed "no preview".
+    has_preview: node.has_preview,
+    preview_format: node.preview_format,
+    preview_px: node.preview_px,
+    preview_bytes: node.preview_bytes,
   };
 }
 
@@ -1301,7 +1315,61 @@ export function fileEntryToSyncNode(entry: FileEntry): SyncNode {
     chunk_count: entry.chunk_count,
     created_at: entry.created_at,
     updated_at: entry.updated_at,
+    has_preview: entry.has_preview,
+    preview_format: entry.preview_format,
+    preview_px: entry.preview_px,
+    preview_bytes: entry.preview_bytes,
   };
+}
+
+const PREVIEW_FORMATS = new Set(['heic', 'jpeg']);
+
+/**
+ * The photo preview fields an op payload carries, only those present. A field set
+ * to null (preview removed) is carried as null so it overrides a stale value.
+ */
+export function previewFieldsFromPayload(
+  payload: Record<string, unknown>,
+): Pick<SyncNode, 'has_preview' | 'preview_format' | 'preview_px' | 'preview_bytes'> {
+  const out: Pick<SyncNode, 'has_preview' | 'preview_format' | 'preview_px' | 'preview_bytes'> = {};
+  if (typeof payload.has_preview === 'boolean') out.has_preview = payload.has_preview;
+  if ('preview_format' in payload) {
+    const f = payload.preview_format;
+    if (f === null) out.preview_format = null;
+    else if (typeof f === 'string' && PREVIEW_FORMATS.has(f)) out.preview_format = f as 'heic' | 'jpeg';
+  }
+  for (const key of ['preview_px', 'preview_bytes'] as const) {
+    if (!(key in payload)) continue;
+    const v = payload[key];
+    if (v === null) out[key] = null;
+    else if (typeof v === 'number' && Number.isFinite(v)) out[key] = v;
+  }
+  return out;
+}
+
+type PreferenceUpdateHandler = (payload: Record<string, unknown>) => void;
+const preferenceUpdateHandlers = new Set<PreferenceUpdateHandler>();
+
+/**
+ * Register a handler for `preference_update` sync ops (payload `{key, value}`).
+ * Each handler checks the key it owns. Returns an unregister function.
+ */
+export function onPreferenceUpdateOp(handler: PreferenceUpdateHandler): () => void {
+  preferenceUpdateHandlers.add(handler);
+  return () => {
+    preferenceUpdateHandlers.delete(handler);
+  };
+}
+
+function notifyPreferenceUpdate(payload: Record<string, unknown>): void {
+  if (typeof payload.key !== 'string') return;
+  for (const handler of [...preferenceUpdateHandlers]) {
+    try {
+      handler(payload);
+    } catch {
+      // A preference handler never breaks op application.
+    }
+  }
 }
 
 /**
@@ -1370,5 +1438,6 @@ function payloadToNode(
     chunk_count: (payload.chunk_count as number | undefined) ?? 1,
     created_at: now,
     updated_at: now,
+    ...previewFieldsFromPayload(payload),
   };
 }

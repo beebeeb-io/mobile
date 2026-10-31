@@ -160,7 +160,7 @@ export async function refreshLocalIdentifierMap(): Promise<void> {
  * Seed the native worker's localIdentifier map directly from LOCAL data
  * (e.g. the `backup_assets` remote→local map) WITHOUT a server round-trip.
  *
- * Why this exists: the "Improve thumbnail quality" repair worker resolves each
+ * Why this exists: the thumbnail repair worker resolves each
  * file's PHAsset.localIdentifier from the native map. That map was historically
  * only ever populated from the server endpoint via `refreshLocalIdentifierMap()`,
  * but the sole writer of that server table (`photoBackupMark`) has had no runtime

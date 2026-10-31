@@ -210,6 +210,18 @@ final class FileKeyHandle {
   }
 }
 
+// ---- core chunk ladder: beebeeb-types plan_chunks (4 MiB floor, 32 chunks, "mobile" cap 32 MiB) ----
+struct ChunkPlanResult { let chunkSizeBytes: UInt64; let chunkCount: UInt64 }
+func planChunks(fileSizeBytes: UInt64, profile: String) throws -> ChunkPlanResult {
+  precondition(profile == "mobile", "Files plans with the mobile profile")
+  let mib: UInt64 = 1024 * 1024
+  let target = max(1, (fileSizeBytes + 31) / 32)
+  var size: UInt64 = 1
+  while size < target { size <<= 1 }
+  size = min(max(size, 4 * mib), 32 * mib)
+  return ChunkPlanResult(chunkSizeBytes: size, chunkCount: max(1, (fileSizeBytes + size - 1) / size))
+}
+
 // ---- shared metadata cache: in-memory, records every write ----
 __CACHED_ITEM__
 
@@ -310,8 +322,10 @@ final class ApiClient {
   /// SF-0002 part 1: the file_id the real ApiClient puts in the upload-init
   /// body (it sends fileId.lowercased(), ApiClient.swift).
   private(set) var uploadInitFileIds: [String] = []
+  /// Scenario hook: each chunk PUT throws the next queued error, then succeeds.
+  var chunkFailures: [Error] = []
 
-  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); callsLock.lock(); recordedCalls = []; callsLock.unlock(); patchedNames = []; uploadInitFileIds = [] }
+  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); callsLock.lock(); recordedCalls = []; callsLock.unlock(); patchedNames = []; uploadInitFileIds = []; chunkFailures = [] }
   func count(_ prefix: String) -> Int { calls.filter { $0.hasPrefix(prefix) }.count }
 
   func listFiles(parentId: String?) async throws -> [FileEntryDto] {
@@ -339,6 +353,7 @@ final class ApiClient {
   }
   func uploadChunkV2(uploadSessionId: String, index: Int, encryptedChunk: Data, expectedUser: String?) async throws {
     record("upload-chunk \(index)")
+    if !chunkFailures.isEmpty { throw chunkFailures.removeFirst() }
   }
   func completeUploadV2(uploadSessionId: String, expectedUser: String?) async throws -> UploadResponseDto {
     record("upload-complete")
@@ -1168,6 +1183,39 @@ func createMintsALowercaseFileIdUsedForDerivation() async {
   check(result.0?.filename == "Notes.txt", "the created item keeps its name, got \(result.0?.filename ?? "nil")")
 }
 
+// ---- A dropped chunk request is retried; a refused one is not ----
+// Without a retry, one chunk PUT that timed out failed the whole create and
+// Files restarted the upload from the first byte.
+func createItemFromFilesApp(_ filename: String, bytes: Int) async -> (NSFileProviderItem?, NSError?) {
+  let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
+  let template = Template("template-\(filename)", parent: "root", filename: filename)
+  let source = AppGroupContainer.directory("create-source").appendingPathComponent(filename)
+  try! Data(repeating: 0x5A, count: bytes).write(to: source)
+  return await withCheckedContinuation { continuation in
+    _ = ext.createItem(basedOn: template, fields: [], contents: source, options: [],
+                       request: NSFileProviderRequest()) { item, _, _, error in
+      continuation.resume(returning: (item, error as NSError?))
+    }
+  }
+}
+
+func createRetriesADroppedChunkAndStopsOnARefusal() async {
+  reset()
+  ApiClient.shared.chunkFailures = [URLError(.timedOut)]
+  let retried = await createItemFromFilesApp("Clip.mov", bytes: 1024)
+  check(retried.0 != nil && retried.1 == nil, "a timed-out chunk: the create still finishes, got \(describe(retried.1))")
+  check(ApiClient.shared.count("upload-chunk 0") == 2, "a timed-out chunk is sent again, got \(ApiClient.shared.calls)")
+  check(ApiClient.shared.count("upload-init") == 1, "a timed-out chunk does not restart the upload, got \(ApiClient.shared.calls)")
+  check(ApiClient.shared.count("upload-complete") == 1, "a timed-out chunk: the upload completes once, got \(ApiClient.shared.calls)")
+
+  reset()
+  ApiClient.shared.chunkFailures = [ApiError.statusCode(400)]
+  let refused = await createItemFromFilesApp("Refused.mov", bytes: 1024)
+  check(refused.0 == nil && refused.1 != nil, "a refused chunk (400): the create fails")
+  check(ApiClient.shared.count("upload-chunk 0") == 1, "a refused chunk is not sent again, got \(ApiClient.shared.calls)")
+  check(ApiClient.shared.count("upload-complete") == 0, "a refused chunk: nothing is completed, got \(ApiClient.shared.calls)")
+}
+
 let scenarioTable: [(String, () async -> Void)] = [
   ("key-errors", keyFailuresAreAuthenticationRequired),
   ("other-errors", otherFailuresKeepTheirMeaning),
@@ -1188,6 +1236,7 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("materialized-set", { await materializedSetFollowsTheSystem(); workingSetScenariosFinish() }),
   ("materialized-refresh", { await staleMaterializedFoldersAreRefreshed(); workingSetScenariosFinish() }),
   ("create-lowercase-id", createMintsALowercaseFileIdUsedForDerivation),
+  ("chunk-retry", createRetriesADroppedChunkAndStopsOnARefusal),
 ]
 
 @main
@@ -1402,5 +1451,11 @@ describe('task 1722 (G4/G5, review I1): content is streamed into the registered 
 describe('SF-0002 part 1: a Files-app create derives keys from the lowercase id it sends', () => {
   nativeSwiftHarnessTest('createItem derives the name and chunk keys from the same lowercase id as file_id', () => {
     expectScenario('create-lowercase-id', 9);
+  }, 300_000);
+});
+
+describe('a Files-app upload survives a dropped chunk request', () => {
+  nativeSwiftHarnessTest('a timed-out chunk is sent again without restarting the upload; a refused one fails at once', () => {
+    expectScenario('chunk-retry', 7);
   }, 300_000);
 });

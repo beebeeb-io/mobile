@@ -15,7 +15,7 @@
  * access, and the access the app already has is exactly what its
  * `getAssetsAsync` calls see); REQUEST only when access is not granted —
  * and only from an explicit user action (enabling backup in Settings,
- * "Save to Photos", the thumbnail-quality screen). No mount/focus/effect
+ * "Save to Photos"). No mount/focus/effect
  * may auto re-request.
  *
  * Kept dependency-free and module-injected so it is unit-testable directly
@@ -76,4 +76,49 @@ export async function ensurePhotoPermission(
   }
   const requested = await module.requestPermissionsAsync(options.writeOnly);
   return { granted: photoPermissionGranted(requested), requested: true };
+}
+export interface PhotoAccessNotice {
+  /** Replaces the camera-roll progress line when nothing can be backed up. */
+  summary: string | null;
+  message: string;
+  actionLabel: string;
+  /** 'picker' = iOS limited-library picker, 'settings' = iOS Settings app. */
+  action: 'picker' | 'settings';
+}
+
+/**
+ * Why camera-roll backup is not moving, when the cause is
+ * the iOS photo permission rather than the engine. `visibleCount` is what
+ * the app can actually read (`getAssetsAsync().totalCount`), which under
+ * limited access is the user's selection. Null when access is full or not
+ * known yet — never a false alarm.
+ */
+export function photoAccessNotice(
+  permission: PhotoPermissionResponse | null | undefined,
+  visibleCount: number,
+): PhotoAccessNotice | null {
+  if (!permission) return null;
+  if (permission.status === 'denied') {
+    return {
+      summary: 'Paused · no access to Photos',
+      message: 'Beebeeb is not allowed to read your photos.',
+      actionLabel: 'Open Settings',
+      action: 'settings',
+    };
+  }
+  if (permission.status !== 'granted' || permission.accessPrivileges !== 'limited') return null;
+  if (visibleCount <= 0) {
+    return {
+      summary: 'Paused · no photos shared with Beebeeb',
+      message: 'iOS shares no photos with Beebeeb, so there is nothing to back up.',
+      actionLabel: 'Choose photos',
+      action: 'picker',
+    };
+  }
+  return {
+    summary: null,
+    message: `Only ${visibleCount.toLocaleString()} selected photo${visibleCount === 1 ? ' is' : 's are'} shared with Beebeeb.`,
+    actionLabel: 'Change',
+    action: 'picker',
+  };
 }

@@ -138,7 +138,9 @@ describe('NativeBackupEngine.swift: every manifest write is fenced', () => {
     expect(body(code, 'private func registerPhotoObserver(')).not.toMatch(/Task \{/);
     // Round 11: registration goes through lifecycle.registerObserverOnce; one scan either way.
     expect((body(code, 'private func registerPhotoObserver(').match(/spawnScan\(/g) ?? []).length).toBe(1);
-    expect(body(engine, 'func photoLibraryDidChange(')).toMatch(/spawnScan\(reason: "Selected albums rescanned"/);
+    // The reason names albums or the limited-library selection.
+    expect(body(engine, 'func photoLibraryDidChange(')).toMatch(/"Selected albums rescanned"/);
+    expect(body(engine, 'func photoLibraryDidChange(')).toMatch(/spawnScan\(reason: reason, wakeReason: "photo-library-selected"\)/);
     // Round 11: stop()'s body is stopLocked(), run inside lifecycle.userStop.
     const stop = body(code, 'private func stopLocked() {');
     expect(before(stop, 'cancelScanTasks()', 'guard isRunning else { return }')).toBe(true);

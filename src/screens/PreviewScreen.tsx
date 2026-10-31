@@ -65,7 +65,7 @@ import {
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } from '../lib/text-file-save';
-import { decryptToTempFile, invalidatePreviewCache, materializeVideoPreviewForExport, releasePreviewCopy } from '../lib/native-decrypt';
+import { decryptToTempFile, invalidatePreviewCache, materializeVideoPreviewForExport, previewCachePath, releasePreviewCopy, retainPreviewCopy } from '../lib/native-decrypt';
 import { isLoopbackStreamUri, streamBufferPctFromEvent } from '../lib/video-stream';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
@@ -83,6 +83,13 @@ import {
   cachePhotoWithExtension,
 } from '../lib/photo-cache';
 import { getCachedThumbnail } from '../lib/thumbnail-cache';
+import {
+  forgetStoredPreviewIfGone,
+  loadStoredPreview,
+  prepareGenerateFromOpenedOriginal,
+  zoomExceedsPreview,
+  type OpenedOriginalUpload,
+} from '../lib/photo-preview-viewer';
 import {
   cacheLocalThumbnail,
   fetchDecryptedLargeThumbnailUri,
@@ -500,6 +507,15 @@ function languageDisplayLabel(hljsId: string, fileName?: string): string {
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
+/**
+ * Space the floating header and bottom bar take on the media stage. Photos
+ * (and RAW) use the whole screen and the chrome floats over them, so showing
+ * or hiding the chrome never moves or resizes the image; video keeps its
+ * letterboxed stage so the native controls stay clear of the bars.
+ */
+const MEDIA_STAGE_TOP_CHROME = 64;
+const MEDIA_STAGE_BOTTOM_PAD = 24;
+
 interface PhotoPageEntry {
   id: string;
   name_encrypted: string;
@@ -514,13 +530,17 @@ interface PhotoPageEntry {
   local_asset_id?: string | null;
   has_thumbnail?: boolean;
   thumbnail_bytes?: number | null;
+  has_preview?: boolean;
+  preview_format?: 'heic' | 'jpeg' | null;
+  preview_px?: number | null;
+  preview_bytes?: number | null;
   is_request_upload?: boolean;
 }
 
 type PhotoLoadStage = 'checking' | 'downloading' | 'decrypting' | 'caching';
 type FileKeyLoader = (fileId: string) => Promise<Uint8Array>;
 type MasterKeyHandleLoader = () => number;
-type ImagePreviewKind = 'thumbnail' | 'large' | 'original';
+type ImagePreviewKind = 'thumbnail' | 'large' | 'preview' | 'original';
 
 const NORMAL_PREVIEW_THUMB_SIZE = 768;
 const LARGE_PREVIEW_THUMB_SIZE = 1600;
@@ -533,7 +553,7 @@ function normalizePerformanceStorageProfile(value: unknown): PerformanceStorageP
 
 interface ThumbnailPreviewResult {
   uri: string;
-  kind: Exclude<ImagePreviewKind, 'original'>;
+  kind: 'thumbnail' | 'large';
   source: 'photoKit' | 'remote' | 'cache' | 'local';
 }
 
@@ -911,6 +931,34 @@ async function loadDecryptedPhotoForViewer(
         pinnedLocal,
         status: offlineManager.getStatus(entry.id)?.state ?? 'none',
       });
+      // Stored photo preview first (cache, then download). Any miss, old server or
+      // bad file answers null and the thumbnail/original path below runs unchanged.
+      if (isUnlocked && entry.has_preview === true && !entry.is_request_upload) {
+        const stored = await loadStoredPreview(
+          {
+            id: entry.id,
+            mime_type: entry.mime_type,
+            has_preview: true,
+            preview_format: entry.preview_format ?? null,
+            preview_px: entry.preview_px ?? null,
+            preview_bytes: entry.preview_bytes ?? null,
+          },
+          { offlinePinned: pinnedLocal },
+        );
+        throwIfPreviewAborted(signal);
+        if (stored) {
+          recordRuntimeTrace('preview.photo_preview.source', {
+            fileId: entry.id,
+            source: stored.source,
+            elapsedMs: Date.now() - startedAt,
+          });
+          return { uri: stored.uri, kind: 'preview' };
+        }
+        recordRuntimeTrace('preview.photo_preview.source', { fileId: entry.id, source: 'existing' });
+      } else if (entry.has_preview === false) {
+        // No stored preview any more (new version, Off): never show a cached old one.
+        forgetStoredPreviewIfGone({ id: entry.id, has_preview: false });
+      }
       const normal = await loadNormalPreviewThumbnail(entry, isUnlocked, getFileKeyBytes, signal, !pinnedLocal);
       if (normal?.source === 'photoKit' || normal?.source === 'local') {
         recordRuntimeTrace('preview.photo_page.thumbnail.success', {
@@ -979,6 +1027,10 @@ async function loadDecryptedPhotoForViewer(
       chunkCount: entry.chunk_count,
       hasMasterKeyHandle: getMasterKeyHandleId() != null,
     });
+    // Resolved before the decrypt so no await sits between "file ready" and the upload.
+    const previewJob = !isVideo && !entry.is_request_upload && !sharedFileKeyIsLoaded(entry.id)
+      ? prepareGenerateFromOpenedOriginal({ id: entry.id, mime_type: entry.mime_type, has_preview: entry.has_preview })
+      : null;
     const decryptedUri = await decryptToTempFile(
       entry.id,
       () => getFileKeyBytes(entry.id),
@@ -988,6 +1040,7 @@ async function loadDecryptedPhotoForViewer(
       getMasterKeyHandleId(),
       { onProgress, signal, useProvidedFileKey: entry.is_request_upload === true },
     );
+    holdOpenedOriginalForPreview(entry.id, ext, decryptedUri, previewJob);
     if (signal?.aborted) {
       // Task 1593 round 2 (P2-F) — give the shared preview copy back instead of
       // deleting it: the full preview or "Prove it" may be using the same file.
@@ -1292,6 +1345,46 @@ const stopPageTouchPropagation = (e: GestureResponderEvent) => {
   e.stopPropagation();
 };
 
+/**
+ * An original image was just decrypted to the preview-cache copy: hold one extra
+ * lease on it (taken synchronously, before any other release can run) until the
+ * preview upload has settled, then give it back. Not the preview-cache copy
+ * (offline copy etc.): nothing to hold.
+ */
+function holdOpenedOriginalForPreview(
+  fileId: string,
+  extension: string,
+  decryptedUri: string,
+  job: Promise<OpenedOriginalUpload | null> | null,
+): void {
+  if (!job) return;
+  const held = decryptedUri === previewCachePath(fileId, extension);
+  if (held) retainPreviewCopy(fileId, extension);
+  const release = () => (held ? releasePreviewCopy(fileId, extension).then(() => {}) : undefined);
+  void job
+    .then((run) => (run ? run(decryptedUri, release) : release()))
+    .catch(() => release());
+}
+
+/**
+ * Visible switch from the stored photo preview to the full original. Highlighted
+ * once the zoom goes past the preview's resolution (the original has more detail).
+ */
+function ViewOriginalPill({ onPress, bottom, highlight = false }: { onPress: () => void; bottom: number; highlight?: boolean }) {
+  return (
+    <Pressable
+      style={[styles.viewOriginalPill, highlight ? styles.viewOriginalPillHighlight : null, { bottom }]}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="View original"
+      accessibilityHint={highlight ? 'Zoomed past the preview. The original has more detail.' : undefined}
+      testID="preview-view-original"
+    >
+      <Text style={[styles.viewOriginalPillText, highlight ? styles.viewOriginalPillTextHighlight : null]}>Original</Text>
+    </Pressable>
+  );
+}
+
 export const PhotoPage = React.memo(function PhotoPage({
   entry,
   shouldLoadFull,
@@ -1305,7 +1398,9 @@ export const PhotoPage = React.memo(function PhotoPage({
   onExifInfo,
   onZoomChange,
   onSingleTap,
+  onViewOriginal,
   videoControlsBottomInset,
+  stageInsets,
 }: {
   entry: PhotoPageEntry;
   shouldLoadFull: boolean;
@@ -1341,7 +1436,15 @@ export const PhotoPage = React.memo(function PhotoPage({
   onZoomChange?: (zoomed: boolean) => void;
   /** Task 1579 — a single tap on a zoomable page (chrome toggle); see ZoomableImage. */
   onSingleTap?: () => void;
+  /** Loads the full original over the stored preview (the "Original" control). */
+  onViewOriginal?: () => void;
   videoControlsBottomInset: number;
+  /**
+   * The page fills the whole screen. Video pages keep clear of the floating
+   * chrome by this much; image pages ignore it except to place the "Original"
+   * pill above the bottom bar.
+   */
+  stageInsets?: { top: number; bottom: number };
 }) {
   const { colors: c } = useTheme();
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
@@ -1370,6 +1473,27 @@ export const PhotoPage = React.memo(function PhotoPage({
   const [originalActive, setOriginalActive] = useState(false);
   const [originalCacheHit, setOriginalCacheHit] = useState(false);
   const [reduceMotion, setReduceMotion] = useState(false);
+  // Zoomed past the stored preview's resolution: the "Original" pill is highlighted.
+  const [zoomPastPreview, setZoomPastPreview] = useState(false);
+  const [previewPixels, setPreviewPixels] = useState<{ width: number; height: number } | null>(null);
+  const handleZoomScale = useCallback((scale: number) => {
+    const win = Dimensions.get('window');
+    setZoomPastPreview(zoomExceedsPreview(
+      scale, { width, height: win.height }, win.scale || 2, previewPixels, entry.preview_px,
+    ));
+  }, [width, previewPixels, entry.preview_px]);
+  // The preview's pixel size, for the exact fitted scale (any aspect ratio).
+  useEffect(() => {
+    setPreviewPixels(null);
+    if (uriKind !== 'preview' || !uri || typeof Image.getSize !== 'function') return;
+    let cancelled = false;
+    Image.getSize(
+      uri,
+      (w, h) => { if (!cancelled) setPreviewPixels({ width: w, height: h }); },
+      () => {},
+    );
+    return () => { cancelled = true; };
+  }, [uri, uriKind]);
   // Task 0885 (FIX #3): track whether the mounted <Image> has actually decoded,
   // so the failsafe watchdog can tell "rendered" from "spinning forever".
   const [imageLoaded, setImageLoaded] = useState(false);
@@ -1944,7 +2068,7 @@ export const PhotoPage = React.memo(function PhotoPage({
               </Text>
             </View>
           ) : uri && isVideoEntry ? (
-            <View style={styles.mediaVideoStageWrap}>
+            <View style={[styles.mediaVideoStageWrap, stageInsets && { height: undefined, top: stageInsets.top, bottom: stageInsets.bottom, position: 'absolute' }]}>
               <PhotoPageVideo
                 uri={uri}
                 style={[styles.videoControlsSurface, { bottom: videoControlsBottomInset }]}
@@ -1982,6 +2106,7 @@ export const PhotoPage = React.memo(function PhotoPage({
               style={StyleSheet.absoluteFill}
               resetSignal={isCurrent}
               onZoomChange={isCurrent ? onZoomChange : undefined}
+              onScaleChange={isCurrent && uriKind === 'preview' ? handleZoomScale : undefined}
               onSingleTap={onSingleTap}
               testID="preview-zoomable"
             >
@@ -2021,6 +2146,9 @@ export const PhotoPage = React.memo(function PhotoPage({
               ) : null}
             </View>
           )}
+          {isCurrent && uri && uriKind === 'preview' && !originalActive && !error && onViewOriginal ? (
+            <ViewOriginalPill onPress={onViewOriginal} bottom={videoControlsBottomInset + 8 + (stageInsets?.bottom ?? 0)} highlight={zoomPastPreview} />
+          ) : null}
           </>
         );
       })()}
@@ -2131,6 +2259,10 @@ export default function PreviewScreen() {
     performanceStorageProfile: routePerformanceStorageProfile,
     hasThumbnail,
     thumbnailBytes,
+    hasPreview,
+    previewFormat,
+    previewPx,
+    previewBytes,
     fileRequestId,
     senderEphemeralPubkey,
     wrappedContentKey,
@@ -3253,6 +3385,13 @@ export default function PreviewScreen() {
       // Task 1593 — the shared preview cache key ("Prove it" uses the same).
       const decryptExt = previewDecryptExtension(currentMimeType, currentFileName);
       let decryptedUri: string;
+      const previewJob = category === 'image' && !requestFileFields && !sharedFileKeyIsLoaded(currentFileId)
+        ? prepareGenerateFromOpenedOriginal({
+            id: currentFileId,
+            mime_type: currentMimeType,
+            has_preview: currentEntry ? currentEntry.has_preview : hasPreview,
+          })
+        : null;
       try {
         recordRuntimeTrace('preview.original.decrypt_request', {
           fileId: currentFileId,
@@ -3295,6 +3434,7 @@ export default function PreviewScreen() {
         });
         throw error;
       }
+      holdOpenedOriginalForPreview(currentFileId, decryptExt, decryptedUri, previewJob);
       throwIfPreviewAborted(options.signal);
       setDownloadProgress(1);
       setLoadProgress(emptyPreviewProgress(null));
@@ -3337,6 +3477,8 @@ export default function PreviewScreen() {
     fileId,
     hasThumbnail,
     thumbnailBytes,
+    currentEntry,
+    hasPreview,
     showToast,
     requestFileFields,
     getFileKeyBytes,
@@ -3388,6 +3530,10 @@ export default function PreviewScreen() {
     storage_pool_id: currentStoragePoolId ?? null,
     thumbnail_uri: currentEntry?.thumbnail_uri ?? null,
     local_asset_id: currentEntry?.local_asset_id ?? null,
+    has_preview: currentEntry ? currentEntry.has_preview : hasPreview,
+    preview_format: currentEntry ? currentEntry.preview_format : previewFormat,
+    preview_px: currentEntry ? currentEntry.preview_px : previewPx,
+    preview_bytes: currentEntry ? currentEntry.preview_bytes : previewBytes,
   }), [
     requestFileFields,
     fileId,
@@ -3395,6 +3541,14 @@ export default function PreviewScreen() {
     currentCreatedAt,
     currentEntry?.local_asset_id,
     currentEntry?.thumbnail_uri,
+    currentEntry?.has_preview,
+    currentEntry?.preview_format,
+    currentEntry?.preview_px,
+    currentEntry?.preview_bytes,
+    hasPreview,
+    previewFormat,
+    previewPx,
+    previewBytes,
     currentFileId,
     currentFileName,
     currentMimeType,
@@ -4438,6 +4592,11 @@ export default function PreviewScreen() {
     [],
   );
 
+  const pagerStageInsets = useMemo(
+    () => ({ top: insets.top + MEDIA_STAGE_TOP_CHROME, bottom: MEDIA_STAGE_BOTTOM_PAD + previewBottomInset }),
+    [insets.top, previewBottomInset],
+  );
+
   const renderPhotoPage = useCallback(
     ({ item, index }: { item: PhotoPageEntry; index: number }) => (
       <PhotoPage
@@ -4462,15 +4621,19 @@ export default function PreviewScreen() {
         onExifInfo={publishRawExif}
         onZoomChange={setMediaZoomed}
         onSingleTap={handleContentTap}
+        onViewOriginal={handleViewOriginal}
         videoControlsBottomInset={previewVideoControlsBottomInset}
+        stageInsets={pagerStageInsets}
       />
     ),
     [
+      pagerStageInsets,
       activePhotoPageIndexes,
       authenticatedFileIds,
       currentPhotoIndex,
       handleContentTap,
       handleUnlockCurrent,
+      handleViewOriginal,
       lockCheckReady,
       lockedFileIds,
       originalPhotoRequest,
@@ -4651,15 +4814,7 @@ export default function PreviewScreen() {
           // both with Maestro's coordinate-swipe and its direction-swipe);
           // removing it and using the plain `View` below restored paging
           // immediately (counter advanced to "2 / 13" on the same gesture).
-          <View
-            style={[
-              styles.mediaStage,
-              {
-                paddingTop: insets.top + 64,
-                paddingBottom: 24 + previewBottomInset,
-              },
-            ]}
-          >
+          <View style={styles.mediaStage}>
             <FlatList
               ref={pagerRef}
               data={photoList}
@@ -4710,8 +4865,8 @@ export default function PreviewScreen() {
             style={[
               styles.mediaStage,
               {
-                paddingTop: insets.top + 64,
-                paddingBottom: 24 + previewBottomInset,
+                paddingTop: pagerStageInsets.top,
+                paddingBottom: pagerStageInsets.bottom,
                 alignItems: 'center',
                 justifyContent: 'center',
               },
@@ -4738,10 +4893,14 @@ export default function PreviewScreen() {
           <Pressable
             style={[
               styles.mediaStage,
-              {
-                paddingTop: insets.top + 64,
-                paddingBottom: 24 + previewBottomInset,
-              },
+              // Photos and RAW fill the screen under the floating chrome; other
+              // media (video, audio) keep their letterboxed stage.
+              isImage || isRaw
+                ? null
+                : {
+                    paddingTop: pagerStageInsets.top,
+                    paddingBottom: pagerStageInsets.bottom,
+                  },
             ]}
             onPress={handleContentTap}
             // Task 1579 — a mounted ZoomableImage owns taps (single tap →
@@ -4761,6 +4920,7 @@ export default function PreviewScreen() {
                 renderLoadError("Couldn't load image", imageError, 'media')
               ) : imageUri ? (
                 // Task 1579 — pinch/double-tap zoom (single-file image).
+                <>
                 <ZoomableImage
                   resetSignal={currentFileId}
                   onZoomChange={setMediaZoomed}
@@ -4794,6 +4954,10 @@ export default function PreviewScreen() {
                     />
                   )}
                 </ZoomableImage>
+                {imagePreviewKind === 'preview' && !originalImageActive ? (
+                  <ViewOriginalPill onPress={handleViewOriginal} bottom={previewVideoControlsBottomInset + 8 + pagerStageInsets.bottom} />
+                ) : null}
+                </>
               ) : (
                 <View style={styles.imageStatus}>
                   {renderSharedProgress(false)}
@@ -6256,6 +6420,30 @@ const styles = StyleSheet.create({
   photoPageImage: {
     width: '100%',
     height: '100%',
+  },
+  viewOriginalPill: {
+    position: 'absolute',
+    alignSelf: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.35)',
+  },
+  viewOriginalPillText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  // Forced colours: the pill only renders on the photo pager's dark ground.
+  viewOriginalPillHighlight: {
+    backgroundColor: 'rgba(245,184,0,0.95)',
+    borderColor: 'rgba(255,255,255,0.6)',
+  },
+  viewOriginalPillTextHighlight: {
+    color: '#16110a',
+    fontWeight: '800',
   },
   photoPageStatus: {
     alignItems: 'center',

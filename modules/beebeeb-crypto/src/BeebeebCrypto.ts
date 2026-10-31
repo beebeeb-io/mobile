@@ -39,7 +39,6 @@ export interface RegenResult {
 const BeebeebThumbnailsModule = requireOptionalNativeModule<{
   getThumbnail(fileId: string, width: number, height: number): Promise<{ uri: string; source: string }>
   regenerateThumbnail(fileId: string, qualityPreset: string): Promise<RegenResult>
-  enqueueApplyQuality(fileIds: string[], qualityPreset: string): Promise<number>
   pauseWorkers(): Promise<void>
   resumeWorkers(): Promise<void>
   retryFile(fileId: string): Promise<void>
@@ -2137,6 +2136,92 @@ export async function generateAndUploadPhotoLibraryThumbnailNative(
   )
 }
 
+/**
+ * Encode a photo (PhotoKit id or a decrypted local file path), encrypt it with the
+ * file key and PUT it as the file's photo preview. Rejects above 8 MiB encrypted.
+ */
+export async function uploadPhotoPreviewNative(
+  handleId: number,
+  apiUrl: string,
+  token: string,
+  fileId: string,
+  localIdentifier: string | null,
+  sourcePath: string | null,
+  format: 'heic' | 'jpeg',
+  px: number,
+  expectedUser: string | null = null,
+): Promise<{ bytes: number }> {
+  return BeebeebCryptoModule.uploadPhotoPreviewNative(
+    handleId, apiUrl, token, fileId, localIdentifier, sourcePath, format, px, expectedUser,
+  )
+}
+
+/**
+ * Mirror the account's photo preview setting into the native backup engine (app
+ * UserDefaults), together with the account it was read for. The engine makes a
+ * preview after each image upload only while enabled AND only for a batch of that
+ * same account; a missing or different account means disabled.
+ */
+export function setPhotoPreviewSetting(
+  enabled: boolean,
+  format: 'heic' | 'jpeg',
+  px: number,
+  accountId: string | null,
+): void {
+  if (typeof BeebeebCryptoModule.setPhotoPreviewSetting !== 'function') return
+  BeebeebCryptoModule.setPhotoPreviewSetting(enabled, format, px, accountId ?? '')
+}
+
+/** Forget the mirrored photo preview setting (sign-out / account purge). */
+export function clearPhotoPreviewSetting(): void {
+  if (typeof BeebeebCryptoModule.clearPhotoPreviewSetting !== 'function') return
+  BeebeebCryptoModule.clearPhotoPreviewSetting()
+}
+
+/**
+ * Download + decrypt a photo preview to `destPath` (inside Caches/beebeeb-previews-v1/).
+ * Rejects with code `preview_missing` (404) or `preview_corrupt` (bad or truncated
+ * ciphertext); no partial file is left behind.
+ */
+export async function downloadPhotoPreviewNative(
+  handleId: number,
+  apiUrl: string,
+  token: string,
+  fileId: string,
+  destPath: string,
+): Promise<{ bytes: number; format: string; px: number }> {
+  return BeebeebCryptoModule.downloadPhotoPreviewNative(handleId, apiUrl, token, fileId, destPath)
+}
+
+/** Encode a library photo as a preview sample (plaintext, Caches only) for the compare view. */
+export async function encodePhotoPreviewSample(
+  localIdentifier: string,
+  format: 'heic' | 'jpeg',
+  px: number,
+): Promise<{ path: string; bytes: number; width: number; height: number }> {
+  return BeebeebCryptoModule.encodePhotoPreviewSample(localIdentifier, format, px)
+}
+
+/** Average encoded preview size over a few library photos; nothing is written. */
+export async function estimatePhotoPreviewBytes(
+  localIdentifiers: string[],
+  format: 'heic' | 'jpeg',
+  px: number,
+): Promise<{ averageBytes: number; sampled: number }> {
+  return BeebeebCryptoModule.estimatePhotoPreviewBytes(localIdentifiers, format, px)
+}
+
+/**
+ * Downsampled original (JPEG q1.0 in the samples dir) for the compare view.
+ * `originalBytes` is the size of the original file in the library, when PhotoKit reports it.
+ */
+export async function originalPhotoForCompare(
+  localIdentifier: string,
+  maxPx: number,
+): Promise<{ path: string; width: number; height: number; originalBytes?: number }> {
+  return BeebeebCryptoModule.originalPhotoForCompare(localIdentifier, maxPx)
+}
+
 // ─── Amber Constellation — display side ─────────────────────────────────────
 
 /**
@@ -2177,10 +2262,6 @@ export const BeebeebThumbnails = {
   regenerateThumbnail: (fileId: string, qualityPreset: string): Promise<RegenResult> => {
     if (!BeebeebThumbnailsModule?.regenerateThumbnail) return Promise.reject(new Error('ThumbnailService not available'))
     return BeebeebThumbnailsModule.regenerateThumbnail(fileId, qualityPreset)
-  },
-  enqueueApplyQuality: (fileIds: string[], qualityPreset: string): Promise<number> => {
-    if (!BeebeebThumbnailsModule?.enqueueApplyQuality) return Promise.resolve(0)
-    return BeebeebThumbnailsModule.enqueueApplyQuality(fileIds, qualityPreset)
   },
   pauseWorkers: (): Promise<void> => {
     if (!BeebeebThumbnailsModule?.pauseWorkers) return Promise.resolve()

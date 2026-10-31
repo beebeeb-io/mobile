@@ -52,6 +52,8 @@ export interface ZoomableImageProps {
   style?: StyleProp<ViewStyle>;
   /** Fired when the content crosses between 1x and zoomed (either way). */
   onZoomChange?: (zoomed: boolean) => void;
+  /** Every zoom scale change (1 = fit). */
+  onScaleChange?: (scale: number) => void;
   /** A single tap that was not the first half of a double-tap. */
   onSingleTap?: () => void;
   /**
@@ -68,6 +70,7 @@ export function ZoomableImage({
   children,
   style,
   onZoomChange,
+  onScaleChange,
   onSingleTap,
   resetSignal,
   testID,
@@ -86,6 +89,8 @@ export function ZoomableImage({
   // Latest callbacks in refs so the effects below don't re-run per render.
   const onZoomChangeRef = useRef(onZoomChange);
   onZoomChangeRef.current = onZoomChange;
+  const onScaleChangeRef = useRef(onScaleChange);
+  onScaleChangeRef.current = onScaleChange;
   const onSingleTapRef = useRef(onSingleTap);
   onSingleTapRef.current = onSingleTap;
 
@@ -126,6 +131,7 @@ export function ZoomableImage({
     clearSingleTapTimer();
     if (isZoomed(scaleRef.current)) zoomToFull(false);
     scaleRef.current = MIN_ZOOM_SCALE;
+    onScaleChangeRef.current?.(MIN_ZOOM_SCALE);
     setZoomedState(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetSignal]);
@@ -144,6 +150,7 @@ export function ZoomableImage({
   const handleScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const scale = clampZoomScale(e.nativeEvent.zoomScale ?? MIN_ZOOM_SCALE);
     scaleRef.current = scale;
+    onScaleChangeRef.current?.(scale);
     setZoomedState(shouldBlockPaging(scale));
   }, [setZoomedState]);
 
