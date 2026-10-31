@@ -174,6 +174,12 @@ do {
   expect(elapsed < BackupSQLiteQuiesce.defaultTimeout, "m1: within the 2 s bound (elapsed \(elapsed))")
   expect(!inFlight.get, "m1: no SQLite statement in flight when the quiesce returns")
   expect(rc.get == SQLITE_INTERRUPT, "m1: the in-flight statement was interrupted (rc \(rc.get))")
+  if inFlight.get, let db = handle.db {
+    // Red path only (the quiesce did not stop it): stop it here so the rest
+    // of the run does not wait minutes behind it.
+    exsqlite3_interrupt(db)
+    _ = BackupSQLiteQuiesce.waitForSerialQueue(dbQueue, timeout: 5)
+  }
 
   var after: OpaquePointer? = OpaquePointer(bitPattern: 1)
   var ran = false
@@ -252,18 +258,14 @@ do {
 
 // MARK: - m5 B5: an interrupted chunk replace changes nothing
 
-/// One-shot: the trigger arms it on chunk 2, and the progress handler then
-/// aborts that INSERT with SQLITE_INTERRUPT, exactly as the expiry's
-/// `exsqlite3_interrupt` does (the transaction is rolled back).
-var interruptArmed = false
-let armFunction: @convention(c) (OpaquePointer?, Int32, UnsafeMutablePointer<OpaquePointer?>?) -> Void = { ctx, _, _ in
-  interruptArmed = true
+/// What an expiry does to the replace: `exsqlite3_interrupt` lands while the
+/// INSERT of chunk 2 is running (the trigger calls it, then loops, so the
+/// statement is still executing when SQLite checks the flag). SQLite then
+/// aborts the statement with SQLITE_INTERRUPT and rolls the WHOLE transaction
+/// back, as it does for the real expiry interrupt.
+let interruptFunction: @convention(c) (OpaquePointer?, Int32, UnsafeMutablePointer<OpaquePointer?>?) -> Void = { ctx, _, _ in
+  exsqlite3_interrupt(exsqlite3_context_db_handle(ctx))
   exsqlite3_result_null(ctx)
-}
-let progress: @convention(c) (UnsafeMutableRawPointer?) -> Int32 = { _ in
-  guard interruptArmed else { return 0 }
-  interruptArmed = false
-  return 1
 }
 
 do {
@@ -276,18 +278,18 @@ do {
   let chunksSQL = "SELECT path FROM backup_upload_chunks WHERE local_asset_id = 'asset-1' ORDER BY chunk_index"
   expect(strings(db, chunksSQL) == oldPaths, "m5 setup: three old chunks")
 
-  expect(exsqlite3_create_function_v2(db, "bb_arm_interrupt", 0, SQLITE_UTF8, nil, armFunction, nil, nil, nil) == SQLITE_OK,
-         "m5 setup: arm function")
+  expect(exsqlite3_create_function_v2(db, "bb_interrupt", 0, SQLITE_UTF8, nil, interruptFunction, nil, nil, nil) == SQLITE_OK,
+         "m5 setup: interrupt function")
   expect(exsqlite3_exec(db, """
+    CREATE TEMP TABLE bb_rows(x);
+    WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r WHERE x < 50) INSERT INTO bb_rows SELECT x FROM r;
     CREATE TEMP TRIGGER bb_interrupt_chunk_2 BEFORE INSERT ON backup_upload_chunks
     WHEN NEW.chunk_index = 2 AND NEW.server_file_id = 'new-file'
-    BEGIN SELECT bb_arm_interrupt(); END;
+    BEGIN SELECT bb_interrupt(); SELECT count(*) FROM bb_rows a, bb_rows b; END;
     """, nil, nil, nil) == SQLITE_OK, "m5 setup: trigger")
-  exsqlite3_progress_handler(db, 1, progress, nil)
 
   let newPaths = (0..<5).map { "/staged/new-\($0)" }
   let replaced = BackupManifestStore.replaceStagedChunks(db, assetId: "asset-1", fileId: "new-file", chunkPaths: newPaths)
-  exsqlite3_progress_handler(db, 0, nil, nil)
   expect(!replaced, "m5 (B5): the interrupted replace reports failure")
   expect(exsqlite3_get_autocommit(db) != 0, "m5 (B5): no transaction left open")
   let after = strings(db, chunksSQL)
