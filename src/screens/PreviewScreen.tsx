@@ -4352,7 +4352,9 @@ export default function PreviewScreen() {
           dialogTitle: previewFileName,
         });
       } else {
-        Alert.alert('Downloaded', `Saved to ${shareUri}`);
+        // Round 2 (mobile#254 review): the copy is removed when this returns,
+        // so naming its path ("Saved to …") pointed at a file that was gone.
+        Alert.alert('Not available', 'Saving is not available on this device.');
       }
     } catch (err) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);

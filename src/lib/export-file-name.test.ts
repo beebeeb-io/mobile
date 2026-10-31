@@ -77,6 +77,40 @@ describe('sanitizeExportFileName', () => {
   });
 });
 
+describe('round 2 (mobile#254 review): an allowlist, not a denylist', () => {
+  test('URI-significant characters never survive (they were path syntax once decoded)', () => {
+    // The stem's trailing dot is trimmed like any edge dot: `.._2F.` + `._2Fx`.
+    expect(sanitizeExportFileName('..%2F..%2Fx')).toBe('_2F._2Fx');
+    expect(sanitizeExportFileName('%2e%2e%2f')).toBe('_2e_2e_2f');
+    expect(sanitizeExportFileName('a#b?c.txt')).toBe('a_b_c.txt');
+    expect(sanitizeExportFileName('100%.txt')).toBe('100_.txt');
+  });
+
+  test('Windows / FAT / SMB reserved characters and stems save anywhere', () => {
+    expect(sanitizeExportFileName('a<b>c|d*e"f:g.txt')).toBe('a_b_c_d_e_f_g.txt');
+    expect(sanitizeExportFileName('CON.txt')).toBe('_CON.txt');
+    expect(sanitizeExportFileName('nul')).toBe('_nul');
+    expect(sanitizeExportFileName('com1.log')).toBe('_com1.log');
+    expect(sanitizeExportFileName('console.txt')).toBe('console.txt');
+  });
+
+  test('bidi overrides, zero-width characters and line separators cannot fake a name', () => {
+    // "invoice<RLO>fdp.exe" shows as "invoiceexe.pdf" in a share sheet.
+    expect(sanitizeExportFileName('invoice\u202Efdp.exe')).toBe('invoice_fdp.exe');
+    expect(sanitizeExportFileName('pho\u200Bto.jpg')).toBe('pho_to.jpg');
+    expect(sanitizeExportFileName('line\u2028break.txt')).toBe('line_break.txt');
+    expect(sanitizeExportFileName('word\u2066x\u2069.txt')).toBe('word_x_.txt');
+    // Every kind of space is a plain space.
+    expect(sanitizeExportFileName('no\u00A0break.txt')).toBe('no break.txt');
+  });
+
+  test('a real name that starts with { is a name, an envelope is not', () => {
+    expect(isExportableDisplayName('{draft} notes.txt')).toBe(true);
+    expect(isExportableDisplayName('{"cipher_suite":"x","nonce":"n","ciphertext":"c"}')).toBe(false);
+    expect(isExportableDisplayName('{"n":"a","c":"b"}')).toBe(false);
+  });
+});
+
 describe('exportFileName — display name, or the id name when there is none', () => {
   test('uses the decrypted display name, not the file id', () => {
     expect(exportFileName('IMG_0042.DNG', '640d4f1e-c0cd-4b1e-9e54-1a2b3c4d5e6f.dng')).toBe('IMG_0042.DNG');

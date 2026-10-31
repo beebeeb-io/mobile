@@ -17,6 +17,12 @@
  *
  * The caller removes the whole per-export folder when the share sheet
  * resolves (`cleanup()`).
+ *
+ * Round 2 (mobile#254 review, P1): the name enters the URI PERCENT-ENCODED,
+ * and the decoded target must be exactly `<folder>/<name>`. The file-system
+ * layer percent-decodes the URI path, so a raw name was path syntax: a
+ * shared file called `..%2F..%2Fx` landed outside `beebeeb-export/<random>/`
+ * (and outside the leaf the sign-out purge sweeps).
  */
 import * as FileSystem from 'expo-file-system/legacy';
 import { exportFileName, exportSubdirectoryName } from './export-file-name';
@@ -64,7 +70,9 @@ export async function prepareExportShareCopy({
 }: PrepareExportShareCopyInput): Promise<ExportShareCopy> {
   const root = exportShareRoot(fs);
   const folderUri = `${root}${exportSubdirectoryName(random)}/`;
-  const uri = `${folderUri}${exportFileName(displayName, idBasedName)}`;
+  const name = exportFileName(displayName, idBasedName);
+  const uri = `${folderUri}${encodeURIComponent(name)}`;
+  assertExportTargetInsideFolder(uri, folderUri, name);
 
   const cleanup = async (): Promise<void> => {
     await fs.deleteAsync(folderUri, { idempotent: true }).catch(() => {});
@@ -83,4 +91,23 @@ export async function prepareExportShareCopy({
   }
 
   return { uri, folderUri, cleanup };
+}
+
+/** The path a `file://` URI names, decoded as the file-system layer decodes it. */
+export function decodedFileUriPath(uri: string): string {
+  return decodeURIComponent(uri.replace(/^file:\/\//, ''));
+}
+
+/**
+ * Round 2 (mobile#254 review, P1): the decoded target is exactly
+ * `<decoded folder>/<name>`, and `name` is one path component. Throws before
+ * anything is written otherwise.
+ */
+export function assertExportTargetInsideFolder(uri: string, folderUri: string, name: string): void {
+  const folderPath = decodedFileUriPath(folderUri);
+  const targetPath = decodedFileUriPath(uri);
+  const oneComponent = name.length > 0 && name !== '.' && name !== '..' && !name.includes('/') && !name.includes('\\');
+  if (!oneComponent || !folderPath.endsWith('/') || targetPath !== `${folderPath}${name}`) {
+    throw new Error('Export name does not stay inside its export folder');
+  }
 }

@@ -8,9 +8,17 @@
  * plaintext to the file's own decrypted display name instead. This module is
  * the ONE place that decides what that name may look like:
  *
- *  - sanitize for the FILESYSTEM ONLY (`/`, `\`, `:` and control characters
- *    become `_`); every other character — spaces, accents, CJK, emoji — is
- *    the user's name and is kept exactly;
+ *  - an ALLOWLIST by Unicode category (round 2, mobile#254 review P1): letters,
+ *    marks, numbers, punctuation, symbols and the plain space are the user's
+ *    name and are kept exactly (accents, CJK, emoji); every other character
+ *    becomes `_` — controls, bidi overrides, zero-width characters and
+ *    line/paragraph separators (they can fake an extension in the share sheet).
+ *    Within the allowed categories the Windows/FAT/SMB-reserved and
+ *    URI-significant characters `/ \ : * ? " < > | % #` become `_` too: the
+ *    name goes into a `file://` URI, and the file-system layer percent-decodes
+ *    it, so a kept `%2F` reached a directory outside the export folder;
+ *  - a Windows-reserved stem (`CON`, `NUL`, `COM1`, …) gets a `_` prefix, so
+ *    the copy saves to an SD card or an SMB share;
  *  - trim spaces and dots at both ends (a name that ends in `.` or ` ` is
  *    awkward on every filesystem), and never yield `..`;
  *  - normalize to NFC so the same name always maps to the same path;
@@ -30,11 +38,24 @@ export const EXPORT_NAME_MAX_BYTES = 200;
 
 const FALLBACK_STEM = 'file';
 
-// `/`, `\` and `:` are path/hostile separators on the three platforms we
-// write to; C0 and C1 control characters would corrupt the name and the
-// share-sheet UI.
-const HOSTILE = /[/\\:]/g;
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
+// Round 2 (mobile#254 review): the categories a name may use. Anything else
+// (Cc controls, Cf bidi/zero-width, Zl/Zp separators, Co/Cn/Cs) becomes `_`.
+const ALLOWED = /^[\p{L}\p{M}\p{N}\p{P}\p{S} ]$/u;
+// Path separators, Windows/FAT/SMB-reserved and URI-significant characters —
+// all inside the allowed categories, all replaced.
+const RESERVED = new Set(['/', '\\', ':', '*', '?', '"', '<', '>', '|', '%', '#']);
+// Device names Windows (and SMB / FAT) refuse as a file stem, with or without
+// an extension.
+const WINDOWS_RESERVED_STEM = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+function allowlisted(name: string): string {
+  let out = '';
+  // Every space character (no-break, narrow, ideographic) is a plain space.
+  for (const ch of name.replace(/\p{Zs}/gu, ' ')) {
+    out += ALLOWED.test(ch) && !RESERVED.has(ch) ? ch : '_';
+  }
+  return out;
+}
 
 function utf8Length(ch: string): number {
   const cp = ch.codePointAt(0) ?? 0;
@@ -74,7 +95,7 @@ function trimEdges(s: string): string {
  */
 export function sanitizeExportFileName(name: string): string {
   const normalized = (name ?? '').normalize('NFC');
-  const replaced = normalized.replace(HOSTILE, '_').replace(CONTROL, '_');
+  const replaced = allowlisted(normalized);
 
   // Trim the tail BEFORE locating the extension, so `  padded name.pdf  `
   // does not keep the spaces in its "extension"; the leading edge is trimmed
@@ -103,19 +124,35 @@ export function sanitizeExportFileName(name: string): string {
     stem = truncateToBytes(stem, budget) || FALLBACK_STEM;
   }
 
+  if (WINDOWS_RESERVED_STEM.test(stem)) stem = `_${stem}`;
   const result = `${stem}${extension}`;
   return result === '..' || result === '.' ? FALLBACK_STEM + extension : result;
 }
 
 /**
  * True when `name` is a decrypted display name we can use. A blank string is
- * "not available yet"; an encrypted metadata envelope (`{cipher_suite…`) is
- * ciphertext that leaked into a name slot, never a name.
+ * "not available yet"; an encrypted metadata envelope (`{"cipher_suite"…}`) is
+ * ciphertext that leaked into a name slot, never a name. Round 2 (mobile#254
+ * review): only an actual envelope (a JSON object with the envelope's fields)
+ * counts; a real name that merely starts with `{` (`{draft}.txt`) is a name.
  */
 export function isExportableDisplayName(name: string | null | undefined): boolean {
   if (typeof name !== 'string') return false;
   const trimmed = name.trim();
-  return trimmed.length > 0 && !trimmed.startsWith('{');
+  return trimmed.length > 0 && !isEncryptedEnvelope(trimmed);
+}
+
+const ENVELOPE_FIELDS = ['cipher_suite', 'nonce', 'ciphertext', 'n', 'c'];
+
+function isEncryptedEnvelope(text: string): boolean {
+  if (!text.startsWith('{')) return false;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    return ENVELOPE_FIELDS.some((field) => field in (parsed as Record<string, unknown>));
+  } catch {
+    return false;
+  }
 }
 
 /**
