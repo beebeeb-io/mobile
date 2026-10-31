@@ -43,6 +43,8 @@ export const STORE_WRITES = [
   'resetInPlace', 'migrate',
   'keepInFlightUploads', 'recordInFlightComplete', 'resolveKeptInFlight', 'purgeAllStaged', 'clearStagedForRestage',
   'purgeMismatchedStaged', 'restageMismatchedRow',
+  // LD-0002 (B5): moved out of the engine, one transaction.
+  'replaceStagedChunks',
 ];
 
 /** The handle's reset / recovery / open: these ADVANCE the fence (or open the file). */
@@ -144,6 +146,14 @@ export function auditWriteFence(source: string): WriteFenceAudit {
   for (let m = qRe.exec(code); m; m = qRe.exec(code)) {
     const open = m.index + m[0].length - 1;
     closures.push({ name: m[1], open, close: matchBrace(code, open) });
+  }
+  // LD-0002 rule 5: a background-URLSession completion write is a dbQueue critical section too:
+  // `runBackgroundCompletionWrite` runs its closure on dbQueue, and the ticket check inside it is the
+  // same `admitsChunkCallback` / `admitsWrite`.
+  const completionRe = /\brunBackgroundCompletionWrite\([^)]*\)\s*\{/g;
+  for (let m = completionRe.exec(code); m; m = completionRe.exec(code)) {
+    const open = m.index + m[0].length - 1;
+    closures.push({ name: 'completion', open, close: matchBrace(code, open) });
   }
   const inClosure = (pos: number) => closures.some((c) => c.open < pos && pos < c.close);
 

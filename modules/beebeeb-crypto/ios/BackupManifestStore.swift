@@ -1346,6 +1346,51 @@ enum BackupManifestStore {
     return true
   }
 
+  // MARK: - Staged chunks
+
+  /// An asset's staged chunk rows, replaced as ONE transaction: the old rows
+  /// stay until every new row is in. Moved here from
+  /// `NativeBackupEngine.replaceStagedChunks` (task LD-0002, mobile#257
+  /// review B5) so the harness drives it on the real SQLite copy. Before, the
+  /// DELETE ran in autocommit ahead of `BEGIN` and no step was checked: an
+  /// expiry's `exsqlite3_interrupt` on chunk N rolled the transaction back,
+  /// chunks N+1... then autocommitted one by one and `COMMIT` failed silently,
+  /// which left a gap in `backup_upload_chunks` and no old rows to fall back
+  /// on. Now the first step that does not finish ends the block and rolls
+  /// back. False = nothing changed.
+  @discardableResult
+  static func replaceStagedChunks(_ db: OpaquePointer, assetId: String, fileId: String, chunkPaths: [String]) -> Bool {
+    guard exsqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
+    var committed = false
+    defer {
+      // Harmless when an interrupt already rolled the transaction back.
+      if !committed { exsqlite3_exec(db, "ROLLBACK", nil, nil, nil) }
+    }
+    let deleted = run(db, "DELETE FROM backup_upload_chunks WHERE local_asset_id = ?") { stmt in
+      bindText(stmt, 1, assetId)
+    }
+    guard deleted >= 0 else { return false }
+    let sql = """
+    INSERT INTO backup_upload_chunks
+      (local_asset_id, server_file_id, chunk_index, path, status)
+    VALUES (?, ?, ?, ?, 'pending')
+    """
+    var stmt: OpaquePointer?
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+    defer { exsqlite3_finalize(stmt) }
+    for (index, path) in chunkPaths.enumerated() {
+      bindText(stmt, 1, assetId)
+      bindText(stmt, 2, fileId)
+      exsqlite3_bind_int(stmt, 3, Int32(index))
+      bindText(stmt, 4, path)
+      guard exsqlite3_step(stmt) == SQLITE_DONE else { return false }
+      exsqlite3_reset(stmt)
+    }
+    guard exsqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else { return false }
+    committed = true
+    return true
+  }
+
   // MARK: - Upload completion
 
   /// Completed upload: the row now points at `remoteFileId`, owned by

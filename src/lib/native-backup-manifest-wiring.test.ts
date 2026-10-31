@@ -123,7 +123,8 @@ describe('1. sign-out empties the manifest in place, before the registry purge',
     // Round 13 (review item 3): the outgoing account and whether it is only remembered.
     expect(prep).toMatch(/dbQueue\.sync \{\s*let ok = manifestHandle\.resetForSignOut\(\s*outgoingAccountId: outgoing\.accountId, outgoingInferred: outgoing\.inferred,\s*mode: mode, deletedAccountIds: deletedAccountIds\s*\)\s*return \(ok, manifestHandle\.writeFence\.generation, manifestHandle\.activeDiscard\.all\)\s*\}/);
     // Round 7: the close goes through `close(_:)` (checked sqlite3_close).
-    expect(resetForSignOut()).toMatch(/BackupManifestStore\.resetInPlace\(db[\s\S]*close\(db\)\s*self\.db = nil\s*\}\s*pendingReset\.set\(true\)\s*if !discard\.isEmpty \{ recordDiscardPending\(\) \}\s*awaitingPurgeFinish = true\s*return false/);
+    // LD-0002 (B4): the interrupt target is withdrawn and the handle cleared BEFORE the close.
+    expect(resetForSignOut()).toMatch(/BackupManifestStore\.resetInPlace\(db[\s\S]*interruptTarget\?\.withdraw\(\)\s*self\.db = nil\s*close\(db\)\s*\}\s*pendingReset\.set\(true\)\s*if !discard\.isEmpty \{ recordDiscardPending\(\) \}\s*awaitingPurgeFinish = true\s*return false/);
     expect(prep).not.toMatch(/return \[\]/);
     expect(prep).toMatch(/return \(kept, !resetOK\)/);
   });
@@ -601,7 +602,7 @@ describe('6. round 6: the native manifest handle is reopened, and nothing runs w
 
   test('the reason is visible: progress dict, status state, manual trigger error, JS context and Settings', () => {
     expect(engine).toMatch(/"manifestUnavailableReason": manifestUnavailableStopReason \?\? NSNull\(\)/);
-    const state = body(engine, 'private func backupState(pending: Int) -> (state: String, reason: String) {');
+    const state = body(engine, 'private func backupState(pending: Int, uploading knownUploading: Int? = nil) -> (state: String, reason: String) {');
     // Round 13 (review item 6): the rules moved to BackupSurfaceState.decide.
     expect(state).toMatch(/manifestUnavailableReason: manifestUnavailableStopReason,/);
     const decide = body(readFileSync(join(IOS, 'BackupSurfaceState.swift'), 'utf8'), 'static func decide(_ i: Inputs) -> State {');
@@ -616,7 +617,8 @@ describe('6. round 6: the native manifest handle is reopened, and nothing runs w
 
   test('only BackupManifestHandle opens, closes or assigns the native handle (the engine has no other path to a nil db)', () => {
     const c = code(engine);
-    expect(c).toMatch(/private var db: OpaquePointer\? \{ manifestHandle\.db \}/);
+    // LD-0002: still only a view of the handle's connection, now also nil while the execution gate is closed.
+    expect(c).toMatch(/private var db: OpaquePointer\? \{ manifestHandle\.connection\(admittedBy: executionGate, completionWrite: completionWriteAssertion\) \}/);
     expect(c.match(/sqlite3_open_v2\(/g) ?? []).toHaveLength(0);
     expect(c.match(/sqlite3_close(?:_v2)?\(/g) ?? []).toHaveLength(0);
     // (`db` is get-only, so the compiler refuses an assignment too; `let db = db` shadows are not assignments)
@@ -1142,7 +1144,7 @@ describe('round 13 (review of mobile#182 at a19037f9)', () => {
   });
 
   test('item 6: every surface update decides the state with the server-check pause', () => {
-    const state = lazyBody(engine, 'private func backupState(pending: Int) -> (state: String, reason: String) {');
+    const state = lazyBody(engine, 'private func backupState(pending: Int, uploading knownUploading: Int? = nil) -> (state: String, reason: String) {');
     expect(state).toMatch(/BackupSurfaceState\.decide\(/);
     expect(state).toMatch(/serverCheckPause: serverCheckPauseSurface,/);
     expect(lazyBody(engine, 'private func heartbeatStatus(for payload: BackupStatusPayload) -> String {')).toMatch(/BackupSurfaceState\.heartbeatStatus\(/);

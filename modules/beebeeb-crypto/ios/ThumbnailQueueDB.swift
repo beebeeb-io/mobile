@@ -16,6 +16,14 @@ public final class ThumbnailQueueDB {
 
     private var db: OpaquePointer?
     private let serialQueue = DispatchQueue(label: "io.beebeeb.thumbnail.queue-db")
+    /// Task LD-0002: every statement asks this gate first. While background
+    /// time has ended nothing runs; the rows stay as they are.
+    private let gate: BackupExecutionGate
+    /// LD-0002 (B4): published after the open, withdrawn before every close.
+    private let interruptTarget = SQLiteInterruptTarget { sqlite3_interrupt($0) }
+    /// LD-0002 (B7): the gate's `closures` when `running` rows were last
+    /// reset. `serialQueue` only.
+    private var runningResetAtClosures: UInt64?
     /// `nil` = the app's Documents directory. The harness passes a temp
     /// directory; production never does.
     private let directoryOverride: URL?
@@ -24,15 +32,48 @@ public final class ThumbnailQueueDB {
     /// tricks are not portable to a root CI container).
     var removeFile: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
 
-    init(directory: URL?) {
+    init(directory: URL?, gate: BackupExecutionGate = .shared) {
         // Task 1962 round 4 (7a) — never open here. Opening happens only in
         // `ensureOpen()`, called inside `serialQueue`, so a sign-out's
         // `prepareForStoragePurge()` can never race an open.
         self.directoryOverride = directory
+        self.gate = gate
     }
 
     deinit {
+        interruptTarget.withdraw()
         if let db { sqlite3_close_v2(db) }
+    }
+
+    // MARK: - Background quiesce (task LD-0002)
+
+    /// Aborts the statement running on this connection. Safe from any thread.
+    public func interruptInFlightStatement() {
+        interruptTarget.interrupt()
+    }
+
+    /// Waits (bounded) for the current `serialQueue` block to exit. Never call
+    /// it from `serialQueue`.
+    public func waitForQuiet(timeout: TimeInterval) -> Bool {
+        BackupSQLiteQuiesce.waitForSerialQueue(serialQueue, timeout: timeout)
+    }
+
+    /// Inside `serialQueue`: the gate is open and the connection usable. On
+    /// the first use after an open or after an expiry closed the gate, rows a
+    /// worker claimed (`running`) and could not finish go back to `pending`
+    /// (B7): a closed gate refuses a worker's result write, and nothing else
+    /// ever moved those rows again. A worker still running then may do its
+    /// item twice; that is the price of never losing one.
+    private func admitted() -> Bool {
+        guard gate.canStartSQLiteWork, ensureOpen() else { return false }
+        let closures = gate.closures
+        if runningResetAtClosures != closures {
+            guard bindAndStep("UPDATE queue_items SET state='pending' WHERE state='running';", []) == SQLITE_DONE else {
+                return false
+            }
+            runningResetAtClosures = closures
+        }
+        return true
     }
 
     // MARK: - Schema
@@ -70,6 +111,7 @@ public final class ThumbnailQueueDB {
             return false
         }
         db = handle
+        runningResetAtClosures = nil
         // Task 1962 round 4 (7a/7c): secure_delete zeroes deleted cells so the
         // purge's DELETE leaves none of the outgoing account's ids in the file.
         let configured = exec("PRAGMA journal_mode = WAL;")
@@ -89,10 +131,11 @@ public final class ThumbnailQueueDB {
             """)
             && exec("CREATE INDEX IF NOT EXISTS idx_queue_state_next ON queue_items(state, next_attempt_at);")
         if !configured {
-            sqlite3_close_v2(handle)
             db = nil
+            sqlite3_close_v2(handle)
             return false
         }
+        interruptTarget.publish(handle)
         // Task 1962 round 5 (P2.5) — these three files are created lazily by
         // this open (and recreated after a failed reset), long after the launch
         // hardening pass. Exclude them from iCloud backup now, not at the next
@@ -152,9 +195,11 @@ public final class ThumbnailQueueDB {
             let free = (deleted && busy == 0 && remaining == 0) ? freelistCount(handle) : -1
             if deleted, busy == 0, remaining == 0, free == 0 { return 0 }
             // 7d — reset failed: close BEFORE unlinking, then unlink all
-            // three. The next use reopens lazily (7a).
-            sqlite3_close_v2(handle)
+            // three. The next use reopens lazily (7a). LD-0002 (B4): the
+            // interrupt target is withdrawn before the close.
+            interruptTarget.withdraw()
             db = nil
+            sqlite3_close_v2(handle)
             return removeDatabaseFiles()
         }
     }
@@ -231,20 +276,26 @@ public final class ThumbnailQueueDB {
     // MARK: - Writes
 
     /// Insert OR ignore (existing entries preserved with original quality).
+    /// LD-0002 (B5): one transaction, and the first step that does not finish
+    /// (an expiry's interrupt) rolls the whole batch back. Before, the rest of
+    /// the batch autocommitted after the interrupt had ended the transaction.
     public func enqueue(fileIds: [String], qualityPreset: String) {
         serialQueue.sync {
-            guard ensureOpen() else { return }
+            guard admitted() else { return }
             let now = Int64(Date().timeIntervalSince1970 * 1000)
-            exec("BEGIN;")
+            guard exec("BEGIN IMMEDIATE;") else { return }
             for id in fileIds {
                 let sql = """
                     INSERT OR IGNORE INTO queue_items
                         (file_id, quality_preset, state, attempts, next_attempt_at, enqueued_at, updated_at)
                     VALUES (?, ?, 'pending', 0, ?, ?, ?);
                 """
-                bindAndStep(sql, [id, qualityPreset, now, now, now])
+                guard bindAndStep(sql, [id, qualityPreset, now, now, now]) == SQLITE_DONE else {
+                    exec("ROLLBACK;")
+                    return
+                }
             }
-            exec("COMMIT;")
+            if !exec("COMMIT;") { exec("ROLLBACK;") }
         }
     }
 
@@ -261,7 +312,7 @@ public final class ThumbnailQueueDB {
     /// Bump attempt counter, set backoff or mark perm-fail.
     public func recordFailure(fileId: String, category: ThumbnailErrorCategory, message: String) {
         serialQueue.sync {
-            guard ensureOpen() else { return }
+            guard admitted() else { return }
             guard let item = fetchInternal(fileId: fileId) else { return }
             let nextAttempts = item.attempts + 1
             let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -297,10 +348,14 @@ public final class ThumbnailQueueDB {
     // MARK: - Reads
 
     /// Pop next ready batch (state='pending' OR (state='failed_retry' AND next_attempt_at <= now)).
+    /// LD-0002 (B5): the claim is one transaction. A read or a claim that does
+    /// not finish (an expiry's interrupt) returns nothing and claims nothing;
+    /// before, the items whose claim UPDATE was interrupted were handed out
+    /// while still `pending`.
     public func popReady(limit: Int) -> [Item] {
         var out: [Item] = []
         serialQueue.sync {
-            guard ensureOpen() else { return }
+            guard admitted() else { return }
             let now = Int64(Date().timeIntervalSince1970 * 1000)
             var stmt: OpaquePointer?
             let sql = """
@@ -314,13 +369,32 @@ public final class ThumbnailQueueDB {
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int64(stmt, 1, now)
             sqlite3_bind_int(stmt, 2, Int32(limit))
-            while sqlite3_step(stmt) == SQLITE_ROW {
+            var rc = sqlite3_step(stmt)
+            while rc == SQLITE_ROW {
                 out.append(itemFromRow(stmt!))
+                rc = sqlite3_step(stmt)
+            }
+            guard rc == SQLITE_DONE, !out.isEmpty else {
+                out = []
+                return
             }
             // Atomically mark them running so concurrent pops don't double-claim
+            guard exec("BEGIN IMMEDIATE;") else {
+                out = []
+                return
+            }
             for item in out {
-                bindAndStep("UPDATE queue_items SET state='running', updated_at=? WHERE file_id=?",
-                            [Int64(Date().timeIntervalSince1970 * 1000), item.fileId])
+                let claimed = bindAndStep("UPDATE queue_items SET state='running', updated_at=? WHERE file_id=?",
+                                          [Int64(Date().timeIntervalSince1970 * 1000), item.fileId])
+                guard claimed == SQLITE_DONE else {
+                    exec("ROLLBACK;")
+                    out = []
+                    return
+                }
+            }
+            if !exec("COMMIT;") {
+                exec("ROLLBACK;")
+                out = []
             }
         }
         return out
@@ -329,7 +403,7 @@ public final class ThumbnailQueueDB {
     public func stats() -> (pending: Int, running: Int, succeeded: Int, failedRetry: Int, failedPerm: Int) {
         var result: (Int, Int, Int, Int, Int) = (0, 0, 0, 0, 0)
         serialQueue.sync {
-            guard ensureOpen() else { return }
+            guard admitted() else { return }
             var stmt: OpaquePointer?
             let sql = "SELECT state, COUNT(*) FROM queue_items GROUP BY state;"
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
@@ -353,7 +427,7 @@ public final class ThumbnailQueueDB {
     public func failedPermFileIds() -> [String] {
         var ids: [String] = []
         serialQueue.sync {
-            guard ensureOpen() else { return }
+            guard admitted() else { return }
             var stmt: OpaquePointer?
             let sql = "SELECT file_id FROM queue_items WHERE state='failed_perm' ORDER BY updated_at DESC LIMIT 200;"
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
@@ -369,7 +443,7 @@ public final class ThumbnailQueueDB {
 
     private func mutate(_ sql: String, _ args: [Any]) {
         serialQueue.sync {
-            guard ensureOpen() else { return }
+            guard admitted() else { return }
             bindAndStep(sql, args)
         }
     }
@@ -402,10 +476,13 @@ public final class ThumbnailQueueDB {
         )
     }
 
-    private func bindAndStep(_ sql: String, _ args: [Any]) {
-        guard let db else { return }
+    /// The step's result code (`SQLITE_DONE` = it finished).
+    @discardableResult
+    private func bindAndStep(_ sql: String, _ args: [Any]) -> Int32 {
+        guard let db else { return SQLITE_MISUSE }
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+        let prepared = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard prepared == SQLITE_OK else { return prepared }
         defer { sqlite3_finalize(stmt) }
         let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         for (i, arg) in args.enumerated() {
@@ -415,6 +492,6 @@ public final class ThumbnailQueueDB {
             else if let n = arg as? Int   { sqlite3_bind_int64(stmt, idx, Int64(n)) }
             else { sqlite3_bind_null(stmt, idx) }
         }
-        _ = sqlite3_step(stmt)
+        return sqlite3_step(stmt)
     }
 }

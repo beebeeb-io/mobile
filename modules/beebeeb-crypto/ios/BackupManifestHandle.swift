@@ -150,6 +150,10 @@ final class BackupManifestHandle {
   /// own `resetForSignOut` already advanced it (same process) or to a
   /// previous process (whose producers are gone).
   let writeFence: ManifestWriteFence
+  /// LD-0002 (B4): where an expiry interrupts this handle's connection from
+  /// any thread. Published after every open, withdrawn BEFORE every close (the
+  /// two `self.db = nil` below), so an interrupt never reaches a freed handle.
+  let interruptTarget: SQLiteInterruptTarget?
 
   /// Round 9: every account deleted permanently in this process. Sticky for
   /// the life of the process (a deleted account cannot sign in again), so the
@@ -205,9 +209,11 @@ final class BackupManifestHandle {
     discardPending: ResetPendingFlag? = nil,
     now: @escaping () -> Int64 = BackupManifestStore.currentMs,
     onFencedWrite: @escaping (String, UInt64?, UInt64) -> Void = { _, _, _ in },
+    interruptTarget: SQLiteInterruptTarget? = nil,
     prepareSchema: @escaping (OpaquePointer) -> Void
   ) {
     self.path = path
+    self.interruptTarget = interruptTarget
     self.writeFence = ManifestWriteFence(onDrop: onFencedWrite)
     self.pendingReset = pendingReset
     if let discardPending {
@@ -222,6 +228,17 @@ final class BackupManifestHandle {
   }
 
   var isOpen: Bool { db != nil }
+
+  /// LD-0002: the connection, or nil while the execution gate refuses SQLite
+  /// (background time ended, or a completion write's assertion expired). The
+  /// engine's `db` is this, so every engine statement starts here and none can
+  /// start after a quiesce until the gate reopens.
+  func connection(
+    admittedBy gate: BackupExecutionGate,
+    completionWrite: BackupExecutionGate.Assertion? = nil
+  ) -> OpaquePointer? {
+    gate.admitsStatement(completionWrite: completionWrite) ? db : nil
+  }
 
   /// Round 9: what the next reset may not keep. The accounts deleted in this
   /// process, plus "everything" when a deletion's account is unknown, or when
@@ -337,6 +354,7 @@ final class BackupManifestHandle {
       appliedPendingReset = true
     }
     db = opened
+    interruptTarget?.publish(opened)
     openCount += 1
     lastOpenAppliedPendingReset = appliedPendingReset
     return nil
@@ -421,8 +439,9 @@ final class BackupManifestHandle {
         recoveryAccountId = nil
         return true
       }
-      close(db)
+      interruptTarget?.withdraw()
       self.db = nil
+      close(db)
     }
     pendingReset.set(true)
     if !discard.isEmpty { recordDiscardPending() }
@@ -525,8 +544,9 @@ final class BackupManifestHandle {
       return FinishResult(ok: false, unlinked: false, reopened: false, reopenFailure: .pendingResetDeferred)
     }
     if let db {
-      close(db)
+      interruptTarget?.withdraw()
       self.db = nil
+      close(db)
     }
     // Round 10: `allowUnlink` is JS's confirmed close, under the purge hold.
     peerConfirmedClosed()
