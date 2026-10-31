@@ -37,7 +37,7 @@ import {
   getPreviewCacheLimitBytes,
   previewCacheUsage,
 } from '../lib/photo-preview-cache';
-import { applyConfirmMessage, rebuildConfirmMessage, turnOffConfirmMessage } from '../lib/photo-preview-copy';
+import { applyConfirmMessage, previewQuotaExceededMessage, rebuildConfirmMessage, turnOffConfirmMessage } from '../lib/photo-preview-copy';
 import {
   onPhotoPreviewRun,
   photoPreviewRunProgress,
@@ -144,6 +144,8 @@ export default function PhotoPreviewsScreen() {
       showToast({ type: 'info', message: 'Stopped because the photo previews setting changed.' });
     } else if (outcome.stoppedByUser) {
       showToast({ type: 'info', message: `Stopped after ${outcome.done.toLocaleString()} previews. Apply again to make the rest.` });
+    } else if (outcome.quotaExceeded) {
+      showToast({ type: 'info', message: previewQuotaExceededMessage(outcome.done) });
     } else if (outcome.aborted || outcome.stoppedLocked) {
       showToast({ type: 'info', message: 'Stopped. It continues where it left off next time.' });
     } else if (outcome.failed > 0) {
