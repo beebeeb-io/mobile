@@ -18,7 +18,6 @@ import { useNavigation, useRoute, type RouteProp } from '@react-navigation/nativ
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { RootStackParamList } from '../App';
-import { encodePhotoPreviewSample, originalPhotoForCompare } from '../../modules/beebeeb-crypto';
 import { SyncedZoomImage } from '../components/preview-compare/SyncedZoomImage';
 import {
   baseSize,
@@ -34,6 +33,7 @@ import {
 } from '../lib/compare-viewport';
 import { createEncodeQueue, type EncodeQueue } from '../lib/compare-encode-queue';
 import { formatBytes } from '../lib/format';
+import { encodePreviewSample, originalForCompare } from '../lib/photo-compare-samples';
 import {
   DEFAULT_PHOTO_PREVIEW_SETTING,
   PREVIEW_SIZE_OPTIONS,
@@ -158,7 +158,7 @@ export default function PhotoPreviewCompareScreen() {
       async (key) => {
         const [id, rest] = [key.slice(0, key.lastIndexOf('|')), key.slice(key.lastIndexOf('|') + 1)];
         const [f, p] = rest.split(':');
-        const r = await encodePhotoPreviewSample(id, f as PreviewFormat, Number(p));
+        const r = await encodePreviewSample(id, f as PreviewFormat, Number(p));
         return { uri: fileUri(r.path), bytes: r.bytes, width: r.width, height: r.height };
       },
       (key, outcome) => {
@@ -181,7 +181,7 @@ export default function PhotoPreviewCompareScreen() {
     setOriginal(null);
     setError(null);
     lastFit.current = '';
-    originalPhotoForCompare(localId, ORIGINAL_MAX_PX)
+    originalForCompare(localId, ORIGINAL_MAX_PX)
       .then((o) => {
         const uri = fileUri(o.path);
         if (!alive || !mountedRef.current) {
