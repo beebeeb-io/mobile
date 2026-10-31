@@ -3498,11 +3498,11 @@ export default function PreviewScreen() {
   // today's id-based name.
   const decryptExportName = useCallback(async (nameEncrypted: string | null | undefined): Promise<string | null> => {
     if (!nameEncrypted?.trim()) return null;
-    if (!nameEncrypted.trim().startsWith('{')) {
-      return isExportableDisplayName(nameEncrypted) ? nameEncrypted : null;
-    }
     const payload = encryptedMetadataPayloadToBytes(nameEncrypted);
-    if (!payload) return null;
+    // Round 3 (mobile#265 review): not an envelope ⇒ a legacy bare name, even
+    // one that starts with `{` (`{draft} notes.txt`). A list placeholder is
+    // never a name (`isExportableDisplayName`).
+    if (!payload) return isExportableDisplayName(nameEncrypted) ? nameEncrypted.trim() : null;
     try {
       const plaintext = await decryptMetadata(currentFileId, payload.nonce, payload.ciphertext);
       return parseExportDisplayName(plaintext);
@@ -3512,17 +3512,19 @@ export default function PreviewScreen() {
   }, [currentFileId, decryptMetadata]);
 
   const resolveExportDisplayName = useCallback(async (): Promise<string | null> => {
-    // Swipe-pager entry: it carries the file's own encrypted name. When that
-    // is ciphertext the entry's display_name is a placeholder, so decrypt.
-    if (currentEntry?.name_encrypted) {
-      if (isExportableDisplayName(currentEntry.name_encrypted)) {
-        return isExportableDisplayName(currentFileName) ? currentFileName : currentEntry.name_encrypted;
-      }
-      return decryptExportName(currentEntry.name_encrypted);
-    }
+    // Round 3 (mobile#265 review): the route / pager name IS the decrypted
+    // display name whenever it is not a list placeholder (`Shared file`,
+    // `Photo`, a truncated `xxx...` label — `isExportableDisplayName`). Taken
+    // first: the list already decrypted it, with the right key (a request
+    // upload's name is under its content key, not the master key).
     if (isExportableDisplayName(currentFileName)) return currentFileName;
-    // Single-file open: the route param can be blank when the name had not
-    // been decrypted yet — fetch the file's own metadata and decrypt it now.
+    // Swipe-pager entry: it carries the file's own encrypted name.
+    if (currentEntry?.name_encrypted) return decryptExportName(currentEntry.name_encrypted);
+    // Single-file open: the route param can itself be the envelope (a share
+    // invite's name) — decrypt it locally before asking the network.
+    const fromRoute = await decryptExportName(currentFileName);
+    if (fromRoute) return fromRoute;
+    // Otherwise fetch the file's own metadata and decrypt it now.
     try {
       const fresh = await getFile(currentFileId);
       return decryptExportName(fresh.name_encrypted);
@@ -4331,6 +4333,13 @@ export default function PreviewScreen() {
         return;
       }
 
+      // Round 3 (mobile#265 review): ask before decrypting and copying the
+      // whole original (and before the Success haptic), not after.
+      if (!(await Sharing.isAvailableAsync())) {
+        Alert.alert('Not available', 'Saving is not available on this device.');
+        return;
+      }
+
       const { uri: shareUri, release } = await getExportUri(
         exportController.signal,
         (event) => {
@@ -4344,18 +4353,14 @@ export default function PreviewScreen() {
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-      const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        setPreparingExport(false);
-        await Sharing.shareAsync(shareUri, {
-          mimeType: currentMimeType ?? 'application/octet-stream',
-          dialogTitle: previewFileName,
-        });
-      } else {
-        // Round 2 (mobile#254 review): the copy is removed when this returns,
-        // so naming its path ("Saved to …") pointed at a file that was gone.
-        Alert.alert('Not available', 'Saving is not available on this device.');
-      }
+      // Round 2 (mobile#254 review): the copy is removed when this returns, so
+      // the old "Saved to <path>" pointed at a file that was gone; round 3
+      // checks for the sheet up front instead.
+      setPreparingExport(false);
+      await Sharing.shareAsync(shareUri, {
+        mimeType: currentMimeType ?? 'application/octet-stream',
+        dialogTitle: previewFileName,
+      });
     } catch (err) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Download failed', friendlyError(err));

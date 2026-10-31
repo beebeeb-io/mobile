@@ -17,8 +17,11 @@
  *    URI-significant characters `/ \ : * ? " < > | % #` become `_` too: the
  *    name goes into a `file://` URI, and the file-system layer percent-decodes
  *    it, so a kept `%2F` reached a directory outside the export folder;
- *  - a Windows-reserved stem (`CON`, `NUL`, `COM1`, …) gets a `_` prefix, so
- *    the copy saves to an SD card or an SMB share;
+ *  - a Windows-reserved first component (`CON`, `NUL`, `COM1`, …, also in
+ *    `CON.tar.gz`) gets a `_` prefix, so the copy saves to an SD card or an
+ *    SMB share;
+ *  - round 3 (mobile#265 review): ZWNJ, ZWJ and the emoji tag characters stay
+ *    (Persian names, emoji sequences, subdivision flags);
  *  - trim spaces and dots at both ends (a name that ends in `.` or ` ` is
  *    awkward on every filesystem), and never yield `..`;
  *  - normalize to NFC so the same name always maps to the same path;
@@ -28,7 +31,9 @@
  *
  * Row 4 of the contract: a name that is not available yet (still encrypted /
  * still decrypting) is NEVER guessed — the caller passes `null` and gets the
- * id-based name it had before.
+ * id-based name it had before. Round 3: a list placeholder (`Shared file`,
+ * `Photo`, a truncated `xxx...` label) or a name of only dots and spaces is
+ * treated the same way.
  */
 
 /** 200 UTF-8 bytes — well inside the 255-byte limit of APFS / ext4, with the
@@ -41,6 +46,11 @@ const FALLBACK_STEM = 'file';
 // Round 2 (mobile#254 review): the categories a name may use. Anything else
 // (Cc controls, Cf bidi/zero-width, Zl/Zp separators, Co/Cn/Cs) becomes `_`.
 const ALLOWED = /^[\p{L}\p{M}\p{N}\p{P}\p{S} ]$/u;
+// Round 3 (mobile#265 review): the format characters a name NEEDS to render —
+// ZWNJ / ZWJ (Persian and Indic words, emoji ZWJ sequences such as a family)
+// and the emoji tag characters (subdivision flags). They cannot reorder or
+// hide text, unlike the bidi controls and zero-width spaces that stay out.
+const NEEDED_FORMAT = /^[\u200C\u200D\u{E0020}-\u{E007F}]$/u;
 // Path separators, Windows/FAT/SMB-reserved and URI-significant characters —
 // all inside the allowed categories, all replaced.
 const RESERVED = new Set(['/', '\\', ':', '*', '?', '"', '<', '>', '|', '%', '#']);
@@ -52,7 +62,7 @@ function allowlisted(name: string): string {
   let out = '';
   // Every space character (no-break, narrow, ideographic) is a plain space.
   for (const ch of name.replace(/\p{Zs}/gu, ' ')) {
-    out += ALLOWED.test(ch) && !RESERVED.has(ch) ? ch : '_';
+    out += (ALLOWED.test(ch) && !RESERVED.has(ch)) || NEEDED_FORMAT.test(ch) ? ch : '_';
   }
   return out;
 }
@@ -114,7 +124,7 @@ export function sanitizeExportFileName(name: string): string {
     // Pathological: the "extension" alone does not fit. Cap the whole name
     // rather than inventing one.
     const capped = trimEdges(truncateToBytes(stem + extension, EXPORT_NAME_MAX_BYTES));
-    return capped || FALLBACK_STEM;
+    return notADevice(capped || FALLBACK_STEM);
   }
 
   const budget = EXPORT_NAME_MAX_BYTES - extensionBytes;
@@ -124,9 +134,19 @@ export function sanitizeExportFileName(name: string): string {
     stem = truncateToBytes(stem, budget) || FALLBACK_STEM;
   }
 
-  if (WINDOWS_RESERVED_STEM.test(stem)) stem = `_${stem}`;
   const result = `${stem}${extension}`;
-  return result === '..' || result === '.' ? FALLBACK_STEM + extension : result;
+  return notADevice(result === '..' || result === '.' ? FALLBACK_STEM + extension : result);
+}
+
+/**
+ * Round 3 (mobile#265 review): Windows / SMB / FAT read a name as the device
+ * when its FIRST component is one (`CON.tar.gz`, `nul.txt.exe`), not only the
+ * part before the last dot. A `_` prefix keeps it a file. (A `_` added to a
+ * name already at the byte cap is one byte over the 200-byte budget, still
+ * far inside the 255-byte filesystem limit.)
+ */
+function notADevice(name: string): string {
+  return WINDOWS_RESERVED_STEM.test(name.split('.')[0] ?? '') ? `_${name}` : name;
 }
 
 /**
@@ -139,7 +159,37 @@ export function sanitizeExportFileName(name: string): string {
 export function isExportableDisplayName(name: string | null | undefined): boolean {
   if (typeof name !== 'string') return false;
   const trimmed = name.trim();
-  return trimmed.length > 0 && !isEncryptedEnvelope(trimmed);
+  return (
+    trimmed.length > 0 &&
+    !isEncryptedEnvelope(trimmed) &&
+    // Round 3 (mobile#265 review): a name with nothing in it but dots and
+    // spaces (`....`) would be saved as a bare `file`; the id name keeps its
+    // extension.
+    trimmed.replace(/[\s.]/g, '').length > 0 &&
+    !isPlaceholderDisplayName(trimmed)
+  );
+}
+
+// Round 3 (mobile#265 review, contract row 4 "never guessed"): the labels the
+// lists show while a name is missing or still encrypted. They reach Preview
+// as its `fileName` param (FilesScreen, SharedScreen, PhotosScreen), and are
+// never the file's name.
+const PLACEHOLDER_NAMES = new Set([
+  'Untitled file',
+  'Untitled folder',
+  'Encrypted file',
+  'Encrypted folder',
+  'Shared file',
+  'Shared folder',
+  'Photo',
+]);
+// FilesScreen's list label for a long legacy name: its first 24 UTF-16 units
+// and `...` (`displayName`). Never the whole name.
+const TRUNCATED_LIST_LABEL_LENGTH = 24 + '...'.length;
+
+/** True for a list placeholder or a truncated list label (never a real name). */
+export function isPlaceholderDisplayName(name: string): boolean {
+  return PLACEHOLDER_NAMES.has(name) || (name.length === TRUNCATED_LIST_LABEL_LENGTH && name.endsWith('...'));
 }
 
 const ENVELOPE_FIELDS = ['cipher_suite', 'nonce', 'ciphertext', 'n', 'c'];
@@ -153,6 +203,18 @@ function isEncryptedEnvelope(text: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Round 3 (mobile#265 review): an extension that may go into a cache file URI
+ * (`<preview dir>/<id>.<ext>`). It comes from a name, or a mime type, that
+ * whoever shared the file chose, so only 1–10 plain ASCII letters and digits
+ * pass; anything else (`jpg#a`, `my file`, `%2f..%2fy`) is `null` and the
+ * caller falls back.
+ */
+export function plainExtension(candidate: string | null | undefined): string | null {
+  const ext = (candidate ?? '').toLowerCase();
+  return /^[a-z0-9]{1,10}$/.test(ext) ? ext : null;
 }
 
 /**

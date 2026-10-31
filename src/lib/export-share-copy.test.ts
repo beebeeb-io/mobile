@@ -121,6 +121,7 @@ const HOSTILE_NAMES = [
   'pho\u200Bto.jpg',
   'line\u2028break.txt',
   'CON.txt',
+  'CON.tar.gz',
   'a<b>c|d*e"f:g.txt',
   '%2F',
   '/',
@@ -164,5 +165,40 @@ describe('the export directory is a registered plaintext leaf', () => {
     expect(PREVIEW_EXPORT_ROOT).toBe('file:///cache/beebeeb-export/');
     expect(cachesEntryFor('beebeeb-export')?.plaintext).toBe(true);
     expect(isCachesPlaintextName('beebeeb-export')).toBe(true);
+  });
+});
+
+describe('round 3 (mobile#265 review): leftover copies are swept', () => {
+  test('each export removes per-export folders older than 10 minutes and anything it did not mint; a fresh one stays', async () => {
+    const now = Date.UTC(2026, 9, 31, 12, 0, 0);
+    const minted = (at: number) => `${at.toString(36)}-0123abcd`;
+    const stale = minted(now - 11 * 60 * 1000);
+    const fresh = minted(now - 2 * 60 * 1000);
+    const deleted: string[] = [];
+    const fs = {
+      cacheDirectory: 'file:///cache/',
+      makeDirectoryAsync: async () => {},
+      copyAsync: async () => {},
+      deleteAsync: async (uri: string) => { deleted.push(uri); },
+      readDirectoryAsync: async (uri: string) => {
+        expect(uri).toBe('file:///cache/beebeeb-export/');
+        return [stale, fresh, 'IMG_0042.DNG'];
+      },
+    };
+    const copy = await prepareExportShareCopy({ sourceUri: 'file:///cache/preview/p.bin', displayName: 'a.txt', idBasedName: 'id.txt', fs, now: () => now });
+    expect(deleted).toEqual([`file:///cache/beebeeb-export/${stale}`, 'file:///cache/beebeeb-export/IMG_0042.DNG']);
+    expect(copy.folderUri.startsWith('file:///cache/beebeeb-export/')).toBe(true);
+  });
+
+  test('no export root yet (or no listing) never blocks the export', async () => {
+    const fs = {
+      cacheDirectory: 'file:///cache/',
+      makeDirectoryAsync: async () => {},
+      copyAsync: async () => {},
+      deleteAsync: async () => { throw new Error('nothing to delete'); },
+      readDirectoryAsync: async () => { throw new Error('ENOENT'); },
+    };
+    const copy = await prepareExportShareCopy({ sourceUri: 'file:///cache/preview/p.bin', displayName: 'a.txt', idBasedName: 'id.txt', fs });
+    expect(copy.uri.endsWith('/a.txt')).toBe(true);
   });
 });

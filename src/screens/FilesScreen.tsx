@@ -41,6 +41,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { gatedPlaintextWrite } from '../lib/plaintext-gate';
 import { prepareExportShareCopy } from '../lib/export-share-copy';
+import { plainExtension } from '../lib/export-file-name';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Clipboard from 'expo-clipboard';
@@ -3893,13 +3894,17 @@ export default function FilesScreen() {
       'video/x-msvideo': 'avi',
       'video/x-matroska': 'mkv',
     };
+    // Round 3 (mobile#265 review): the extension goes into the preview-cache
+    // file URI, and both the name and the mime type are someone else's
+    // choice for a shared file — only a plain one (`plainExtension`) is used.
     const extForSave = (): string => {
       const dot = name.lastIndexOf('.');
-      if (dot > 0 && dot < name.length - 1) return name.slice(dot + 1).toLowerCase();
+      const fromName = dot > 0 && dot < name.length - 1 ? plainExtension(name.slice(dot + 1)) : null;
+      if (fromName) return fromName;
       const mime = (itemMimeType ?? '').toLowerCase();
       if (MIME_TO_EXT[mime]) return MIME_TO_EXT[mime];
-      const fromMime = mime.split('/')[1];
-      return (fromMime && fromMime.length <= 5 ? fromMime : 'bin').toLowerCase();
+      const fromMime = plainExtension(mime.split('/')[1]);
+      return fromMime && fromMime.length <= 5 ? fromMime : 'bin';
     };
     const decryptForSave = async (): Promise<string> => {
       const requestUpload = isRequestUpload(item);

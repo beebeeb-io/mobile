@@ -33,6 +33,37 @@ export interface ExportShareFs {
   makeDirectoryAsync: (uri: string, options?: { intermediates?: boolean }) => Promise<void>;
   copyAsync: (options: { from: string; to: string }) => Promise<void>;
   deleteAsync: (uri: string, options?: { idempotent?: boolean }) => Promise<void>;
+  /** Lists the export root for the stale-copy sweep (absent ⇒ no sweep). */
+  readDirectoryAsync?: (uri: string) => Promise<string[]>;
+}
+
+/**
+ * Round 3 (mobile#265 review): a per-export folder this old was left by an
+ * export the app did not live to clean up (killed or crashed while the share
+ * sheet was open). Every export sweeps them, so decrypted copies do not pile
+ * up until sign-out. An export in progress is minutes old at most: the sheet
+ * is modal and a new export cannot start while it is open.
+ */
+export const STALE_EXPORT_FOLDER_MS = 10 * 60 * 1000;
+
+// `exportSubdirectoryName`: `<base36 Date.now()>-<8 hex>`.
+const EXPORT_FOLDER_NAME = /^([0-9a-z]+)-[0-9a-f]{8}$/;
+
+async function sweepStaleExportFolders(fs: ExportShareFs, root: string, now: number): Promise<void> {
+  if (!fs.readDirectoryAsync) return;
+  let names: string[];
+  try {
+    names = await fs.readDirectoryAsync(root);
+  } catch {
+    return; // no export root yet
+  }
+  for (const name of names) {
+    const minted = EXPORT_FOLDER_NAME.exec(name);
+    // Anything not minted here (a bare copy an older build wrote straight into
+    // the root) is a leftover too: nothing else belongs in this leaf.
+    const stale = !minted || now - parseInt(minted[1], 36) > STALE_EXPORT_FOLDER_MS;
+    if (stale) await fs.deleteAsync(`${root}${encodeURIComponent(name)}`, { idempotent: true }).catch(() => {});
+  }
 }
 
 /** The registered plaintext export dir (see `CACHES_REGISTRY`). */
@@ -59,6 +90,7 @@ export interface PrepareExportShareCopyInput {
   idBasedName: string;
   random?: () => number;
   fs?: ExportShareFs;
+  now?: () => number;
 }
 
 export async function prepareExportShareCopy({
@@ -67,8 +99,10 @@ export async function prepareExportShareCopy({
   idBasedName,
   random,
   fs = FileSystem,
+  now = Date.now,
 }: PrepareExportShareCopyInput): Promise<ExportShareCopy> {
   const root = exportShareRoot(fs);
+  await sweepStaleExportFolders(fs, root, now());
   const folderUri = `${root}${exportSubdirectoryName(random)}/`;
   const name = exportFileName(displayName, idBasedName);
   const uri = `${folderUri}${encodeURIComponent(name)}`;

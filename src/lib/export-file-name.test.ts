@@ -11,6 +11,7 @@ import {
   exportSubdirectoryName,
   isExportableDisplayName,
   parseExportDisplayName,
+  plainExtension,
   sanitizeExportFileName,
 } from './export-file-name';
 
@@ -153,5 +154,47 @@ describe('exportSubdirectoryName', () => {
     const b = exportSubdirectoryName(() => values[n++]);
     expect(a).not.toBe(b);
     expect(a).toMatch(/^[0-9a-z]+-[0-9a-f]{8}$/);
+  });
+});
+
+describe('round 3 (mobile#265 review)', () => {
+  test('joiners and emoji tag characters a name needs stay exactly', () => {
+    const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467} family.jpg';
+    expect(sanitizeExportFileName(family)).toBe(family);
+    const persian = '\u0646\u0627\u0645\u0647\u200C\u0647\u0627.pdf';
+    expect(sanitizeExportFileName(persian)).toBe(persian);
+    const england = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}.png';
+    expect(sanitizeExportFileName(england)).toBe(england);
+    // The bidi controls and zero-width spaces stay out.
+    expect(sanitizeExportFileName('a\u202Eb\u200Bc\u2066d.txt')).toBe('a_b_c_d.txt');
+  });
+
+  test('a device name is caught in the FIRST component, in every branch', () => {
+    expect(sanitizeExportFileName('CON.tar.gz')).toBe('_CON.tar.gz');
+    expect(sanitizeExportFileName('nul.txt.exe')).toBe('_nul.txt.exe');
+    expect(sanitizeExportFileName('lpt1.')).toBe('_lpt1');
+    // The long-extension branch (the "extension" alone over the cap).
+    expect(sanitizeExportFileName(`CON.${'x'.repeat(250)}`).startsWith('_CON.')).toBe(true);
+    expect(sanitizeExportFileName('console.tar.gz')).toBe('console.tar.gz');
+  });
+
+  test('a name of only dots and spaces, or a list placeholder, is the id name (never guessed)', () => {
+    for (const label of ['....', '. . .', ' .. ', 'Untitled file', 'Encrypted file', 'Shared file', 'Photo', 'Shared folder', 'Annual_financial_stateme...']) {
+      expect(isExportableDisplayName(label)).toBe(false);
+      expect(exportFileName(label, 'id.pdf')).toBe('id.pdf');
+    }
+    // Real names that merely look close stay names.
+    for (const name of ['Photo.jpg', 'Shared file.pdf', 'Wait...', 'Annual_financial_statement_2026.pdf', '_']) {
+      expect(isExportableDisplayName(name)).toBe(true);
+    }
+  });
+
+  test('plainExtension: 1-10 ASCII letters and digits, or nothing', () => {
+    expect(plainExtension('jpg')).toBe('jpg');
+    expect(plainExtension('DNG')).toBe('dng');
+    expect(plainExtension('mp4')).toBe('mp4');
+    for (const bad of ['jpg#a', 'my file', '%2f..%2fy', 'a/b', '', null, undefined, 'abcdefghijk', 'p\u00E9g', 'x?y']) {
+      expect(plainExtension(bad)).toBeNull();
+    }
   });
 });
