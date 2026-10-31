@@ -1647,26 +1647,6 @@ final class NativeBackupEngine: NSObject {
     return (decided.state, decided.reason)
   }
 
-  /// LD-0002 (B1, P2a): the counts for the status surfaces. Read fresh only
-  /// while the gate is open, and kept only when no expiry closed it during the
-  /// reads (an interrupted step reads as 0). Otherwise the last good counts:
-  /// an expiry handler builds its payload without touching SQLite.
-  private func statusCounts() -> BackupStatusCounts {
-    let fresh = executionGate.readIfUninterrupted { () -> BackupStatusCounts in
-      refreshProgress()
-      return BackupStatusCounts(
-        pending: pendingUploadCount(),
-        breakdown: backupWorkBreakdown(),
-        lastBackupAt: latestUploadedAt()
-      )
-    }
-    if let fresh {
-      lastStatusCounts = fresh
-      return fresh
-    }
-    return lastStatusCounts
-  }
-
   private func makeBackupStatusPayload(reason explicitReason: String? = nil) -> BackupStatusPayload {
     let counts = statusCounts()
     let pending = counts.pending
@@ -1690,6 +1670,26 @@ final class NativeBackupEngine: NSObject {
       lastChangeAt: now,
       updatedAt: now
     )
+  }
+
+  /// LD-0002 (B1, P2a): the counts for the status surfaces. Read fresh only
+  /// while the gate is open, and kept only when no expiry closed it during the
+  /// reads (an interrupted step reads as 0). Otherwise the last good counts:
+  /// an expiry handler builds its payload without touching SQLite.
+  private func statusCounts() -> BackupStatusCounts {
+    let fresh = executionGate.readIfUninterrupted { () -> BackupStatusCounts in
+      refreshProgress()
+      return BackupStatusCounts(
+        pending: pendingUploadCount(),
+        breakdown: backupWorkBreakdown(),
+        lastBackupAt: latestUploadedAt()
+      )
+    }
+    if let fresh {
+      lastStatusCounts = fresh
+      return fresh
+    }
+    return lastStatusCounts
   }
 
   private func updateBackupStatusSurfaces(reason: String? = nil) {
