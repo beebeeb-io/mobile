@@ -12,7 +12,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import { clearCachedFileIndex } from './file-index-cache';
-import { advanceAccountEpoch } from './account-epoch';
+import { advanceAccountEpoch, onAccountEpochAdvance } from './account-epoch';
 import { rememberUploadClassification } from './upload-classification';
 import { clearCachedBilling } from './billing-cache';
 import { collectPaged, findInPages } from './paginate';
@@ -1226,6 +1226,11 @@ export interface FileEntry {
    * each blob.
    */
   thumbnail_bytes?: number | null;
+  /** Photo preview (larger than the thumbnail), present only when one was uploaded. */
+  has_preview?: boolean;
+  preview_format?: 'heic' | 'jpeg' | null;
+  preview_px?: number | null;
+  preview_bytes?: number | null;
   /**
    * Blurhash placeholder string (~25 bytes, base83 encoded 4x3 colour grid).
    * Unencrypted by design — see task 0552 for the privacy argument. The
@@ -3030,6 +3035,57 @@ export async function uploadThumbnail(
   }
 }
 
+/** Authenticated photo preview endpoint URL for a file (PUT also takes `?format=&px=`). */
+export function photoPreviewUrl(fileId: string): string {
+  return `${BASE_URL}/api/v1/files/${fileId}/thumbnail/preview`;
+}
+
+export async function deletePhotoPreview(fileId: string): Promise<void> {
+  await request('DELETE', `/api/v1/files/${fileId}/thumbnail/preview`);
+}
+
+/**
+ * DELETE /api/v1/files/previews: removes every stored preview of the account in one
+ * call (the server emits a `file_update` per file). Returns how many were removed.
+ */
+export async function deleteAllPhotoPreviews(): Promise<number> {
+  const res = await request<{ removed?: unknown }>('DELETE', '/api/v1/files/previews');
+  return typeof res?.removed === 'number' && Number.isFinite(res.removed) ? res.removed : 0;
+}
+
+export interface PhotoPreviewSummary {
+  count: number;
+  total_bytes: number;
+  by_setting: { format: string; px: number; count: number }[];
+}
+
+/** Null when the server has no preview support (404). */
+export async function getPhotoPreviewSummary(): Promise<PhotoPreviewSummary | null> {
+  try {
+    return await request<PhotoPreviewSummary>('GET', '/api/v1/files/previews/summary');
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+let photoPreviewSupport: boolean | null = null;
+// Asked again after a sign-out or account switch.
+onAccountEpochAdvance(() => {
+  photoPreviewSupport = null;
+});
+
+/** Cached per session; a transient failure answers false without caching. */
+export async function serverSupportsPhotoPreviews(): Promise<boolean> {
+  if (photoPreviewSupport !== null) return photoPreviewSupport;
+  try {
+    photoPreviewSupport = (await getPhotoPreviewSummary()) !== null;
+    return photoPreviewSupport;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * GET /api/v1/files/photo-backup/identifiers — task 0552.
  * Returns the full file_id → local_identifier map for the authenticated
@@ -3572,6 +3628,35 @@ export async function setPreference(key: string, value: string): Promise<void> {
   await request('PUT', `/api/v1/preferences/${key}`, { value });
 }
 
+/** Like getPreference, but returns the stored value as-is (object-valued keys). */
+export async function getPreferenceValue(key: string): Promise<unknown> {
+  try {
+    const data = await request<{ key: string; value: unknown }>('GET', `/api/v1/preferences/${key}`);
+    return data.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Like getPreferenceValue, but only "not set" (404 or a null value) reads as null;
+ * transport, 401 and 5xx errors throw so callers can tell "unset" from "unknown".
+ */
+export async function getPreferenceValueStrict(key: string): Promise<unknown> {
+  try {
+    const data = await request<{ key: string; value: unknown }>('GET', `/api/v1/preferences/${key}`);
+    return data.value ?? null;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+/** Like setPreference, but for keys whose server-side value is a JSON object. */
+export async function setPreferenceValue(key: string, value: unknown): Promise<void> {
+  await request('PUT', `/api/v1/preferences/${key}`, { value });
+}
+
 // ---------------------------------------------------------------------------
 // Billing / subscription
 // ---------------------------------------------------------------------------
@@ -4053,6 +4138,11 @@ export interface SyncNode {
   chunk_count?: number;
   created_at: string;
   updated_at: string;
+  /** Photo preview fields; absent when the source (snapshot, older server) does not carry them. */
+  has_preview?: boolean;
+  preview_format?: 'heic' | 'jpeg' | null;
+  preview_px?: number | null;
+  preview_bytes?: number | null;
 }
 
 export interface SyncOp {

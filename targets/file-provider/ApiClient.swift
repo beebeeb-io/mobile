@@ -180,11 +180,17 @@ final class ApiClient {
 
   /// Upload one encrypted chunk for a v2 session. Body is raw
   /// `nonce || ciphertext || tag` bytes (12 + N + 16 for AES-256-GCM).
-  func uploadChunkV2(uploadSessionId: String, index: Int, encryptedChunk: Data, expectedUser: String?) async throws {
+  ///
+  /// `timeout` is the caller's own per-attempt deadline for THIS request. It
+  /// overrides the session's `timeoutIntervalForRequest` (60 s, sized for
+  /// whole-file work), so a File Provider chunk can give up and retry inside
+  /// the extension's short window instead of inheriting it.
+  func uploadChunkV2(uploadSessionId: String, index: Int, encryptedChunk: Data, expectedUser: String?, timeout: TimeInterval) async throws {
     let url = baseUrl.appendingPathComponent("/api/v1/uploads/\(uploadSessionId)/chunks/\(index)")
     var request = try authedRequest(url: url, method: "PUT", expectedUser: expectedUser)
     request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
     request.httpBody = encryptedChunk
+    request.timeoutInterval = timeout
 
     let (data, response) = try await session.data(for: request)
     try validate(response, data)

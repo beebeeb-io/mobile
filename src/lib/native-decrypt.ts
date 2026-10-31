@@ -481,6 +481,11 @@ function retainPreviewLease(path: string): void {
   previewLeases.set(path, (previewLeases.get(path) ?? 0) + 1);
 }
 
+/** Take one more lease on the preview-cache copy of (fileId, extension); give it back with `releasePreviewCopy`. */
+export function retainPreviewCopy(fileId: string, extension: string): void {
+  retainPreviewLease(previewCachePath(fileId, extension));
+}
+
 function dropLease(path: string): number {
   const left = (previewLeases.get(path) ?? 0) - 1;
   if (left > 0) previewLeases.set(path, left);

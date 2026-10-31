@@ -33,7 +33,7 @@ test('every_deriveFileKey_site_has_an_explicit_ownership_reason', () => {
       if (ownUploads.has(rel) || rel.endsWith('/SharedKeyOps.swift') || rel.endsWith('/SharedKeyOps.kt')) continue
       const prefix = source.slice(0, match.index)
       const enclosing = [...prefix.matchAll(/^    (?:AsyncFunction|Function)\("([^"]+)"\)/gm)].at(-1)?.[1]
-      const allowed = rel === swift ? ['deriveFileKey', 'handleDeriveFileKey', 'generateAndUploadThumbnailNative', 'generateAndUploadPhotoLibraryThumbnailNative']
+      const allowed = rel === swift ? ['deriveFileKey', 'handleDeriveFileKey', 'generateAndUploadThumbnailNative', 'generateAndUploadPhotoLibraryThumbnailNative', 'uploadPhotoPreviewNative', 'downloadPhotoPreviewNative']
         : rel === kotlin ? ['deriveFileKey', 'handleDeriveFileKey'] : []
       if (!enclosing || !allowed.includes(enclosing)) violations.push(`${rel}:${prefix.split('\n').length}:${enclosing ?? 'native reader'}`)
     }

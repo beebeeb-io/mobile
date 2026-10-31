@@ -39,7 +39,7 @@ let Calendar: any = {
 try { LocalAuthentication = require('expo-local-authentication'); } catch {}
 try { StoreReview = require('expo-store-review'); } catch {}
 try { Notifications = require('expo-notifications'); } catch {}
-try { MediaLibrary = require('expo-media-library'); } catch {}
+try { MediaLibrary = require('expo-media-library/legacy'); } catch {}
 try { Contacts = require('expo-contacts'); } catch {}
 try { Calendar = require('expo-calendar'); } catch {}
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -57,7 +57,12 @@ import { useToast } from '../lib/toast-context';
 import { useNetworkStatus } from '../lib/useNetworkStatus';
 import { recordRuntimeTrace } from '../lib/runtime-trace';
 import { ensureCalendarPermission } from '../lib/calendar-permissions';
-import { ensurePhotoPermission } from '../lib/photo-permissions';
+import {
+  ensurePhotoPermission,
+  getPhotoPermission,
+  photoAccessNotice,
+  type PhotoPermissionResponse,
+} from '../lib/photo-permissions';
 import { formatBytes } from '../lib/format';
 import { shouldCompleteSettingsBackSwipe } from '../lib/settings-back-swipe';
 import {
@@ -805,6 +810,10 @@ export default function SettingsScreen() {
   const [cameraRollTotalBytes, setCameraRollTotalBytes] = useState(0);
   const [cameraRollTotalCount, setCameraRollTotalCount] = useState(0);
   const cameraRollStatusInFlightRef = useRef(false);
+  // The photo permission and what it actually lets us read,
+  // so a limited or revoked library explains itself instead of "waiting".
+  const [photoPermission, setPhotoPermission] = useState<PhotoPermissionResponse | null>(null);
+  const [photoVisibleCount, setPhotoVisibleCount] = useState(0);
 
   // Advanced backup section toggle
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
@@ -1074,6 +1083,7 @@ export default function SettingsScreen() {
       // Get total count from MediaLibrary. Count videos when video backup is
       // enabled so the "items" label does not show a photo-only total.
       try {
+        setPhotoPermission(await withTimeout(getPhotoPermission(MediaLibrary), null, 1_000));
         const [photoAssets, videoAssets] = await Promise.all([
           withTimeout(
             MediaLibrary.getAssetsAsync({
@@ -1096,6 +1106,7 @@ export default function SettingsScreen() {
         ]);
         const nextTotalCount = (photoAssets?.totalCount ?? 0) + (videoAssets?.totalCount ?? 0);
         setCameraRollTotalCount((prev) => nextTotalCount > 0 ? nextTotalCount : prev);
+        setPhotoVisibleCount(nextTotalCount);
       } catch {
         // MediaLibrary may not be available
       }
@@ -1105,6 +1116,28 @@ export default function SettingsScreen() {
       cameraRollStatusInFlightRef.current = false;
     }
   }, [includeVideos]);
+
+  // The limited-library picker changes the selection in place and resolves
+  // as soon as it is shown, so the new selection arrives through the
+  // library-change listener below (the engine rescans on the same change).
+  // Turning access back on happens in iOS Settings, which relaunches the app.
+  const handlePhotoAccessNoticePress = useCallback(async () => {
+    if (photoAccessNotice(photoPermission, photoVisibleCount)?.action === 'settings') {
+      void Linking.openSettings();
+      return;
+    }
+    try {
+      await MediaLibrary.presentPermissionsPickerAsync?.();
+    } catch {
+      void Linking.openSettings();
+    }
+  }, [photoPermission, photoVisibleCount]);
+
+  useEffect(() => {
+    if (!isPhotoBackupEnabled || typeof MediaLibrary.addListener !== 'function') return;
+    const subscription = MediaLibrary.addListener(() => { void refreshCameraRollStatus(); });
+    return () => subscription?.remove?.();
+  }, [isPhotoBackupEnabled, refreshCameraRollStatus]);
 
   useEffect(() => {
     fetchUsage();
@@ -1845,6 +1878,7 @@ export default function SettingsScreen() {
   const calendarBackupChecking =
     (backupStatsLoading || calendarNativeStatus === null) &&
     !categoryStatsHasEvidence(displayCalendarStats);
+  const cameraPhotoAccessNotice = photoAccessNotice(photoPermission, photoVisibleCount);
   const cameraRollSummary = (() => {
     // Task 1594: a stopped backup says why, before any progress line.
     if (backupBlockedReason) return backupBlockedReason;
@@ -1868,6 +1902,8 @@ export default function SettingsScreen() {
     // Task 1667 round 12: native holds uploads because the server check
     // cannot answer; say so instead of a progress line that is not moving.
     if (serverCheckPausedReason) return serverCheckPausedReason;
+    // iOS shares nothing with us; no progress line can move.
+    if (cameraPhotoAccessNotice?.summary) return cameraPhotoAccessNotice.summary;
     if (backupPaused) {
       return `Paused · waiting for Wi-Fi${cameraTotalCount > 0 ? ` · ${cameraBackedUpCount.toLocaleString()} of ${cameraTotalCount.toLocaleString()} ${cameraItemLabel}` : ''}${cameraIssueSuffix}`;
     }
@@ -1896,7 +1932,7 @@ export default function SettingsScreen() {
   const cameraRollSummaryColor = backupBlockedReason || accountMismatchReason || ownerUnconfirmedReason || accountRefusalReason || manifestUnavailableReason || serverCheckPausedReason || (cameraIssueCount > 0 && !cameraBackupActive)
     ? c.red
     : c.ink3;
-  const cameraRollStatusDotColor = backupPaused
+  const cameraRollStatusDotColor = backupPaused || cameraPhotoAccessNotice?.summary
     ? c.ink4
     : cameraIssueCount > 0 && !cameraBackupActive
       ? c.red
@@ -2244,11 +2280,26 @@ export default function SettingsScreen() {
                       </Text>
                       <Ionicons name="chevron-forward" size={14} color={c.ink4} />
                     </View>
-                    {cameraTotalCount > 0 && (
+                    {cameraTotalCount > 0 && !cameraPhotoAccessNotice?.summary && (
                       <View style={{ height: 4, borderRadius: 2, backgroundColor: c.line2, overflow: 'hidden' }}>
                         <View style={{ height: '100%', width: cameraProgressFillWidth, backgroundColor: cameraProgressBarColor, borderRadius: 2 }} />
                       </View>
                     )}
+                  </TouchableOpacity>
+                )}
+                {isPhotoBackupEnabled && cameraPhotoAccessNotice && (
+                  <TouchableOpacity
+                    style={{ paddingHorizontal: 12, paddingBottom: 10 }}
+                    activeOpacity={0.6}
+                    onPress={handlePhotoAccessNoticePress}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${cameraPhotoAccessNotice.message} ${cameraPhotoAccessNotice.actionLabel}`}
+                    testID="photo-access-notice"
+                  >
+                    <Text style={{ fontSize: 11, color: c.ink3 }}>
+                      {cameraPhotoAccessNotice.message}{' '}
+                      <Text style={{ color: c.amber, fontWeight: '600' }}>{cameraPhotoAccessNotice.actionLabel}</Text>
+                    </Text>
                   </TouchableOpacity>
                 )}
                 <RowDivider c={c} />

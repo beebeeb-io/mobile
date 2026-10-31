@@ -3169,9 +3169,14 @@ final class NativeBackupEngine: NSObject {
     // ticket check below is what holds when the cancel comes too late.
     guard !Task.isCancelled else { return false }
     let scanned = scannedAssets(assets)
+    // Under "Selected photos" access the fetch IS the user's
+    // selection, so scope the manifest to it exactly like an album
+    // selection. Photos no longer shared leave the queue and the counts
+    // (instead of each one failing as "missing" and parking the drain), and
+    // come back on the first scan after access widens.
     let selection = FencedManifestWrites.Selection(
       allowedAssetIds: Set(assets.map(\.localIdentifier)),
-      hasAlbumSelection: !selectedAlbums.isEmpty
+      hasAlbumSelection: !selectedAlbums.isEmpty || status == .limited
     )
 
     let scanAccountId = ticket.accountId
@@ -3627,7 +3632,7 @@ final class NativeBackupEngine: NSObject {
     // Process with a foreground-friendly concurrency limit. The Rust uploader
     // can saturate bandwidth with multiple concurrent assets, which makes the
     // React Native UI and Files/Photos browsing feel sluggish.
-    await withTaskGroup(of: Bool.self) { group in
+    await withTaskGroup(of: BatchAssetOutcome.self) { group in
       var activeCount = 0
       var index = 0
 
@@ -3639,8 +3644,8 @@ final class NativeBackupEngine: NSObject {
           activeCount += 1
 
           group.addTask { [weak self] in
-            guard let self else { return false }
-            return await self.uploadSingleAsset(
+            guard let self else { return .failed }
+            let didUpload = await self.uploadSingleAsset(
               asset,
               masterKey: masterKey,
               authToken: authToken,
@@ -3648,20 +3653,28 @@ final class NativeBackupEngine: NSObject {
               batchAccountId: batchAccountId,
               ticket: ticket
             )
+            if didUpload { return .uploaded }
+            // A photo deleted or no longer shared was marked
+            // `local_missing`; nothing went wrong, so it must not feed the
+            // failure backoff below.
+            return self.isLocalMissing(asset.localAssetId) ? .skipped : .failed
           }
         }
 
         // Wait for one to complete
-        if let result = await group.next() {
+        if let outcome = await group.next() {
           activeCount -= 1
           if !self.isRunning || Task.isCancelled {
             group.cancelAll()
             break
           }
-          if result {
+          switch outcome {
+          case .uploaded:
             uploaded += 1
             self.consecutiveFailures = 0
-          } else {
+          case .skipped:
+            break
+          case .failed:
             self.consecutiveFailures += 1
             // 5 consecutive failures: 60s backoff
             if self.consecutiveFailures >= 5 {
@@ -4010,7 +4023,7 @@ final class NativeBackupEngine: NSObject {
         markLocalMissing(assetId: asset.localAssetId)
       }
       refreshProgress()
-      updateBackupStatusSurfaces(reason: "Skipped a photo no longer on this iPhone")
+      updateBackupStatusSurfaces(reason: "Skipped a photo no longer on this iPhone or no longer shared")
 
       onFileStatus?(asset.localAssetId, "local_missing", nil, BackupError.assetNotFound.localizedDescription)
       NSLog("[NativeBackupEngine] Asset missing locally, skipped: \(asset.localAssetId)")
@@ -5404,7 +5417,7 @@ final class NativeBackupEngine: NSObject {
     UPDATE backup_assets
     SET status = 'local_missing',
         retry_count = 0,
-        error_message = 'Photo removed from this iPhone before backup completed',
+        error_message = 'Photo no longer on this iPhone or no longer shared with Beebeeb',
         last_attempt_at = ?
     WHERE status != 'uploaded'
       AND (
@@ -5785,7 +5798,7 @@ final class NativeBackupEngine: NSObject {
     UPDATE backup_assets
     SET status = 'local_missing',
         retry_count = 0,
-        error_message = 'Photo removed from this iPhone before backup completed',
+        error_message = 'Photo no longer on this iPhone or no longer shared with Beebeeb',
         last_attempt_at = ?
     WHERE local_asset_id = ?
       AND status != 'uploaded'
@@ -5796,6 +5809,26 @@ final class NativeBackupEngine: NSObject {
     exsqlite3_bind_int64(stmt, 1, nowMs())
     BackupManifestStore.bindText(stmt, 2, assetId)
     exsqlite3_step(stmt)
+  }
+
+  /// One asset's result inside a `processBatch` task group.
+  private enum BatchAssetOutcome {
+    case uploaded
+    /// Gone from the library or no longer shared (`local_missing`).
+    case skipped
+    case failed
+  }
+
+  private func isLocalMissing(_ localId: String) -> Bool {
+    return dbQueue.sync {
+      guard let db = self.db else { return false }
+      var stmt: OpaquePointer?
+      defer { exsqlite3_finalize(stmt) }
+      let sql = "SELECT 1 FROM backup_assets WHERE local_asset_id = ? AND status = 'local_missing' LIMIT 1"
+      guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+      BackupManifestStore.bindText(stmt, 1, localId)
+      return exsqlite3_step(stmt) == SQLITE_ROW
+    }
   }
 
   private func replaceStagedChunks(assetId: String, fileId: String, chunkPaths: [String]) {
@@ -7359,6 +7392,25 @@ final class NativeBackupEngine: NSObject {
           NSLog("[NativeBackupEngine] Medium thumbnail produced no output")
         }
 
+        // Small thumbnail (384px, q0.35) — what the dense Photos grid (7 and 12
+        // columns) requests. Same decoded source, independent best-effort PUT to
+        // /thumbnail/small; no blurhash (only the medium variant carries one).
+        if let smallData = ThumbnailGenerator.generate(from: source, config: .small) {
+          await self.putThumbnail(
+            variant: "small",
+            data: smallData,
+            fileKey: fileKey,
+            maxBytes: ThumbnailGenerator.Config.small.maxBytes + 28,
+            blurhash: nil,
+            serverFileId: serverFileId,
+            authToken: authToken,
+            baseURL: baseURL,
+            accountId: accountId
+          )
+        } else {
+          NSLog("[NativeBackupEngine] Small thumbnail produced no output")
+        }
+
         // Large thumbnail (1280px) — used by the preview screen + web preview.
         // Independent best-effort PUT to /thumbnail/large; sets has_large_thumbnail.
         if let largeData = ThumbnailGenerator.generate(from: source, config: .large) {
@@ -7378,6 +7430,28 @@ final class NativeBackupEngine: NSObject {
         }
       } catch {
         NSLog("[NativeBackupEngine] Thumbnail generation failed: \(error.localizedDescription)")
+      }
+
+      // Photo preview tier: images only, only when the mirrored setting is enabled
+      // FOR THIS BATCH'S ACCOUNT (a setting mirrored for another account counts as
+      // disabled). Runs after the upload and the thumbnails are done, on this
+      // detached task (no engine lock, no manifest access). Failures are logged
+      // inside the helper and can never fail or retry the backup.
+      let isVideoAsset = assetType == "video" || self.isVideoType(mediaTypeHint)
+      if !isVideoAsset, PhotoPreviewSettingStore.current(forAccount: accountId) != nil {
+        do {
+          let previewKey = try masterKey.deriveFileKey(fileId: Data(serverFileId.utf8))
+          await PhotoPreviewAfterUpload.run(
+            phAssetId: phAssetId,
+            serverFileId: serverFileId,
+            fileKey: previewKey,
+            authToken: authToken,
+            baseURL: baseURL,
+            accountId: accountId
+          )
+        } catch {
+          NSLog("[NativeBackupEngine] Photo preview skipped: \(error.localizedDescription)")
+        }
       }
     }
   }
@@ -7581,8 +7655,12 @@ extension NativeBackupEngine: PHPhotoLibraryChangeObserver {
   /// computed, and the insert runs behind it: a sign-out reset in between
   /// drops the insert. No ticket (signed out, another account) = nothing to do.
   func photoLibraryDidChange(_ changeInstance: PHChange) {
-    if !selectedPhotoAlbumIds.isEmpty {
-      spawnScan(reason: "Selected albums rescanned", wakeReason: "photo-library-selected")
+    // A limited-library selection change is a removal as much
+    // as an insert; the incremental path below only inserts. A limited
+    // library is the user's hand-picked set, so a full rescan is cheap.
+    if !selectedPhotoAlbumIds.isEmpty || PHPhotoLibrary.authorizationStatus(for: .readWrite) == .limited {
+      let reason = selectedPhotoAlbumIds.isEmpty ? "Shared photos rescanned" : "Selected albums rescanned"
+      spawnScan(reason: reason, wakeReason: "photo-library-selected")
       return
     }
 

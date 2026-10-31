@@ -10,7 +10,7 @@ in the same commit as the code, with the ruling that caused it.
 
 **Ruling:** Guus requested clearer categories and removal of confusing duplicates; full-speed program §5.6 item 5 explicitly allows implementation after the design PR without waiting for approval. Publication is blocked by the session's network/approval policy; the docs branch and client branch are prepared locally for the lead.
 
-**Changes:** eight category entries; distinct account/device notifications; backup albums versus folders displayed in Photos; photo loading and quality under Backups & files; diagnostics under development-only Help; thumbnail-quality entry limited to iOS because Android has no consumer for its saved value; platform-neutral biometric/system-settings/rating labels. Existing routes, keys, consent, iOS purchase restrictions and storage-country capability gates remain.
+**Changes:** eight category entries; distinct account/device notifications; backup albums versus folders displayed in Photos; photo loading and quality under Backups & files; diagnostics under development-only Help; platform-neutral biometric/system-settings/rating labels. Existing routes, keys, consent, iOS purchase restrictions and storage-country capability gates remain.
 
 **Verification:** targeted isolated unit tests and TypeScript, with evidence recorded in the workspace delivery plan. Maestro flows are updated but not run: program §5.4 reserves runtime checks for the release window.
 

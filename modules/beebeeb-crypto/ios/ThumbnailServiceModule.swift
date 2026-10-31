@@ -177,11 +177,6 @@ public final class ThumbnailServiceModule: Module, ThumbnailEventEmitter {
       ]
     }
 
-    AsyncFunction("enqueueApplyQuality") { (fileIds: [String], qualityPreset: String) -> Int in
-        ThumbnailWorkerPool.shared.enqueue(fileIds: fileIds, qualityPreset: qualityPreset)
-        return fileIds.count
-    }
-
     AsyncFunction("pauseWorkers") { () -> Void in
         ThumbnailWorkerPool.shared.pause()
     }

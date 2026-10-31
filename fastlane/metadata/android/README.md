@@ -71,14 +71,14 @@ of at least 1080 px (at least 4 of them). So: send me the raw captures and I fra
 | 1 | Files, root folder with 6 to 8 items, a mix of folders and files | Files tab, list view | END-TO-END ENCRYPTED / Your files, encrypted / Every file and folder name is encrypted on your phone before upload. |
 | 2 | A photo or PDF open in preview | tap a file | DECRYPTED ON YOUR DEVICE / Opened on your phone / Previews decrypt locally. We only ever store ciphertext. |
 | 3 | The share sheet for a file, with a password typed (dots) and an expiry chosen | three dots on a file, Share Beebeeb link | ENCRYPTED LINKS / Share without handing over the key / The key stays in the link. Add a password or an expiry date. |
-| 4 | Photos tab, scrolled into a month with a full grid | Photos tab | YOUR PHOTOS / Your photos, by date / Photos stay encrypted until they open on your phone. |
-| 5 | A file request link just created, ready to share | a folder, File request, Create & share link (stop at the share sheet, do not send) | FILE REQUESTS / Let others send you files / Collect files into a folder from anyone with the link. |
-| 6 | A ZIP archive open, showing its folder tree | tap a .zip in the demo vault (upload a small one with neutral names first if there is none) | PREVIEW MORE / Look inside archives / Open ZIP files and the files inside them, on your phone. |
-| 7 | Settings, the app lock section with fingerprint unlock on | Settings | APP LOCK / Locked when you're away / Unlock with your fingerprint or face. |
-| 8 | Settings, the storage location row showing Europe or the country | Settings, Storage location | STORED IN EUROPE / Your vault stays in the EU / Encrypted on your phone, stored in Europe. |
+| 4 | A file request link just created, ready to share | a folder, File request, Create & share link (stop at the share sheet, do not send) | FILE REQUESTS / Let others send you files / Collect files into a folder from anyone with the link. |
+| 5 | A ZIP archive open, showing its folder tree | tap a .zip in the demo vault (upload a small one with neutral names first if there is none) | PREVIEW MORE / Look inside archives / Open ZIP files and the files inside them, on your phone. |
+| 6 | Settings, the app lock section with fingerprint unlock on | Settings | APP LOCK / Locked when you're away / Unlock with your fingerprint or face. |
+| 7 | Settings, the storage location row showing Europe or the country | Settings, Storage location | STORED IN EUROPE / Your vault stays in the EU / Encrypted on your phone, stored in Europe. |
 
-Order on the listing: 1, 3, 4, 2, 8, 5, 6, 7 (encryption, sharing and photos first). Drop 7 if check 1 above fails;
-six screenshots is plenty.
+Order on the listing (7 screens; the Photos screen is dropped, Guus 2026-10-30: "drop the Photos screen and ship 7",
+no personal photos and no illustrations): 1, 3, 2, 7, 4, 5, 6 (encryption and sharing first). Drop 6 if check 1 above
+fails; six screenshots is plenty.
 
 Never capture: the recovery phrase screen (it blocks screen capture on purpose), any real email
 address, the sign-in screen with a typed password, or a notification from another app.

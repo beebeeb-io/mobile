@@ -44,6 +44,8 @@ MANIFEST=(
   "thumbnail-queue-purge-test.swift|modules/beebeeb-crypto/ios/ThumbnailQueueDB.swift modules/beebeeb-crypto/ios/ThumbnailErrorCategory.swift modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift modules/beebeeb-crypto/ios/RuntimeTrace.swift"
   "legacy-url-cache-cleanup-test.swift|modules/beebeeb-crypto/ios/LegacyURLCacheCleanup.swift"
   "thumbnail-purge-generation-test.swift|modules/beebeeb-crypto/ios/ThumbnailPurgeGeneration.swift"
+  "photo-preview-encoder-test.swift|modules/beebeeb-crypto/ios/PhotoPreviewEncoder.swift"
+  "thumbnail-variant-policy-test.swift|modules/beebeeb-crypto/ios/ThumbnailServiceTypes.swift"
 )
 
 LOG_DIR="${SWIFT_CI_LOG_DIR:-$(mktemp -d)}"

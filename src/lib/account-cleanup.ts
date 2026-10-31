@@ -156,6 +156,13 @@ export function resolvePurgeMode(options: PurgeAllOptions = {}): {
  */
 async function sweepDecryptedCaches(): Promise<{ removed: string[]; failed: string[] }> {
   clearSharedKeys();
+  // The engine's mirrored photo preview setting belongs to the outgoing account
+  // (the native purge clears it too; this covers a purge that never reaches it).
+  try {
+    NativeCrypto.clearPhotoPreviewSetting?.();
+  } catch {
+    // never blocks sign-out
+  }
   await Promise.allSettled([
     clearAdopted(),
     clearPendingPublishes(),

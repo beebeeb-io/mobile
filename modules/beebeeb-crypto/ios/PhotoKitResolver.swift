@@ -91,8 +91,8 @@ public actor PhotoKitResolver {
   /// Unlike `requestImage`, this returns the UIImage directly instead of writing
   /// to a file, because the caller (thumbnail encoder) needs the pixel data.
   ///
-  /// `allowNetworkAccess` defaults to `false` (conservative). The "Improve
-  /// thumbnail quality" repair path passes `true`: it is a deliberate user
+  /// `allowNetworkAccess` defaults to `false` (conservative). The thumbnail
+  /// repair path passes `true`: it is a deliberate user
   /// action, so fetching iCloud-offloaded originals over the network is
   /// expected — otherwise every optimized-storage original fails non-retriably
   /// (task 0883). This is NOT the latency-sensitive grid render path; that path

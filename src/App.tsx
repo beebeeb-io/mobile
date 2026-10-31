@@ -49,6 +49,10 @@ import * as BeebeebCrypto from '../modules/beebeeb-crypto';
 import { populateFileProviderCache } from './lib/file-provider-mount';
 import { ensureFilesMountedByDefault } from './lib/files-mount-default';
 import { initLocalIdentifierMap } from './lib/local-identifier-map';
+import { applyPreferenceUpdateOp } from './lib/photo-preview-sync';
+import { photoPreviewAppActive } from './lib/photo-preview-runner';
+import { deletePreviewSamples } from './lib/photo-preview-cache';
+import { onPreferenceUpdateOp } from './lib/sync-client';
 import { resetThumbnailSelfRepairState } from './lib/thumbnail-self-repair';
 import {
   accountDeletionPurgePending,
@@ -66,6 +70,9 @@ import {
   handleNotificationTap,
 } from './lib/push-notifications';
 import { registerDevice } from './lib/device-registration';
+
+// `preference_update` sync ops: the photo preview setting changed on another device.
+onPreferenceUpdateOp(applyPreferenceUpdateOp);
 
 const BIOMETRIC_PREF_KEY = 'beebeeb_biometric_lock';
 const BIOMETRIC_DELAY_KEY = 'beebeeb_biometric_delay';
@@ -124,7 +131,8 @@ import TwoFactorSetupScreen from './screens/TwoFactorSetupScreen';
 import BackupInsightsScreen from './screens/BackupInsightsScreen';
 import SpeedtestScreen from './screens/SpeedtestScreen';
 import AdvancedSettingsScreen from './screens/AdvancedSettingsScreen';
-import ThumbnailQualityScreen from './screens/ThumbnailQualityScreen';
+import PhotoPreviewsScreen from './screens/PhotoPreviewsScreen';
+import PhotoPreviewCompareScreen from './screens/PhotoPreviewCompareScreen';
 import ThumbnailWorkerScreen from './screens/ThumbnailWorkerScreen';
 import PhotoLibrarySettingsScreen from './screens/PhotoLibrarySettingsScreen';
 // __DEV__-only glass primitives gallery (task 1311). Registered below only
@@ -316,6 +324,12 @@ export type RootStackParamList = {
     hasThumbnail?: boolean;
     /** Known encrypted thumbnail bytes for local-source quality repair (0554). */
     thumbnailBytes?: number | null;
+    /** Server `has_preview` for the opened file: the viewer shows the stored photo preview first. */
+    hasPreview?: boolean;
+    /** The stored preview's format and long edge (a cached copy made at another setting is refetched). */
+    previewFormat?: 'heic' | 'jpeg' | null;
+    previewPx?: number | null;
+    previewBytes?: number | null;
     // ── File-request uploads (0643) ──
     // When set, the file arrived through a file request and must be decrypted
     // with the request content key (resolved from these), NOT the master-key
@@ -364,7 +378,8 @@ export type RootStackParamList = {
   BackupInsights: undefined;
   Speedtest: undefined;
   AdvancedSettings: undefined;
-  ThumbnailQuality: undefined;
+  PhotoPreviews: undefined;
+  PhotoPreviewCompare: { localIdentifier?: string };
   ThumbnailWorker: undefined;
   PhotoLibrarySettings: undefined;
   /** `__DEV__` only — the iOS 26 glass primitives gallery (task 1311). */
@@ -1072,6 +1087,9 @@ export default function App() {
       void initLocalIdentifierMap().catch((err: unknown) =>
         console.warn('[App] initLocalIdentifierMap failed', err),
       );
+      // Tell the native backup engine whether to make photo previews (for this
+      // account), and continue an interrupted Apply.
+      void photoPreviewAppActive({ accountId: me.user_id, force: true });
     } catch (err) {
       // Round 14: the 403 account_deleted handler already ran (inside getMe);
       // getMeNamingKeyOwner has cleared the owner.
@@ -1142,6 +1160,9 @@ export default function App() {
     // real, pre-existing gap — ruling 2 asked to "confirm and cite" that
     // sign-out already clears it; it did not, until this line.
     await SecureStore.deleteItemAsync(PHRASE_VERIFIED_KEY).catch(() => {});
+    // A compare/settings sample encode still running during the purge can finish
+    // after it: remove the samples once more now that sign-out is done.
+    await deletePreviewSamples().catch(() => {});
     setPhraseVerified(true);
     setUser(null);
   }, []);
@@ -1274,6 +1295,7 @@ export default function App() {
           void initLocalIdentifierMap().catch((err: unknown) =>
             console.warn('[App] initLocalIdentifierMap (cold launch) failed', err),
           );
+          void photoPreviewAppActive({ accountId: me.user_id, force: true });
         } else {
           // All transient retries exhausted — keep the restoring/diagnostic
           // surface. The token remains stored, so showing Login here would be
@@ -1342,6 +1364,8 @@ export default function App() {
         await AsyncStorage.multiRemove([
           'beebeeb:thumbnail-repair-settings:v1',
           'beebeeb:thumbnail-repair-status:v1',
+          // The per-user thumbnail quality setting no longer exists.
+          'beebeeb:thumbnail-quality:v1',
         ]);
       } catch {}
       await AsyncStorage.setItem(MIGRATION_KEY, '1');
@@ -1426,6 +1450,17 @@ export default function App() {
   useEffect(() => {
     if (onSignedOutSurface) void signedOutPurger.enterSignedOut();
   }, [onSignedOutSurface]);
+
+  // Photo previews: on foreground, re-mirror the account setting natively
+  // (throttled) and continue an interrupted Apply.
+  useEffect(() => {
+    const userId = user?.user_id;
+    if (!userId) return;
+    const subscription = AppState.addEventListener('change', (next: AppStateStatus) => {
+      if (next === 'active') void photoPreviewAppActive({ accountId: userId });
+    });
+    return () => subscription.remove();
+  }, [user?.user_id]);
 
   // Lock the app when it goes to background and biometric pref is on.
   // The user-configurable delay (BIOMETRIC_DELAY_KEY, in ms) lets a quick
@@ -1780,9 +1815,14 @@ export default function App() {
                     options={{ headerShown: false }}
                   />
                   <Stack.Screen
-                    name="ThumbnailQuality"
-                    component={ThumbnailQualityScreen}
+                    name="PhotoPreviews"
+                    component={PhotoPreviewsScreen}
                     options={{ headerShown: false }}
+                  />
+                  <Stack.Screen
+                    name="PhotoPreviewCompare"
+                    component={PhotoPreviewCompareScreen}
+                    options={{ headerShown: false, presentation: 'fullScreenModal' }}
                   />
                   {__DEV__ ? (
                     <Stack.Screen
