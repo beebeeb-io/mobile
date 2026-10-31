@@ -79,7 +79,7 @@ import SkeletonRow from '../components/SkeletonRow';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
 import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
-import { ApiError, listAllFiles, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getUploadStatus, getApiUrl, getToken, abortUploadForFile, abandonFileUpload, getUploadResumeForFile, forgetUploadResume } from '../lib/api';
+import { ApiError, listAllFiles, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getUploadStatus, getApiUrl, getToken, abortUploadForFile, abandonFileUpload, getUploadResumeForFile, forgetUploadResume, resumeUploadFileId } from '../lib/api';
 import type { UploadResumeInfo } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { ensurePhotoPermission } from '../lib/photo-permissions';
@@ -101,6 +101,7 @@ import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson, fileMetadataP
 import { syncDecryptedEntriesToFileProvider, removeFromFileProviderCache } from '../lib/file-provider-mount';
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
+import { uploadReplacingOrAdding } from '../lib/replace-or-add';
 import { buildAddMenuActions, NEW_FILE_ACTION_ID } from '../lib/new-document';
 import { createNewDocumentFile, decryptFolderNames, previewParamsForNewDocument } from '../lib/create-new-document';
 import { abandonTextFileUpload } from '../lib/text-file-save';
@@ -2457,10 +2458,14 @@ export default function FilesScreen() {
       const display = info.name || displayName(file) || 'file';
       setUpload({ fileName: display, stage: 2, percent: 0, place: loc.place, region: loc.region });
       const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
-      activeUploadFileIdRef.current = file.id;
+      // Task SF-0001 (mobile#259 review M2): a pointer from before the rule may
+      // carry the id the SERVER chose; that resume restarts as a new create
+      // under an id minted here (its old session is abandoned by the upload).
+      const target = await resumeUploadFileId(info, generateFileId);
+      activeUploadFileIdRef.current = target.fileId;
       try {
         const uploaded = await encryptedUpload({
-          fileId: file.id,
+          fileId: target.fileId,
           uri: info.sourceUri,
           name: info.name,
           parentId: info.parentId ?? undefined,
@@ -2505,6 +2510,10 @@ export default function FilesScreen() {
         // Resume pointer is spent — the upload completed.
         void forgetUploadResume(uploaded.id);
         resumeInfosRef.current.set(uploaded.id, null);
+        if (target.restarted) {
+          void forgetUploadResume(file.id);
+          resumeInfosRef.current.set(file.id, null);
+        }
         // Post-crash the thumbnail jobs never ran: regenerate both variants
         // through the bounded queue, then clean up the plaintext upload copy
         // (only the screen-owned `upload-*` cache file — never the picker's own).
@@ -2690,6 +2699,9 @@ export default function FilesScreen() {
     let uploadFileId = await generateFileId();   // new UUID by default
     let uploadFileName = asset.name;       // original name by default
     let v2InitNameEncrypted: string | undefined;
+    // Task SF-0001 (mobile#259 review M9): the listed row the user chose to
+    // overwrite; an add-only member's 403 falls back to a new file.
+    let replacingExistingId: string | undefined;
 
     const existingFile = findConflict(asset.name);
     if (existingFile) {
@@ -2700,6 +2712,7 @@ export default function FilesScreen() {
         // Reuse the existing file ID → server stores a new version of it
         uploadFileId = existingFile.id;
         v2InitNameEncrypted = existingFile.name_encrypted;
+        replacingExistingId = existingFile.id;
       } else {
         // Keep both: upload under the suffixed name with a fresh ID
         uploadFileName = choice.finalName;
@@ -2716,13 +2729,13 @@ export default function FilesScreen() {
       const allowProgress = createProgressThrottle(UPLOAD_PROGRESS_MIN_INTERVAL_MS);
       activeUploadFileIdRef.current = uploadFileId;
       try {
-        const uploaded = await encryptedUpload({
-          fileId: uploadFileId,
+        const uploaded = await uploadReplacingOrAdding(replacingExistingId, uploadFileId, generateFileId, (targetFileId, replacing) => encryptedUpload({
+          fileId: targetFileId,
           uri: asset.uri,
           name: uploadFileName,
           parentId: currentFolder.id ?? undefined,
           mimeType: asset.mimeType ?? undefined,
-          v2InitNameEncrypted,
+          v2InitNameEncrypted: replacing ? v2InitNameEncrypted : undefined,
           encryptChunkFn: encryptChunk,
           encryptMetadataFn: encryptMetadata,
           masterKeyHandleId: getMasterKeyHandleId(),
@@ -2749,7 +2762,7 @@ export default function FilesScreen() {
               };
             });
           },
-        });
+        }));
         const finalLoc = trustLocation(uploaded.storage_pool_id, uploaded);
         setUpload({ fileName: uploadFileName, stage: 'done', percent: 100, place: finalLoc.place, region: finalLoc.region });
         const seedPreview = queueRawUploadedPreview(uploaded.id, uploadFileName, asset.mimeType, asset.uri, uploaded.size_bytes);
@@ -2941,10 +2954,13 @@ export default function FilesScreen() {
         let name = rawNames[i]!;
         let fileId = await generateFileId();
         let v2InitNameEncrypted: string | undefined;
+        // Task SF-0001 (mobile#259 review M9): see the single-file path.
+        let replacingExistingId: string | undefined;
         if (decision?.action === 'version-existing') {
           // Overwrite → a new version of the existing row (same id + name bytes).
           fileId = decision.existingId;
           v2InitNameEncrypted = decision.existingNameEncrypted;
+          replacingExistingId = decision.existingId;
         } else if (decision?.action === 'keep-both') {
           name = decision.finalName;
         } else if (usedInBatch.has(name.toLowerCase())) {
@@ -2969,13 +2985,14 @@ export default function FilesScreen() {
         try {
           uploadUri = await copyPhotoAssetToUploadCache(asset.uri, fileId, name);
           recordRuntimeTrace('upload.photo.source_ready', { fileId, elapsedMs: Date.now() - preparationStartedAt });
-          const uploaded = await encryptedUpload({
-            fileId,
-            uri: uploadUri,
+          const sourceUri = uploadUri;
+          const uploaded = await uploadReplacingOrAdding(replacingExistingId, fileId, generateFileId, (targetFileId, replacing) => encryptedUpload({
+            fileId: targetFileId,
+            uri: sourceUri,
             name,
             parentId: currentFolder.id ?? undefined,
             mimeType: asset.mimeType ?? (isVideoAsset ? 'video/mp4' : 'image/jpeg'),
-            v2InitNameEncrypted,
+            v2InitNameEncrypted: replacing ? v2InitNameEncrypted : undefined,
             encryptChunkFn: encryptChunk,
             encryptMetadataFn: encryptMetadata,
             masterKeyHandleId: getMasterKeyHandleId(),
@@ -3002,7 +3019,7 @@ export default function FilesScreen() {
                 };
               });
             },
-          });
+          }));
           // Retain the completed RAW source before publishing its row. Opening it
           // immediately must not download the same 50–100 MB we just uploaded.
           const copyUri = uploadUri;

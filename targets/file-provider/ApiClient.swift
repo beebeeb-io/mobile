@@ -198,6 +198,17 @@ final class ApiClient {
 
   /// Finalize a v2 chunked upload. Server verifies all chunks are present,
   /// updates the file row, and returns the canonical file metadata.
+  /// Task SF-0001 (mobile#259 review M5): best-effort abandon of the upload
+  /// session for the id this extension REQUESTED, after an init answer named
+  /// another item. Never throws: an unknown session is already gone.
+  func abandonUploadBestEffort(fileId: String, expectedUser: String?) async {
+    let url = baseUrl.appendingPathComponent("/api/v1/files/\(fileId)/upload/abandon")
+    guard var request = try? authedRequest(url: url, method: "POST", expectedUser: expectedUser) else { return }
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = Data("{}".utf8)
+    _ = try? await session.data(for: request)
+  }
+
   func completeUploadV2(uploadSessionId: String, expectedUser: String?) async throws -> UploadResponseDto {
     let url = baseUrl.appendingPathComponent("/api/v1/uploads/\(uploadSessionId)/complete")
     var request = try authedRequest(url: url, method: "POST", expectedUser: expectedUser)

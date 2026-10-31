@@ -23,6 +23,9 @@ let fetchQueue: Array<() => Promise<Response>> = []
 const uploadAsyncQueue: Array<{ status: number; body: string }> = []
 const uploadAsyncCalls: Array<{ url: string; options: Record<string, unknown> }> = []
 let nativeAvailable = false
+// mobile#259 review M7: a SecureStore delete that lands late (a real Keychain
+// write is slow), so a fire-and-forget clear races the next attempt's save.
+let deleteDelayMs = 0
 const nativeCalls: Array<Record<string, unknown>> = []
 
 mock.module('@react-native-async-storage/async-storage', () => ({
@@ -40,7 +43,10 @@ mock.module('expo-constants', () => ({
 mock.module('expo-secure-store', () => ({
   getItemAsync: async (key: string) => store.get(key) ?? null,
   setItemAsync: async (key: string, value: string) => { store.set(key, value) },
-  deleteItemAsync: async (key: string) => { store.delete(key) },
+  deleteItemAsync: async (key: string) => {
+    if (deleteDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, deleteDelayMs))
+    store.delete(key)
+  },
 }))
 mock.module('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///cache/',
@@ -116,7 +122,10 @@ beforeEach(() => {
   uploadAsyncCalls.length = 0
   nativeCalls.length = 0
   nativeAvailable = false
+  deleteDelayMs = 0
 })
+
+const settle = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms))
 
 describe('A7 — a create whose answer echoes another id is aborted', () => {
   test('v2 init echoing a different id aborts before any chunk PUT, complete or seal', async () => {
@@ -289,5 +298,134 @@ describe('A8 — a folder create whose answer differs is aborted', () => {
     const { createFolder } = await loadFreshApi()
     const created = await createFolder('enc', undefined, CLIENT_ID)
     expect(created.id).toBe(CLIENT_ID)
+  })
+})
+
+describe('round 2 (mobile#259 review)', () => {
+  test('M5: an init mismatch abandons the REQUESTED id, never the echoed one', async () => {
+    fetchQueue.push(initAnswer('server-chosen-id'), async () => jsonResponse({}, 200))
+    const { uploadEncryptedChunked, ServerChangedItemIdError } = await loadFreshApi()
+    const err = await uploadEncryptedChunked({
+      fileId: CLIENT_ID,
+      nameEncrypted: 'n',
+      plaintextSizeBytes: 1_000,
+      readEncryptedChunk: async () => new Uint8Array(10),
+    }).catch((e) => e)
+    expect(err).toBeInstanceOf(ServerChangedItemIdError)
+    const abandons = fetchCalls.filter((c) => c.url.endsWith('/upload/abandon')).map((c) => c.url)
+    expect(abandons).toEqual([`https://api.test/api/v1/files/${CLIENT_ID}/upload/abandon`])
+  })
+
+  test('M6: a completion mismatch says the server finished, not "nothing was uploaded"', async () => {
+    fetchQueue.push(
+      initAnswer(CLIENT_ID),
+      async () => jsonResponse({ id: 'server-chosen-id', name_encrypted: 'n' }, 200),
+    )
+    uploadAsyncQueue.push({ status: 200, body: '{}' })
+    const { uploadEncryptedChunked, ServerChangedItemIdError, friendlyError } = await loadFreshApi()
+    const err = await uploadEncryptedChunked({
+      fileId: CLIENT_ID,
+      nameEncrypted: 'n',
+      plaintextSizeBytes: 1_000,
+      readEncryptedChunk: async () => new Uint8Array(10),
+    }).catch((e) => e)
+    expect(err).toBeInstanceOf(ServerChangedItemIdError)
+    expect(err.stage).toBe('completion')
+    expect(err.message).toBe('The server finished this upload under a different item. Beebeeb did not count it as uploaded.')
+    expect(friendlyError(err)).toBe(err.message)
+  })
+
+  test('M7: the legacy session is cleared BEFORE the new attempt persists (a late delete no longer wipes it)', async () => {
+    deleteDelayMs = 40
+    store.set('beebeeb_upload_resume_rk', JSON.stringify({
+      protocol: 'v2', fileId: 'server-chosen-id', uploadSessionId: 'OLD-SESSION',
+      chunkSizeBytes: 4_194_304, chunkCount: 2, plaintextSizeBytes: 5_000_000,
+      parentId: null, mimeType: null, lastUploadedChunkIndex: 0,
+    }))
+    fetchQueue.push(
+      async () => jsonResponse({}, 200), // abandon of the legacy id
+      initAnswer(CLIENT_ID, 'S2', 2),
+    )
+    uploadAsyncQueue.push({ status: 200, body: '{}' })
+    const controller = new AbortController()
+    const { uploadEncryptedChunked } = await loadFreshApi()
+    // Chunk 0 goes up; the attempt is then cancelled before chunk 1, leaving
+    // its resume state behind (as an interrupted upload does).
+    const err = await uploadEncryptedChunked({
+      fileId: CLIENT_ID,
+      nameEncrypted: 'n',
+      plaintextSizeBytes: 5_000_000,
+      resumeKey: 'rk',
+      signal: controller.signal,
+      readEncryptedChunk: async () => { controller.abort(); return new Uint8Array(10) },
+    }).catch((e) => e)
+    expect(err?.name).toBe('AbortError')
+    await settle(120)
+    const kept = JSON.parse(store.get('beebeeb_upload_resume_rk') ?? 'null')
+    expect(kept?.fileId).toBe(CLIENT_ID)
+    expect(kept?.selfMinted).toBe(true)
+  })
+
+  test('M8: a self-minted session for the same id that cannot be resumed is abandoned before the new init', async () => {
+    store.set('beebeeb_upload_resume_rk', JSON.stringify({
+      protocol: 'v2', fileId: CLIENT_ID, uploadSessionId: 'S0',
+      chunkSizeBytes: 4_194_304, chunkCount: 1, plaintextSizeBytes: 999, // another size
+      parentId: null, mimeType: null, lastUploadedChunkIndex: -1, selfMinted: true,
+    }))
+    fetchQueue.push(
+      async () => jsonResponse({}, 200), // abandon
+      initAnswer(CLIENT_ID, 'S1'),
+      async () => jsonResponse({ id: CLIENT_ID, name_encrypted: 'n' }, 200),
+    )
+    uploadAsyncQueue.push({ status: 200, body: '{}' })
+    const { uploadEncryptedChunked } = await loadFreshApi()
+    const result = await uploadEncryptedChunked({
+      fileId: CLIENT_ID,
+      nameEncrypted: 'n',
+      plaintextSizeBytes: 1_000,
+      resumeKey: 'rk',
+      readEncryptedChunk: async () => new Uint8Array(10),
+    })
+    expect(fetchCalls[0].url).toBe(`https://api.test/api/v1/files/${CLIENT_ID}/upload/abandon`)
+    expect(fetchCalls[1].url).toBe('https://api.test/api/v1/uploads/init')
+    expect(result.id).toBe(CLIENT_ID)
+  })
+
+  test('M2: a pointer from before the rule restarts under a fresh id; one with the marker resumes its own', async () => {
+    const { resumeUploadFileId } = await loadFreshApi()
+    const legacy = { fileId: 'server-chosen-id', resumeKey: 'rk', sourceUri: 'file:///a', name: 'a', parentId: null, mimeType: null, plaintextSizeBytes: 1 }
+    const minted = await resumeUploadFileId(legacy, async () => CLIENT_ID)
+    expect(minted).toEqual({ fileId: CLIENT_ID, restarted: true })
+    const own = await resumeUploadFileId({ ...legacy, fileId: CLIENT_ID, selfMinted: true }, async () => 'never')
+    expect(own).toEqual({ fileId: CLIENT_ID, restarted: false })
+  })
+
+  test('M2: the pointer an attempt writes carries the marker', async () => {
+    fetchQueue.push(initAnswer(CLIENT_ID), async () => jsonResponse({ id: CLIENT_ID, name_encrypted: 'n' }, 200))
+    uploadAsyncQueue.push({ status: 200, body: '{}' })
+    const { uploadEncryptedChunked } = await loadFreshApi()
+    let pointer = null
+    await uploadEncryptedChunked({
+      fileId: CLIENT_ID,
+      nameEncrypted: 'n',
+      plaintextSizeBytes: 1_000,
+      resumeKey: 'rk',
+      resumeMeta: { sourceUri: 'file:///a', name: 'a.jpg', mimeType: 'image/jpeg' },
+      readEncryptedChunk: async () => {
+        await settle()
+        pointer = JSON.parse(store.get(`beebeeb_upload_resume_file_${CLIENT_ID}`) ?? 'null')
+        return new Uint8Array(10)
+      },
+    })
+    expect(pointer?.fileId).toBe(CLIENT_ID)
+    expect(pointer?.selfMinted).toBe(true)
+  })
+
+  test('M11: a differently-cased echo is another id', async () => {
+    const { assertEchoedItemId, ServerChangedItemIdError } = await import('./item-id-echo')
+    const lettered = 'abcdef01-2222-4333-8444-5555555555ee'
+    expect(lettered.toUpperCase()).not.toBe(lettered)
+    expect(() => assertEchoedItemId(lettered, lettered.toUpperCase())).toThrow(ServerChangedItemIdError)
+    expect(() => assertEchoedItemId(lettered, lettered)).not.toThrow()
   })
 })

@@ -4395,8 +4395,39 @@ final class NativeBackupEngine: NSObject {
       isResumingExistingRemote = true
     } else if let existing = asset.remoteFileId, !existing.isEmpty {
       // Task SF-0001 (2275 L13/A7c): the stored id is not the one this client
-      // minted (pre-update state, or the server changed it) — abandon it
-      // server-side and stage a fresh upload under our own id. Never resumed.
+      // minted (pre-update state, or the server changed it) — never resumed.
+      // mobile#259 review M10: a pre-update upload under it may have FINISHED
+      // (its session id was lost, or the app died after the complete). Then
+      // the photo is backed up: record it instead of uploading it twice.
+      // Only an upload that did not finish is abandoned and staged again
+      // under our own id.
+      if case .complete = try await inspectExistingUpload(fileId: existing, authToken: authToken, baseURL: baseURL) {
+        let recorded: Bool = dbQueue.sync {
+          guard admitsWrite(ticket, "markUploadComplete") else { return false }
+          guard markUploadComplete(assetId: asset.localAssetId, remoteFileId: existing, accountId: batchAccountId) else {
+            return false
+          }
+          deleteStagedChunks(assetId: asset.localAssetId)
+          return true
+        }
+        guard recorded else {
+          RuntimeTrace.event("backup.native.upload.record_failed", ["path": "pre_update_complete"])
+          throw BackupError.databaseUnavailable
+        }
+        removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)
+        RuntimeTrace.event("backup.native.upload.pre_update_complete_recorded")
+        updateBackupStatusSurfaces(reason: "Recovered completed backup")
+        onFileStatus?(asset.localAssetId, "uploaded", nil, nil)
+        await markOnServer(
+          assetId: asset.localAssetId,
+          fileId: existing,
+          authToken: authToken,
+          baseURL: baseURL,
+          accountId: batchAccountId,
+          ticket: ticket
+        )
+        return true
+      }
       await abandonUpload(fileId: existing, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)
       // Stale file_id without a session id (or with a foreign id) — drop it
       // and re-init below.
@@ -4437,8 +4468,17 @@ final class NativeBackupEngine: NSObject {
       )
       // Task SF-0001 (2275 L13/A7): the init answer must name the id this
       // engine proposed, and encrypted under — checked before ANY chunk PUT.
-      try UploadItemIdEcho.assertEchoedId(chosen: fileId, echoed: session.fileId)
-      serverFileId = session.fileId
+      // On a mismatch the session for the REQUESTED id is abandoned (mobile#259
+      // review M5); nothing is sent to the echoed one.
+      do {
+        try UploadItemIdEcho.assertEchoedId(chosen: fileId, echoed: session.fileId)
+      } catch {
+        await abandonUpload(fileId: fileId, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)
+        throw error
+      }
+      // mobile#259 review M10: the minted id, not the answer's (equal after the
+      // check, and the answer is never the source of an id).
+      serverFileId = fileId
       uploadSessionId = session.uploadSessionId
       heartbeatIntervalSecs = session.heartbeatIntervalSecs
       dbQueue.sync {
@@ -4865,12 +4905,21 @@ final class NativeBackupEngine: NSObject {
     let http = response as? HTTPURLResponse
     let statusCode = http?.statusCode ?? 0
     do {
-      return try PhotoBackupServerResponses.existingUpload(
+      let state = try PhotoBackupServerResponses.existingUpload(
         statusCode: statusCode,
         contentType: http?.value(forHTTPHeaderField: "Content-Type"),
         retryAfter: http?.value(forHTTPHeaderField: "Retry-After"),
         data: data
       )
+      // Task SF-0001 (mobile#259 review M6): an answer about a file must be
+      // about THAT file. Without this, an upload whose completion answer named
+      // another item (the asset stays failed) was marked complete by the next
+      // resume's `.complete` here, with no echo check at all.
+      if state != .gone {
+        let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        try UploadItemIdEcho.assertEchoedId(chosen: fileId, echoed: body?["id"] as? String, stage: .completion)
+      }
+      return state
     } catch let limited as PhotoBackupServerResponses.RateLimited {
       // Round 15 (review item 2): the server's Retry-After is honoured; the
       // rebuild gate's deferral never shortens it (`ManifestRebuildGate
@@ -5267,7 +5316,8 @@ final class NativeBackupEngine: NSObject {
     let echoedId = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     try UploadItemIdEcho.assertEchoedId(
       chosen: expectedFileId,
-      echoed: (echoedId?["id"] as? String)
+      echoed: (echoedId?["id"] as? String),
+      stage: .completion
     )
   }
 
