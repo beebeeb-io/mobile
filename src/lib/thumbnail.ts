@@ -913,6 +913,15 @@ export async function prefetchDecryptedThumbnails(
       onLoaded?.(fileId, cached);
       return;
     }
+    // MB-0002 round 2 — on iOS only a foreign shared file whose key is loaded
+    // natively can be loaded here (the loader decrypts through the native
+    // handle callback). A file of your own has no JS reader on iOS: skipping it
+    // here means the prefetch never calls `getFileKeyBytes` (32 raw key bytes
+    // into the JS heap, plus `setFileKey`) for it. Android is unchanged.
+    if (Platform.OS === 'ios' && !sharedFileKeyIsLoaded(fileId)) {
+      stats.skipped += 1;
+      return;
+    }
     stats.attempted += 1;
     try {
       // P1-2 — prefetch jobs coalesce with the cells' own jobs and yield to
