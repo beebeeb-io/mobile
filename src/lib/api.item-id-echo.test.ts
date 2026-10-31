@@ -429,3 +429,47 @@ describe('round 2 (mobile#259 review)', () => {
     expect(() => assertEchoedItemId(lettered, lettered)).not.toThrow()
   })
 })
+
+describe('mobile#259 round 3', () => {
+  test('C: only the FIRST init\'s plain forbidden is an UploadInitRefusedError (v2 and v1)', async () => {
+    const { uploadEncryptedChunked, UploadInitRefusedError, ApiError } = await loadFreshApi()
+    const run = () => uploadEncryptedChunked({
+      fileId: CLIENT_ID,
+      nameEncrypted: 'n',
+      plaintextSizeBytes: 1_000,
+      readEncryptedChunk: async () => new Uint8Array(10),
+    }).catch((e) => e)
+
+    fetchQueue.push(async () => jsonResponse({ error: 'forbidden' }, 403))
+    const v2 = await run()
+    expect(v2).toBeInstanceOf(UploadInitRefusedError)
+    expect(uploadAsyncCalls).toHaveLength(0)
+
+    // v2 unavailable → the v1 init refuses the same way.
+    fetchQueue.push(async () => jsonResponse({ error: 'not found' }, 404), async () => jsonResponse({ error: 'forbidden' }, 403))
+    const v1 = await run()
+    expect(v1).toBeInstanceOf(UploadInitRefusedError)
+    expect(fetchCalls.some((c) => c.url.endsWith('/files/upload/init'))).toBe(true)
+
+    // A typed 403 is the server's answer for the account, never a refusal of the id.
+    fetchQueue.push(async () => jsonResponse({ error: 'billing_read_only', message: 'read-only' }, 403))
+    const typed = await run()
+    expect(typed).toBeInstanceOf(ApiError)
+    expect(typed).not.toBeInstanceOf(UploadInitRefusedError)
+    expect(typed.code).toBe('billing_read_only')
+  })
+
+  test('F: a version replace under a different id than the file it replaces is refused before any request', async () => {
+    const { uploadEncryptedChunked } = await loadFreshApi()
+    const err = await uploadEncryptedChunked({
+      fileId: CLIENT_ID,
+      nameEncrypted: 'n',
+      plaintextSizeBytes: 1_000,
+      readEncryptedChunk: async () => new Uint8Array(10),
+      versionReplace: { fileId: 'another-file', baseVersionNumber: 3 },
+    }).catch((e) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(String(err.message)).toContain('version replace')
+    expect(fetchCalls).toHaveLength(0)
+  })
+})

@@ -355,6 +355,25 @@ export function retryAfterSecondsFromHeader(value: string | null, nowMs = Date.n
  * session token. Caller must navigate to TwoFactorChallenge with this
  * partial_token and call `completeTwoFactor` after the user enters their code.
  */
+/**
+ * mobile#259 round 3: the FIRST init of an upload refused with the server's
+ * plain `forbidden` — an explicit `file_id` the member may not edit, or a
+ * folder they may not write to (server routes/uploads.rs). Raised only there:
+ * nothing has been sealed under the id or sent yet, so `replaceOrAdd` may put
+ * the same bytes up as a new file. Every other 403 (a typed code, a chunk PUT,
+ * a complete, a takeover re-init) stays a plain `ApiError`.
+ */
+export class UploadInitRefusedError extends ApiError {
+  constructor(message: string) {
+    super(403, message, 'forbidden')
+    this.name = 'UploadInitRefusedError'
+  }
+}
+
+function firstInitRefusal(status: number, err: { error?: string; message?: string }): UploadInitRefusedError | null {
+  return status === 403 && err.error === 'forbidden' ? new UploadInitRefusedError(err.message ?? 'forbidden') : null
+}
+
 export class TwoFactorRequiredError extends Error {
   constructor(public partialToken: string) {
     super('two_factor_required');
@@ -1752,6 +1771,11 @@ export async function uploadEncryptedChunked(params: {
   // Task SF-0001 (2275 L13/A7b): the id this attempt proposes — minted on the
   // client for a create, or the listed row's id for a version-replace — is the
   // ONLY id this upload may ever be completed under.
+  // mobile#259 round 3: the two can never differ — the v1 init, the name and
+  // the persisted state are keyed by `fileId`, the chunks by `chosenFileId`.
+  if (versionReplace && versionReplace.fileId !== fileId) {
+    throw new Error('A version replace must upload under the file it replaces')
+  }
   const chosenFileId = versionReplace?.fileId ?? fileId
   // Task 2062: every progress event carries the country the init named.
   const initCountry = trackInitCountry(onProgressRaw)
@@ -1815,6 +1839,7 @@ export async function uploadEncryptedChunked(params: {
       createdAt,
       fileId: chosenFileId,
       baseVersionNumber: versionReplace?.baseVersionNumber,
+      firstInit: true,
     })
     if (v2Init) {
       initCountry.note(v2Init)
@@ -1876,6 +1901,8 @@ export async function uploadEncryptedChunked(params: {
     })
     if (!initRes.ok) {
       const err = (await initRes.json().catch(() => ({ error: initRes.statusText }))) as { error?: string; message?: string }
+      const refusal = firstInitRefusal(initRes.status, err)
+      if (refusal) throw refusal
       // Task 1594 round 2 (F5) / round 3 (T5): route account_mismatch the
       // same as request(), guarded against a session that has since moved on.
       await throwUploadError(initRes.status, err, initRes.statusText, authSnapshot)
@@ -2013,7 +2040,11 @@ export async function uploadEncryptedChunked(params: {
           fileId: serverFileId, // takeover: server recreates/reverts under the SAME id
           baseVersionNumber: versionReplace?.baseVersionNumber,
         })
-      } catch {
+      } catch (reinitErr) {
+        // mobile#259 round 3: a re-init answered with another item has already
+        // abandoned the requested id (initUploadV2). Its typed sentence is the
+        // honest answer, not "Upload session expired".
+        if (reinitErr instanceof ServerChangedItemIdError) throw reinitErr
         reinit = null
       }
       if (!reinit || reinit.file_id !== serverFileId) {
@@ -2218,6 +2249,7 @@ export async function uploadEncryptedFileNative(params: {
       chunkCount: plan.chunkCount,
       // Task SF-0001 (2275 L13/A7b): a create names the id this client minted.
       fileId,
+      firstInit: true,
     })
     if (!v2Init) return null
     initCountry.note(v2Init)
@@ -2378,7 +2410,11 @@ export async function uploadEncryptedFileNative(params: {
           chunkCount: plan.chunkCount,
           fileId: serverFileId, // takeover: server recreates/reverts under the SAME id
         })
-      } catch {
+      } catch (reinitErr) {
+        // mobile#259 round 3: a re-init answered with another item has already
+        // abandoned the requested id (initUploadV2). Its typed sentence is the
+        // honest answer, not "Upload session expired".
+        if (reinitErr instanceof ServerChangedItemIdError) throw reinitErr
         reinit = null
       }
       if (
@@ -2598,6 +2634,8 @@ async function initUploadV2(params: {
    */
   fileId?: string;
   baseVersionNumber?: number;
+  /** mobile#259 round 3: this is the upload's first init (not a takeover re-init). */
+  firstInit?: boolean;
 }): Promise<UploadV2InitResponse | null> {
   const chunkSizeBytes = params.chunkSizeBytes ?? CHUNK_SIZE
   const chunkCount = params.chunkCount ?? Math.max(1, Math.ceil(params.fileSizeBytes / CHUNK_SIZE))
@@ -2624,6 +2662,8 @@ async function initUploadV2(params: {
   if (res.status === 404 || res.status === 405) return null
   if (!res.ok) {
     const err = (await res.json().catch(() => ({ error: res.statusText }))) as { error?: string; message?: string }
+    const refusal = params.firstInit ? firstInitRefusal(res.status, err) : null
+    if (refusal) throw refusal
     // Task 1594 round 2 (F5) / round 3 (T5): route account_mismatch the same
     // as request(), guarded against a session that has since moved on.
     await throwUploadError(res.status, err, res.statusText, params.authSnapshot)

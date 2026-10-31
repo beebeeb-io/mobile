@@ -9,7 +9,7 @@ import Foundation
 /// `targets/file-provider/FileProviderExtension.swift` and
 /// `targets/share-extension/ShareUploader.swift` carry the same enum in their
 /// own targets (the extensions do not link this pod). Its body is copied there
-/// VERBATIM (`src/lib/upload-item-id-echo-copies.test.ts` fails on any drift),
+/// VERBATIM (`src/lib/sf-0001-r2-wiring.test.ts` (M11) fails on any drift),
 /// so the Swift test of this file covers all three.
 enum UploadItemIdEcho {
   /// The plain sentence shown when the init or create answer names another item.

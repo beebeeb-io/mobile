@@ -4,11 +4,11 @@
  * proposes every id). A member who may only ADD to a shared folder is refused
  * that id with 403 (server uploads.rs: an explicit `file_id` without Edit
  * permission), where the old name match quietly made a new file (task 2250).
- * Keep that outcome: on a 403 for the replace, the same bytes go up as a NEW
- * file under a freshly minted id. The refusal comes at the init, so nothing
- * was sealed or sent under the listed id.
+ * Keep that outcome: on that init refusal (`UploadInitRefusedError`), the
+ * same bytes go up as a NEW file under a freshly minted id. Nothing was sealed
+ * or sent under the listed id yet.
  */
-import { ApiError } from './api';
+import { UploadInitRefusedError } from './api';
 
 export async function replaceOrAdd<T>(params: {
   existingId: string;
@@ -18,7 +18,10 @@ export async function replaceOrAdd<T>(params: {
   try {
     return await params.upload({ fileId: params.existingId, replacing: true });
   } catch (err) {
-    if (!(err instanceof ApiError) || err.status !== 403) throw err;
+    // mobile#259 round 3: only the FIRST init's plain `forbidden` (nothing was
+    // sealed or sent yet). A typed 403 (billing_read_only, account_frozen, …)
+    // or one after chunks went up is the user's answer, never a second upload.
+    if (!(err instanceof UploadInitRefusedError)) throw err;
     return params.upload({ fileId: await params.mint(), replacing: false });
   }
 }

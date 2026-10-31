@@ -430,7 +430,7 @@ final class ShareUploader {
 ///
 /// Lives here because the Share target does not link the pod. The enum body is
 /// a VERBATIM copy of modules/beebeeb-crypto/ios/UploadItemIdEcho.swift (its
-/// Swift test covers this copy too); src/lib/upload-item-id-echo-copies.test.ts
+/// Swift test covers this copy too); src/lib/sf-0001-r2-wiring.test.ts (M11)
 /// fails on any drift.
 enum UploadItemIdEcho {
     /// The plain sentence shown when the init or create answer names another item.

@@ -4394,14 +4394,20 @@ final class NativeBackupEngine: NSObject {
       uploadSessionId = existingSession
       isResumingExistingRemote = true
     } else if let existing = asset.remoteFileId, !existing.isEmpty {
-      // Task SF-0001 (2275 L13/A7c): the stored id is not the one this client
-      // minted (pre-update state, or the server changed it) — never resumed.
-      // mobile#259 review M10: a pre-update upload under it may have FINISHED
+      // Task SF-0001 (2275 L13/A7c): no session id, or the stored id is not the
+      // one this client minted (pre-update state, or the server changed it) —
+      // never resumed.
+      // mobile#259 review M10: an upload under OUR OWN id may have FINISHED
       // (its session id was lost, or the app died after the complete). Then
-      // the photo is backed up: record it instead of uploading it twice.
-      // Only an upload that did not finish is abandoned and staged again
-      // under our own id.
-      if case .complete = try await inspectExistingUpload(fileId: existing, authToken: authToken, baseURL: baseURL) {
+      // the photo is backed up: record it, as the resume path does, instead
+      // of uploading it twice.
+      // mobile#259 round 3: ONLY under our own id. Staging seals the name and
+      // every chunk under `fileId`, so a finished upload under any other id is
+      // one no reader can open; recording it would end the retries on a
+      // backup that does not exist. A foreign id is always abandoned and the
+      // photo staged again under our own.
+      if existing == fileId,
+         try await Self.isFinishedUpload(inspectExistingUpload(fileId: existing, authToken: authToken, baseURL: baseURL)) {
         let recorded: Bool = dbQueue.sync {
           guard admitsWrite(ticket, "markUploadComplete") else { return false }
           guard markUploadComplete(assetId: asset.localAssetId, remoteFileId: existing, accountId: batchAccountId) else {
@@ -4425,6 +4431,16 @@ final class NativeBackupEngine: NSObject {
           baseURL: baseURL,
           accountId: batchAccountId,
           ticket: ticket
+        )
+        generateAndUploadThumbnail(
+          phAssetId: asset.localAssetId,
+          serverFileId: existing,
+          assetType: asset.assetType,
+          mediaTypeHint: asset.stagedMimeType,
+          masterKey: masterKey,
+          authToken: authToken,
+          baseURL: baseURL,
+          accountId: batchAccountId
         )
         return true
       }
@@ -4641,9 +4657,13 @@ final class NativeBackupEngine: NSObject {
           "assetId": asset.localAssetId
         ])
         NSLog("[NativeBackupEngine] Re-init file id mismatch — refusing: \(asset.localAssetId)")
+        // mobile#259 round 3: as at the first init (review M5), the session
+        // for the REQUESTED id is abandoned; nothing is sent to the echoed one.
+        await abandonUpload(fileId: fileId, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)
         throw BackupError.reinitFileIdMismatch
       }
-      serverFileId = reinitSession.fileId
+      // mobile#259 round 3: the minted id (equal after the check).
+      serverFileId = fileId
       uploadSessionId = reinitSession.uploadSessionId
       heartbeatIntervalSecs = reinitSession.heartbeatIntervalSecs
       pacer.intervalSecs = heartbeatIntervalSecs
@@ -4863,6 +4883,16 @@ final class NativeBackupEngine: NSObject {
     if let currentDir = try? currentStagedDirectory(fileId: fileId),
        stagedDir != currentDir.path {
       try? FileManager.default.removeItem(at: currentDir)
+    }
+  }
+
+  /// mobile#259 round 3: what the resume path reads as "this backup is done"
+  /// (`.complete`, and a trashed file too, round 15), for the lost-session
+  /// recovery to read the same way.
+  static func isFinishedUpload(_ state: PhotoBackupServerResponses.ExistingUpload) -> Bool {
+    switch state {
+    case .complete, .completeInTrash: return true
+    default: return false
     }
   }
 

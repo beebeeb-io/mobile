@@ -222,16 +222,20 @@ describe('uploadEncryptedFileNative — re-init on a swept v2 session (task 1589
       async () => { throw nativeGoneFailure(404, 'not found') },
     )
 
-    const { uploadEncryptedFileNative, ApiError } = await loadFreshApi()
+    // mobile#259 round 3: the typed "another item" error surfaces (not the
+    // session-gone one), and the REQUESTED id's session is abandoned.
+    const { uploadEncryptedFileNative, ServerChangedItemIdError } = await loadFreshApi()
     await expect(uploadEncryptedFileNative({
       masterKeyHandleId: 1,
       fileId: 'F',
       inputUri: 'file:///tmp/photo.jpg',
       nameEncrypted: 'name-cipher',
       plaintextSizeBytes: 2_000_000,
-    })).rejects.toBeInstanceOf(ApiError)
+    })).rejects.toBeInstanceOf(ServerChangedItemIdError)
 
     expect(nativeUploadCalls).toHaveLength(1)
     expect(fetchCalls.filter((c) => c.url.endsWith('/uploads/init'))).toHaveLength(2)
+    expect(fetchCalls.some((c) => c.url.includes('/F/') && c.url.includes('abandon'))).toBe(true)
+    expect(fetchCalls.some((c) => c.url.includes('WRONG'))).toBe(false)
   })
 })

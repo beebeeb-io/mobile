@@ -79,7 +79,7 @@ import SkeletonRow from '../components/SkeletonRow';
 import TrustDetailsSheet from '../components/TrustDetailsSheet';
 import FolderPickerModal, { type PickerFolder } from '../components/FolderPickerModal';
 import ExportProgressBanner, { type ExportProgressBannerHandle } from '../components/ExportProgressBanner';
-import { ApiError, listAllFiles, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getUploadStatus, getApiUrl, getToken, abortUploadForFile, abandonFileUpload, getUploadResumeForFile, forgetUploadResume, resumeUploadFileId } from '../lib/api';
+import { ApiError, listAllFiles, createFolder, deleteFile, trashFiles, renameFile, moveFile, uploadFile, friendlyError, getStorageUsage, createProofOfExistence, storageLocation, trustLocation, getUploadStatus, getApiUrl, getToken, abortUploadForFile, abandonFileUpload, getUploadResumeForFile, forgetUploadResume, resumeUploadFileId, registerUploadAbort, settleUploadSignal } from '../lib/api';
 import type { UploadResumeInfo } from '../lib/api';
 import { guessMimeType, fileCategory as fileCategoryFromMime } from '../lib/media';
 import { ensurePhotoPermission } from '../lib/photo-permissions';
@@ -2463,9 +2463,14 @@ export default function FilesScreen() {
       // under an id minted here (its old session is abandoned by the upload).
       const target = await resumeUploadFileId(info, generateFileId);
       activeUploadFileIdRef.current = target.fileId;
+      // mobile#259 round 3: the run registers under the NEW id, but the row the
+      // user can tap (and Discard) is still the old one. Register the old id
+      // too and forward it into the run, so Discard stops the restarted upload.
+      const restartedAbort = target.restarted ? registerUploadAbort(file.id) : undefined;
       try {
         const uploaded = await encryptedUpload({
           fileId: target.fileId,
+          signal: restartedAbort,
           uri: info.sourceUri,
           name: info.name,
           parentId: info.parentId ?? undefined,
@@ -2535,6 +2540,7 @@ export default function FilesScreen() {
         resumeInfosRef.current.delete(file.id);
       } finally {
         activeUploadFileIdRef.current = null;
+        settleUploadSignal(file.id, restartedAbort);
       }
     };
 
@@ -2562,8 +2568,12 @@ export default function FilesScreen() {
     const gate = uploadGateRef.current!;
     const uploadInFlight = gate.isBusy() || activeUploadFileIdRef.current !== null;
     const offerResume = canOfferResume(resumeInfo, activeUploadFileIdRef.current, file.id, uploadInFlight);
+    // mobile#259 round 3: a pointer from before the client-minted-id rule
+    // restarts from the first part (resumeUploadFileId); say so.
     const detail = offerResume
-      ? `"${resumeInfo!.name}" was interrupted before it finished. Resume continues the upload with the parts that were already stored.`
+      ? resumeInfo!.selfMinted === true
+        ? `"${resumeInfo!.name}" was interrupted before it finished. Resume continues the upload with the parts that were already stored.`
+        : `"${resumeInfo!.name}" was interrupted before it finished. Resume uploads it again from the start.`
       : uploadInFlight
         ? 'An upload is in progress right now. Discarding removes this placeholder and its stored chunks. To upload the file again, add it from its source.'
         : 'This upload never finished.\n\nDiscarding removes this placeholder and its stored chunks. To upload the file, add it again from its source.';

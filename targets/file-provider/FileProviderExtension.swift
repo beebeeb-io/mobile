@@ -964,12 +964,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     if error is BeebeebKeychainCore.LoadError {
       return NSFileProviderError(.notAuthenticated)
     }
-    // Task SF-0001 (mobile#259 review M3): a server that answered with another
-    // item is not one to retry against. `.cannotSynchronize` let Files retry,
-    // and every retry minted a new id and uploaded again. Non-retryable until
-    // the app signals, exactly like `.accountMismatch` below.
-    if error is UploadItemIdEcho.Mismatch {
-      return NSFileProviderError(.notAuthenticated)
+    // Task SF-0001: a server that answered with another item.
+    // mobile#259 review M3 mapped this to `.notAuthenticated`, on the premise
+    // that `.cannotSynchronize` is retried. That premise was WRONG (round 3):
+    // Apple's `signalErrorResolved` retries only `notAuthenticated`,
+    // `insufficientQuota` and `serverUnreachable` (task 1722 above), the app
+    // signals `.notAuthenticated` on every key provisioning, and Files shows
+    // it as an "Authentication Required" alert — a false message, and a
+    // re-upload on the next app open. `.cannotSynchronize` is the dead end,
+    // carrying the honest sentence.
+    if let mismatch = error as? UploadItemIdEcho.Mismatch {
+      return NSFileProviderError(
+        .cannotSynchronize,
+        userInfo: [NSLocalizedDescriptionKey: mismatch.errorDescription ?? UploadItemIdEcho.message]
+      )
     }
     if let api = error as? ApiError {
       switch api {
@@ -1016,7 +1024,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 /// Lives here (not in the pod) because the File Provider target does not link
 /// the pod. The enum body is a VERBATIM copy of
 /// modules/beebeeb-crypto/ios/UploadItemIdEcho.swift (its Swift test covers this
-/// copy too); src/lib/upload-item-id-echo-copies.test.ts fails on any drift.
+/// copy too); src/lib/sf-0001-r2-wiring.test.ts (M11) fails on any drift.
 enum UploadItemIdEcho {
   /// The plain sentence shown when the init or create answer names another item.
   static let message = "The server answered with a different item. Nothing was uploaded under it."

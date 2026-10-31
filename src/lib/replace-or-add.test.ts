@@ -10,7 +10,10 @@ import { describe, expect, mock, test } from 'bun:test'
 class ApiError extends Error {
   constructor(public status: number, message: string, public code?: string) { super(message) }
 }
-mock.module('./api', () => ({ ApiError }))
+class UploadInitRefusedError extends ApiError {
+  constructor(message: string) { super(403, message, 'forbidden') }
+}
+mock.module('./api', () => ({ ApiError, UploadInitRefusedError }))
 
 const { replaceOrAdd, uploadReplacingOrAdding } = await import('./replace-or-add')
 
@@ -26,14 +29,14 @@ describe('replaceOrAdd', () => {
     expect(calls).toEqual([{ fileId: 'listed', replacing: true }])
   })
 
-  test('a 403 on the replace becomes a new file under a freshly minted id', async () => {
+  test('the first init refusing the listed id becomes a new file under a freshly minted id', async () => {
     const calls = []
     const out = await replaceOrAdd({
       existingId: 'listed',
       mint: async () => 'fresh',
       upload: async (t) => {
         calls.push(t)
-        if (t.replacing) throw new ApiError(403, 'Forbidden')
+        if (t.replacing) throw new UploadInitRefusedError('forbidden')
         return t.fileId
       },
     })
@@ -42,7 +45,16 @@ describe('replaceOrAdd', () => {
   })
 
   test('any other failure is not turned into a new file', async () => {
-    for (const err of [new ApiError(409, 'conflict'), new ApiError(500, 'boom'), new Error('network')]) {
+    // mobile#259 round 3: a typed 403 (billing, frozen, unverified) or a plain
+    // one from a chunk PUT / complete is the user's answer, not a second upload.
+    for (const err of [
+      new ApiError(409, 'conflict'),
+      new ApiError(500, 'boom'),
+      new Error('network'),
+      new ApiError(403, 'Your account is read-only', 'billing_read_only'),
+      new ApiError(403, 'Account frozen', 'account_frozen'),
+      new ApiError(403, 'forbidden', 'forbidden'),
+    ]) {
       let attempts = 0
       const out = await replaceOrAdd({
         existingId: 'listed',

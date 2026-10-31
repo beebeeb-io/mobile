@@ -5,13 +5,16 @@
  *
  *  - M11: the File Provider and both Share copies of `UploadItemIdEcho` are
  *    VERBATIM copies of the pod's (whose Swift test covers them all);
- *  - M3: the File Provider maps a mismatch to a non-retryable error;
+ *  - M3: the File Provider maps a mismatch to the dead-end error (round 3:
+ *    `.cannotSynchronize`, not the `.notAuthenticated` round 2 chose);
  *  - M4: the Share sheet shows the mismatch sentence;
  *  - M5: every init mismatch abandons the REQUESTED id (File Provider, engine);
  *  - M1: the Contacts/Calendar uploader runs `BackupCreateUploadFlow`;
  *  - M6/M10: the engine echo-checks what `inspectExistingUpload` reports,
- *    checks a foreign stored id for a finished upload before abandoning it,
- *    and uses the minted id after the init check;
+ *    recovers a finished upload only under its OWN id (round 3), abandons a
+ *    foreign one, and uses the minted id after the init check;
+ *  - E/D/H (round 3): a re-init mismatch abandons the requested id; Discard
+ *    reaches a restarted resume; a restarting resume says so;
  *  - M2/M9: FilesScreen resumes a legacy pending row under a fresh id and
  *    falls back to a new file when an add-only member's replace is refused.
  *
@@ -112,11 +115,15 @@ describe('M11: one UploadItemIdEcho, copied verbatim into each extension', () =>
 });
 
 describe('M3/M4/M5: the extensions', () => {
+  // Round 3: M3's premise was wrong — `signalErrorResolved` retries only
+  // notAuthenticated / insufficientQuota / serverUnreachable (Apple), and
+  // `.notAuthenticated` shows a false "Authentication Required" alert. The
+  // dead end is `.cannotSynchronize`, carrying the honest sentence.
   guarded(
-    'M3: the File Provider maps a mismatch to the non-retryable .notAuthenticated',
+    'M3 (round 3): the File Provider maps a mismatch to .cannotSynchronize with the mismatch sentence, never .notAuthenticated',
     fileProvider,
-    (s) => /if error is UploadItemIdEcho\.Mismatch \{\s*return NSFileProviderError\(\.notAuthenticated\)\s*\}/.test(body(s, 'static func mapError(_ error: Error) -> Error {')),
-    (s) => s.replace(/if error is UploadItemIdEcho\.Mismatch \{\s*return NSFileProviderError\(\.notAuthenticated\)/, 'if error is UploadItemIdEcho.Mismatch {\n      return NSFileProviderError(.cannotSynchronize)'),
+    (s) => /if let mismatch = error as\? UploadItemIdEcho\.Mismatch \{\s*return NSFileProviderError\(\s*\.cannotSynchronize,\s*userInfo: \[NSLocalizedDescriptionKey: mismatch\.errorDescription \?\? UploadItemIdEcho\.message\]\s*\)\s*\}/.test(body(s, 'static func mapError(_ error: Error) -> Error {')),
+    (s) => s.replace(/(if let mismatch = error as\? UploadItemIdEcho\.Mismatch \{\s*return NSFileProviderError\(\s*)\.cannotSynchronize/, '$1.notAuthenticated'),
   );
   guarded(
     'M5: a File Provider init mismatch abandons the requested id, then throws',
@@ -182,17 +189,56 @@ describe('M5/M6/M10: the backup engine', () => {
     },
     (s) => s.replace('        try UploadItemIdEcho.assertEchoedId(chosen: fileId, echoed: body?["id"] as? String, stage: .completion)\n', ''),
   );
+  // Round 3: the finished-upload recovery is ONLY for our own id (a lost
+  // session). A foreign id holds bytes sealed under `fileId` that no reader
+  // can open: recording it would end the retries on a backup that does not
+  // exist (data loss). It is abandoned and staged again.
+  const m10 = [
+    '} else if let existing = asset.remoteFileId, !existing.isEmpty {',
+    'if existing == fileId,',
+    'try await Self.isFinishedUpload(inspectExistingUpload(fileId: existing, authToken: authToken, baseURL: baseURL)) {',
+    'markUploadComplete(assetId: asset.localAssetId, remoteFileId: existing, accountId: batchAccountId)',
+    'generateAndUploadThumbnail(',
+    'return true',
+    'await abandonUpload(fileId: existing, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)',
+  ];
   guarded(
-    'M10: a foreign stored id is checked for a finished upload BEFORE it is abandoned',
+    'M10 (round 3): only our own id with a lost session is recovered as finished; a foreign id never is',
+    engine,
+    (s) => inOrder(s, m10),
+    (s) => s.replace('      if existing == fileId,\n         try await Self.isFinishedUpload(', '      if try await Self.isFinishedUpload('),
+  );
+  guarded(
+    'M10 (round 3): the recovery checks for a finished upload before abandoning',
+    engine,
+    (s) => inOrder(s, m10),
+    (s) => s.replace('try await Self.isFinishedUpload(inspectExistingUpload(fileId: existing, authToken: authToken, baseURL: baseURL)) {', 'false {'),
+  );
+  guarded(
+    'M10 (round 3): the recovery generates the thumbnails, as the resume path does',
+    engine,
+    (s) => inOrder(s, m10),
+    (s) => {
+      const at = s.indexOf('RuntimeTrace.event("backup.native.upload.pre_update_complete_recorded")');
+      const thumb = s.indexOf('generateAndUploadThumbnail(', at);
+      return s.slice(0, thumb) + 'skippedThumbnail(' + s.slice(thumb + 'generateAndUploadThumbnail('.length);
+    },
+  );
+  guarded(
+    'M10 (round 3): a trashed finished upload counts as finished, as on the resume path',
+    engine,
+    (s) => /case \.complete, \.completeInTrash: return true/.test(body(s, 'static func isFinishedUpload(')),
+    (s) => s.replace('case .complete, .completeInTrash: return true', 'case .complete: return true'),
+  );
+  guarded(
+    'E (round 3): a swept-session re-init that names another item abandons the requested id',
     engine,
     (s) => inOrder(s, [
-      '} else if let existing = asset.remoteFileId, !existing.isEmpty {',
-      'if case .complete = try await inspectExistingUpload(fileId: existing, authToken: authToken, baseURL: baseURL) {',
-      'markUploadComplete(assetId: asset.localAssetId, remoteFileId: existing, accountId: batchAccountId)',
-      'return true',
-      'await abandonUpload(fileId: existing, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)',
+      'guard reinitSession.fileId == fileId else {',
+      'await abandonUpload(fileId: fileId, authToken: authToken, baseURL: baseURL, accountId: batchAccountId)',
+      'throw BackupError.reinitFileIdMismatch',
     ]),
-    (s) => s.replace('if case .complete = try await inspectExistingUpload(fileId: existing, authToken: authToken, baseURL: baseURL) {', 'if false {'),
+    (s) => s.replace(/(guard reinitSession\.fileId == fileId else \{[\s\S]*?)        await abandonUpload\(fileId: fileId, authToken: authToken, baseURL: baseURL, accountId: batchAccountId\)\n/, '$1'),
   );
   guarded(
     'M6: the engine completion check is the completion stage',
@@ -210,7 +256,30 @@ describe('M2/M9: FilesScreen', () => {
       const b = body(s, 'const resumePendingUpload = useCallback(async (file: FileEntry, info: UploadResumeInfo) => {');
       return b.includes('const target = await resumeUploadFileId(info, generateFileId);') && b.includes('fileId: target.fileId,') && !b.includes('fileId: file.id,');
     },
-    (s) => s.replace('          fileId: target.fileId,\n          uri: info.sourceUri,', '          fileId: file.id,\n          uri: info.sourceUri,'),
+    (s) => s.replace('          fileId: target.fileId,\n          signal: restartedAbort,', '          fileId: file.id,\n          signal: restartedAbort,'),
+  );
+  guarded(
+    'D (round 3): Discard on the old row stops a restarted resume (its abort is registered under the old id too)',
+    filesScreen,
+    (s) => {
+      const b = body(s, 'const resumePendingUpload = useCallback(async (file: FileEntry, info: UploadResumeInfo) => {');
+      return inOrder(b, [
+        'const restartedAbort = target.restarted ? registerUploadAbort(file.id) : undefined;',
+        'signal: restartedAbort,',
+        'settleUploadSignal(file.id, restartedAbort);',
+      ]);
+    },
+    (s) => s.replace('          signal: restartedAbort,\n', ''),
+  );
+  guarded(
+    'H (round 3): a restarting resume says it starts over; only a self-minted one promises the stored parts',
+    filesScreen,
+    (s) => inOrder(body(s, 'const handlePendingUpload = useCallback(async (file: FileEntry) => {'), [
+      "? resumeInfo!.selfMinted === true",
+      'Resume continues the upload with the parts that were already stored.',
+      'Resume uploads it again from the start.',
+    ]),
+    (s) => s.replace('Resume uploads it again from the start.', 'Resume continues the upload with the parts that were already stored.'),
   );
   guarded(
     'M9: both overwrite paths fall back to a new file on an add-only refusal',

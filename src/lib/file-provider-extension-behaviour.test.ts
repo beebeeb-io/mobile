@@ -1196,16 +1196,20 @@ func createMintsALowercaseFileIdUsedForDerivation() async {
 
 // ---- SF-0001 round 2 (mobile#259 review M3/M5): another item's echo ----
 // The init answers with an id the extension did not propose: nothing is sealed
-// or PUT under it, the REQUESTED id's session is abandoned, and Files gets a
-// non-retryable error (-1000), not -2005, which it retried with a new id each time.
+// or PUT under it, and the REQUESTED id's session is abandoned.
+// Round 3: Files gets the dead end -2005 carrying the mismatch sentence. Round
+// 2 chose -1000 on the premise that -2005 is retried; that was wrong. Apple's
+// signalErrorResolved retries only -1000 / insufficientQuota / serverUnreachable,
+// the app signals -1000 on every key provisioning, and Files shows -1000 as a
+// false "Authentication Required" alert.
 func createAbortsOnAnotherItemsEcho() async {
   reset()
   ApiClient.shared.initEchoOverride = "server-chosen-id"
   let result = await createItemFromFilesApp("Echo.txt", bytes: 64)
   let requested = ApiClient.shared.uploadInitFileIds.first ?? ""
   check(result.0 == nil, "a mismatched echo creates no item")
-  check(result.1?.domain == NSFileProviderErrorDomain && result.1?.code == NSFileProviderError.Code.notAuthenticated.rawValue,
-        "a mismatched echo is the non-retryable -1000, got \(describe(result.1))")
+  check(isProviderError(result.1, .cannotSynchronize) && result.1?.localizedDescription == UploadItemIdEcho.message,
+        "a mismatched echo is the dead-end -2005 with the mismatch sentence, got \(describe(result.1)) \(result.1?.localizedDescription ?? "")")
   check(ApiClient.shared.count("upload-chunk") == 0, "no chunk PUT after a mismatched echo, got \(ApiClient.shared.calls)")
   check(ApiClient.shared.count("upload-complete") == 0, "no complete after a mismatched echo, got \(ApiClient.shared.calls)")
   check(!requested.isEmpty && ApiClient.shared.calls.contains("upload-abandon \(requested)"),
@@ -1512,7 +1516,7 @@ describe('SF-0002 part 1: a Files-app create derives keys from the lowercase id 
 });
 
 describe('SF-0001 round 2: a Files-app create whose init names another item', () => {
-  nativeSwiftHarnessTest('aborts with the non-retryable -1000, abandons the requested id, sends nothing to the echoed one', () => {
+  nativeSwiftHarnessTest('aborts with the dead-end -2005 and the mismatch sentence (round 3), abandons the requested id, sends nothing to the echoed one', () => {
     expectScenario('create-echo-mismatch', 7);
   }, 300_000);
 });
