@@ -580,7 +580,8 @@ describe('6. round 6: the native manifest handle is reopened, and nothing runs w
     const [open, refuse, purge, setRunning] = order(
       bg,
       'self.dbQueue.sync { self.openManifestIfClosed(trigger: "background_task") }',
-      'self.completeBackgroundTaskOnce(task, success: false)\n        return\n      }\n      self.dbQueue.sync { self.purgeMismatchedStagedAssets',
+      // LD-0002 (#262 review 12): each completion ends the task's own assertion.
+      'self.completeBackgroundTaskOnce(task, success: false, assertion: assertion)\n        return\n      }\n      self.dbQueue.sync { self.purgeMismatchedStagedAssets',
       'self.dbQueue.sync { self.purgeMismatchedStagedAssets(currentAccountId: accountId) }',
       'self.isRunning = true',
     );
@@ -618,7 +619,7 @@ describe('6. round 6: the native manifest handle is reopened, and nothing runs w
   test('only BackupManifestHandle opens, closes or assigns the native handle (the engine has no other path to a nil db)', () => {
     const c = code(engine);
     // LD-0002: still only a view of the handle's connection, now also nil while the execution gate is closed.
-    expect(c).toMatch(/private var db: OpaquePointer\? \{ manifestHandle\.connection\(admittedBy: executionGate, completionWrite: completionWriteAssertion\) \}/);
+    expect(c).toMatch(/private var db: OpaquePointer\? \{ manifestHandle\.connection\(admittedBy: executionGate, completionWrite: NativeBackupEngine\.manifestStatements\.completionWrite\) \}/);
     expect(c.match(/sqlite3_open_v2\(/g) ?? []).toHaveLength(0);
     expect(c.match(/sqlite3_close(?:_v2)?\(/g) ?? []).toHaveLength(0);
     // (`db` is get-only, so the compiler refuses an assignment too; `let db = db` shadows are not assignments)

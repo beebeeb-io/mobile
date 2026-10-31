@@ -71,20 +71,40 @@ public final class BackupExecutionGate {
     return completionWrites.contains(completionWrite)
   }
 
-  /// How many expiries closed the gate. A quiesce interrupts statements only
-  /// after an expiry closed it, so a read that started and ended with the gate
-  /// open and this count unchanged was not interrupted (`readIfUninterrupted`).
+  /// How many times the gate went from open to closed, counted in the same
+  /// locked step as the transition (an expiry, the last assertion ending, the
+  /// app leaving the foreground with none). A read that started and ended
+  /// with the gate open and this count unchanged was not interrupted
+  /// (`readIfUninterrupted`), and a producer whose start predates a closure
+  /// may have read the closed gate as "no row": the engine refuses its writes
+  /// (`isOpen(since:)`, #262 review 1).
   public var closures: UInt64 {
     lock.lock()
     defer { lock.unlock() }
     return _closures
   }
 
-  public func setForeground(_ value: Bool) {
+  /// Open now, and not closed once since `closures` was read.
+  public func isOpen(since closures: UInt64) -> Bool {
     lock.lock()
-    foreground = value
-    if value { expired = false }
+    defer { lock.unlock() }
+    return isOpenLocked && _closures == closures
+  }
+
+  /// One locked transition; a close is counted in the same step.
+  private func transition(_ change: () -> Void) {
+    lock.lock()
+    let wasOpen = isOpenLocked
+    change()
+    if wasOpen && !isOpenLocked { _closures &+= 1 }
     lock.unlock()
+  }
+
+  public func setForeground(_ value: Bool) {
+    transition {
+      foreground = value
+      if value { expired = false }
+    }
   }
 
   /// Background time ended (an expiry handler, or `didEnterBackground` with no
@@ -97,10 +117,10 @@ public final class BackupExecutionGate {
   public func expire() -> Bool {
     lock.lock()
     defer { lock.unlock() }
+    let wasOpen = isOpenLocked
     expired = true
-    guard !foreground else { return false }
-    _closures &+= 1
-    return true
+    if wasOpen && !isOpenLocked { _closures &+= 1 }
+    return !foreground
   }
 
   /// A general assertion opens the gate (and reopens it after an expiry); a
@@ -120,10 +140,10 @@ public final class BackupExecutionGate {
   }
 
   public func endAssertion(_ assertion: Assertion) {
-    lock.lock()
-    general.remove(assertion)
-    completionWrites.remove(assertion)
-    lock.unlock()
+    transition {
+      general.remove(assertion)
+      completionWrites.remove(assertion)
+    }
   }
 
   /// P2a: runs `read` while the gate is open and returns its value only when
@@ -216,10 +236,71 @@ public enum BackupSQLiteQuiesce {
   }
 
   /// A barrier on a serial queue: true once every block enqueued before it has
-  /// exited. Never call it from `queue` itself (it would time out).
+  /// exited. Never call it from `queue` itself (it would time out). The
+  /// barrier is a `.userInitiated` work item with `.enforceQoS` and the wait is
+  /// on the item, so the utility queue's current block is boosted while the
+  /// expiry handler waits (#262 review 11: a semaphore passes no priority on,
+  /// and a throttled background block took past the 2 s bound).
   public static func waitForSerialQueue(_ queue: DispatchQueue, timeout: TimeInterval) -> Bool {
-    let done = DispatchSemaphore(value: 0)
-    queue.async { done.signal() }
-    return done.wait(timeout: .now() + max(0, timeout)) == .success
+    let barrier = DispatchWorkItem(qos: .userInitiated, flags: .enforceQoS) {}
+    queue.async(execute: barrier)
+    return barrier.wait(timeout: .now() + max(0, timeout)) == .success
+  }
+}
+
+/// LD-0002 (#262 review 3): what a gated connection's progress handler asks.
+/// An interrupt aborts only the statements running when it lands; SQLite
+/// clears it once none is running, so a block that already holds the
+/// connection would start its next statement normally after a quiesce. The
+/// owner installs a progress handler on the connection right after opening
+/// it (`*_progress_handler(db, progressOps, callback, progressContext)`); the
+/// callback calls `shouldAbort(context:)`, and while the gate refuses every
+/// statement on that connection stops within `progressOps` VM steps, however
+/// it was started. A completion write admitted under its own assertion runs
+/// inside `withCompletionWrite` and keeps going.
+public final class SQLiteStatementGate {
+  public static let progressOps: Int32 = 1_000
+
+  public let gate: BackupExecutionGate
+  private let lock = NSLock()
+  private var _completionWrite: BackupExecutionGate.Assertion?
+
+  public init(gate: BackupExecutionGate) {
+    self.gate = gate
+  }
+
+  /// The completion write the connection's current block runs under.
+  public var completionWrite: BackupExecutionGate.Assertion? {
+    lock.lock()
+    defer { lock.unlock() }
+    return _completionWrite
+  }
+
+  public func withCompletionWrite<T>(_ assertion: BackupExecutionGate.Assertion, _ body: () -> T) -> T {
+    lock.lock()
+    _completionWrite = assertion
+    lock.unlock()
+    defer {
+      lock.lock()
+      _completionWrite = nil
+      lock.unlock()
+    }
+    return body()
+  }
+
+  public var admits: Bool {
+    gate.admitsStatement(completionWrite: completionWrite)
+  }
+
+  /// The C callback's context (the owner keeps this object alive as long as
+  /// the connection).
+  public var progressContext: UnsafeMutableRawPointer {
+    Unmanaged.passUnretained(self).toOpaque()
+  }
+
+  /// For the C progress callback: non-zero aborts the running statement.
+  public static func shouldAbort(context: UnsafeMutableRawPointer?) -> Int32 {
+    guard let context else { return 0 }
+    return Unmanaged<SQLiteStatementGate>.fromOpaque(context).takeUnretainedValue().admits ? 0 : 1
   }
 }

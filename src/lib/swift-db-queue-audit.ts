@@ -373,7 +373,7 @@ export function auditDbQueue(source: string): DbQueueAudit {
   const handleDecl = /private let manifestHandle\s*=/.exec(code);
   const handleDeclPos = handleDecl ? handleDecl.index + 'private let '.length : -1;
   // LD-0002: the getter asks the execution gate (`connection(admittedBy:completionWrite:)`).
-  const dbGetter = /private var db\s*:\s*OpaquePointer\?\s*\{\s*manifestHandle\.(?:db|connection\(admittedBy:\s*executionGate,\s*completionWrite:\s*completionWriteAssertion\))\s*\}/.exec(code);
+  const dbGetter = /private var db\s*:\s*OpaquePointer\?\s*\{\s*manifestHandle\.(?:db|connection\(admittedBy:\s*executionGate,\s*completionWrite:\s*NativeBackupEngine\.manifestStatements\.completionWrite\))\s*\}/.exec(code);
   const dbGetterRange: [number, number] = dbGetter ? [dbGetter.index, dbGetter.index + dbGetter[0].length] : [-1, -1];
 
   // ---- references to the `db` property (and to `manifestHandle`)

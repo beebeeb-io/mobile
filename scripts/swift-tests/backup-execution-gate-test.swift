@@ -20,6 +20,8 @@ import Foundation
 //   g6  the bounded wait returns within its timeout when a block never ends
 //   g7  P2a: a read an expiry closed the gate on is "unknown", not 0
 //   g8  B4: withdrawing the interrupt target waits for an interrupt in flight
+//   g9  #262 review 1: every open -> closed transition is counted, so a
+//       producer from before a closure stays stale after a reopen
 
 var failures: [String] = []
 var total = 0
@@ -230,6 +232,35 @@ do {
   let count = interrupted.count
   target.interrupt()
   expect(!target.isPublished && interrupted.count == count, "g8: after withdraw an interrupt is a no-op")
+}
+
+// MARK: - g9 #262 review 1: every open -> closed transition is counted
+
+do {
+  let gate = BackupExecutionGate(foreground: false)
+  let grace = gate.beginAssertion(.backgroundGrace)
+  let start = gate.closures
+  expect(gate.isOpen(since: start), "g9: open since the read")
+  gate.endAssertion(grace)
+  expect(gate.closures == start + 1, "g9: the last assertion ending closes the gate and counts it")
+  expect(!gate.isOpen(since: start), "g9: not open since the read")
+  let reopened = gate.beginAssertion(.backgroundProcessing)
+  expect(gate.canStartSQLiteWork && !gate.isOpen(since: start),
+         "g9: reopened, but a producer from before the closure is still stale")
+  expect(gate.isOpen(since: gate.closures), "g9: a fresh producer is admitted")
+  gate.endAssertion(reopened)
+  let fg = BackupExecutionGate(foreground: true)
+  let before = fg.closures
+  let bg = fg.beginAssertion(.backgroundGrace)
+  fg.setForeground(false)
+  expect(fg.closures == before, "g9: backgrounding with a grace assertion keeps the gate open (no closure)")
+  fg.endAssertion(bg)
+  expect(fg.closures == before + 1, "g9: ...its end closes it (one closure)")
+  _ = fg.expire()
+  expect(fg.closures == before + 1, "g9: an expiry of an already closed gate counts nothing more")
+  fg.setForeground(true)
+  fg.setForeground(false)
+  expect(fg.closures == before + 2, "g9: leaving the foreground with no assertion closes it (counted)")
 }
 
 let failed = failures.count

@@ -102,12 +102,12 @@ describe('1. one choke point: every engine statement starts from the gated `db`'
     'the engine db is the handle connection admitted by the gate',
     engine,
     (s) =>
-      /private var db: OpaquePointer\? \{ manifestHandle\.connection\(admittedBy: executionGate, completionWrite: completionWriteAssertion\) \}/.test(
+      /private var db: OpaquePointer\? \{ manifestHandle\.connection\(admittedBy: executionGate, completionWrite: NativeBackupEngine\.manifestStatements\.completionWrite\) \}/.test(
         s,
       ) && /private var executionGate: BackupExecutionGate \{ BackupExecutionGate\.shared \}/.test(s),
     (s) =>
       s.replace(
-        'private var db: OpaquePointer? { manifestHandle.connection(admittedBy: executionGate, completionWrite: completionWriteAssertion) }',
+        'private var db: OpaquePointer? { manifestHandle.connection(admittedBy: executionGate, completionWrite: NativeBackupEngine.manifestStatements.completionWrite) }',
         'private var db: OpaquePointer? { manifestHandle.db }',
       ),
   );
@@ -156,7 +156,7 @@ describe('2. B1: expiry handlers quiesce first, end the task last, read no SQLit
       );
       return (
         l[0] === 'self.quiesceSQLiteBeforeBackgroundTimeEnds(reason: "background-processing-expiry")' &&
-        l[l.length - 1] === 'self.completeBackgroundTaskOnce(task, success: false, quiesced: true)'
+        l[l.length - 1] === 'self.completeBackgroundTaskOnce(task, success: false, assertion: assertion, quiesced: true)'
       );
     },
     (s) => s.replace('      self.quiesceSQLiteBeforeBackgroundTimeEnds(reason: "background-processing-expiry")\n', ''),
@@ -165,16 +165,16 @@ describe('2. B1: expiry handlers quiesce first, end the task last, read no SQLit
     'the status payload reads through readIfUninterrupted and falls back to the last good counts',
     engine,
     (s) => {
-      const counts = body(s, 'private func statusCounts() -> BackupStatusCounts {');
-      const payload = body(s, 'private func makeBackupStatusPayload(reason explicitReason: String? = nil) -> BackupStatusPayload {');
+      const counts = body(s, 'private func statusCounts() -> BackupStatusCounts? {');
+      const payload = body(s, 'private func makeBackupStatusPayload(reason explicitReason: String? = nil) -> BackupStatusPayload? {');
       return (
         counts.includes('executionGate.readIfUninterrupted') &&
         counts.includes('return lastStatusCounts') &&
-        payload.includes('let counts = statusCounts()') &&
+        payload.includes('guard let counts = statusCounts() else { return nil }') &&
         !/refreshProgress\(\)|pendingUploadCount\(\)|backupWorkBreakdown\(\)|latestUploadedAt\(\)/.test(payload)
       );
     },
-    (s) => s.replace('let counts = statusCounts()', 'refreshProgress()\n    let counts = statusCounts()'),
+    (s) => s.replace('    guard let counts = statusCounts() else { return nil }\n', '    refreshProgress()\n    guard let counts = statusCounts() else { return nil }\n'),
   );
   guarded(
     'refreshProgress assigns its counters only from an uninterrupted read',
@@ -204,7 +204,7 @@ describe('3. every other end of background time quiesces before the task ends', 
     'completeBackgroundTaskOnce: assertion ends, quiesce when the gate closed, THEN setTaskCompleted',
     engine,
     (s) =>
-      inOrder(body(s, 'private func completeBackgroundTaskOnce(_ task: BGProcessingTask, success: Bool, quiesced: Bool = false) {'), [
+      inOrder(body(s, 'private func completeBackgroundTaskOnce(\n    _ task: BGProcessingTask,\n    success: Bool,\n    assertion: BackupExecutionGate.Assertion,\n    quiesced: Bool = false\n  ) {'), [
         'executionGate.endAssertion(assertion)',
         'if !quiesced, !executionGate.canStartSQLiteWork {',
         'quiesceSQLiteBeforeBackgroundTimeEnds(reason: "background-processing-end")',
@@ -241,8 +241,8 @@ describe('3. every other end of background time quiesces before the task ends', 
         'self.executionGate.beginAssertion(.backgroundGrace)',
         'UIApplication.shared.beginBackgroundTask(withName: "BeebeebBackupDrain")',
         'self.wakeDrainLoop(reason: "background-grace")',
-      ]) && inOrder(body(s, 'private func handleBackgroundTask(_ task: BGProcessingTask) {'), ['executionGate.beginAssertion(.backgroundProcessing)', 'let bgTask = Task {']),
-    (s) => s.replace('backgroundTaskAssertion = executionGate.beginAssertion(.backgroundProcessing)', 'backgroundTaskAssertion = nil'),
+      ]) && inOrder(body(s, 'private func handleBackgroundTask(_ task: BGProcessingTask) {'), ['let assertion = executionGate.beginAssertion(.backgroundProcessing)', 'let bgTask = Task {']),
+    (s) => s.replace('let assertion = executionGate.beginAssertion(.backgroundProcessing)', 'let assertion = executionGate.beginAssertion(.completionWrite)'),
   );
 });
 
@@ -300,7 +300,7 @@ describe('6. B2/B3: completion writes', () => {
       return (
         b.includes('self.executionGate.beginAssertion(.completionWrite)') &&
         !/beginAssertion\(\.background(?:Grace|Processing)\)/.test(b) &&
-        inOrder(b, ['self.dbQueue.async {', 'self.completionWriteAssertion = assertion', 'body()', 'self.completionWriteAssertion = nil', 'self.executionGate.endAssertion(assertion)'])
+        inOrder(b, ['self.dbQueue.async {', 'NativeBackupEngine.manifestStatements.withCompletionWrite(assertion, body)', 'self.executionGate.endAssertion(assertion)'])
       );
     },
     (s) => s.replace('self.executionGate.beginAssertion(.completionWrite)', 'self.executionGate.beginAssertion(.backgroundGrace)'),
@@ -414,10 +414,111 @@ describe('8. B4 close order, and the thumbnail queue behind the gate', () => {
       const c = code(s);
       const blocks = c.split('serialQueue.sync {').slice(1).map((rest) => rest.trimStart().split('\n')[0]);
       const purge = blocks.filter((l) => l.startsWith('// 7e') || l.startsWith('guard let handle = db'));
-      const gated = blocks.filter((l) => l === 'guard admitted() else { return }');
+      const gated = blocks.filter((l) => l === 'guard admitted() else { return }' || l === 'guard admitted() else {');
       const admitted = body(s, 'private func admitted() -> Bool {');
       return blocks.length === 7 && purge.length === 1 && gated.length === 6 && admitted.indexOf('gate.canStartSQLiteWork') < admitted.indexOf('ensureOpen()');
     },
     (s) => s.replace('    public func popReady(limit: Int) -> [Item] {\n        var out: [Item] = []\n        serialQueue.sync {\n            guard admitted() else { return }', '    public func popReady(limit: Int) -> [Item] {\n        var out: [Item] = []\n        serialQueue.sync {\n            guard ensureOpen() else { return }'),
+  );
+});
+
+describe('9. round 2 (#262 review): a batch across a closure, the relaunch window, the statement gate', () => {
+  guarded(
+    '#1: tickets carry the gate closure count, and admitsWrite refuses a stale one',
+    engine,
+    (s) => {
+      const t = body(s, 'private func manifestWriteTicket(_ producer: String, accountId: String? = nil) -> ManifestWriteFence.Ticket? {');
+      const a = body(s, 'private func admitsWrite(_ ticket: ManifestWriteFence.Ticket?, _ writer: String) -> Bool {');
+      return (
+        inOrder(t, ['let gateClosures = executionGate.closures', 'manifestHandle.writeFence.issue(for: account)', 'ticket?.gateClosures = gateClosures']) &&
+        inOrder(a, ['if let ticket, ticket.gateClosures != executionGate.closures {', 'return false', 'return manifestHandle.writeFence.admits(ticket, writer: writer)'])
+      );
+    },
+    (s) => s.replace('    if let ticket, ticket.gateClosures != executionGate.closures {', '    if let ticket, ticket.gateClosures != executionGate.closures, false {'),
+  );
+  guarded(
+    '#1/#5: a batch across a closure starts no asset and takes no network step on a closed-gate read',
+    engine,
+    (s) =>
+      body(s, 'func processBatch(limit: Int = 12, ticket callerTicket: ManifestWriteFence.Ticket? = nil) async throws -> Int {').includes('&& executionGate.isOpen(since: ticket.gateClosures) {') &&
+      body(s, 'private func uploadSingleAsset(').includes('guard executionGate.isOpen(since: ticket.gateClosures) else { return false }') &&
+      inOrder(body(s, 'private func stageEncryptedAsset('), ['guard recordedStaging else {', 'try ensureBatchAdmitted(ticket)', 'if staged == nil { try ensureBatchAdmitted(ticket) }', 'return staged ?? asset']) &&
+      body(s, 'private func uploadStagedAsset(').trimStart().startsWith('try ensureBatchAdmitted(ticket)') &&
+      inOrder(body(s, 'private func runChunksAndComplete('), ['try ensureBatchAdmitted(ticket)', 'countPendingStagedChunks(assetId: asset.localAssetId)', 'try ensureBatchAdmitted(ticket)', 'guard remaining == 0 else {']),
+    (s) => s.replace('    if staged == nil { try ensureBatchAdmitted(ticket) }\n', ''),
+  );
+  guarded(
+    '#1: the quiesce cancels the drain',
+    engine,
+    (s) => body(s, 'private func quiesceSQLiteBeforeBackgroundTimeEnds(reason: String) -> BackupSQLiteQuiesce.Outcome {').includes('if outcome != .foreground { drainTask?.cancel() }'),
+    (s) => s.replace('    if outcome != .foreground { drainTask?.cancel() }\n', ''),
+  );
+  guarded(
+    '#2: the background-session handler quiesces before it hands the events back (last step)',
+    engine,
+    (s) => {
+      const b = body(s, 'func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {');
+      const l = lines(b);
+      return inOrder(b, ['if let self, !self.executionGate.canStartSQLiteWork {', 'self.quiesceSQLiteBeforeBackgroundTimeEnds(reason: "url-session-events-finished")', 'Self.takeBackgroundSessionCompletionHandler()?()']) && l[l.length - 2] === 'Self.takeBackgroundSessionCompletionHandler()?()';
+    },
+    (s) => s.replace('        self.quiesceSQLiteBeforeBackgroundTimeEnds(reason: "url-session-events-finished")\n', ''),
+  );
+  guarded(
+    '#3: the manifest connection gets the statement gate as its progress handler',
+    engine + handle,
+    (s) => /statementGate: NativeBackupEngine\.manifestStatements,/.test(s) && /exsqlite3_progress_handler\(opened, SQLiteStatementGate\.progressOps, manifestStatementProgress, statementGate\.progressContext\)/.test(s),
+    (s) => s.replace('exsqlite3_progress_handler(opened, SQLiteStatementGate.progressOps, manifestStatementProgress, statementGate.progressContext)', '_ = statementGate'),
+  );
+  guarded(
+    '#3: the thumbnail connection gets it too',
+    thumbnailDB,
+    (s) => /sqlite3_progress_handler\(handle, SQLiteStatementGate\.progressOps, thumbnailStatementProgress, statementGate\.progressContext\)/.test(s),
+    (s) => s.replace('sqlite3_progress_handler(handle, SQLiteStatementGate.progressOps, thumbnailStatementProgress, statementGate.progressContext)', '_ = statementGate'),
+  );
+  guarded(
+    '#4: the staged row and its chunk rows are one store transaction',
+    engine,
+    (s) => {
+      const mark = body(s, 'private func markStaged(');
+      return mark.includes('BackupManifestStore.recordStaging(') && !/replaceStagedChunks\(|UPDATE backup_assets/.test(mark) && !/replaceStagedChunks\(/.test(body(s, 'private func stageEncryptedAsset('));
+    },
+    // round 1's shape: the row, then the chunk rows in a separate statement
+    (s) => s.replace('    return BackupManifestStore.recordStaging(\n      db,', '    _ = BackupManifestStore.replaceStagedChunks(db, assetId: assetId, fileId: fileId, chunkPaths: chunkPaths)\n    return BackupManifestStore.recordStaging(\n      db,'),
+  );
+  guarded(
+    '#6: no good read yet: the surfaces are not overwritten with zeros',
+    engine,
+    (s) =>
+      body(s, 'private func updateBackupStatusSurfaces(reason: String? = nil) {').trimStart().startsWith('guard let payload = makeBackupStatusPayload(reason: reason) else { return }') &&
+      body(s, 'private func statusCounts() -> BackupStatusCounts? {').includes('return lastStatusCounts') &&
+      /private var _lastStatusCounts: BackupStatusCounts\?\n/.test(s),
+    (s) => s.replace('  private var _lastStatusCounts: BackupStatusCounts?\n', '  private var _lastStatusCounts: BackupStatusCounts? = BackupStatusCounts()\n'),
+  );
+  guarded(
+    '#7: the JS bridge reads the same counts',
+    engine,
+    (s) => ['func snapshotForBridge() -> [String: Any] {', 'func currentProgress() -> [String: Any] {'].every((sig) => {
+      const b = body(s, sig);
+      return b.includes('let counts = statusCounts() ?? BackupStatusCounts()') && !/pendingUploadCount\(\)|refreshProgress\(\)/.test(b);
+    }),
+    (s) => s.replace('  func currentProgress() -> [String: Any] {\n', '  func currentProgress() -> [String: Any] {\n    refreshProgress()\n'),
+  );
+  guarded(
+    '#8: canExecuteBackupWorkNow is the gate',
+    engine,
+    (s) => lines(body(s, 'private func canExecuteBackupWorkNow() -> Bool {')).join(' ') === 'executionGate.canStartSQLiteWork',
+    (s) => s.replace('  private func canExecuteBackupWorkNow() -> Bool {\n    executionGate.canStartSQLiteWork\n', '  private func canExecuteBackupWorkNow() -> Bool {\n    isBackgroundGraceActive || executionGate.canStartSQLiteWork\n'),
+  );
+  guarded(
+    '#10: a zero-pending status ends the grace task only while background time is ours',
+    engine,
+    (s) => body(s, 'private func updateBackupStatusSurfaces(reason: String? = nil) {').includes('if payload.pending == 0, executionGate.canStartSQLiteWork {'),
+    (s) => s.replace('if payload.pending == 0, executionGate.canStartSQLiteWork {', 'if payload.pending == 0 {'),
+  );
+  guarded(
+    '#12: every completion ends the task\'s own assertion (no engine-wide slot)',
+    engine,
+    (s) => !/backgroundTaskAssertion/.test(code(s)) && (code(body(s, 'private func handleBackgroundTask(_ task: BGProcessingTask) {')).match(/completeBackgroundTaskOnce\(task, success: [^)]*assertion: assertion/g) ?? []).length === 10,
+    (s) => s.replace('self.completeBackgroundTaskOnce(task, success: uploaded >= 0, assertion: assertion)', 'self.completeBackgroundTaskOnce(task, success: uploaded >= 0, assertion: self.lastBackgroundAssertion!)'),
   );
 });

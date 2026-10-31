@@ -16,6 +16,10 @@ import SQLite3
 //       the rows after the interrupt
 //   t5  B5: a pop whose claim is interrupted hands out nothing and leaves
 //       nothing `running`; the quiesce wait returns once it is interrupted
+//   t6  #262 review 9: a closure and reopen (an app switch) does not hand
+//       rows a worker is still running to a second worker
+//   t7  #262 review 3: the progress handler stops a running statement once
+//       the gate closes, with no interrupt
 
 var failures: [String] = []
 var total = 0
@@ -168,6 +172,60 @@ do {
   let stats = queue.stats()
   expect(stats.running == 0 && stats.pending == 3, "t5 (B5): no row is left `running` (running \(stats.running), pending \(stats.pending))")
   expect(ids(queue.popReady(limit: 5)) == ["slow2", "y1", "y3"], "t5: the next pop claims all three")
+}
+
+// MARK: - t6 #262 review 9: an app switch does not hand out rows still being worked on
+
+do {
+  let d = dir("t6")
+  let gate = BackupExecutionGate(foreground: true)
+  let queue = ThumbnailQueueDB(directory: d, gate: gate)
+  queue.enqueue(fileIds: ["w1", "w2"], qualityPreset: "medium")
+  expect(ids(queue.popReady(limit: 5)) == ["w1", "w2"], "t6 setup: two workers claimed w1, w2")
+  // The user switches apps and back, no grace task: the gate closes (counted)
+  // and reopens while both workers are still running.
+  gate.setForeground(false)
+  _ = gate.expire()
+  gate.setForeground(true)
+  expect(queue.popReady(limit: 5).isEmpty, "t6 (#9): rows still being worked on are not handed to a second worker")
+  queue.markSucceeded(fileId: "w1")
+  queue.markSucceeded(fileId: "w2")
+  let stats = queue.stats()
+  expect(stats.succeeded == 2 && stats.running == 0, "t6: both workers' results land")
+}
+
+// MARK: - t7 #262 review 3: the progress handler stops a statement with no interrupt
+
+do {
+  let d = dir("t7")
+  let gate = BackupExecutionGate(foreground: false)
+  let grace = gate.beginAssertion(.backgroundGrace)
+  let queue = ThumbnailQueueDB(directory: d, gate: gate)
+  _ = queue.stats()
+  withConnection(d) { db in
+    installSlowTable(db)
+    exec(db, "CREATE TRIGGER slow_insert BEFORE INSERT ON queue_items WHEN NEW.file_id = 'slow' BEGIN \(slowBody) END;")
+  }
+  let done = DispatchSemaphore(value: 0)
+  Thread {
+    queue.enqueue(fileIds: ["z1", "slow", "z2"], qualityPreset: "medium")
+    done.signal()
+  }.start()
+  Thread.sleep(forTimeInterval: 0.3)
+  let closedAt = Date()
+  _ = gate.expire() // no interruptInFlightStatement()
+  gate.endAssertion(grace)
+  let stopped = done.wait(timeout: .now() + 2) == .success
+  expect(stopped, "t7 (#3): the closed gate alone stopped the slow statement")
+  expect(Date().timeIntervalSince(closedAt) < 1, "t7 (#3): within the bound")
+  if !stopped {
+    // Red path only: stop it here so the cleanup below can take the lock.
+    queue.interruptInFlightStatement()
+    _ = done.wait(timeout: .now() + 5)
+  }
+  gate.setForeground(true)
+  withConnection(d) { db in exec(db, "DROP TRIGGER slow_insert;") }
+  expect(queue.stats().pending == 0, "t7: and the batch rolled back")
 }
 
 if failures.isEmpty {

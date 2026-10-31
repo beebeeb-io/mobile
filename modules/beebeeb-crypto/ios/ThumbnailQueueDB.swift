@@ -11,6 +11,12 @@ import SQLite3
 /// registry sweep is then told to preserve (`.sqlite`, `-wal`, `-shm`): the DB
 /// owns those three files' lifecycle, so the purge never unlinks a file under
 /// this class's live handle.
+/// LD-0002 (#262 review 3): the queue connection's progress handler (see
+/// `SQLiteStatementGate`): non-zero aborts the running statement.
+private let thumbnailStatementProgress: @convention(c) (UnsafeMutableRawPointer?) -> Int32 = { context in
+    SQLiteStatementGate.shouldAbort(context: context)
+}
+
 public final class ThumbnailQueueDB {
     public static let shared = ThumbnailQueueDB(directory: nil)
 
@@ -21,9 +27,16 @@ public final class ThumbnailQueueDB {
     private let gate: BackupExecutionGate
     /// LD-0002 (B4): published after the open, withdrawn before every close.
     private let interruptTarget = SQLiteInterruptTarget { sqlite3_interrupt($0) }
-    /// LD-0002 (B7): the gate's `closures` when `running` rows were last
-    /// reset. `serialQueue` only.
+    /// LD-0002 (#262 review 3): the connection's progress handler asks it, so
+    /// no statement runs while the gate refuses.
+    private let statementGate: SQLiteStatementGate
+    /// LD-0002 (B7): the gate's `closures` when the claims were last checked;
+    /// nil until the first use after an open. `serialQueue` only.
     private var runningResetAtClosures: UInt64?
+    /// LD-0002 (B7, #262 review 9): claimed rows whose worker result the
+    /// closed gate refused. Only these go back to `pending` when the gate
+    /// reopens; a worker still running keeps its claim. `serialQueue` only.
+    private var refusedResultIds: Set<String> = []
     /// `nil` = the app's Documents directory. The harness passes a temp
     /// directory; production never does.
     private let directoryOverride: URL?
@@ -38,6 +51,7 @@ public final class ThumbnailQueueDB {
         // `prepareForStoragePurge()` can never race an open.
         self.directoryOverride = directory
         self.gate = gate
+        self.statementGate = SQLiteStatementGate(gate: gate)
     }
 
     deinit {
@@ -58,22 +72,44 @@ public final class ThumbnailQueueDB {
         BackupSQLiteQuiesce.waitForSerialQueue(serialQueue, timeout: timeout)
     }
 
-    /// Inside `serialQueue`: the gate is open and the connection usable. On
-    /// the first use after an open or after an expiry closed the gate, rows a
-    /// worker claimed (`running`) and could not finish go back to `pending`
-    /// (B7): a closed gate refuses a worker's result write, and nothing else
-    /// ever moved those rows again. A worker still running then may do its
-    /// item twice; that is the price of never losing one.
+    /// Inside `serialQueue`: the gate is open and the connection usable. B7:
+    /// a closed gate refuses a worker's result write, and nothing else ever
+    /// moved that row out of `running` again. So on the first use after an
+    /// open (a new process: no worker of this one holds a claim) every
+    /// `running` row goes back to `pending`, and after the gate closed and
+    /// reopened only the rows whose result was refused do (#262 review 9:
+    /// resetting them all on every app switch handed rows still being worked
+    /// on to a second worker).
     private func admitted() -> Bool {
         guard gate.canStartSQLiteWork, ensureOpen() else { return false }
         let closures = gate.closures
-        if runningResetAtClosures != closures {
+        guard runningResetAtClosures != closures else { return true }
+        if runningResetAtClosures == nil {
             guard bindAndStep("UPDATE queue_items SET state='pending' WHERE state='running';", []) == SQLITE_DONE else {
                 return false
             }
-            runningResetAtClosures = closures
+        } else {
+            for fileId in refusedResultIds {
+                guard bindAndStep("UPDATE queue_items SET state='pending' WHERE state='running' AND file_id=?;", [fileId]) == SQLITE_DONE else {
+                    return false
+                }
+            }
         }
+        refusedResultIds.removeAll()
+        runningResetAtClosures = closures
         return true
+    }
+
+    /// A worker's result write: refused while the gate is closed, and then
+    /// remembered so its claim is released when the gate reopens.
+    private func recordResult(fileId: String, _ write: () -> Void) {
+        serialQueue.sync {
+            guard admitted() else {
+                if runningResetAtClosures != nil { refusedResultIds.insert(fileId) }
+                return
+            }
+            write()
+        }
     }
 
     // MARK: - Schema
@@ -112,6 +148,8 @@ public final class ThumbnailQueueDB {
         }
         db = handle
         runningResetAtClosures = nil
+        refusedResultIds.removeAll()
+        sqlite3_progress_handler(handle, SQLiteStatementGate.progressOps, thumbnailStatementProgress, statementGate.progressContext)
         // Task 1962 round 4 (7a/7c): secure_delete zeroes deleted cells so the
         // purge's DELETE leaves none of the outgoing account's ids in the file.
         let configured = exec("PRAGMA journal_mode = WAL;")
@@ -305,14 +343,15 @@ public final class ThumbnailQueueDB {
     }
 
     public func markSucceeded(fileId: String) {
-        mutate("UPDATE queue_items SET state='succeeded', updated_at=? WHERE file_id=?",
-               [Int64(Date().timeIntervalSince1970 * 1000), fileId])
+        recordResult(fileId: fileId) {
+            bindAndStep("UPDATE queue_items SET state='succeeded', updated_at=? WHERE file_id=?",
+                        [Int64(Date().timeIntervalSince1970 * 1000), fileId])
+        }
     }
 
     /// Bump attempt counter, set backoff or mark perm-fail.
     public func recordFailure(fileId: String, category: ThumbnailErrorCategory, message: String) {
-        serialQueue.sync {
-            guard admitted() else { return }
+        recordResult(fileId: fileId) {
             guard let item = fetchInternal(fileId: fileId) else { return }
             let nextAttempts = item.attempts + 1
             let now = Int64(Date().timeIntervalSince1970 * 1000)

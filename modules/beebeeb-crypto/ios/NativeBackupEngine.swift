@@ -527,9 +527,12 @@ final class NativeBackupEngine: NSObject {
   /// thread. `manifestHandle` publishes the connection and withdraws it before
   /// every close (B4).
   private static let manifestInterrupt = SQLiteInterruptTarget { exsqlite3_interrupt($0) }
-  /// LD-0002 (B2): the completion write the current `dbQueue` block runs
-  /// under its own assertion, or nil. dbQueue-only.
-  private var completionWriteAssertion: BackupExecutionGate.Assertion?
+  /// LD-0002 (#262 review 3): the manifest connection's progress handler asks
+  /// it, so no statement runs while the gate refuses, even one a block started
+  /// from a `db` it read before the gate closed. It also carries the
+  /// completion write the current `dbQueue` block runs under its own
+  /// assertion (B2).
+  private static let manifestStatements = SQLiteStatementGate(gate: BackupExecutionGate.shared)
   /// Task 1531 [P2-C] (round 5 delta review): guards the read-compare-write
   /// of `currentAccountId` + the `accountGeneration` bump together. Without
   /// it, two near-simultaneous writers (e.g. a JS-driven `bindAccount` call
@@ -561,13 +564,14 @@ final class NativeBackupEngine: NSObject {
       NSLog("[NativeBackupEngine] Manifest write dropped by the sign-out fence: \(writer)")
     },
     interruptTarget: NativeBackupEngine.manifestInterrupt,
+    statementGate: NativeBackupEngine.manifestStatements,
     prepareSchema: NativeBackupEngine.ensureTables
   )
   /// The open manifest handle, or nil while it is closed. Read-only here:
   /// only `manifestHandle` opens or closes it. LD-0002: nil too while the
   /// execution gate is closed, so no statement can start after a quiesce:
   /// every engine statement starts from here.
-  private var db: OpaquePointer? { manifestHandle.connection(admittedBy: executionGate, completionWrite: completionWriteAssertion) }
+  private var db: OpaquePointer? { manifestHandle.connection(admittedBy: executionGate, completionWrite: NativeBackupEngine.manifestStatements.completionWrite) }
   /// Round 8: scans spawned by `registerPhotoObserver` / `photoLibraryDidChange`
   /// (guarded by `engineStateLock`). `stop()` cancels them; the write fence,
   /// not the cancel, is what keeps a late scan out of a reset manifest.
@@ -779,18 +783,12 @@ final class NativeBackupEngine: NSObject {
 
   /// LD-0002: the grace task's gate assertion (main thread only).
   private var graceAssertion: BackupExecutionGate.Assertion?
-  /// LD-0002: the live `BGProcessingTask`'s gate assertion.
-  private var _backgroundTaskAssertion: BackupExecutionGate.Assertion?
-  private var backgroundTaskAssertion: BackupExecutionGate.Assertion? {
-    get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _backgroundTaskAssertion }
-    set { engineStateLock.lock(); _backgroundTaskAssertion = newValue; engineStateLock.unlock() }
-  }
   /// LD-0002 (B1, P2a): the counts the status surfaces last read with the gate
   /// open and uninterrupted. While the gate is closed they are what the widget,
   /// the Live Activity and the reminder show: no SQLite, and never a false
   /// "0 pending".
-  private var _lastStatusCounts = BackupStatusCounts()
-  private var lastStatusCounts: BackupStatusCounts {
+  private var _lastStatusCounts: BackupStatusCounts?
+  private var lastStatusCounts: BackupStatusCounts? {
     get { engineStateLock.lock(); defer { engineStateLock.unlock() }; return _lastStatusCounts }
     set { engineStateLock.lock(); _lastStatusCounts = newValue; engineStateLock.unlock() }
   }
@@ -1647,8 +1645,8 @@ final class NativeBackupEngine: NSObject {
     return (decided.state, decided.reason)
   }
 
-  private func makeBackupStatusPayload(reason explicitReason: String? = nil) -> BackupStatusPayload {
-    let counts = statusCounts()
+  private func makeBackupStatusPayload(reason explicitReason: String? = nil) -> BackupStatusPayload? {
+    guard let counts = statusCounts() else { return nil }
     let pending = counts.pending
     let breakdown = counts.breakdown
     let state = backupState(pending: pending, uploading: breakdown.uploading)
@@ -1675,8 +1673,10 @@ final class NativeBackupEngine: NSObject {
   /// LD-0002 (B1, P2a): the counts for the status surfaces. Read fresh only
   /// while the gate is open, and kept only when no expiry closed it during the
   /// reads (an interrupted step reads as 0). Otherwise the last good counts:
-  /// an expiry handler builds its payload without touching SQLite.
-  private func statusCounts() -> BackupStatusCounts {
+  /// an expiry handler builds its payload without touching SQLite. nil = no
+  /// good read yet in this process (a background launch): nothing is known,
+  /// so nothing may be published as "0 pending" (#262 review 6).
+  private func statusCounts() -> BackupStatusCounts? {
     let fresh = executionGate.readIfUninterrupted { () -> BackupStatusCounts in
       refreshProgress()
       return BackupStatusCounts(
@@ -1693,11 +1693,16 @@ final class NativeBackupEngine: NSObject {
   }
 
   private func updateBackupStatusSurfaces(reason: String? = nil) {
-    let payload = makeBackupStatusPayload(reason: reason)
+    // LD-0002 (#262 review 6): no good read yet and the gate closed: keep
+    // whatever the surfaces show rather than overwrite them with zeros.
+    guard let payload = makeBackupStatusPayload(reason: reason) else { return }
     writeBackupStatus(payload)
     updateLiveActivity(payload)
     emitBackupHeartbeat(payload: payload)
-    if payload.pending == 0 {
+    // LD-0002 (#262 review 10): only while background time is still ours.
+    // Inside an expiry handler (gate closed) the handler ends the grace task
+    // itself, as its last step; ending it here ran a second quiesce first.
+    if payload.pending == 0, executionGate.canStartSQLiteWork {
       endBackgroundGrace()
     }
   }
@@ -1844,7 +1849,7 @@ final class NativeBackupEngine: NSObject {
   }
 
   private func scheduleOpenAppReminderIfNeeded() {
-    let payload = makeBackupStatusPayload()
+    guard let payload = makeBackupStatusPayload() else { return }
     guard payload.pending > 0, payload.state == "waitingForAppOpen" else { return }
     guard UserDefaults.standard.object(forKey: "io.beebeeb.backupNotifications.actionNeeded") as? Bool ?? true else {
       return
@@ -2749,9 +2754,11 @@ final class NativeBackupEngine: NSObject {
   /// the old per-screen calls into `BackupDatabase.ts` — JS reads only,
   /// Swift writes. See task 0437.
   func snapshotForBridge() -> [String: Any] {
-    refreshProgress()
-    let pending = pendingUploadCount()
-    let internalState = backupState(pending: pending).state
+    // LD-0002 (#262 review 7): the status surfaces' counts, so a poll while
+    // the gate is closed reads the last good values, not zeros.
+    let counts = statusCounts() ?? BackupStatusCounts()
+    let pending = counts.pending
+    let internalState = backupState(pending: pending, uploading: counts.breakdown.uploading).state
     let lastError = lastErrorMessageForBridge()
     let backoffMillis: Any = backoffUntil.map { Int($0.timeIntervalSince1970 * 1000) } ?? NSNull()
     return [
@@ -2828,10 +2835,11 @@ final class NativeBackupEngine: NSObject {
 
   /// Return current progress as a dictionary suitable for JS bridge.
   func currentProgress() -> [String: Any] {
-    refreshProgress()
-    let pending = pendingUploadCount()
-    let breakdown = backupWorkBreakdown()
-    let state = backupState(pending: pending)
+    // LD-0002 (#262 review 7): see `snapshotForBridge`.
+    let counts = statusCounts() ?? BackupStatusCounts()
+    let pending = counts.pending
+    let breakdown = counts.breakdown
+    let state = backupState(pending: pending, uploading: breakdown.uploading)
     return [
       "total": totalAssets,
       "completed": completedAssets,
@@ -2847,7 +2855,7 @@ final class NativeBackupEngine: NSObject {
       "isPaused": isPaused,
       "state": state.state,
       "reason": state.reason,
-      "lastBackupAt": latestUploadedAt() ?? NSNull(),
+      "lastBackupAt": counts.lastBackupAt ?? NSNull(),
       // Task 1599 followup 2: a SEPARATE, sticky signal from `state`/`reason`
       // above (which are recomputed fresh from live counters on every call
       // and would otherwise fall back to an unrelated generic reason like
@@ -2934,9 +2942,11 @@ final class NativeBackupEngine: NSObject {
     scheduleNextBackup()
     isBackgroundTaskActive = true
     // LD-0002: a live BGProcessingTask opens the background gate (and reopens
-    // it after an earlier expiry) before the body's first statement.
-    if let previous = backgroundTaskAssertion { executionGate.endAssertion(previous) }
-    backgroundTaskAssertion = executionGate.beginAssertion(.backgroundProcessing)
+    // it after an earlier expiry) before the body's first statement. The
+    // assertion is this task's own: its completion ends exactly it (#262
+    // review 12: a slot shared across tasks let a late completion of task A
+    // end task B's assertion).
+    let assertion = executionGate.beginAssertion(.backgroundProcessing)
     // Reset the completion guard for this invocation. The property lives
     // on the engine (singleton) so a previous task's completion state
     // would otherwise leak forward.
@@ -2964,7 +2974,7 @@ final class NativeBackupEngine: NSObject {
       guard let accountId = self.currentAccountId, !accountId.isEmpty else {
         RuntimeTrace.event("backup.native.background_task.refused_no_account")
         NSLog("[NativeBackupEngine] Background task: no current account id — refusing to run")
-        self.completeBackgroundTaskOnce(task, success: false)
+        self.completeBackgroundTaskOnce(task, success: false, assertion: assertion)
         return
       }
       // Task 1531 [P1-3]: captured AFTER the account guard above, so this is
@@ -2982,7 +2992,7 @@ final class NativeBackupEngine: NSObject {
           "failure": manifestFailure?.rawValue ?? NSNull()
         ])
         self.updateBackupStatusSurfaces(reason: reason)
-        self.completeBackgroundTaskOnce(task, success: false)
+        self.completeBackgroundTaskOnce(task, success: false, assertion: assertion)
         return
       }
       self.dbQueue.sync { self.purgeMismatchedStagedAssets(currentAccountId: accountId) }
@@ -2990,7 +3000,7 @@ final class NativeBackupEngine: NSObject {
       // start; its scan and its batch write behind it. None (signed out
       // since the account check, another account bound) = nothing to do.
       guard let writeTicket = self.manifestWriteTicket("background_task", accountId: accountId) else {
-        self.completeBackgroundTaskOnce(task, success: false)
+        self.completeBackgroundTaskOnce(task, success: false, assertion: assertion)
         return
       }
       // Round 11 (review finding 9): the task's batch starts with a bulk check.
@@ -3007,7 +3017,7 @@ final class NativeBackupEngine: NSObject {
         // touching a key at all.
         guard self.currentAccountId == accountId else {
           RuntimeTrace.event("backup.native.background_task.refused_account_changed")
-          self.completeBackgroundTaskOnce(task, success: false)
+          self.completeBackgroundTaskOnce(task, success: false, assertion: assertion)
           return
         }
         // Task 1599 followup 3: a cached handle existing is not, by itself,
@@ -3039,13 +3049,13 @@ final class NativeBackupEngine: NSObject {
             "reason": cacheSnapshot.handle != nil ? "cached_key_owner_unconfirmed" : "no_unlocked_cache",
             "promptMayAppear": false
           ])
-          self.completeBackgroundTaskOnce(task, success: false)
+          self.completeBackgroundTaskOnce(task, success: false, assertion: assertion)
           return
         }
       }
 
       guard self.masterKeyHandle != nil else {
-        self.completeBackgroundTaskOnce(task, success: false)
+        self.completeBackgroundTaskOnce(task, success: false, assertion: assertion)
         return
       }
 
@@ -3075,12 +3085,12 @@ final class NativeBackupEngine: NSObject {
         _ = await self.scanPhotoLibraryForPendingUploads(reason: "Background backup scan", ticket: writeTicket)
         try Task.checkCancellation()
         let uploaded = try await self.processBatch(limit: mode.batchLimit, ticket: writeTicket)
-        self.completeBackgroundTaskOnce(task, success: uploaded >= 0)
+        self.completeBackgroundTaskOnce(task, success: uploaded >= 0, assertion: assertion)
       } catch is CancellationError {
         self.perfLog("bg-task.expired", [:])
-        self.completeBackgroundTaskOnce(task, success: false)
+        self.completeBackgroundTaskOnce(task, success: false, assertion: assertion)
       } catch {
-        self.completeBackgroundTaskOnce(task, success: false)
+        self.completeBackgroundTaskOnce(task, success: false, assertion: assertion)
       }
 
       // Task 1531 [P1-3]: only THIS task's own idle→running transition gets
@@ -3131,7 +3141,7 @@ final class NativeBackupEngine: NSObject {
       if !self.lifecycle.expireBackgroundRun({ self.pause() }) {
         RuntimeTrace.event("backup.native.background_task.expired_user_run_kept")
       }
-      self.completeBackgroundTaskOnce(task, success: false, quiesced: true)
+      self.completeBackgroundTaskOnce(task, success: false, assertion: assertion, quiesced: true)
     }
   }
 
@@ -3144,7 +3154,15 @@ final class NativeBackupEngine: NSObject {
   /// LD-0002: the task's gate assertion ends here; in the background the gate
   /// closes with it, so SQLite is quiesced before `setTaskCompleted`
   /// (`quiesced`: the expiry handler already did).
-  private func completeBackgroundTaskOnce(_ task: BGProcessingTask, success: Bool, quiesced: Bool = false) {
+  private func completeBackgroundTaskOnce(
+    _ task: BGProcessingTask,
+    success: Bool,
+    assertion: BackupExecutionGate.Assertion,
+    quiesced: Bool = false
+  ) {
+    // The task's own assertion ends with its first completion, whichever
+    // path gets there (ending it twice is harmless).
+    executionGate.endAssertion(assertion)
     backgroundTaskCompletionLock.lock()
     let alreadyFired = backgroundTaskCompletionFired
     if !alreadyFired {
@@ -3152,10 +3170,6 @@ final class NativeBackupEngine: NSObject {
     }
     backgroundTaskCompletionLock.unlock()
     if !alreadyFired {
-      if let assertion = backgroundTaskAssertion {
-        backgroundTaskAssertion = nil
-        executionGate.endAssertion(assertion)
-      }
       if !quiesced, !executionGate.canStartSQLiteWork {
         quiesceSQLiteBeforeBackgroundTimeEnds(reason: "background-processing-end")
       }
@@ -3448,19 +3462,11 @@ final class NativeBackupEngine: NSObject {
     updateCachedApplicationState(.inactive)
   }
 
+  /// LD-0002 (#262 review 8): the gate, so a status built inside an expiry
+  /// handler (grace still flagged active, gate already closed) is
+  /// `waitingForAppOpen` and the reminder is scheduled.
   private func canExecuteBackupWorkNow() -> Bool {
-    if isBackgroundTaskActive || isBackgroundGraceActive {
-      return true
-    }
-
-    switch currentApplicationState() {
-    case .active, .inactive:
-      return true
-    case .background:
-      return false
-    @unknown default:
-      return false
-    }
+    executionGate.canStartSQLiteWork
   }
 
   private func beginBackgroundGraceIfNeeded() {
@@ -3554,6 +3560,10 @@ final class NativeBackupEngine: NSObject {
         return manifestQuiet && thumbnailQuiet
       }
     )
+    // LD-0002 (#262 review 1): the drain stops at its next checkpoint instead
+    // of running its batch on against a closed gate; foreground or a new
+    // assertion wakes it again.
+    if outcome != .foreground { drainTask?.cancel() }
     perfLog("quiesce", [
       "reason": reason,
       "outcome": outcome.rawValue,
@@ -3597,9 +3607,7 @@ final class NativeBackupEngine: NSObject {
         return
       }
       self.dbQueue.async {
-        self.completionWriteAssertion = assertion
-        body()
-        self.completionWriteAssertion = nil
+        NativeBackupEngine.manifestStatements.withCompletionWrite(assertion, body)
         self.executionGate.endAssertion(assertion)
         DispatchQueue.main.async {
           if task != .invalid {
@@ -3849,9 +3857,12 @@ final class NativeBackupEngine: NSObject {
       var activeCount = 0
       var index = 0
 
+      // LD-0002 (#262 review 1): no new asset once the gate closed since the
+      // batch's ticket.
       while (index < pending.count || !group.isEmpty) && isRunning && !isPaused && !Task.isCancelled {
         // Add tasks up to concurrency limit
-        while activeCount < maxConcurrentUploads && index < pending.count && isRunning && !isPaused && !Task.isCancelled {
+        while activeCount < maxConcurrentUploads && index < pending.count && isRunning && !isPaused && !Task.isCancelled
+          && executionGate.isOpen(since: ticket.gateClosures) {
           let asset = pending[index]
           index += 1
           activeCount += 1
@@ -4017,6 +4028,8 @@ final class NativeBackupEngine: NSObject {
     ticket: ManifestWriteFence.Ticket
   ) async -> Bool {
     guard isRunning && !isPaused && !Task.isCancelled else { return false }
+    // LD-0002 (#262 review 1): see `ensureBatchAdmitted`.
+    guard executionGate.isOpen(since: ticket.gateClosures) else { return false }
 
     // Task 1531 [P1-2]: refuse outright — no staging, no upload — unless the
     // LIVE `currentAccountId` still matches the account this batch's
@@ -4499,34 +4512,33 @@ final class NativeBackupEngine: NSObject {
 
     // Round 8: a batch that outlived a sign-out (or an account switch) must
     // not put its staged row back; its ciphertext is removed instead.
+    // LD-0002 (#262 review 4): the staged row and its chunk rows are ONE
+    // transaction (`BackupManifestStore.recordStaging`).
     let recordedStaging: Bool = dbQueue.sync {
       guard admitsWrite(ticket, "markStaged") else { return false }
-      markStaged(
+      return markStaged(
         assetId: asset.localAssetId,
         fileId: fileId,
         nameEncrypted: nameEncrypted,
         mimeType: mimeType,
         isMediaValue: mediaFlag(assetType: asset.assetType, mimeType: mimeType),
         originalSize: Int64(originalSize),
-        chunkCount: stagedPaths.count,
+        chunkPaths: stagedPaths,
         stagedDir: dir.path,
         stagedAccountId: accountId
       )
-      replaceStagedChunks(
-        assetId: asset.localAssetId,
-        fileId: fileId,
-        chunkPaths: stagedPaths
-      )
-      return true
     }
     guard recordedStaging else {
       try? FileManager.default.removeItem(at: dir)
+      try ensureBatchAdmitted(ticket)
       throw BackupError.accountUnknown
     }
 
-    return dbQueue.sync {
-      getStagedAsset(localAssetId: asset.localAssetId) ?? asset
-    }
+    let staged = dbQueue.sync { getStagedAsset(localAssetId: asset.localAssetId) }
+    // LD-0002 (#262 review 1): a staged row that reads as missing because the
+    // gate closed is not the pre-staging row.
+    if staged == nil { try ensureBatchAdmitted(ticket) }
+    return staged ?? asset
   }
 
   private func uploadStagedAsset(
@@ -4544,6 +4556,7 @@ final class NativeBackupEngine: NSObject {
     /// Round 8: the batch's manifest write ticket.
     ticket: ManifestWriteFence.Ticket
   ) async throws -> Bool {
+    try ensureBatchAdmitted(ticket)
     guard let fileId = asset.stagedFileId,
           let nameEncrypted = asset.stagedNameEncrypted,
           let stagedDir = asset.stagedDir else {
@@ -4957,7 +4970,12 @@ final class NativeBackupEngine: NSObject {
       )
     }
 
+    // LD-0002 (#262 review 5): with the gate closed this count reads 0, which
+    // would send `upload/complete` for chunks whose results were never
+    // recorded.
+    try ensureBatchAdmitted(ticket)
     let remaining = dbQueue.sync { countPendingStagedChunks(assetId: asset.localAssetId) }
+    try ensureBatchAdmitted(ticket)
     guard remaining == 0 else {
       // The re-PUT loop finished but the local bookkeeping still reports chunks
       // pending. Surface a diagnosable error with the offending indices instead
@@ -5729,6 +5747,36 @@ final class NativeBackupEngine: NSObject {
     )
   }
 
+  /// The staged row and its chunk rows in one transaction
+  /// (`BackupManifestStore.recordStaging`, LD-0002 #262 review 4). False =
+  /// nothing changed.
+  private func markStaged(
+    assetId: String,
+    fileId: String,
+    nameEncrypted: String,
+    mimeType: String?,
+    isMediaValue: Bool,
+    originalSize: Int64,
+    chunkPaths: [String],
+    stagedDir: String,
+    stagedAccountId: String?
+  ) -> Bool {
+    guard let db = db else { return false }
+    return BackupManifestStore.recordStaging(
+      db,
+      assetId: assetId,
+      fileId: fileId,
+      nameEncrypted: nameEncrypted,
+      mimeType: mimeType,
+      isMedia: isMediaValue,
+      originalSize: originalSize,
+      chunkPaths: chunkPaths,
+      stagedDir: stagedDir,
+      stagedAccountId: stagedAccountId,
+      nowMs: nowMs()
+    )
+  }
+
   private func getStagedAsset(localAssetId: String) -> BackupAssetRow? {
     guard let db = db else { return nil }
     let sql = """
@@ -5836,59 +5884,6 @@ final class NativeBackupEngine: NSObject {
     }
     exsqlite3_bind_int64(stmt, 2, nowMs())
     BackupManifestStore.bindText(stmt, 3, assetId)
-    exsqlite3_step(stmt)
-  }
-
-  private func markStaged(
-    assetId: String,
-    fileId: String,
-    nameEncrypted: String,
-    mimeType: String?,
-    isMediaValue: Bool,
-    originalSize: Int64,
-    chunkCount: Int,
-    stagedDir: String,
-    stagedAccountId: String?
-  ) {
-    guard let db = db else { return }
-    let sql = """
-    UPDATE backup_assets
-    SET status = 'staged_upload',
-        staged_file_id = ?,
-        staged_name_encrypted = ?,
-        staged_mime_type = ?,
-        staged_is_media = ?,
-        staged_original_size = ?,
-        staged_chunk_count = ?,
-        staged_dir = ?,
-        staged_at = ?,
-        file_size = ?,
-        staged_account_id = ?,
-        error_message = NULL
-    WHERE local_asset_id = ?
-    """
-    var stmt: OpaquePointer?
-    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-    defer { exsqlite3_finalize(stmt) }
-    BackupManifestStore.bindText(stmt, 1, fileId)
-    BackupManifestStore.bindText(stmt, 2, nameEncrypted)
-    if let mimeType {
-      BackupManifestStore.bindText(stmt, 3, mimeType)
-    } else {
-      exsqlite3_bind_null(stmt, 3)
-    }
-    exsqlite3_bind_int(stmt, 4, isMediaValue ? 1 : 0)
-    exsqlite3_bind_int64(stmt, 5, originalSize)
-    exsqlite3_bind_int(stmt, 6, Int32(chunkCount))
-    BackupManifestStore.bindText(stmt, 7, stagedDir)
-    exsqlite3_bind_int64(stmt, 8, nowMs())
-    exsqlite3_bind_int64(stmt, 9, originalSize)
-    if let stagedAccountId {
-      BackupManifestStore.bindText(stmt, 10, stagedAccountId)
-    } else {
-      exsqlite3_bind_null(stmt, 10)
-    }
-    BackupManifestStore.bindText(stmt, 11, assetId)
     exsqlite3_step(stmt)
   }
 
@@ -6363,7 +6358,11 @@ final class NativeBackupEngine: NSObject {
   /// bound). MUST NOT run on `dbQueue`.
   private func manifestWriteTicket(_ producer: String, accountId: String? = nil) -> ManifestWriteFence.Ticket? {
     let account = accountId ?? currentAccountId
-    let ticket: ManifestWriteFence.Ticket? = dbQueue.sync { manifestHandle.writeFence.issue(for: account) }
+    // LD-0002 (#262 review 1): read BEFORE the ticket, so a closure in between
+    // makes the ticket stale (its writes refused), never the other way round.
+    let gateClosures = executionGate.closures
+    var ticket: ManifestWriteFence.Ticket? = dbQueue.sync { manifestHandle.writeFence.issue(for: account) }
+    ticket?.gateClosures = gateClosures
     if ticket == nil {
       RuntimeTrace.event("backup.native.manifest.write_ticket_refused", [
         "producer": producer, "hasAccount": account?.isEmpty == false,
@@ -6375,8 +6374,31 @@ final class NativeBackupEngine: NSObject {
   /// The fence check for one write. MUST run on `dbQueue`, in the SAME
   /// closure as the write it guards (`native-backup-write-fence.test.ts`
   /// checks every writer call site). A refused write is traced by the fence.
+  ///
+  /// LD-0002 (#262 review 1): also refused when the gate closed since the
+  /// producer took its ticket, even if it reopened since. Inside that window
+  /// `db` was nil and the producer read it as "no row": a batch that read a
+  /// staged photo as unstaged encrypted it again under a new file id, and its
+  /// `markStaged` then landed next to the old server file and session.
+  /// Background-URLSession completions (`admitsChunkCallback`) record what
+  /// the server already has and are not refused.
   private func admitsWrite(_ ticket: ManifestWriteFence.Ticket?, _ writer: String) -> Bool {
-    manifestHandle.writeFence.admits(ticket, writer: writer)
+    if let ticket, ticket.gateClosures != executionGate.closures {
+      RuntimeTrace.event("backup.native.manifest.write_after_gate_closed", ["writer": writer])
+      return false
+    }
+    return manifestHandle.writeFence.admits(ticket, writer: writer)
+  }
+
+  /// LD-0002 (#262 review 1, 5): a batch whose ticket predates a gate closure
+  /// takes no further network or manifest step. Its reads in that window
+  /// returned nil / 0 / "no row", which it would otherwise act on (re-encrypt
+  /// a staged photo, call `upload/complete` with unrecorded chunks).
+  private func ensureBatchAdmitted(_ ticket: ManifestWriteFence.Ticket) throws {
+    guard executionGate.isOpen(since: ticket.gateClosures) else {
+      RuntimeTrace.event("backup.native.batch.stopped_gate_closed")
+      throw CancellationError()
+    }
   }
 
   /// `stop()` and sign-out: cancel every observer-spawned scan. Best effort
@@ -8039,7 +8061,14 @@ extension NativeBackupEngine: URLSessionDelegate, URLSessionTaskDelegate, URLSes
     // Apple requires the completion handler to be called on the main queue. It was stashed by
     // `stashBackgroundSessionCompletionHandler` (static), see "Background URLSession relaunch
     // events" above.
-    DispatchQueue.main.async {
+    DispatchQueue.main.async { [weak self] in
+      // LD-0002 (#262 review 2): iOS may suspend the app as soon as this handler is called. The
+      // completions before it may have run on the open path (a background relaunch starts with
+      // the gate open until the launch seed closes it), so quiesce first when no assertion holds
+      // background time: the handler call is the last step.
+      if let self, !self.executionGate.canStartSQLiteWork {
+        self.quiesceSQLiteBeforeBackgroundTimeEnds(reason: "url-session-events-finished")
+      }
       Self.takeBackgroundSessionCompletionHandler()?()
     }
   }

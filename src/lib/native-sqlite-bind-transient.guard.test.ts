@@ -111,8 +111,9 @@ describe('round 11 finding 6: no SQLITE_STATIC text/blob bind in the native modu
     // BackupManifestStore.purgeMismatchedStaged, which binds with the same
     // bindText (36 -> 35 in the engine).
     // LD-0002 (B5): replaceStagedChunks moved into
-    // BackupManifestStore.replaceStagedChunks, same bindText (35 -> 32).
-    expect((engine.match(/BackupManifestStore\.bindText\(/g) ?? []).length).toBeGreaterThanOrEqual(32);
+    // BackupManifestStore.replaceStagedChunks, same bindText (35 -> 32), and
+    // markStaged into BackupManifestStore.recordStaging (#262 review 4, 32 -> 26).
+    expect((engine.match(/BackupManifestStore\.bindText\(/g) ?? []).length).toBeGreaterThanOrEqual(26);
     expect(engine).not.toMatch(/\.utf8String, -1, nil\)/);
     const store = readFileSync(join(IOS, 'BackupManifestStore.swift'), 'utf8');
     expect(store).toMatch(/private static let transient = unsafeBitCast\(-1, to: sqlite3_destructor_type\.self\)/);

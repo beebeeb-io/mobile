@@ -154,6 +154,10 @@ final class BackupManifestHandle {
   /// any thread. Published after every open, withdrawn BEFORE every close (the
   /// two `self.db = nil` below), so an interrupt never reaches a freed handle.
   let interruptTarget: SQLiteInterruptTarget?
+  /// LD-0002 (#262 review 3): installed as the connection's progress handler
+  /// right after every open, so no statement runs on it while the execution
+  /// gate refuses, even one started from a `db` read before the gate closed.
+  let statementGate: SQLiteStatementGate?
 
   /// Round 9: every account deleted permanently in this process. Sticky for
   /// the life of the process (a deleted account cannot sign in again), so the
@@ -210,10 +214,12 @@ final class BackupManifestHandle {
     now: @escaping () -> Int64 = BackupManifestStore.currentMs,
     onFencedWrite: @escaping (String, UInt64?, UInt64) -> Void = { _, _, _ in },
     interruptTarget: SQLiteInterruptTarget? = nil,
+    statementGate: SQLiteStatementGate? = nil,
     prepareSchema: @escaping (OpaquePointer) -> Void
   ) {
     self.path = path
     self.interruptTarget = interruptTarget
+    self.statementGate = statementGate
     self.writeFence = ManifestWriteFence(onDrop: onFencedWrite)
     self.pendingReset = pendingReset
     if let discardPending {
@@ -323,6 +329,9 @@ final class BackupManifestHandle {
     // SQLITE_BUSY instead of interleaving as the two copies did. Wait for it
     // instead of failing (JS sets the same in `BackupDatabase.migrate`).
     exsqlite3_busy_timeout(opened, Self.busyTimeoutMs)
+    if let statementGate {
+      exsqlite3_progress_handler(opened, SQLiteStatementGate.progressOps, manifestStatementProgress, statementGate.progressContext)
+    }
     // WAL for concurrent access with the JS layer. Its result is not the
     // check: another connection can briefly hold the lock a mode change
     // needs. The schema read below is.
@@ -564,6 +573,12 @@ final class BackupManifestHandle {
     let failure = openIfClosed()
     return FinishResult(ok: true, unlinked: recovered.unlinked, reopened: failure == nil, reopenFailure: failure)
   }
+}
+
+/// LD-0002 (#262 review 3): the manifest connection's progress handler (see
+/// `SQLiteStatementGate`): non-zero aborts the running statement.
+private let manifestStatementProgress: @convention(c) (UnsafeMutableRawPointer?) -> Int32 = { context in
+  SQLiteStatementGate.shouldAbort(context: context)
 }
 
 /// Task 1667 round 6: what an entry point that needs the manifest

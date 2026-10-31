@@ -43,8 +43,8 @@ export const STORE_WRITES = [
   'resetInPlace', 'migrate',
   'keepInFlightUploads', 'recordInFlightComplete', 'resolveKeptInFlight', 'purgeAllStaged', 'clearStagedForRestage',
   'purgeMismatchedStaged', 'restageMismatchedRow',
-  // LD-0002 (B5): moved out of the engine, one transaction.
-  'replaceStagedChunks',
+  // LD-0002 (B5, #262 review 4): moved out of the engine, one transaction each.
+  'replaceStagedChunks', 'recordStaging',
 ];
 
 /** The handle's reset / recovery / open: these ADVANCE the fence (or open the file). */

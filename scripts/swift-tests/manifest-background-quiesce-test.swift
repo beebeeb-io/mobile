@@ -24,6 +24,11 @@ import ManifestSQLite
 //       close waits for an interrupt in flight and never frees it
 //   m5  B5: a chunk replace interrupted on chunk 2 changes nothing (old rows
 //       intact, no partial set); an uninterrupted one replaces them all
+//   m6  #262 review 3: with the gate closed the connection's progress handler
+//       aborts a statement started from a `db` read before the closure (an
+//       interrupt is cleared once no statement runs); a completion write runs
+//   m7  #262 review 4: an interrupted staging leaves neither the staged row
+//       nor chunk rows
 
 var failures: [String] = []
 var total = 0
@@ -301,6 +306,95 @@ do {
   expect(BackupManifestStore.replaceStagedChunks(db, assetId: "asset-1", fileId: "new-file", chunkPaths: newPaths),
          "m5: the retried replace succeeds")
   expect(strings(db, chunksSQL) == newPaths, "m5: and replaces the set completely")
+}
+
+// MARK: - m6 #262 review 3: the statement gate stops what an interrupt misses
+
+/// The handle's progress handler, installed as the engine installs it.
+do {
+  let gate = BackupExecutionGate(foreground: false)
+  let grace = gate.beginAssertion(.backgroundGrace)
+  let statements = SQLiteStatementGate(gate: gate)
+  let flag = PendingFlag()
+  let handle = BackupManifestHandle(
+    path: root.appendingPathComponent("m6.db").path,
+    pendingReset: flag.flag,
+    interruptTarget: SQLiteInterruptTarget { exsqlite3_interrupt($0) },
+    statementGate: statements,
+    prepareSchema: prepareSchema
+  )
+  expect(handle.openIfClosed() == nil, "m6 setup: open with the statement gate")
+  // A block that read `db` while the gate was open, and starts its NEXT long
+  // statement after the closure (an interrupt is cleared once no statement
+  // runs, so it would not stop this one).
+  let grabbed = handle.connection(admittedBy: gate)!
+  _ = gate.expire()
+  gate.endAssertion(grace)
+  let rc = Box<Int32>(-1)
+  let finished = DispatchSemaphore(value: 0)
+  let begun = Date()
+  Thread {
+    var stmt: OpaquePointer?
+    if exsqlite3_prepare_v2(grabbed, endlessRead, -1, &stmt, nil) == SQLITE_OK { rc.set(exsqlite3_step(stmt)) }
+    exsqlite3_finalize(stmt)
+    finished.signal()
+  }.start()
+  let stopped = finished.wait(timeout: .now() + 1) == .success
+  let elapsed = Date().timeIntervalSince(begun)
+  if !stopped {
+    // Red path only: stop it so the run does not wait minutes behind it.
+    exsqlite3_interrupt(grabbed)
+    _ = finished.wait(timeout: .now() + 5)
+  }
+  expect(stopped && rc.get == SQLITE_INTERRUPT, "m6 (#3): a statement started after the closure on a grabbed connection aborts (rc \(rc.get))")
+  expect(elapsed < 0.5, "m6 (#3): at once, with no interrupt (elapsed \(elapsed))")
+
+  let write = gate.beginAssertion(.completionWrite)
+  let admittedRead = statements.withCompletionWrite(write) { () -> Int in
+    guard let db = handle.connection(admittedBy: gate, completionWrite: statements.completionWrite) else { return -2 }
+    return scalar(db, "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 100000) SELECT count(*) FROM c")
+  }
+  expect(admittedRead == 100000, "m6 (B2): a completion write under its own assertion runs to the end (got \(admittedRead))")
+  gate.endAssertion(write)
+  gate.setForeground(true)
+  expect(scalar(handle.db!, "SELECT 1") == 1, "m6: foreground: statements run again")
+}
+
+// MARK: - m7 #262 review 4: the staged row and its chunks land together
+
+do {
+  let target = SQLiteInterruptTarget { exsqlite3_interrupt($0) }
+  let (handle, _) = makeHandle("m7.db", target: target)
+  let db = handle.db!
+  expect(exsqlite3_exec(db, """
+    INSERT INTO backup_assets (local_asset_id, created_at, asset_type, status) VALUES ('asset-7', '2026-10-30', 'photo', 'pending_upload');
+    """, nil, nil, nil) == SQLITE_OK, "m7 setup: a pending asset")
+  expect(exsqlite3_create_function_v2(db, "bb_interrupt", 0, SQLITE_UTF8, nil, interruptFunction, nil, nil, nil) == SQLITE_OK,
+         "m7 setup: interrupt function")
+  expect(exsqlite3_exec(db, """
+    CREATE TEMP TABLE IF NOT EXISTS bb_rows(x);
+    DELETE FROM bb_rows;
+    WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r WHERE x < 50) INSERT INTO bb_rows SELECT x FROM r;
+    CREATE TEMP TRIGGER bb_interrupt_stage BEFORE INSERT ON backup_upload_chunks
+    WHEN NEW.chunk_index = 1 AND NEW.local_asset_id = 'asset-7'
+    BEGIN SELECT bb_interrupt(); SELECT count(*) FROM bb_rows a, bb_rows b; END;
+    """, nil, nil, nil) == SQLITE_OK, "m7 setup: trigger")
+  let record = {
+    BackupManifestStore.recordStaging(
+      db, assetId: "asset-7", fileId: "file-7", nameEncrypted: "n", mimeType: "image/jpeg", isMedia: true,
+      originalSize: 10, chunkPaths: ["/s/0", "/s/1", "/s/2"], stagedDir: "/s", stagedAccountId: "acct", nowMs: 1
+    )
+  }
+  expect(!record(), "m7 (#4): the interrupted staging reports failure")
+  let status = strings(db, "SELECT status || ':' || COALESCE(staged_file_id, '-') || ':' || COALESCE(staged_chunk_count, 0) FROM backup_assets WHERE local_asset_id = 'asset-7'")
+  expect(status == ["pending_upload:-:0"], "m7 (#4): the asset row is NOT staged without its chunk rows (got \(status))")
+  expect(scalar(db, "SELECT COUNT(*) FROM backup_upload_chunks WHERE local_asset_id = 'asset-7'") == 0, "m7 (#4): no chunk row either")
+  exsqlite3_exec(db, "DROP TRIGGER bb_interrupt_stage", nil, nil, nil)
+  expect(record(), "m7: the retried staging succeeds")
+  expect(strings(db, "SELECT status || ':' || staged_file_id || ':' || staged_chunk_count FROM backup_assets WHERE local_asset_id = 'asset-7'") == ["staged_upload:file-7:3"],
+         "m7: staged with its count")
+  expect(scalar(db, "SELECT COUNT(*) FROM backup_upload_chunks WHERE local_asset_id = 'asset-7' AND server_file_id = 'file-7'") == 3,
+         "m7: and its three chunk rows")
 }
 
 if failures.isEmpty {
