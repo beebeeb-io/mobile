@@ -77,3 +77,14 @@ export function photoPreviewStorageLine(summary: PhotoPreviewSummary | null): st
   if (!summary || !(summary.count > 0)) return null;
   return `Photo previews: ${formatBytes(Math.max(0, summary.total_bytes))}`;
 }
+
+/**
+ * A run stopped because the account's Beebeeb storage is full (the server refused
+ * the preview PUT with 413 `quota_exceeded`). One sentence for the whole run: every
+ * remaining photo would be refused the same way, and the fix is storage, not a
+ * smaller size. Same tone and wording as the upload refusal in `friendlyError`.
+ */
+export function previewQuotaExceededMessage(done: number): string {
+  const made = done > 0 ? `${done.toLocaleString()} previews made; the rest could not be made. ` : '';
+  return `${made}This account has reached its storage limit. Free up space to make the remaining previews.`;
+}

@@ -245,3 +245,36 @@ describe('compare samples are written under a plaintext lease', () => {
     }
   });
 });
+
+// Task 260 (P2-2) — the server sends 413 for two unrelated refusals. A preview
+// over the wire cap is this photo's size; a PUT that would exceed the plan's
+// quota is answered `{"error":"quota_exceeded",...}` (server #372) and applies to
+// every remaining photo. Blaming the size for the second one tells the person to
+// pick a smaller size, which cannot help, and fails each photo in turn.
+describe('a preview quota 413 is classified by the body, not by the status alone', () => {
+  const put = () => helperBody('photoPreviewEncryptAndPut');
+  const parse = () => helperBody('photoPreviewServerErrorCode');
+
+  test('the refusal body is read, not discarded', () => {
+    expect(put()).toContain('let (body, response) = try await URLSession.shared.data(for: request)');
+    expect(put()).not.toContain('let (_, response)');
+    expect(put()).toContain('photoPreviewServerErrorCode(body)');
+  });
+
+  test('the helper reads the server\'s typed error code and has no opinion otherwise', () => {
+    const p = parse();
+    expect(p).toContain('JSONSerialization.jsonObject(with: body)');
+    expect(p).toContain('object["error"] as? String');
+    expect(p).toContain('guard !body.isEmpty');
+  });
+
+  test('quota_exceeded maps to preview_quota_exceeded; every other 413 stays preview_too_large', () => {
+    const b = put();
+    const at = b.indexOf('if statusCode == 413');
+    expect(at).toBeGreaterThan(-1);
+    const branch = b.slice(at, b.indexOf('preview_upload_failed', at));
+    expect(branch).toContain('serverError == "quota_exceeded" ? "preview_quota_exceeded" : "preview_too_large"');
+    // The local wire-cap check still reports a plain size error.
+    expect(b).toContain('throw photoPreviewError("preview_too_large", "Preview is larger than 8 MiB after encryption")');
+  });
+});
