@@ -1046,6 +1046,10 @@ export default function PhotosScreen() {
           is_request_upload: !!p.file_request_id || !!p.wrapped_content_key,
           has_thumbnail: p.has_thumbnail,
           thumbnail_bytes: p.thumbnail_bytes,
+          has_preview: p.has_preview,
+          preview_format: p.preview_format ?? null,
+          preview_px: p.preview_px ?? null,
+          preview_bytes: p.preview_bytes ?? null,
           thumbnail_uri: thumbnailUris[p.id] ?? null,
           local_asset_id: photoKitAssetMap.get(p.id) ?? null,
         })),
@@ -1066,6 +1070,10 @@ export default function PhotosScreen() {
         // photo/video from the downloaded plaintext (undefined ⇒ skip).
         hasThumbnail: entry.has_thumbnail,
         thumbnailBytes: entry.thumbnail_bytes,
+        hasPreview: entry.has_preview,
+        previewFormat: entry.preview_format ?? null,
+        previewPx: entry.preview_px ?? null,
+        previewBytes: entry.preview_bytes ?? null,
       });
     },
     [navigation, decryptedMimeTypes, decryptedNames, flatPhotos, performanceStorageProfile, photoKitAssetMap, thumbnailUris],

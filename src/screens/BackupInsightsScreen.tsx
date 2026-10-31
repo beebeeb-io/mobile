@@ -54,7 +54,7 @@ import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 let MediaLibrary: { getAssetsAsync: (opts: { first: number; mediaType?: string[] }) => Promise<{ totalCount: number }>; MediaType?: { photo: string; video: string } } = {
   getAssetsAsync: async () => ({ totalCount: 0 }),
 };
-try { MediaLibrary = require('expo-media-library'); } catch {}
+try { MediaLibrary = require('expo-media-library/legacy'); } catch {}
 
 type C = Colors;
 

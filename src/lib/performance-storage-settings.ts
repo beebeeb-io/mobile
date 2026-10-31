@@ -20,8 +20,7 @@ export const DEFAULT_PERFORMANCE_STORAGE_SETTINGS: PerformanceStorageSettings = 
   profile: 'balanced',
 };
 
-// Task 0552: normal thumbnails use the user's Thumbnail Quality setting. This
-// setting controls fetch behaviour and whether Preview uses an extra large tier:
+// Task 0552: this setting controls fetch behaviour and whether Preview uses an extra large tier:
 //   - light    → remote thumbnails fetch only when a tile scrolls into view
 //   - balanced → normal thumbnails prefetch around the viewport (default)
 //   - smooth   → balanced grid behaviour plus large preview thumbnails on tap

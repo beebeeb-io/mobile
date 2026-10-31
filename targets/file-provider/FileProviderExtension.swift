@@ -751,17 +751,24 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
   // MARK: - Streaming upload
 
-  /// Plaintext chunk size used for File Provider uploads. iOS gives File
-  /// Provider extensions ~50 MB of resident memory; 1 MB plaintext keeps the
-  /// per-chunk allocation (plaintext + AES-GCM ciphertext + URLSession copy)
-  /// well under that even with autorelease drift.
-  private static let uploadChunkSizeBytes = 1 * 1024 * 1024
+  /// Ceiling on the core-planned plaintext chunk size. iOS gives File Provider
+  /// extensions ~50 MB of resident memory; each chunk lives as plaintext,
+  /// ciphertext and a URLSession copy, so 4 MiB (the core ladder's minimum)
+  /// stays well under that. The download side already decrypts 4 MiB chunks
+  /// the same way. Chunks go up one at a time: concurrent PUTs to one upload
+  /// session were seen to go unanswered by the server.
+  private static let uploadChunkSizeCapBytes = 4 * 1024 * 1024
+
+  /// Attempts per chunk PUT, as in the app's own uploader. Without a retry one
+  /// dropped request threw away the whole upload and Files restarted it from
+  /// the first byte.
+  private static let maxAttemptsPerChunk = 4
 
   /// Streams a plaintext file to the v2 chunked-upload endpoints. Reads one
   /// chunk at a time via `FileHandle`, encrypts via `CryptoBridge`, and PUTs
   /// it to the server. No full-file `Data` buffer ever exists in the
   /// extension's heap — the only steady-state allocation is the per-chunk
-  /// plaintext/ciphertext pair (~2 MB combined).
+  /// plaintext/ciphertext pair.
   ///
   /// `progressBase` + `progressSpan` are written into `progress` as upload
   /// advances; callers pick the slice so init/finalize remain visible in the
@@ -785,7 +792,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       throw NSFileProviderError(.noSuchItem)
     }
 
-    let chunkSize = Self.uploadChunkSizeBytes
+    let plan = try planChunks(fileSizeBytes: UInt64(fileSize), profile: "mobile")
+    let chunkSize = min(Int(plan.chunkSizeBytes), Self.uploadChunkSizeCapBytes)
     let chunkCount = max(1, Int((fileSize + Int64(chunkSize) - 1) / Int64(chunkSize)))
 
     let session = try await ApiClient.shared.initUploadV2(
@@ -826,7 +834,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         throw NSFileProviderError(.serverUnreachable)
       }
 
-      try await ApiClient.shared.uploadChunkV2(
+      try await uploadChunkWithRetry(
         uploadSessionId: session.upload_session_id,
         index: index,
         encryptedChunk: encrypted,
@@ -840,6 +848,44 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     try Task.checkCancellation()
     return try await ApiClient.shared.completeUploadV2(uploadSessionId: session.upload_session_id, expectedUser: expectedUser)
+  }
+
+  /// PUTs one chunk, retrying a timeout, a dropped connection, 429 or 5xx with
+  /// exponential backoff (1, 2, 4 s). Anything else — auth, account mismatch,
+  /// another 4xx, cancellation — fails at once.
+  private static func uploadChunkWithRetry(
+    uploadSessionId: String,
+    index: Int,
+    encryptedChunk: Data,
+    expectedUser: String?
+  ) async throws {
+    var attempt = 0
+    while true {
+      attempt += 1
+      do {
+        try await ApiClient.shared.uploadChunkV2(
+          uploadSessionId: uploadSessionId,
+          index: index,
+          encryptedChunk: encryptedChunk,
+          expectedUser: expectedUser
+        )
+        return
+      } catch {
+        guard attempt < Self.maxAttemptsPerChunk, isRetryableChunkError(error) else { throw error }
+        NSLog("[Beebeeb] chunk \(index) attempt \(attempt) failed, retrying: \(error)")
+        try await Task.sleep(nanoseconds: UInt64(1 << (attempt - 1)) * 1_000_000_000)
+      }
+    }
+  }
+
+  private static func isRetryableChunkError(_ error: Error) -> Bool {
+    if case ApiError.statusCode(let status) = error {
+      return status == 429 || status >= 500
+    }
+    if let urlError = error as? URLError {
+      return urlError.code != .cancelled
+    }
+    return false
   }
 
   /// True when iOS would classify `type` as photo/video content. Used to set

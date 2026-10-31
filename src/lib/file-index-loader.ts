@@ -22,7 +22,7 @@ import { ingestTree } from './shared-folder-tree';
  *     called getFileIndex on EVERY focus of the Photos tab: switching back to
  *     the tab, and closing any screen stacked over it (Preview, ShareSheet,
  *     any modal). The settings screens that need the index (Advanced, Photo
- *     library, Thumbnail quality) fetched it again on every mount, and
+ *     library) fetched it again on every mount, and
  *     overlapping callers each sent their own request.
  *
  * What this module does instead:

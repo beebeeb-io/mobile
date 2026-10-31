@@ -107,6 +107,177 @@ private func cgImagePropertyOrientation(
   }
 }
 
+// MARK: - Photo preview samples (settings compare view)
+
+/// Samples are plaintext, so they live only under Library/Caches (not backed up).
+private func photoPreviewSamplesDirectory() throws -> URL {
+  let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+  let dir = caches.appendingPathComponent("beebeeb-previews-v1/samples", isDirectory: true)
+  try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  // Drop stale samples from earlier compare sessions.
+  let cutoff = Date().addingTimeInterval(-3600)
+  let files = (try? FileManager.default.contentsOfDirectory(
+    at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+  for url in files {
+    let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    if let modified, modified < cutoff { try? FileManager.default.removeItem(at: url) }
+  }
+  return dir
+}
+
+/// Photos measured by one size estimate.
+private let photoPreviewEstimateSampleCount = 10
+
+private let photoPreviewAllowedPx = PhotoPreviewSettingStore.allowedPx
+
+private func validatePhotoPreviewPx(_ px: Int) throws {
+  guard photoPreviewAllowedPx.contains(px) else {
+    throw NSError(domain: "BeebeebPhotoPreview", code: 5,
+                  userInfo: [NSLocalizedDescriptionKey: "Unsupported preview size"])
+  }
+}
+
+private func photoPreviewFormat(_ raw: String) throws -> PhotoPreviewFormat {
+  guard let format = PhotoPreviewFormat(rawValue: raw) else {
+    throw NSError(domain: "BeebeebPhotoPreview", code: 1,
+                  userInfo: [NSLocalizedDescriptionKey: "Unsupported preview format"])
+  }
+  return format
+}
+
+/// Loads the original image bytes of a library photo (iCloud allowed) as an ImageIO source.
+func photoPreviewImageSource(localIdentifier: String) async throws -> CGImageSource {
+  guard let phAsset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject else {
+    throw NSError(domain: "BeebeebPhotoPreview", code: 2,
+                  userInfo: [NSLocalizedDescriptionKey: "Photo asset not found in library"])
+  }
+  let data: Data = try await withCheckedThrowingContinuation { continuation in
+    let options = PHImageRequestOptions()
+    options.version = .original
+    options.isNetworkAccessAllowed = true
+    options.deliveryMode = .highQualityFormat
+    PHImageManager.default().requestImageDataAndOrientation(for: phAsset, options: options) { data, _, _, info in
+      beebeebCryptoPHKitCallbackQueue.async {
+        if let error = info?[PHImageErrorKey] as? Error {
+          continuation.resume(throwing: error)
+        } else if let data {
+          continuation.resume(returning: data)
+        } else {
+          continuation.resume(throwing: NSError(domain: "BeebeebPhotoPreview", code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "Failed to load photo data from library"]))
+        }
+      }
+    }
+  }
+  guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+    throw NSError(domain: "BeebeebPhotoPreview", code: 4,
+                  userInfo: [NSLocalizedDescriptionKey: "Photo data is not a readable image"])
+  }
+  return source
+}
+
+/// File size of the photo's original resource, from PhotoKit metadata. nil when unavailable.
+func photoOriginalFileSize(localIdentifier: String) -> Int? {
+  guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject else {
+    return nil
+  }
+  let resources = PHAssetResource.assetResources(for: asset)
+  guard let original = resources.first(where: { $0.type == .photo })
+    ?? resources.first(where: { $0.type == .alternatePhoto })
+    ?? resources.first
+  else { return nil }
+  if let size = original.value(forKey: "fileSize") as? NSNumber, size.intValue > 0 { return size.intValue }
+  return nil
+}
+
+// MARK: - Photo preview upload / download
+
+/// Encrypted preview cap on the wire (nonce + ciphertext + tag); the server answers 413 above it.
+private let photoPreviewMaxEncryptedBytes = 8 * 1024 * 1024
+/// Largest encoded preview that still fits the cap once the nonce (12) and tag (16) are added.
+let photoPreviewMaxEncodedBytes = photoPreviewMaxEncryptedBytes - 28
+
+/// Encrypt an encoded preview with the file key and PUT it. Returns the wire size.
+/// Shared by the module function and the backup engine's after-upload hook.
+func photoPreviewEncryptAndPut(
+  fileKey: FileKeyHandle, apiUrl: String, token: String, fileId: String,
+  data: Data, format: PhotoPreviewFormat, px: Int, expectedUser: String?
+) async throws -> Int {
+  let enc = try fileKey.encryptChunk(plaintext: data)
+  var wire = Data(capacity: enc.nonce.count + enc.ciphertext.count)
+  wire.append(enc.nonce)
+  wire.append(enc.ciphertext)
+  guard wire.count <= photoPreviewMaxEncryptedBytes else {
+    throw photoPreviewError("preview_too_large", "Preview is larger than 8 MiB after encryption")
+  }
+
+  guard let url = URL(string: "\(apiUrl)/api/v1/files/\(fileId)/thumbnail/preview?format=\(format.rawValue)&px=\(px)") else {
+    throw photoPreviewError("preview_bad_url", "Invalid preview URL")
+  }
+  var request = URLRequest(url: url)
+  ProvenanceHeaders.apply(to: &request)
+  request.httpMethod = "PUT"
+  request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+  // Same account check as every other engine mutation: the server refuses (409
+  // account_mismatch) a session that is not the account the key belongs to.
+  if let expectedUser, !expectedUser.isEmpty {
+    request.setValue(expectedUser, forHTTPHeaderField: "X-Beebeeb-Expected-User")
+  }
+  request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+  request.httpBody = wire
+
+  let (_, response) = try await URLSession.shared.data(for: request)
+  let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+  guard (200..<300).contains(statusCode) else {
+    NSLog("[BeebeebCrypto] Photo preview upload HTTP \(statusCode)")
+    throw photoPreviewError(statusCode == 413 ? "preview_too_large" : "preview_upload_failed",
+                            "Preview upload failed (HTTP \(statusCode))")
+  }
+  return wire.count
+}
+
+/// Called by the backup engine once an image upload has fully completed. Best effort:
+/// every failure is logged, nothing is thrown, the manifest is never touched and no
+/// engine lock is held (the caller is a detached utility task).
+enum PhotoPreviewAfterUpload {
+  static func run(
+    phAssetId: String, serverFileId: String, fileKey: FileKeyHandle,
+    authToken: String, baseURL: String, accountId: String
+  ) async {
+    // Only the batch's own account's setting counts; another account's is "disabled".
+    guard let setting = PhotoPreviewSettingStore.current(forAccount: accountId) else { return }
+    do {
+      let source = try await photoPreviewImageSource(localIdentifier: phAssetId)
+      let encoded = try PhotoPreviewEncoder.encodeFittingCap(
+        source: source, format: setting.format, longEdge: setting.px, maxBytes: photoPreviewMaxEncodedBytes)
+      _ = try await photoPreviewEncryptAndPut(
+        fileKey: fileKey, apiUrl: baseURL, token: authToken, fileId: serverFileId,
+        data: encoded.data, format: setting.format, px: setting.px, expectedUser: accountId)
+    } catch {
+      NSLog("[PhotoPreview] After-upload preview failed: \(error.localizedDescription)")
+    }
+  }
+}
+
+/// Decrypted previews are plaintext, so they are written only under Library/Caches/beebeeb-previews-v1.
+/// Anything outside that directory (or a path that escapes it) is refused.
+private func photoPreviewCachePath(_ destPath: String) throws -> URL {
+  let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+  let root = caches.appendingPathComponent("beebeeb-previews-v1", isDirectory: true)
+    .standardizedFileURL.resolvingSymlinksInPath()
+  let dest = URL(fileURLWithPath: destPath).standardizedFileURL
+  let parent = dest.deletingLastPathComponent().resolvingSymlinksInPath()
+  guard parent.path == root.path || parent.path.hasPrefix(root.path + "/") else {
+    throw Exception(name: "PhotoPreviewError", description: "Preview destination is outside the preview cache",
+                    code: "preview_bad_destination")
+  }
+  return dest
+}
+
+private func photoPreviewError(_ code: String, _ message: String) -> Exception {
+  Exception(name: "PhotoPreviewError", description: message, code: code)
+}
+
 private func isVideoMediaHint(_ value: String?) -> Bool {
   guard let value = value?.lowercased() else { return false }
   return value.hasPrefix("video/") ||
@@ -2379,6 +2550,8 @@ public class BeebeebCryptoModule: Module {
       // on every sign-out path. Placed AFTER the marker-failure check so the
       // fail-closed marker stays the first thing this purge reports.
       URLCache.shared.removeAllCachedResponses()
+      // The mirrored photo preview setting belongs to the outgoing account.
+      PhotoPreviewSettingStore.clear()
       // Task 1593 round 6 (new-4, privacy consent) — a forced sign-out
       // (session expiry, account deleted elsewhere, a startup 401) reaches
       // this function but never the ordinary in-app `removeFileProviderAccess`
@@ -4987,6 +5160,155 @@ public class BeebeebCryptoModule: Module {
       }
       NSLog("[BeebeebCrypto] Photo-library \(variantLabel) thumbnail upload HTTP \(statusCode)")
       return false
+    }
+
+    AsyncFunction("uploadPhotoPreviewNative") { [self] (
+      handleId: Int, apiUrl: String, token: String,
+      fileId: String, localIdentifier: String?, sourcePath: String?,
+      format: String, px: Int, expectedUser: String?
+    ) async throws -> [String: Any] in
+      let masterKey = try self.getHandle(handleId)
+      let fmt = try photoPreviewFormat(format)
+      try validatePhotoPreviewPx(px)
+
+      let source: CGImageSource
+      if let localIdentifier, !localIdentifier.isEmpty {
+        source = try await photoPreviewImageSource(localIdentifier: localIdentifier)
+      } else if let sourcePath, !sourcePath.isEmpty {
+        guard let fromFile = CGImageSourceCreateWithURL(URL(fileURLWithPath: sourcePath) as CFURL, nil) else {
+          throw photoPreviewError("preview_bad_source", "Photo file is not a readable image")
+        }
+        source = fromFile
+      } else {
+        throw photoPreviewError("preview_bad_source", "No photo source given")
+      }
+
+      let encoded = try PhotoPreviewEncoder.encodeFittingCap(
+        source: source, format: fmt, longEdge: px, maxBytes: photoPreviewMaxEncodedBytes)
+      let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
+      let bytes = try await photoPreviewEncryptAndPut(
+        fileKey: fileKey, apiUrl: apiUrl, token: token, fileId: fileId,
+        data: encoded.data, format: fmt, px: px, expectedUser: expectedUser)
+      return ["bytes": bytes]
+    }
+
+    Function("setPhotoPreviewSetting") { (enabled: Bool, format: String, px: Int, accountId: String?) throws in
+      try PhotoPreviewSettingStore.save(enabled: enabled, format: format, px: px, accountId: accountId ?? "")
+    }
+
+    Function("clearPhotoPreviewSetting") { () in
+      PhotoPreviewSettingStore.clear()
+    }
+
+    AsyncFunction("downloadPhotoPreviewNative") { [self] (
+      handleId: Int, apiUrl: String, token: String,
+      fileId: String, destPath: String
+    ) async throws -> [String: Any] in
+      let masterKey = try self.getHandle(handleId)
+      let dest = try photoPreviewCachePath(destPath)
+      guard let url = URL(string: "\(apiUrl)/api/v1/files/\(fileId)/thumbnail/preview") else {
+        throw photoPreviewError("preview_bad_url", "Invalid preview URL")
+      }
+      var request = URLRequest(url: url)
+      ProvenanceHeaders.apply(to: &request)
+      request.httpMethod = "GET"
+      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+      let (body, response) = try await URLSession.shared.data(for: request)
+      guard let http = response as? HTTPURLResponse else {
+        throw photoPreviewError("preview_download_failed", "No HTTP response")
+      }
+      if http.statusCode == 404 {
+        throw photoPreviewError("preview_missing", "No preview for this file")
+      }
+      guard (200..<300).contains(http.statusCode) else {
+        throw photoPreviewError("preview_download_failed", "Preview download failed (HTTP \(http.statusCode))")
+      }
+
+      // nonce (12) || ciphertext || tag (16). A shorter body is truncated.
+      let nonceLength = 12
+      guard body.count > nonceLength + 16 else {
+        throw photoPreviewError("preview_corrupt", "Preview is truncated")
+      }
+      // Mirror of the upload cap (plus nonce and tag): anything larger is not a preview we wrote.
+      guard body.count <= photoPreviewMaxEncryptedBytes + 28 else {
+        throw photoPreviewError("preview_corrupt", "Preview is larger than the allowed size")
+      }
+      let plaintext: Data
+      do {
+        let fileKey = try masterKey.deriveFileKey(fileId: Data(fileId.utf8))
+        plaintext = try fileKey.decryptChunk(nonce: body.prefix(nonceLength), ciphertext: body.dropFirst(nonceLength))
+      } catch {
+        throw photoPreviewError("preview_corrupt", "Preview failed to decrypt")
+      }
+      try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try plaintext.write(to: dest, options: .atomic)
+
+      let headerFormat = http.value(forHTTPHeaderField: "X-Preview-Format") ?? ""
+      let headerPx = Int(http.value(forHTTPHeaderField: "X-Preview-Px") ?? "") ?? 0
+      return ["bytes": plaintext.count, "format": headerFormat, "px": headerPx]
+    }
+
+    AsyncFunction("encodePhotoPreviewSample") { (
+      localIdentifier: String, format: String, px: Int
+    ) async throws -> [String: Any] in
+      let fmt = try photoPreviewFormat(format)
+      try validatePhotoPreviewPx(px)
+      let source = try await photoPreviewImageSource(localIdentifier: localIdentifier)
+      let encoded = try PhotoPreviewEncoder.encode(source: source, format: fmt, longEdge: px)
+      let url = try photoPreviewSamplesDirectory()
+        .appendingPathComponent("sample-\(fmt.rawValue)-\(px)-\(UUID().uuidString).\(fmt.fileExtension)")
+      try encoded.data.write(to: url, options: .atomic)
+      return ["path": url.path, "bytes": encoded.data.count, "width": encoded.width, "height": encoded.height]
+    }
+
+    AsyncFunction("estimatePhotoPreviewBytes") { (
+      localIdentifiers: [String], format: String, px: Int
+    ) async throws -> [String: Any] in
+      let fmt = try photoPreviewFormat(format)
+      try validatePhotoPreviewPx(px)
+      var total = 0
+      var sampled = 0
+      for id in localIdentifiers.prefix(photoPreviewEstimateSampleCount) {
+        // A photo that cannot be read or encoded is skipped, not fatal.
+        let source: CGImageSource
+        do {
+          source = try await photoPreviewImageSource(localIdentifier: id)
+        } catch {
+          NSLog("[BeebeebCrypto] Preview estimate skipped \(id): photo fetch failed (PhotoKit/iCloud)")
+          continue
+        }
+        do {
+          let encoded = try PhotoPreviewEncoder.encode(source: source, format: fmt, longEdge: px)
+          total += encoded.data.count
+          sampled += 1
+        } catch {
+          NSLog("[BeebeebCrypto] Preview estimate skipped \(id): encode failed")
+        }
+      }
+      return ["averageBytes": sampled > 0 ? total / sampled : 0, "sampled": sampled]
+    }
+
+    AsyncFunction("originalPhotoForCompare") { (
+      localIdentifier: String, maxPx: Int
+    ) async throws -> [String: Any] in
+      guard maxPx >= 1 else {
+        throw NSError(domain: "BeebeebPhotoPreview", code: 6,
+                      userInfo: [NSLocalizedDescriptionKey: "Invalid maximum size"])
+      }
+      let source = try await photoPreviewImageSource(localIdentifier: localIdentifier)
+      // Quality 1.0: this copy is the baseline the previews are judged against, so it
+      // should add as little of its own loss as the JPEG container allows.
+      let encoded = try PhotoPreviewEncoder.encode(source: source, format: .jpeg, longEdge: maxPx, quality: 1.0)
+      let url = try photoPreviewSamplesDirectory()
+        .appendingPathComponent("original-\(maxPx)-\(UUID().uuidString).jpg")
+      try encoded.data.write(to: url, options: .atomic)
+      var result: [String: Any] = ["path": url.path, "width": encoded.width, "height": encoded.height]
+      // Size of the original file in the library (not of the downsampled copy above).
+      if let bytes = photoOriginalFileSize(localIdentifier: localIdentifier) {
+        result["originalBytes"] = bytes
+      }
+      return result
     }
   }
 }

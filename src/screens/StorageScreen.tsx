@@ -25,6 +25,7 @@ import { SCROLL_EDGE, ScrollEdgeBlur } from '../components/glass';
 import { spacing, type Colors } from '../theme';
 import { formatBytes } from '../lib/format';
 import {
+  getPhotoPreviewSummary,
   getSubscription,
   type StorageUsage,
   type Subscription,
@@ -38,6 +39,7 @@ import { accountGateFor, uploadsBlocked } from '../lib/account-state';
 import { useAccountState } from '../lib/account-state-context';
 import { AccountStatusCard } from '../components/onboarding/AccountStatusCard';
 import { useAuth } from '../lib/auth';
+import { photoPreviewStorageLine } from '../lib/photo-preview-copy';
 
 type C = Colors;
 
@@ -218,6 +220,8 @@ export default function StorageScreen() {
 
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [loading, setLoading] = useState(true);
+  // "Photo previews: X" — hidden when there are none or the server has no previews.
+  const [previewLine, setPreviewLine] = useState<string | null>(null);
   // Task 1746: the account-stage onboarding document, as status text (no purchase UI).
   const { document: accountDocument, gate: accountGate } = useAccountState();
 
@@ -258,6 +262,10 @@ export default function StorageScreen() {
       // Cold first-ever open (no cache) ends its spinner here.
       setLoading(false);
     })();
+
+    void getPhotoPreviewSummary()
+      .then((summary) => { if (!cancelled) setPreviewLine(photoPreviewStorageLine(summary)); })
+      .catch(() => {});
 
     return () => { cancelled = true; };
     // `userId` included: if this screen were ever to stay mounted across a
@@ -331,6 +339,11 @@ export default function StorageScreen() {
                 : <Text style={{ padding: 14, fontSize: 13, color: c.ink3 }}>Could not load storage info</Text>
               }
             </View>
+            {previewLine ? (
+              <Text style={[layout.noteText, { color: c.ink3 }]} testID="storage-photo-previews">
+                {previewLine}
+              </Text>
+            ) : null}
           </View>
 
           {/* Task 1746: the account's state in words, from the server's onboarding

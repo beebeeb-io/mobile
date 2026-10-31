@@ -43,6 +43,10 @@ export class SharedFileKeyNotExportableError extends Error { constructor() { sup
 let nativeSurface: Partial<SharedKeysNative> = {};
 let resolver: SharedKeyResolver | null = null;
 let nativeMaster: (() => number) | null = null;
+const vaultReadyListeners = new Set<() => void>();
+/** Called each time the unlocked master key becomes usable (after every unlock). Returns an unsubscribe. */
+export function onVaultKeysReady(listener: () => void): () => void { vaultReadyListeners.add(listener); return () => { vaultReadyListeners.delete(listener); }; }
+function notifyVaultKeysReady(): void { for (const l of [...vaultReadyListeners]) { try { l(); } catch { /* never breaks unlock */ } } }
 export function sharedMasterHandleId(): number { if (!nativeMaster) throw new Error('Vault is locked'); return nativeMaster(); }
 const ownerWrapLoaded = new Set<string>();
 const outcomes = new Map<string, SharedKeyOutcome>();
@@ -58,7 +62,7 @@ export function configureSharedKeys(native: Partial<SharedKeysNative>, api: Shar
   nativeSurface = native;
   clearSharedKeys();
   const r = createSharedKeyResolver({ ...api, native: { ...native, isSharedKeysNativeReady: () => native.isSharedKeysNativeReady?.() ?? false } as SharedKeysNative, masterHandleId, custody: custodyMemory, epoch: accountEpoch, now: Date.now });
-  nativeMaster = masterHandleId; setSharedKeyResolver(r); return r;
+  nativeMaster = masterHandleId; setSharedKeyResolver(r); notifyVaultKeysReady(); return r;
 }
 
 export function createSharedKeyResolver(p: SharedKeyPorts): SharedKeyResolver {
