@@ -132,16 +132,16 @@ export default function AdvancedSettingsScreen() {
         <Text style={[styles.sectionTitle, { color: c.ink3 }]}>Photos</Text>
         <TouchableOpacity
           style={[styles.card, { backgroundColor: c.paper2, borderColor: c.line }]}
-          onPress={() => navigation.navigate('ThumbnailQuality')}
+          onPress={() => navigation.navigate('PhotoPreviews')}
           accessibilityRole="button"
-          accessibilityLabel="Thumbnail quality settings"
+          accessibilityLabel="Photo previews settings"
         >
           <View style={styles.row}>
-            <Text style={[styles.rowTitle, { color: c.ink }]}>Thumbnail quality</Text>
+            <Text style={[styles.rowTitle, { color: c.ink }]}>Photo previews</Text>
             <Ionicons name="chevron-forward" size={18} color={c.ink3} />
           </View>
           <Text style={[styles.rowSub, { color: c.ink3 }]}>
-            Choose how sharp your saved thumbnails should be. Apply to existing photos.
+            Larger, sharper photos that open instantly. Choose format and size.
           </Text>
         </TouchableOpacity>
 

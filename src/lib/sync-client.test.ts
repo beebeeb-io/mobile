@@ -658,3 +658,71 @@ test('2236 request envelope survives a create op', async () => {
   expect(client.getNode('request-file')).toMatchObject(requestEnvelope2236);
   client.stop();
 });
+
+describe('photo preview fields', () => {
+  const previewOn = { has_preview: true, preview_format: 'heic', preview_px: 3840, preview_bytes: 900_000 };
+  const previewOff = { has_preview: false, preview_format: null, preview_px: null, preview_bytes: null };
+
+  test('a preview PUT file_update reaches the persisted index', async () => {
+    secureStore.set('bb_sync_last_seq', '5');
+    cachedIndex = { hash: 'h', storedAt: 1, seq: 5, files: [fileEntry()] };
+    getSyncOpsImpl = async (since) => since < 6 ? [{ seq_id: 6, op_type: 'file_update', payload: { id: 'file-1', ...previewOn } }] : [];
+    const client = new SyncClient();
+    try {
+      await client.start();
+      expect(client.getNode('file-1')).toMatchObject(previewOn);
+      await client.persistCacheNow();
+      expect(savedIndexCalls.at(-1)?.files[0]).toMatchObject(previewOn);
+    } finally { client.stop(); }
+  });
+
+  test('a preview DELETE carries explicit nulls; an unrelated update keeps the fields', async () => {
+    secureStore.set('bb_sync_last_seq', '5');
+    cachedIndex = { hash: 'h', storedAt: 1, seq: 5, files: [fileEntry(previewOn)] };
+    getSyncOpsImpl = async (since) => since < 6 ? [
+      { seq_id: 6, op_type: 'file_update', payload: { id: 'file-1', size_bytes: 7 } },
+    ] : [];
+    const client = new SyncClient();
+    try {
+      await client.start();
+      expect(client.getNode('file-1')).toMatchObject(previewOn);
+      client.applyRemoteOp({ seq_id: 7, op_type: 'file_update', payload: { id: 'file-1', ...previewOff } });
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(client.getNode('file-1')).toMatchObject(previewOff);
+      await client.persistCacheNow();
+      const row = savedIndexCalls.at(-1)?.files[0];
+      expect(row).toMatchObject(previewOff);
+      // Explicit nulls survive (so the loader cannot merge a stale server value back in).
+      expect('preview_format' in row).toBe(true);
+    } finally { client.stop(); }
+  });
+
+  test('a node that never learned the fields writes them as undefined (server value restored by the loader)', async () => {
+    getSnapshotImpl = async () => ({ seq_id: 5, nodes: [syncNode()] });
+    const client = new SyncClient();
+    try {
+      await client.start(); await client.persistCacheNow();
+      expect(savedIndexCalls.at(-1)?.files[0].has_preview).toBeUndefined();
+    } finally { client.stop(); }
+  });
+
+  test('fileEntryToSyncNode carries the preview fields', () => {
+    expect(fileEntryToSyncNode(fileEntry(previewOn))).toMatchObject(previewOn);
+  });
+});
+
+describe('preference_update sync op', () => {
+  test('reaches registered handlers; unknown op types stay ignored', async () => {
+    const { onPreferenceUpdateOp } = await import('./sync-client');
+    const seen: unknown[] = [];
+    const off = onPreferenceUpdateOp((p) => seen.push(p));
+    const client = new SyncClient();
+    try {
+      const payload = { key: 'photo_previews', value: { enabled: true, format: 'heic', px: 2560 } };
+      await client.applyRemoteOp({ seq_id: 1, op_type: 'preference_update', payload });
+      await client.applyRemoteOp({ seq_id: 2, op_type: 'something_new', payload: { key: 'photo_previews', value: {} } });
+      expect(seen).toEqual([payload]);
+      expect(client.getAllNodes()).toEqual([]);
+    } finally { off(); client.stop(); }
+  });
+});

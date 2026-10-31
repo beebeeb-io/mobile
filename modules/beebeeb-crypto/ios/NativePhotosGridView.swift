@@ -376,6 +376,10 @@ public final class NativePhotosGridView: ExpoView {
   }
 
   private let columns: [Int] = [2, 4, 7, 12]
+
+  static func thumbnailVariant(forColumns columns: Int) -> String {
+    ThumbnailVariantPolicy.variant(forColumns: columns)
+  }
   private var currentColumns = 4
   private var pinchStartColumns = 4
   private var pinchTargetColumns = 4
@@ -1266,11 +1270,12 @@ extension NativePhotosGridView: UICollectionViewDataSourcePrefetching {
     ])
     let side = collectionView.bounds.width / CGFloat(max(currentColumns, 1))
     let targetSize = CGSize(width: side, height: side)
+    let variant = Self.thumbnailVariant(forColumns: currentColumns)
     for item in items where !item.hideThumbnail {
       let fileId = item.id
       guard thumbnailPrefetchTasks[fileId] == nil else { continue }
       let task = Task(priority: .utility) { [weak self] in
-        _ = try? await ThumbnailService.shared.getThumbnail(for: fileId, targetSize: targetSize)
+        _ = try? await ThumbnailService.shared.getThumbnail(for: fileId, targetSize: targetSize, variant: variant)
         guard !Task.isCancelled else { return }
         await MainActor.run { [weak self] in
           self?.thumbnailPrefetchTasks[fileId] = nil
@@ -1335,6 +1340,9 @@ private final class PhotoGridCell: UICollectionViewCell {
   private var representedId: String?
   private var inFlightLoadId: UUID?
   private var thumbnailLoadTask: Task<Void, Never>?
+  /// Variant of the request in flight, and whether the image on screen is the small one.
+  private var loadingVariant: String?
+  private var showingSmall = false
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -1435,6 +1443,8 @@ private final class PhotoGridCell: UICollectionViewCell {
       thumbnailLoadTask?.cancel()
       thumbnailLoadTask = nil
       inFlightLoadId = nil
+      loadingVariant = nil
+      showingSmall = false
       imageView.image = nil
     }
 
@@ -1463,21 +1473,32 @@ private final class PhotoGridCell: UICollectionViewCell {
     let cellSize = max(bounds.width, bounds.height)
     let targetSize = CGSize(width: cellSize, height: cellSize)
 
+    let variant = NativePhotosGridView.thumbnailVariant(forColumns: columns)
+    let upgrade = !identifierChanged
+      && ThumbnailVariantPolicy.needsUpgrade(showingSmall: showingSmall, wanted: variant)
+
     if !identifierChanged, thumbnailLoadTask != nil {
-      RuntimeTrace.event("photos.native.cell.skip_duplicate_task", ["fileId": fileId])
-      return
+      // A small request still running after the grid moved to medium density is
+      // replaced; the reverse (medium running, grid dense again) is left alone.
+      if loadingVariant == variant || variant != "medium" {
+        RuntimeTrace.event("photos.native.cell.skip_duplicate_task", ["fileId": fileId])
+        return
+      }
+      thumbnailLoadTask?.cancel()
+      thumbnailLoadTask = nil
     }
-    if !identifierChanged, imageView.image != nil {
+    if !identifierChanged, imageView.image != nil, !upgrade {
       RuntimeTrace.event("photos.native.cell.skip_existing_image", ["fileId": fileId])
       return
     }
 
     let loadTaskId = UUID()
     inFlightLoadId = loadTaskId
+    loadingVariant = variant
 
     let task = Task(priority: .utility) { [weak self] in
       do {
-        let resolved = try await ThumbnailService.shared.getThumbnail(for: fileId, targetSize: targetSize)
+        let resolved = try await ThumbnailService.shared.getThumbnail(for: fileId, targetSize: targetSize, variant: variant)
         try Task.checkCancellation()
         let image = UIImage(contentsOfFile: resolved.fileURL.path)
         try Task.checkCancellation()
@@ -1489,7 +1510,10 @@ private final class PhotoGridCell: UICollectionViewCell {
             self.inFlightLoadId == loadTaskId
           else { return }
           if let image {
+            // The previous (small) image stays up until this one is decoded: no blank flash.
             self.imageView.image = image
+            self.showingSmall = resolved.source != .photoKit
+              && resolved.fileURL.lastPathComponent.contains(".small.")
             RuntimeTrace.event("photos.native.cell.image_ready", [
               "fileId": fileId,
               "source": resolved.source.rawValue
@@ -1497,6 +1521,7 @@ private final class PhotoGridCell: UICollectionViewCell {
           }
           self.thumbnailLoadTask = nil
           self.inFlightLoadId = nil
+          self.loadingVariant = nil
         }
       } catch is CancellationError {
         // Reuse or prefetch cancellation; keep the current placeholder/image.
@@ -1514,6 +1539,7 @@ private final class PhotoGridCell: UICollectionViewCell {
           else { return }
           self.thumbnailLoadTask = nil
           self.inFlightLoadId = nil
+          self.loadingVariant = nil
         }
       }
     }

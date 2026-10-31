@@ -2511,6 +2511,7 @@ export default function FilesScreen() {
         void Promise.allSettled([
           seedPreview,
           thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes)),
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes, 'small')),
           thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, info.mimeType, getFileKeyBytes, 'large')),
         ]).then(() => {
           const leaf = copyUri.split('/').pop() ?? '';
@@ -2628,6 +2629,10 @@ export default function FilesScreen() {
               // owner media file from the downloaded plaintext (undefined ⇒ skip).
               hasThumbnail: f.has_thumbnail,
               thumbnailBytes: f.thumbnail_bytes,
+              hasPreview: f.has_preview,
+              previewFormat: f.preview_format ?? null,
+              previewPx: f.preview_px ?? null,
+              previewBytes: f.preview_bytes ?? null,
               // File-request uploads (0643): pass the sealed-key fields so Preview
               // decrypts with the request content key, not the master-key path.
               fileRequestId: f.file_request_id ?? null,
@@ -2759,6 +2764,7 @@ export default function FilesScreen() {
         void Promise.allSettled([
           seedPreview,
           thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes)),
+          thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes, 'small')),
           thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, asset.uri, asset.mimeType ?? null, getFileKeyBytes, 'large')),
         ]);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -3012,6 +3018,7 @@ export default function FilesScreen() {
           void Promise.allSettled([
             seedPreview,
             thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes)),
+            thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'small')),
             thumbnailUploadQueue.run(() => generateAndUploadThumbnail(uploaded.id, copyUri, asset.mimeType ?? 'image/jpeg', getFileKeyBytes, 'large')),
           ]).then(() => discardUploadCacheCopy(copyUri, asset.uri));
           successCount += 1;

@@ -9,7 +9,19 @@ public actor ThumbnailService {
 
   private var cache: [CacheKey: URL] = [:]
 
-  private var inFlight: [FileId: Task<ResolvedThumbnail, Error>] = [:]
+  private var inFlight: [String: Task<ResolvedThumbnail, Error>] = [:]
+
+  /// Missing-small memory for this session (see `SmallVariantTracker`).
+  private var smallTracker = SmallVariantTracker()
+
+  private func inFlightKey(_ fileId: FileId, _ variant: String) -> String { "\(fileId)|\(variant)" }
+  private func cancelInFlight(_ fileId: FileId) {
+    for variant in ["medium", "small"] {
+      let key = inFlightKey(fileId, variant)
+      inFlight[key]?.cancel()
+      inFlight.removeValue(forKey: key)
+    }
+  }
 
   internal var eventEmitter: ThumbnailEventEmitter?
 
@@ -74,15 +86,18 @@ internal protocol ThumbnailEventEmitter: AnyObject, Sendable {
 extension ThumbnailService {
   public func getThumbnail(
     for fileId: FileId,
-    targetSize: CGSize
+    targetSize: CGSize,
+    variant: String = "medium"
   ) async throws -> ResolvedThumbnail {
+    let variant = variant == "small" ? "small" : "medium"
+    let flightKey = inFlightKey(fileId, variant)
     RuntimeTrace.event("thumbnail.native.request", [
       "fileId": fileId,
       "targetWidth": Int(targetSize.width),
       "targetHeight": Int(targetSize.height),
       "state": String(describing: currentState(for: fileId))
     ])
-    if let pending = inFlight[fileId] {
+    if let pending = inFlight[flightKey] {
       RuntimeTrace.event("thumbnail.native.join_inflight", ["fileId": fileId])
       return try await pending.value
     }
@@ -90,10 +105,10 @@ extension ThumbnailService {
     let task: Task<ResolvedThumbnail, Error> = Task { [weak self] in
       guard let self else { throw ThumbnailServiceError.cancelled }
       try Task.checkCancellation()
-      return try await self.resolve(fileId: fileId, targetSize: targetSize)
+      return try await self.resolve(fileId: fileId, targetSize: targetSize, variant: variant)
     }
-    inFlight[fileId] = task
-    defer { inFlight[fileId] = nil }
+    inFlight[flightKey] = task
+    defer { inFlight[flightKey] = nil }
 
     do {
       let resolved = try await task.value
@@ -116,7 +131,8 @@ extension ThumbnailService {
 
   fileprivate func resolve(
     fileId: FileId,
-    targetSize: CGSize
+    targetSize: CGSize,
+    variant: String
   ) async throws -> ResolvedThumbnail {
     let localId = localIdentifierLookup?(fileId) ?? nil
     RuntimeTrace.event("thumbnail.native.resolve.start", [
@@ -168,7 +184,7 @@ extension ThumbnailService {
     }
 
     RuntimeTrace.event("thumbnail.native.remote_fallback", ["fileId": fileId])
-    return try await resolveRemote(fileId: fileId, targetSize: targetSize)
+    return try await resolveRemote(fileId: fileId, variant: variant)
   }
 }
 
@@ -185,30 +201,68 @@ extension ThumbnailService {
 }
 
 extension ThumbnailService {
+  /// Remote (encrypted) thumbnail for a file. A cached variant at least as large as
+  /// the one requested is always preferred, so a cell that already has medium is
+  /// never downgraded. Only a real download picks by `variant`; when the server has
+  /// no small variant the request falls back to medium without surfacing an error.
   fileprivate func resolveRemote(
     fileId: FileId,
-    targetSize _: CGSize
+    variant: String
   ) async throws -> ResolvedThumbnail {
-    let remoteKey = CacheKey(fileId: fileId, source: .remote)
-
-    if let memHit = cacheHit(remoteKey) {
-      setState(.remoteResolved(memHit), for: fileId)
-      RuntimeTrace.event("thumbnail.native.cache_hit", [
-        "fileId": fileId,
-        "source": "remoteMemory"
-      ])
-      return ResolvedThumbnail(fileURL: memHit, source: .remote)
+    let cachedOrder = variant == "small" ? ["medium", "small"] : ["medium"]
+    for cachedVariant in cachedOrder {
+      let remoteKey = CacheKey(fileId: fileId, source: .remote, variant: cachedVariant)
+      if let memHit = cacheHit(remoteKey) {
+        setState(.remoteResolved(memHit), for: fileId)
+        RuntimeTrace.event("thumbnail.native.cache_hit", [
+          "fileId": fileId,
+          "source": "remoteMemory"
+        ])
+        return ResolvedThumbnail(fileURL: memHit, source: .remote)
+      }
+      if let diskHit = diskCacheURL(for: fileId, variant: cachedVariant) {
+        writeCache(remoteKey, url: diskHit)
+        setState(.remoteResolved(diskHit), for: fileId)
+        RuntimeTrace.event("thumbnail.native.cache_hit", [
+          "fileId": fileId,
+          "source": "remoteDisk"
+        ])
+        return ResolvedThumbnail(fileURL: diskHit, source: .cache)
+      }
     }
-    if let diskHit = diskCacheURL(for: fileId) {
-      writeCache(remoteKey, url: diskHit)
-      setState(.remoteResolved(diskHit), for: fileId)
-      RuntimeTrace.event("thumbnail.native.cache_hit", [
-        "fileId": fileId,
-        "source": "remoteDisk"
-      ])
-      return ResolvedThumbnail(fileURL: diskHit, source: .cache)
-    }
 
+    if variant == "small", smallTracker.shouldTry(fileId) {
+      do {
+        if let small = try await fetchRemote(fileId: fileId, variant: "small") {
+          smallTracker.record(.hit, fileId: fileId)
+          return small
+        }
+        smallTracker.record(.missing, fileId: fileId)
+        RuntimeTrace.event("thumbnail.native.remote.small_missing_fallback", ["fileId": fileId])
+      } catch ThumbnailServiceError.cancelled {
+        throw ThumbnailServiceError.cancelled
+      } catch is CancellationError {
+        throw ThumbnailServiceError.cancelled
+      } catch {
+        // 429, 5xx, network or decrypt trouble on small: medium may still work, and
+        // this says nothing about whether small exists, so it is not counted as a miss.
+        smallTracker.record(.transient, fileId: fileId)
+        RuntimeTrace.event("thumbnail.native.remote.small_transient_fallback", ["fileId": fileId])
+      }
+    }
+    guard let medium = try await fetchRemote(fileId: fileId, variant: "medium") else {
+      throw ThumbnailServiceError.remoteUnavailable
+    }
+    return medium
+  }
+
+  /// Download, decrypt and store one variant. Returns nil only when a non-medium
+  /// variant does not exist on the server (404) so the caller can fall back.
+  fileprivate func fetchRemote(
+    fileId: FileId,
+    variant: String
+  ) async throws -> ResolvedThumbnail? {
+    let remoteKey = CacheKey(fileId: fileId, source: .remote, variant: variant)
     setState(.remotePending, for: fileId)
     RuntimeTrace.event("thumbnail.native.remote.request", ["fileId": fileId])
     try Task.checkCancellation()
@@ -221,7 +275,7 @@ extension ThumbnailService {
     }
     let (baseURL, sessionToken) = credentials
 
-    let thumbnailURL = baseURL.appendingPathComponent("api/v1/files/\(fileId)/thumbnail")
+    let thumbnailURL = baseURL.appendingPathComponent("api/v1/files/\(fileId)/thumbnail" + (variant == "medium" ? "" : "/\(variant)"))
     var request = URLRequest(url: thumbnailURL)
     ProvenanceHeaders.apply(to: &request)
     request.httpMethod = "GET"
@@ -254,6 +308,7 @@ extension ThumbnailService {
       "bytes": data.count
     ])
     if http.statusCode == 404 {
+      if variant != "medium" { return nil }
       setState(.remoteFailed(category: .unknown), for: fileId)
       throw ThumbnailServiceError.remoteUnavailable
     }
@@ -306,7 +361,7 @@ extension ThumbnailService {
     let outDir = documentDirectory.appendingPathComponent("beebeeb-thumbnails-v3", isDirectory: true)
     try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
     PlaintextStorageProtection.protect(outDir)
-    let outURL = outDir.appendingPathComponent("\(fileId).medium.webp")
+    let outURL = outDir.appendingPathComponent("\(fileId).\(variant).webp")
     do {
       try plaintext.write(to: outURL, options: .atomic)
     } catch {
@@ -349,7 +404,7 @@ extension ThumbnailService {
     guard let m = regex?.firstMatch(in: s, options: [], range: range), m.numberOfRanges == 3,
           let wR = Range(m.range(at: 1), in: s), let qR = Range(m.range(at: 2), in: s),
           let w = Int(s[wR]), let q = Int(s[qR]) else {
-      return (768, 0.82)
+      return (768, 0.35)
     }
     return (w, Float(q) / 100.0)
   }
@@ -431,24 +486,30 @@ extension ThumbnailService {
   }
 
   func invalidateCacheEntries(fileId: String) {
-    cache.removeValue(forKey: CacheKey(fileId: fileId, source: .remote))
+    removeRemoteCache(fileId)
+    smallTracker.forget(fileId)
+  }
+
+  private func removeRemoteCache(_ fileId: FileId) {
+    for variant in ["medium", "small"] {
+      cache.removeValue(forKey: CacheKey(fileId: fileId, source: .remote, variant: variant))
+    }
   }
 }
 
 extension ThumbnailService {
   public func cancelPhotoKitRequest(for fileId: FileId) async {
     RuntimeTrace.event("thumbnail.native.cancel_request", ["fileId": fileId])
-    inFlight[fileId]?.cancel()
-    inFlight.removeValue(forKey: fileId)
+    cancelInFlight(fileId)
     await PhotoKitResolver.shared.cancelInFlight(for: fileId)
   }
 
   public func forgetFile(_ fileId: FileId) {
     state.removeValue(forKey: fileId)
     cache.removeValue(forKey: CacheKey(fileId: fileId, source: .photoKit))
-    cache.removeValue(forKey: CacheKey(fileId: fileId, source: .remote))
-    inFlight[fileId]?.cancel()
-    inFlight.removeValue(forKey: fileId)
+    removeRemoteCache(fileId)
+    smallTracker.forget(fileId)
+    cancelInFlight(fileId)
   }
 
   /// 0817 — bulk-invalidate the in-memory cache + FSM state for files whose

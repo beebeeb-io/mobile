@@ -14,16 +14,13 @@ public enum ThumbnailGenerator {
         public let maxBytes: Int
 
         public static let medium = Config(
-            ladder: [
-                (768, 0.82), (768, 0.74), (768, 0.66), (768, 0.58), (768, 0.50),
-                (640, 0.58), (512, 0.56), (384, 0.54),
-            ],
+            ladder: [(768, 0.35), (640, 0.35), (512, 0.35)],
             targetBytes: 100 * 1024,
             maxBytes: 128 * 1024 - 28
         )
 
         public static let small = Config(
-            ladder: [(384, 0.78), (384, 0.66), (384, 0.54), (320, 0.50), (256, 0.48)],
+            ladder: [(384, 0.35), (320, 0.35), (256, 0.35)],
             targetBytes: 24 * 1024,
             maxBytes: 32 * 1024 - 28
         )

@@ -734,7 +734,7 @@ describe('round 10 (review of mobile#182 at 060bfeb0): the server check is the d
       'let selected = dbQueue.sync { getPendingUploads(limit: limit) }',
       'guard let pending = await rowsCheckedAgainstServer(\n      selected, accountId: batchAccountId, authToken: authToken, baseURL: baseURL, ticket: ticket\n    ) else {\n      return 0\n    }',
       'return 0',
-      'await withTaskGroup(of: Bool.self)',
+      'await withTaskGroup(of: BatchAssetOutcome.self)',
       'self.uploadSingleAsset(',
     );
     expect(select).toBeGreaterThan(-1);
