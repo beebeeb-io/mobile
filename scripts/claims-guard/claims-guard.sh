@@ -86,12 +86,15 @@ validate_allow_file() {
   done < <(allow_lines)
 }
 
+# Membership tests read their whole input (`grep ... >/dev/null`, never `grep -q`): under pipefail,
+# `grep -q` exiting on its first match makes the writer die of SIGPIPE, and that turned allow-listed
+# lines into findings at random (160-174 of them per run on the Linux runner, task 2306).
 is_allowed() { # is_allowed <path> <token>
-  allow_lines | cut -d'|' -f1,2 | grep -qxiF "$1|$2"
+  allow_lines | cut -d'|' -f1,2 | grep -xiF "$1|$2" >/dev/null
 }
 
 in_allowed_hosts() { # in_allowed_hosts <host>
-  printf '%s\n' "${ALLOWED_HOSTS[@]}" | grep -qxF "$1"
+  printf '%s\n' "${ALLOWED_HOSTS[@]}" | grep -xF "$1" >/dev/null
 }
 
 in_non_network_host() { # in_non_network_host <host> — namespace URIs and
@@ -101,7 +104,7 @@ in_non_network_host() { # in_non_network_host <host> — namespace URIs and
   case "$low" in
     *.test|*.invalid|*.example) return 0 ;;
   esac
-  printf '%s\n' "${NON_NETWORK_HOSTS[@]}" | grep -qxF "$low"
+  printf '%s\n' "${NON_NETWORK_HOSTS[@]}" | grep -xF "$low" >/dev/null
 }
 
 strip_non_network_urls() { # strip_non_network_urls <line> — remove every
