@@ -252,6 +252,7 @@ export async function clearPendingPublishes(): Promise<void> {
     const fs = await import('expo-file-system/legacy');
     if (!fs.cacheDirectory) return;
     for (const name of await fs.readDirectoryAsync(fs.cacheDirectory)) {
+      // caches-registry: example=shared-publish-00.json (the sign-out sweep of its own files)
       if (/^shared-publish-[a-f0-9]+\.json$/.test(name)) await fs.deleteAsync(`${fs.cacheDirectory}${name}`, { idempotent: true });
     }
   } catch { /* The registered cache purge also sweeps this exact prefix. */ }

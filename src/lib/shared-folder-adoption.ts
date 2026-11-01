@@ -85,6 +85,7 @@ export async function clearAdopted(): Promise<void> {
   try { if(current)await current.catch(()=>null); await Promise.all([...instances].map(a=>a.clearAdopted())); instances.clear(); current=null;
     const fs=await import('expo-file-system/legacy'); if(!fs.cacheDirectory)return;
     const names=await fs.readDirectoryAsync(fs.cacheDirectory);
+    // caches-registry: example=shared-adopted-00.json (the sign-out sweep of its own files)
     for(const name of names)if(/^shared-adopted-[a-f0-9]+\.json$/.test(name))await fs.deleteAsync(`${fs.cacheDirectory}${name}`,{idempotent:true});
   } catch {}
 }

@@ -67,6 +67,8 @@ import {
 } from '../lib/text-file-save';
 import { decryptToTempFile, invalidatePreviewCache, materializeVideoPreviewForExport, previewCachePath, releasePreviewCopy, retainPreviewCopy } from '../lib/native-decrypt';
 import { isLoopbackStreamUri, streamBufferPctFromEvent } from '../lib/video-stream';
+import { isExportableDisplayName, parseExportDisplayName } from '../lib/export-file-name';
+import { prepareExportShareCopy } from '../lib/export-share-copy';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
@@ -3523,8 +3525,55 @@ export default function PreviewScreen() {
     reloadNonce,
   ]);
 
-  const getExportUri = useCallback(async (signal?: AbortSignal, onExportProgress?: (event: PreviewLoadProgressEvent) => void): Promise<ExportUriResult> => {
-    return resolvePreviewExportUri({
+  // Task 2253 — the name the share sheet must show for an exported file.
+  // The route / photo-list name is normally the decrypted display name
+  // already; when it is missing, or is still the `{cipher_suite…}` envelope,
+  // decrypt it HERE (the export waits for the name instead of guessing one).
+  // A name that cannot be decrypted returns null and the export falls back to
+  // today's id-based name.
+  const decryptExportName = useCallback(async (nameEncrypted: string | null | undefined): Promise<string | null> => {
+    if (!nameEncrypted?.trim()) return null;
+    const payload = encryptedMetadataPayloadToBytes(nameEncrypted);
+    // Round 3 (mobile#265 review): not an envelope ⇒ a legacy bare name, even
+    // one that starts with `{` (`{draft} notes.txt`). A list placeholder is
+    // never a name (`isExportableDisplayName`).
+    if (!payload) return isExportableDisplayName(nameEncrypted) ? nameEncrypted.trim() : null;
+    try {
+      const plaintext = await decryptMetadata(currentFileId, payload.nonce, payload.ciphertext);
+      return parseExportDisplayName(plaintext);
+    } catch {
+      return null;
+    }
+  }, [currentFileId, decryptMetadata]);
+
+  const resolveExportDisplayName = useCallback(async (): Promise<string | null> => {
+    // Round 3 (mobile#265 review): the route / pager name IS the decrypted
+    // display name whenever it is not a list placeholder (`Shared file`,
+    // `Photo`, a truncated `xxx...` label — `isExportableDisplayName`). Taken
+    // first: the list already decrypted it, with the right key (a request
+    // upload's name is under its content key, not the master key).
+    if (isExportableDisplayName(currentFileName)) return currentFileName;
+    // Swipe-pager entry: it carries the file's own encrypted name.
+    if (currentEntry?.name_encrypted) return decryptExportName(currentEntry.name_encrypted);
+    // Single-file open: the route param can itself be the envelope (a share
+    // invite's name) — decrypt it locally before asking the network.
+    const fromRoute = await decryptExportName(currentFileName);
+    if (fromRoute) return fromRoute;
+    // Otherwise fetch the file's own metadata and decrypt it now.
+    try {
+      const fresh = await getFile(currentFileId);
+      return decryptExportName(fresh.name_encrypted);
+    } catch {
+      return null;
+    }
+  }, [currentEntry?.name_encrypted, currentFileName, currentFileId, decryptExportName]);
+
+  const getExportUri = useCallback(async (
+    signal?: AbortSignal,
+    onExportProgress?: (event: PreviewLoadProgressEvent) => void,
+    exportName?: string | null,
+  ): Promise<ExportUriResult> => {
+    const resolved = await resolvePreviewExportUri({
       isImage,
       imageUri,
       imagePreviewKind,
@@ -3538,6 +3587,28 @@ export default function PreviewScreen() {
       materializeStreamVideoForExport: materializeVideoPreviewForExport,
       signal,
     });
+    // Task 2253 — hand the sheet `<cache>/beebeeb-export/<random>/<real name>`
+    // in a fresh per-export folder instead of the id-named preview cache file.
+    const decryptExtension = previewDecryptExtension(currentMimeType, currentFileName);
+    const idBasedName = decryptExtension ? `${currentFileId}.${decryptExtension}` : currentFileId;
+    try {
+      const prepared = await prepareExportShareCopy({
+        sourceUri: resolved.uri,
+        displayName: exportName ?? null,
+        idBasedName,
+      });
+      return {
+        uri: prepared.uri,
+        reusedPreview: resolved.reusedPreview,
+        release: async () => {
+          await prepared.cleanup();
+          await resolved.release?.();
+        },
+      };
+    } catch (error) {
+      await resolved.release?.();
+      throw error;
+    }
   }, [
     currentFileId,
     currentFileName,
@@ -4299,23 +4370,34 @@ export default function PreviewScreen() {
         return;
       }
 
-      const { uri: shareUri, release } = await getExportUri(exportController.signal, (event) => {
-        exportProgressRef.current?.setProgress(event);
-      });
+      // Round 3 (mobile#265 review): ask before decrypting and copying the
+      // whole original (and before the Success haptic), not after.
+      if (!(await Sharing.isAvailableAsync())) {
+        Alert.alert('Not available', 'Saving is not available on this device.');
+        return;
+      }
+
+      const { uri: shareUri, release } = await getExportUri(
+        exportController.signal,
+        (event) => {
+          exportProgressRef.current?.setProgress(event);
+        },
+        // Task 2253 — the sheet shows the file's real name, so resolve (and
+        // wait for) the decrypted display name before naming the copy.
+        await resolveExportDisplayName(),
+      );
       releaseExportCopy = release ?? null;
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-      const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        setPreparingExport(false);
-        await Sharing.shareAsync(shareUri, {
-          mimeType: currentMimeType ?? 'application/octet-stream',
-          dialogTitle: previewFileName,
-        });
-      } else {
-        Alert.alert('Downloaded', `Saved to ${shareUri}`);
-      }
+      // Round 2 (mobile#254 review): the copy is removed when this returns, so
+      // the old "Saved to <path>" pointed at a file that was gone; round 3
+      // checks for the sheet up front instead.
+      setPreparingExport(false);
+      await Sharing.shareAsync(shareUri, {
+        mimeType: currentMimeType ?? 'application/octet-stream',
+        dialogTitle: previewFileName,
+      });
     } catch (err) {
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Download failed', friendlyError(err));
@@ -4329,7 +4411,7 @@ export default function PreviewScreen() {
       setDownloadProgress(0);
       setPreparingExport(false);
     }
-  }, [category, currentFileId, currentMimeType, getExportUri, previewFileName]);
+  }, [category, currentFileId, currentMimeType, getExportUri, previewFileName, resolveExportDisplayName]);
 
   const handleViewOriginal = useCallback(async () => {
     if (!isImage) return;

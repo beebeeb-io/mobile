@@ -39,7 +39,7 @@ export const CACHES_REGISTRY: readonly CachesEntry[] = [
   { match: 'beebeeb-previews-v1/', plaintext: true, contains: 'decrypted photo previews (LRU cache) + settings compare samples', writer: 'lib/photo-preview-cache.ts, native photo preview download/samples' },
   { match: 'beebeeb-photo-cache/', plaintext: true, contains: 'decrypted photo/video originals (Photos pager)', writer: 'lib/photo-cache.ts' },
   { match: 'zip-extract/', plaintext: true, contains: 'a file extracted from a decrypted ZIP for the share sheet', writer: 'components/preview/ZipRenderer.tsx' },
-  { match: 'beebeeb-export/', plaintext: true, contains: '"Save to Files" copy under the real file name', writer: 'screens/FilesScreen.tsx saveToFiles' },
+  { match: 'beebeeb-export/', plaintext: true, contains: 'an export copy under the real file name, one folder per export', writer: 'lib/export-share-copy.ts prepareExportShareCopy (Preview Save, Files "Save to Files")' },
   { match: 'shared_', plaintext: true, contains: 'a decrypted shared-link file', writer: 'screens/SharedViewScreen.tsx (lib/share-file-name.ts)' },
   { match: 'thumb_', plaintext: true, contains: 'thumb_source_*: decrypted original for thumbnail repair; thumb_<id>.jpg: legacy decrypted thumbnails', writer: 'lib/thumbnail.ts' },
   { match: 'upload-', plaintext: true, contains: 'pre-encryption copy of a picked photo/video', writer: 'screens/FilesScreen.tsx copyPhotoAssetToUploadCache' },

@@ -32,7 +32,10 @@ function sourceFiles(dir: string): string[] {
  */
 function cachesWriters() {
   const found = [];
-  const pathRe = /\$\{\s*(?:FileSystem\.cacheDirectory|cacheDir)(?:\s*\?\?\s*'')?\s*\}([^`$]*)/g;
+  // Round 3 (mobile#265 review): `fs.cacheDirectory` too — export-share-copy
+  // writes through an injected `fs` (FileSystem in the app), and a scan that
+  // only knew `FileSystem.` stopped seeing that plaintext writer.
+  const pathRe = /\$\{\s*(?:(?:FileSystem|fs)\.cacheDirectory|cacheDir)(?:\s*\?\?\s*'')?\s*\}([^`$]*)/g;
   for (const file of sourceFiles(SRC)) {
     const lines = readFileSync(file, 'utf8').split('\n');
     lines.forEach((line, i) => {
@@ -52,7 +55,7 @@ describe('the Library/Caches writer registry', () => {
   test('the scan actually finds the writers (a scan that matches nothing proves nothing)', () => {
     expect(writers.length).toBeGreaterThanOrEqual(20);
     const wheres = writers.map((w) => w.where).join('\n');
-    for (const f of ['lib/photo-cache.ts', 'lib/native-decrypt.ts', 'lib/thumbnail.ts', 'screens/SharedViewScreen.tsx', 'components/preview/ZipRenderer.tsx', 'lib/raw-extract.ts', 'screens/FilesScreen.tsx']) {
+    for (const f of ['lib/photo-cache.ts', 'lib/native-decrypt.ts', 'lib/thumbnail.ts', 'screens/SharedViewScreen.tsx', 'components/preview/ZipRenderer.tsx', 'lib/raw-extract.ts', 'screens/FilesScreen.tsx', 'lib/export-share-copy.ts']) {
       expect(wheres).toContain(f);
     }
   });
