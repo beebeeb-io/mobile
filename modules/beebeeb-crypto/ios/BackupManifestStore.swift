@@ -1346,6 +1346,114 @@ enum BackupManifestStore {
     return true
   }
 
+  // MARK: - Staged chunks
+
+  /// An asset's staged chunk rows, replaced as ONE transaction: the old rows
+  /// stay until every new row is in. Moved here from
+  /// `NativeBackupEngine.replaceStagedChunks` (task LD-0002, mobile#257
+  /// review B5) so the harness drives it on the real SQLite copy. Before, the
+  /// DELETE ran in autocommit ahead of `BEGIN` and no step was checked: an
+  /// expiry's `exsqlite3_interrupt` on chunk N rolled the transaction back,
+  /// chunks N+1... then autocommitted one by one and `COMMIT` failed silently,
+  /// which left a gap in `backup_upload_chunks` and no old rows to fall back
+  /// on. Now the first step that does not finish ends the block and rolls
+  /// back. False = nothing changed.
+  @discardableResult
+  static func replaceStagedChunks(_ db: OpaquePointer, assetId: String, fileId: String, chunkPaths: [String]) -> Bool {
+    inImmediateTransaction(db) {
+      writeStagedChunks(db, assetId: assetId, fileId: fileId, chunkPaths: chunkPaths)
+    }
+  }
+
+  /// The staged row AND its chunk rows, as ONE transaction (LD-0002, #262
+  /// review 4). Before, `markStaged` committed on its own ahead of the chunk
+  /// replace: an expiry between the two, or inside the replace, left a row
+  /// `staged_upload` with N chunks and no chunk rows, which uploaded nothing,
+  /// failed `upload/complete` and retried until it was dead-lettered. The
+  /// UPDATE is `NativeBackupEngine.markStaged`'s, moved here unchanged. False
+  /// = nothing changed.
+  @discardableResult
+  static func recordStaging(
+    _ db: OpaquePointer,
+    assetId: String,
+    fileId: String,
+    nameEncrypted: String,
+    mimeType: String?,
+    isMedia: Bool,
+    originalSize: Int64,
+    chunkPaths: [String],
+    stagedDir: String,
+    stagedAccountId: String?,
+    nowMs: Int64
+  ) -> Bool {
+    inImmediateTransaction(db) {
+      let staged = run(db, """
+      UPDATE backup_assets
+      SET status = 'staged_upload',
+          staged_file_id = ?,
+          staged_name_encrypted = ?,
+          staged_mime_type = ?,
+          staged_is_media = ?,
+          staged_original_size = ?,
+          staged_chunk_count = ?,
+          staged_dir = ?,
+          staged_at = ?,
+          file_size = ?,
+          staged_account_id = ?,
+          error_message = NULL
+      WHERE local_asset_id = ?
+      """) { stmt in
+        bindText(stmt, 1, fileId)
+        bindText(stmt, 2, nameEncrypted)
+        if let mimeType { bindText(stmt, 3, mimeType) } else { exsqlite3_bind_null(stmt, 3) }
+        exsqlite3_bind_int(stmt, 4, isMedia ? 1 : 0)
+        exsqlite3_bind_int64(stmt, 5, originalSize)
+        exsqlite3_bind_int(stmt, 6, Int32(chunkPaths.count))
+        bindText(stmt, 7, stagedDir)
+        exsqlite3_bind_int64(stmt, 8, nowMs)
+        exsqlite3_bind_int64(stmt, 9, originalSize)
+        if let stagedAccountId { bindText(stmt, 10, stagedAccountId) } else { exsqlite3_bind_null(stmt, 10) }
+        bindText(stmt, 11, assetId)
+      }
+      return staged >= 0 && writeStagedChunks(db, assetId: assetId, fileId: fileId, chunkPaths: chunkPaths)
+    }
+  }
+
+  /// DELETE + INSERT of the chunk rows, every step checked; the caller holds
+  /// the transaction.
+  private static func writeStagedChunks(_ db: OpaquePointer, assetId: String, fileId: String, chunkPaths: [String]) -> Bool {
+    let deleted = run(db, "DELETE FROM backup_upload_chunks WHERE local_asset_id = ?") { stmt in
+      bindText(stmt, 1, assetId)
+    }
+    guard deleted >= 0 else { return false }
+    let sql = """
+    INSERT INTO backup_upload_chunks
+      (local_asset_id, server_file_id, chunk_index, path, status)
+    VALUES (?, ?, ?, ?, 'pending')
+    """
+    var stmt: OpaquePointer?
+    guard exsqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+    defer { exsqlite3_finalize(stmt) }
+    for (index, path) in chunkPaths.enumerated() {
+      bindText(stmt, 1, assetId)
+      bindText(stmt, 2, fileId)
+      exsqlite3_bind_int(stmt, 3, Int32(index))
+      bindText(stmt, 4, path)
+      guard exsqlite3_step(stmt) == SQLITE_DONE else { return false }
+      exsqlite3_reset(stmt)
+    }
+    return true
+  }
+
+  /// `BEGIN IMMEDIATE`, `body`, `COMMIT`; anything that did not finish rolls
+  /// back (harmless when an interrupt already did).
+  private static func inImmediateTransaction(_ db: OpaquePointer, _ body: () -> Bool) -> Bool {
+    guard exsqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
+    if body(), exsqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK { return true }
+    exsqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    return false
+  }
+
   // MARK: - Upload completion
 
   /// Completed upload: the row now points at `remoteFileId`, owned by

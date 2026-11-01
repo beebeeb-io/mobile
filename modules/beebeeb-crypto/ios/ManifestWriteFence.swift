@@ -33,6 +33,13 @@ final class ManifestWriteFence {
   struct Ticket: Equatable {
     let generation: UInt64
     let accountId: String
+    /// LD-0002 (#262 review 1): the backup execution gate's `closures` when
+    /// the producer started, set by `NativeBackupEngine.manifestWriteTicket`.
+    /// A producer that ran across a gate closure may have read the closed
+    /// gate as "no row" (and, say, re-encrypted a staged photo under a new
+    /// file id), so the engine refuses its writes even after the gate
+    /// reopened. The fence itself does not read it.
+    var gateClosures: UInt64 = 0
   }
 
   enum State: Equatable {

@@ -135,6 +135,8 @@ export const SYNC_CALLEES = new Set([
   'mapValues', 'compactMapValues', 'prefix', 'drop', 'split',
   'enumerateObjects', 'enumerateKeysAndObjects',
   'withLock', 'autoreleasepool', 'withExtendedLifetime', 'withoutActuallyEscaping', 'withCString',
+  // LD-0002: `BackupExecutionGate.readIfUninterrupted` runs its closure inline, once.
+  'readIfUninterrupted',
 ]);
 
 export function auditDbQueue(source: string): DbQueueAudit {
@@ -276,6 +278,9 @@ export function auditDbQueue(source: string): DbQueueAudit {
       if (isDbQueueReceiver(receiver) && name !== 'asyncAfter') return { kind: 'dbQueue', what: `${receiver.split(/\s+/).pop()}.${name}` };
       return { kind: 'hop', what: `${receiver.split(/\s+/).pop()}.${name}` };
     }
+    // LD-0002 rule 5: the helper runs the write closure on dbQueue (under a short background
+    // assertion when the gate is closed), so its closure is a dbQueue critical section.
+    if (name === 'runBackgroundCompletionWrite') return { kind: 'dbQueue', what: name };
     if (SYNC_CALLEES.has(name) || /^withUnsafe/.test(name)) return { kind: 'sync', what: name };
     return { kind: 'hop', what: chain };
   };
@@ -367,7 +372,8 @@ export function auditDbQueue(source: string): DbQueueAudit {
   // as a `db` reference — except its own declaration and the `db` getter.
   const handleDecl = /private let manifestHandle\s*=/.exec(code);
   const handleDeclPos = handleDecl ? handleDecl.index + 'private let '.length : -1;
-  const dbGetter = /private var db\s*:\s*OpaquePointer\?\s*\{\s*manifestHandle\.db\s*\}/.exec(code);
+  // LD-0002: the getter asks the execution gate (`connection(admittedBy:completionWrite:)`).
+  const dbGetter = /private var db\s*:\s*OpaquePointer\?\s*\{\s*manifestHandle\.(?:db|connection\(admittedBy:\s*executionGate,\s*completionWrite:\s*NativeBackupEngine\.manifestStatements\.completionWrite\))\s*\}/.exec(code);
   const dbGetterRange: [number, number] = dbGetter ? [dbGetter.index, dbGetter.index + dbGetter[0].length] : [-1, -1];
 
   // ---- references to the `db` property (and to `manifestHandle`)
