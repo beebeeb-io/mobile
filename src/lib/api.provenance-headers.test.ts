@@ -138,13 +138,13 @@ describe('writer-provenance headers on upload-init calls (1436 — the actual ga
     fetchQueue.push(
       // POST /api/v1/uploads/init
       async () => jsonResponse({
-        file_id: 'SERVER-ID',
+        file_id: 'CLIENT-ID',
         upload_session_id: 'upload-session-1',
         chunk_size_bytes: 4_194_304,
         chunk_count: 1,
       }),
       // POST /api/v1/uploads/:id/complete
-      async () => jsonResponse({ id: 'SERVER-ID', name_encrypted: 'name-cipher' }),
+      async () => jsonResponse({ id: 'CLIENT-ID', name_encrypted: 'name-cipher' }),
     );
 
     const { uploadEncryptedFileNative } = await loadFreshApi();

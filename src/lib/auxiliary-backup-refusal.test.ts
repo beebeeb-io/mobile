@@ -82,7 +82,7 @@ engine.recordAuxiliaryAccountRefusal(statusCode: 409, body: Data(#"{"error":"acc
 guard !engine.accountUploadRefused else { fatalError("stale owner paused new account") }
 print("auxiliary refusal: 8 assertions passed, 0 failed")
 `);
-  execFileSync('swiftc', ['-module-cache-path', join(dir, 'modules'), join(ios, 'NativeEncryptedBackupUploader.swift'), join(ios, 'AccountRefusalDetection.swift'), join(dir, 'main.swift'), '-o', join(dir, 'aux')], {timeout: 60000});
+  execFileSync('swiftc', ['-module-cache-path', join(dir, 'modules'), join(ios, 'NativeEncryptedBackupUploader.swift'), join(ios, 'AccountRefusalDetection.swift'), join(ios, 'BackupCreateUploadFlow.swift'), join(ios, 'UploadItemIdEcho.swift'), join(dir, 'main.swift'), '-o', join(dir, 'aux')], {timeout: 60000});
   expect(execFileSync(join(dir, 'aux'), [], {encoding:'utf8', timeout:10000})).toContain('auxiliary refusal: 8 assertions passed, 0 failed');
 }, 90000);
 

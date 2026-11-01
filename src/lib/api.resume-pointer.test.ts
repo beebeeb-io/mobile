@@ -172,7 +172,7 @@ async function runUpload(): Promise<{ api: Awaited<ReturnType<typeof loadFreshAp
   const { encryptedUpload } = await loadFreshEncryptedUpload();
   try {
     await encryptedUpload({
-      fileId: 'client-1',
+      fileId: 'server-1',
       uri: UPLOAD_URI,
       name: 'photo.jpg',
       parentId: 'parent-1',

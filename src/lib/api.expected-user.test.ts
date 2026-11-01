@@ -122,8 +122,8 @@ describe('1594 — X-Beebeeb-Expected-User on authenticated mutations', () => {
     const api = await import('./api');
     setExpectedUserId(OWNER);
     fetchQueue.push(
-      async () => jsonResponse({ file_id: 'SERVER-ID', upload_session_id: 's1', chunk_size_bytes: 4_194_304, chunk_count: 1 }),
-      async () => jsonResponse({ id: 'SERVER-ID', name_encrypted: 'name-cipher' }),
+      async () => jsonResponse({ file_id: 'CLIENT-ID', upload_session_id: 's1', chunk_size_bytes: 4_194_304, chunk_count: 1 }),
+      async () => jsonResponse({ id: 'CLIENT-ID', name_encrypted: 'name-cipher' }),
     );
     await api.uploadEncryptedFileNative({
       masterKeyHandleId: 1,

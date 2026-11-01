@@ -36,10 +36,18 @@ import { expectedUserHeaders, isMutatingMethod } from './expected-user';
 // Task 1589 — recognizing a swept v2 upload session + the typed error for a
 // second sweep in a row. Shared by the JS chunk loop and the native path.
 import { isUploadSessionGone, UploadRestartFailedError } from './upload-session-reinit';
+// Task SF-0001 (contract 2275 L13): the client's own item id must be the one
+// the server echoes back on every create/init/completion answer.
+import {
+  ServerChangedItemIdError,
+  assertEchoedItemId,
+} from './item-id-echo';
 // Re-exported so `api.ts` (the common import surface for upload callers —
 // FilesScreen, backup-context, text-file-save) can catch it without a second
 // import.
 export { UploadRestartFailedError } from './upload-session-reinit';
+// Task SF-0001 (2275 L13): the typed abort callers can catch by name.
+export { ServerChangedItemIdError } from './item-id-echo';
 
 // API target. Override at build time with EXPO_PUBLIC_API_URL or via
 // expoConfig.extra.apiUrl (e.g. through eas.json env or app.config.ts).
@@ -347,6 +355,25 @@ export function retryAfterSecondsFromHeader(value: string | null, nowMs = Date.n
  * session token. Caller must navigate to TwoFactorChallenge with this
  * partial_token and call `completeTwoFactor` after the user enters their code.
  */
+/**
+ * mobile#259 round 3: the FIRST init of an upload refused with the server's
+ * plain `forbidden` — an explicit `file_id` the member may not edit, or a
+ * folder they may not write to (server routes/uploads.rs). Raised only there:
+ * nothing has been sealed under the id or sent yet, so `replaceOrAdd` may put
+ * the same bytes up as a new file. Every other 403 (a typed code, a chunk PUT,
+ * a complete, a takeover re-init) stays a plain `ApiError`.
+ */
+export class UploadInitRefusedError extends ApiError {
+  constructor(message: string) {
+    super(403, message, 'forbidden')
+    this.name = 'UploadInitRefusedError'
+  }
+}
+
+function firstInitRefusal(status: number, err: { error?: string; message?: string }): UploadInitRefusedError | null {
+  return status === 403 && err.error === 'forbidden' ? new UploadInitRefusedError(err.message ?? 'forbidden') : null
+}
+
 export class TwoFactorRequiredError extends Error {
   constructor(public partialToken: string) {
     super('two_factor_required');
@@ -438,6 +465,11 @@ function displayFor(message: string | undefined, fallback: string): string {
 
 /** Return a human-friendly message for common API errors. */
 export function friendlyError(err: unknown): string {
+  // Task SF-0001 (2275 L13): the authored sentence for its stage (an init, or
+  // a completion: mobile#259 review M6), never a machine code.
+  if (err instanceof ServerChangedItemIdError) {
+    return err.message;
+  }
   if (err instanceof AccountDeletedError) {
     return formatAccountDeletedMessage(err.deletedAt, err.shredAfter);
   }
@@ -1288,12 +1320,18 @@ export interface FileIndexResponse {
   files?: FileEntry[];
 }
 
-export async function createFolder(name: string, parentId?: string, folderId?: string): Promise<FileEntry> {
-  return request<FileEntry>('POST', '/api/v1/files/folder', {
+export async function createFolder(name: string, parentId: string | undefined, folderId: string): Promise<FileEntry> {
+  const created = await request<FileEntry>('POST', '/api/v1/files/folder', {
     name_encrypted: name,
     parent_id: parentId ?? null,
     folder_id: folderId,
   });
+  // Task SF-0001 (2275 A8/L13): the folder name and every child written into
+  // it are sealed under the id this client minted; an answer naming another
+  // folder aborts before anything is placed inside it. `folderId` is required
+  // (mobile#259 review M11): no folder create without a client id.
+  assertEchoedItemId(folderId, created.id);
+  return created;
 }
 
 export const FILE_LIST_HARD_CAP = 50_000;
@@ -1730,6 +1768,15 @@ export async function uploadEncryptedChunked(params: {
     foregroundTransfer,
     signal,
   } = params
+  // Task SF-0001 (2275 L13/A7b): the id this attempt proposes — minted on the
+  // client for a create, or the listed row's id for a version-replace — is the
+  // ONLY id this upload may ever be completed under.
+  // mobile#259 round 3: the two can never differ — the v1 init, the name and
+  // the persisted state are keyed by `fileId`, the chunks by `chosenFileId`.
+  if (versionReplace && versionReplace.fileId !== fileId) {
+    throw new Error('A version replace must upload under the file it replaces')
+  }
+  const chosenFileId = versionReplace?.fileId ?? fileId
   // Task 2062: every progress event carries the country the init named.
   const initCountry = trackInitCountry(onProgressRaw)
   const onProgress = initCountry.onProgress
@@ -1756,13 +1803,25 @@ export async function uploadEncryptedChunked(params: {
   // response — the ceiling `startUploadHeartbeatPulse` clamps against.
   let leaseSeconds: number | undefined
 
-  const resumeState = resumeKey ? await loadUploadResumeState(resumeKey) : null
-  if (
+  const storedResumeState = resumeKey ? await loadUploadResumeState(resumeKey) : null
+  // Task SF-0001 (2275 L13/A7c): a stored session this client did not mint
+  // (or that targets another id) is abandoned — never resumed, never looped.
+  if (storedResumeState && !isResumableSelfMintedSession(storedResumeState, chosenFileId)) {
+    await abandonLegacyResumeSession(storedResumeState, resumeKey)
+  }
+  const resumeState = storedResumeState && isResumableSelfMintedSession(storedResumeState, chosenFileId)
+    ? storedResumeState
+    : null
+  const resumable =
     resumeState?.protocol === 'v2' &&
     resumeState.plaintextSizeBytes === plaintextSizeBytes &&
     resumeState.parentId === (parentId ?? null) &&
     resumeState.mimeType === (mimeType ?? null)
-  ) {
+  // mobile#259 review M8: a session this client minted for the SAME id that
+  // cannot be resumed (v1, another size/parent/type) still holds the id on the
+  // server, so the new init would 409 until the sweep. Abandon it first.
+  if (resumeState && !resumable) await abandonStoredSession(resumeState, resumeKey)
+  if (resumable) {
     protocol = 'v2'
     serverFileId = resumeState.fileId
     uploadSessionId = resumeState.uploadSessionId ?? undefined
@@ -1778,11 +1837,15 @@ export async function uploadEncryptedChunked(params: {
       parentId,
       isMedia,
       createdAt,
-      fileId: versionReplace?.fileId,
+      fileId: chosenFileId,
       baseVersionNumber: versionReplace?.baseVersionNumber,
+      firstInit: true,
     })
     if (v2Init) {
       initCountry.note(v2Init)
+      // Task SF-0001 (2275 L13/A7): the id the client proposed must be the id
+      // the answer names — checked before anything adopts the echoed value.
+      assertEchoedItemId(chosenFileId, v2Init.file_id)
       protocol = 'v2'
       serverFileId = v2Init.file_id
       uploadSessionId = v2Init.upload_session_id
@@ -1838,12 +1901,21 @@ export async function uploadEncryptedChunked(params: {
     })
     if (!initRes.ok) {
       const err = (await initRes.json().catch(() => ({ error: initRes.statusText }))) as { error?: string; message?: string }
+      const refusal = firstInitRefusal(initRes.status, err)
+      if (refusal) throw refusal
       // Task 1594 round 2 (F5) / round 3 (T5): route account_mismatch the
       // same as request(), guarded against a session that has since moved on.
       await throwUploadError(initRes.status, err, initRes.statusText, authSnapshot)
     }
     const init = (await initRes.json()) as { file_id: string }
     initCountry.note(init)
+    // Task SF-0001 (2275 L13/A7): the v1 init also names the id it created —
+    // it must be the one this client sent, never a substitute. On a mismatch
+    // the REQUESTED id's upload is abandoned (mobile#259 review M5).
+    if (init.file_id !== fileId) {
+      await abandonFileUpload(fileId).catch(() => {})
+      throw new ServerChangedItemIdError()
+    }
     serverFileId = init.file_id
   }
 
@@ -1861,6 +1933,10 @@ export async function uploadEncryptedChunked(params: {
       parentId: parentId ?? null,
       mimeType: mimeType ?? null,
       lastUploadedChunkIndex,
+      // Task SF-0001 (2275 A7c): the id in this state was chosen here (minted
+      // for a create, listed for a version-replace) — never adopted from an
+      // echo. A session without this marker predates the rule and is abandoned.
+      selfMinted: true,
     })
     saveUploadResumeIndexEntrySoon(serverFileId, resumeKey, resumeMeta, {
       parentId,
@@ -1879,7 +1955,9 @@ export async function uploadEncryptedChunked(params: {
       // Task 1683f: trash aborted this upload — stop BEFORE the next PUT (the
       // abort also trips any fetch inside putBinaryBytes mid-flight).
       if (signal?.aborted) throw new DOMException('Upload cancelled.', 'AbortError')
-      const encBytes = await readEncryptedChunk(i, chunkSizeBytes, serverFileId)
+      // Task SF-0001 (2275 L13/A7): encryption always keys off the id this
+      // client proposed (equal to `serverFileId` by the init assertion above).
+      const encBytes = await readEncryptedChunk(i, chunkSizeBytes, chosenFileId)
 
       const chunkPath = protocol === 'v2' && uploadSessionId
         ? `/api/v1/uploads/${uploadSessionId}/chunks/${i}`
@@ -1962,7 +2040,11 @@ export async function uploadEncryptedChunked(params: {
           fileId: serverFileId, // takeover: server recreates/reverts under the SAME id
           baseVersionNumber: versionReplace?.baseVersionNumber,
         })
-      } catch {
+      } catch (reinitErr) {
+        // mobile#259 round 3: a re-init answered with another item has already
+        // abandoned the requested id (initUploadV2). Its typed sentence is the
+        // honest answer, not "Upload session expired".
+        if (reinitErr instanceof ServerChangedItemIdError) throw reinitErr
         reinit = null
       }
       if (!reinit || reinit.file_id !== serverFileId) {
@@ -2044,6 +2126,11 @@ async function finalizeUpload(params: {
     await throwUploadError(completeRes.status, err, 'Finalize failed', authSnapshot)
   }
   const completed = await completeRes.json() as FileEntry
+  // Task SF-0001 (2275 L13/A7): the completion answer names the item it
+  // finalized. It must be the id this client proposed — nothing is renamed,
+  // published or treated as a destination under any other id. The server has
+  // finished by now, so the sentence says so (mobile#259 review M6).
+  assertEchoedItemId(serverFileId, completed.id, 'completion')
   let shouldClearResumeState = true
   if (protocol === 'v2') {
     const finalNameEncrypted = await resolveNameEncrypted(serverFileId)
@@ -2123,7 +2210,15 @@ export async function uploadEncryptedFileNative(params: {
   if (!(plan.chunkSizeBytes > 0) || !(plan.chunkCount > 0)) return null
 
   const initialNameEncrypted = v2InitNameEncrypted ?? await resolveNameEncrypted(fileId)
-  const resumeState = resumeKey ? await loadUploadResumeState(resumeKey) : null
+  const storedResumeState = resumeKey ? await loadUploadResumeState(resumeKey) : null
+  // Task SF-0001 (2275 L13/A7c): a session whose id this client did not mint
+  // is abandoned before any resume decision — never resumed, never looped.
+  if (storedResumeState && !isResumableSelfMintedSession(storedResumeState, fileId)) {
+    await abandonLegacyResumeSession(storedResumeState, resumeKey)
+  }
+  const resumeState = storedResumeState && isResumableSelfMintedSession(storedResumeState, fileId)
+    ? storedResumeState
+    : null
 
   let serverFileId: string
   let uploadSessionId: string
@@ -2134,7 +2229,10 @@ export async function uploadEncryptedFileNative(params: {
   // Task 1599 followup 4: the sibling `lease_seconds` from the same (re-)init
   // response — the ceiling `startUploadHeartbeatPulse` clamps against.
   let leaseSeconds: number | undefined
-  if (resumeState && resumeStateMatchesNativePlan(resumeState, { plaintextSizeBytes, parentId, ...plan })) {
+  const nativeResumable = !!resumeState && resumeStateMatchesNativePlan(resumeState, { plaintextSizeBytes, parentId, ...plan })
+  // mobile#259 review M8: see uploadEncryptedChunked.
+  if (resumeState && !nativeResumable) await abandonStoredSession(resumeState, resumeKey)
+  if (resumeState && nativeResumable) {
     serverFileId = resumeState.fileId
     uploadSessionId = resumeState.uploadSessionId as string
     startChunkIndex = Math.min(resumeState.lastUploadedChunkIndex + 1, plan.chunkCount)
@@ -2149,9 +2247,15 @@ export async function uploadEncryptedFileNative(params: {
       createdAt,
       chunkSizeBytes: plan.chunkSizeBytes,
       chunkCount: plan.chunkCount,
+      // Task SF-0001 (2275 L13/A7b): a create names the id this client minted.
+      fileId,
+      firstInit: true,
     })
     if (!v2Init) return null
     initCountry.note(v2Init)
+    // Task SF-0001 (2275 L13/A7): before the bridge encrypts or PUTs anything
+    // under an id, that id must be the one this client proposed.
+    assertEchoedItemId(fileId, v2Init.file_id)
     if (v2Init.chunk_size_bytes !== plan.chunkSizeBytes || v2Init.chunk_count !== plan.chunkCount) {
       throw new ApiError(500, 'Server changed the upload chunk plan', 'chunk_plan_mismatch')
     }
@@ -2184,6 +2288,8 @@ export async function uploadEncryptedFileNative(params: {
       parentId: parentId ?? null,
       mimeType: null,
       lastUploadedChunkIndex,
+      // Task SF-0001 (2275 A7c): this id was minted here, not echoed back.
+      selfMinted: true,
     })
     // Task 1685 — recorded once per (fileId, resumeKey); the per-chunk calls
     // that follow are memoized no-ops.
@@ -2304,7 +2410,11 @@ export async function uploadEncryptedFileNative(params: {
           chunkCount: plan.chunkCount,
           fileId: serverFileId, // takeover: server recreates/reverts under the SAME id
         })
-      } catch {
+      } catch (reinitErr) {
+        // mobile#259 round 3: a re-init answered with another item has already
+        // abandoned the requested id (initUploadV2). Its typed sentence is the
+        // honest answer, not "Upload session expired".
+        if (reinitErr instanceof ServerChangedItemIdError) throw reinitErr
         reinit = null
       }
       if (
@@ -2524,6 +2634,8 @@ async function initUploadV2(params: {
    */
   fileId?: string;
   baseVersionNumber?: number;
+  /** mobile#259 round 3: this is the upload's first init (not a takeover re-init). */
+  firstInit?: boolean;
 }): Promise<UploadV2InitResponse | null> {
   const chunkSizeBytes = params.chunkSizeBytes ?? CHUNK_SIZE
   const chunkCount = params.chunkCount ?? Math.max(1, Math.ceil(params.fileSizeBytes / CHUNK_SIZE))
@@ -2550,11 +2662,22 @@ async function initUploadV2(params: {
   if (res.status === 404 || res.status === 405) return null
   if (!res.ok) {
     const err = (await res.json().catch(() => ({ error: res.statusText }))) as { error?: string; message?: string }
+    const refusal = params.firstInit ? firstInitRefusal(res.status, err) : null
+    if (refusal) throw refusal
     // Task 1594 round 2 (F5) / round 3 (T5): route account_mismatch the same
     // as request(), guarded against a session that has since moved on.
     await throwUploadError(res.status, err, res.statusText, params.authSnapshot)
   }
   const data = await res.json() as UploadV2InitResponse
+  // Task SF-0001 (2275 L13/A7): when this client proposed an id, the answer
+  // must name that same id. Checked here, at the wire, so every caller
+  // (JS loop, native path, takeover re-init) is covered by construction. On a
+  // mismatch the session for the REQUESTED id is abandoned (mobile#259 review
+  // M5); nothing is ever sent to the echoed one.
+  if (params.fileId !== undefined && data.file_id !== params.fileId) {
+    await abandonFileUpload(params.fileId).catch(() => {})
+    throw new ServerChangedItemIdError()
+  }
   return {
     file_id: data.file_id,
     upload_session_id: data.upload_session_id,
@@ -2576,7 +2699,52 @@ interface UploadResumeState {
   parentId: string | null;
   mimeType: string | null;
   lastUploadedChunkIndex: number;
+  /**
+   * Task SF-0001 (2275 L13/A7c): true only when THIS client minted `fileId`
+   * itself and the server echoed it. Sessions persisted before this marker
+   * existed may hold a server-chosen id and must never be resumed.
+   */
+  selfMinted?: boolean;
 }
+
+/**
+ * Task SF-0001 (2275 L13/A7c): a persisted session is resumable only when this
+ * client minted its id and that id is still the one this attempt would use.
+ * Anything else (pre-update state, an id the server picked, or a different
+ * target) is abandoned — never resumed, never looped on.
+ */
+function isResumableSelfMintedSession(
+  state: UploadResumeState | null,
+  chosenFileId: string,
+): state is UploadResumeState {
+  return state !== null && state.selfMinted === true && state.fileId === chosenFileId
+}
+
+/**
+ * Task SF-0001 (2275 L13/A7c): best-effort abandonment of a stored session
+ * whose id this client did not mint, so the server drops it instead of it
+ * being resumed under an id we never sealed anything for.
+ */
+async function abandonLegacyResumeSession(state: UploadResumeState, resumeKey: string | undefined): Promise<void> {
+  await abandonStoredSession(state, resumeKey)
+}
+
+/**
+ * Abandons a stored session server-side (best-effort) and drops its local
+ * state. The clears are AWAITED (mobile#259 review M7): the new attempt
+ * persists under the same resumeKey right after, and a late fire-and-forget
+ * delete used to remove the new attempt's state.
+ */
+async function abandonStoredSession(state: UploadResumeState, resumeKey: string | undefined): Promise<void> {
+  try {
+    await abandonFileUpload(state.fileId)
+  } catch {
+    // Best-effort: an expired/unknown session is already gone server-side.
+  }
+  await clearUploadResumeState(resumeKey).catch(() => {})
+  await forgetUploadResume(state.fileId)
+}
+
 
 const uploadResumeStoreKey = (resumeKey: string) => `beebeeb_upload_resume_${resumeKey}`
 
@@ -2700,6 +2868,29 @@ export interface UploadResumeInfo {
   parentId: string | null;
   mimeType: string | null;
   plaintextSizeBytes: number;
+  /**
+   * Task SF-0001 (mobile#259 review M2): written since the SF-0001 builds,
+   * whose every attempt proposes its own id. A pointer without it predates the
+   * rule: its `fileId` may be the id the SERVER chose for that upload, and no
+   * create may run under it (`resumeUploadFileId`).
+   */
+  selfMinted?: boolean;
+}
+
+/**
+ * Task SF-0001 (mobile#259 review M2): the id a pending row's resume uploads
+ * under. A pointer with the marker resumes under its own id. One without it
+ * restarts as a NEW create under a freshly minted id: its stored session names
+ * the old id, so the upload abandons it (`isResumableSelfMintedSession`), and
+ * the old row is never deleted (a pre-update version replace's row is the
+ * user's existing file).
+ */
+export async function resumeUploadFileId(
+  info: UploadResumeInfo,
+  mint: () => Promise<string>,
+): Promise<{ fileId: string; restarted: boolean }> {
+  if (info.selfMinted === true) return { fileId: info.fileId, restarted: false }
+  return { fileId: await mint(), restarted: true }
 }
 
 const uploadResumeFileKey = (fileId: string) => `beebeeb_upload_resume_file_${fileId}`
@@ -2730,6 +2921,8 @@ function saveUploadResumeIndexEntrySoon(
     // must round-trip exactly or the resume state is never found.
     mimeType: meta.mimeType ?? null,
     plaintextSizeBytes: info.plaintextSizeBytes,
+    // Task SF-0001 (M2): this attempt proposed `fileId` itself.
+    selfMinted: true,
   };
   void tokenStore.set(uploadResumeFileKey(fileId), JSON.stringify(entry)).catch(() => {});
 }

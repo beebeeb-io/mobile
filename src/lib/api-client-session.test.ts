@@ -237,26 +237,29 @@ describe('uploadEncryptedChunked v2 name correction', () => {
     store.set(TOKEN_KEY, 'upload-token');
     fetchQueue.push(
       async () => jsonResponse({
-        file_id: 'server-file',
+        file_id: 'client-file',
         upload_session_id: 'upload-session',
         chunk_size_bytes: 1024,
         chunk_count: 1,
       }),
       async () => new Response('{}', { status: 200 }),
-      async () => jsonResponse({ id: 'server-file', name_encrypted: 'initial-name' }),
+      async () => jsonResponse({ id: 'client-file', name_encrypted: 'initial-name' }),
       async () => jsonResponse({ error: 'temporary' }, 503),
-      async () => jsonResponse({ id: 'server-file', name_encrypted: 'final-name' }),
+      async () => jsonResponse({ id: 'client-file', name_encrypted: 'final-name' }),
     );
 
     const { uploadEncryptedChunked } = await loadFreshApi();
 
+    // SF-0001: the init name is computed for the id THIS client proposed; the
+    // server echoes that same id, so the finalize name is the one that changes.
+    let nameSeq = 0;
     const completed = await uploadEncryptedChunked({
       fileId: 'client-file',
-      nameEncrypted: async (id: string) => id === 'server-file' ? 'final-name' : 'initial-name',
+      nameEncrypted: async () => (nameSeq++ === 0 ? 'initial-name' : 'final-name'),
       plaintextSizeBytes: 1,
       resumeKey: 'retry-success',
       readEncryptedChunk: async (_index: number, _chunkSizeBytes: number, fileId: string) => {
-        expect(fileId).toBe('server-file');
+        expect(fileId).toBe('client-file');
         return new Uint8Array(29);
       },
     });
@@ -270,13 +273,13 @@ describe('uploadEncryptedChunked v2 name correction', () => {
     store.set(TOKEN_KEY, 'upload-token');
     fetchQueue.push(
       async () => jsonResponse({
-        file_id: 'server-file',
+        file_id: 'client-file',
         upload_session_id: 'upload-session',
         chunk_size_bytes: 1024,
         chunk_count: 1,
       }),
       async () => new Response('{}', { status: 200 }),
-      async () => jsonResponse({ id: 'server-file', name_encrypted: 'initial-name' }),
+      async () => jsonResponse({ id: 'client-file', name_encrypted: 'initial-name' }),
       async () => jsonResponse({ error: 'temporary' }, 503),
       async () => jsonResponse({ error: 'temporary' }, 503),
       async () => jsonResponse({ error: 'temporary' }, 503),
@@ -284,9 +287,10 @@ describe('uploadEncryptedChunked v2 name correction', () => {
 
     const { uploadEncryptedChunked } = await loadFreshApi();
 
+    let nameSeq = 0;
     const completed = await uploadEncryptedChunked({
       fileId: 'client-file',
-      nameEncrypted: async (id: string) => id === 'server-file' ? 'final-name' : 'initial-name',
+      nameEncrypted: async () => (nameSeq++ === 0 ? 'initial-name' : 'final-name'),
       plaintextSizeBytes: 1,
       resumeKey: 'retry-failed',
       readEncryptedChunk: async () => new Uint8Array(29),

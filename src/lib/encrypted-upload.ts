@@ -252,7 +252,10 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
         signal: abortSignal,
       })
       if (native) {
-        if (isCurrentAccountEpoch(uploadEpoch)) onOwnerUpload({ id: native.id, parent_id: native.parent_id === undefined ? parentId ?? null : native.parent_id })
+        // Task SF-0001 (2275 L13/A7): the owner row is written under the id
+        // this client chose and the parent it chose — never under an echoed
+        // id or a server-reported parent.
+        if (isCurrentAccountEpoch(uploadEpoch)) onOwnerUpload({ id: fileId, parent_id: parentId ?? null })
         return native
       }
     }
@@ -274,7 +277,7 @@ export async function encryptedUpload(opts: EncryptedUploadOptions): Promise<Fil
       readEncryptedChunk,
       signal: abortSignal,
     })
-    if (isCurrentAccountEpoch(uploadEpoch)) onOwnerUpload({ id: entry.id, parent_id: entry.parent_id === undefined ? parentId ?? null : entry.parent_id })
+    if (isCurrentAccountEpoch(uploadEpoch)) onOwnerUpload({ id: fileId, parent_id: parentId ?? null })
     return entry
   } finally {
     settleUploadSignal(fileId, abortSignal)

@@ -433,7 +433,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         progress.completedUnitCount = 90
 
         let cached = CachedItem(
-          id: response.id,
+          id: fileId,
           parentId: parentId,
           nameEncrypted: response.name_encrypted,
           nameDecrypted: itemTemplate.filename,
@@ -821,6 +821,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       chunkCount: chunkCount,
       expectedUser: expectedUser
     )
+    // Task SF-0001 (2275 L13/A7): the id this extension minted must be the id
+    // the init answer names — checked before a single chunk is sealed. On a
+    // mismatch the session for the REQUESTED id is abandoned (mobile#259
+    // review M5); nothing is ever sent to the echoed one.
+    do {
+      try UploadItemIdEcho.assertEchoedId(chosen: fileId, echoed: session.file_id)
+    } catch {
+      await ApiClient.shared.abandonUploadBestEffort(fileId: fileId, expectedUser: expectedUser)
+      throw error
+    }
 
     let handle = try FileHandle(forReadingFrom: sourceUrl)
     defer { try? handle.close() }
@@ -861,7 +871,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
 
     try Task.checkCancellation()
-    return try await ApiClient.shared.completeUploadV2(uploadSessionId: session.upload_session_id, expectedUser: expectedUser)
+    let completed = try await ApiClient.shared.completeUploadV2(uploadSessionId: session.upload_session_id, expectedUser: expectedUser)
+    // Task SF-0001 (2275 L13/A7): the completion answer must name the same id
+    // — nothing is cached, listed or written under anything else.
+    try UploadItemIdEcho.assertEchoedId(chosen: fileId, echoed: completed.id, stage: .completion)
+    return completed
   }
 
   /// PUTs one chunk, retrying a timeout, a dropped connection, 429 or 5xx with
@@ -950,6 +964,21 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     if error is BeebeebKeychainCore.LoadError {
       return NSFileProviderError(.notAuthenticated)
     }
+    // Task SF-0001: a server that answered with another item.
+    // mobile#259 review M3 mapped this to `.notAuthenticated`, on the premise
+    // that `.cannotSynchronize` is retried. That premise was WRONG (round 3):
+    // Apple's `signalErrorResolved` retries only `notAuthenticated`,
+    // `insufficientQuota` and `serverUnreachable` (task 1722 above), the app
+    // signals `.notAuthenticated` on every key provisioning, and Files shows
+    // it as an "Authentication Required" alert — a false message, and a
+    // re-upload on the next app open. `.cannotSynchronize` is the dead end,
+    // carrying the honest sentence.
+    if let mismatch = error as? UploadItemIdEcho.Mismatch {
+      return NSFileProviderError(
+        .cannotSynchronize,
+        userInfo: [NSLocalizedDescriptionKey: mismatch.errorDescription ?? UploadItemIdEcho.message]
+      )
+    }
     if let api = error as? ApiError {
       switch api {
       case .notAuthenticated: return NSFileProviderError(.notAuthenticated)
@@ -985,5 +1014,49 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       return NSFileProviderError(.notAuthenticated)
     }
     return NSFileProviderError(.cannotSynchronize)
+  }
+}
+
+/// Task SF-0001 (contract 2275 L13): this extension mints the item id it
+/// proposes and requires every init/create/completion answer to echo it back.
+/// A difference aborts before anything is sealed, renamed or cached.
+///
+/// Lives here (not in the pod) because the File Provider target does not link
+/// the pod. The enum body is a VERBATIM copy of
+/// modules/beebeeb-crypto/ios/UploadItemIdEcho.swift (its Swift test covers this
+/// copy too); src/lib/sf-0001-r2-wiring.test.ts (M11) fails on any drift.
+enum UploadItemIdEcho {
+  /// The plain sentence shown when the init or create answer names another item.
+  static let message = "The server answered with a different item. Nothing was uploaded under it."
+  /// After a completion "nothing was uploaded" is not true: the bytes went up
+  /// under our id, but the answer named another item, so this client does not
+  /// count it as uploaded (mobile#259 review M6).
+  static let completionMessage = "The server finished this upload under a different item. Beebeeb did not count it as uploaded."
+  /// The typed code callers and tests assert on.
+  static let errorCode = "server_changed_item_id"
+
+  enum Stage: Equatable {
+    case create
+    case completion
+  }
+
+  /// A `LocalizedError`: `localizedDescription` on an `Error` existential
+  /// reaches `errorDescription`, never a plain property (mobile#259 review M4).
+  struct Mismatch: LocalizedError, Equatable {
+    let code = UploadItemIdEcho.errorCode
+    let stage: Stage
+
+    init(stage: Stage = .create) {
+      self.stage = stage
+    }
+
+    var errorDescription: String? {
+      stage == .completion ? UploadItemIdEcho.completionMessage : UploadItemIdEcho.message
+    }
+  }
+
+  /// Aborts unless `echoed` is exactly the id `chosen` (this client's own).
+  static func assertEchoedId(chosen: String, echoed: String?, stage: Stage = .create) throws {
+    guard let echoed, echoed == chosen else { throw Mismatch(stage: stage) }
   }
 }

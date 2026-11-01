@@ -670,6 +670,12 @@ final class ShareViewController: UIViewController {
                 await MainActor.run {
                     self.showError(uploadError.errorDescription ?? "Couldn't save the file.")
                 }
+            } catch let mismatch as UploadItemIdEcho.Mismatch {
+                // Task SF-0001 (mobile#259 review M4): the server answered with
+                // another item; say so instead of "please try again".
+                await MainActor.run {
+                    self.showError(mismatch.errorDescription ?? UploadItemIdEcho.message)
+                }
             } catch {
                 await MainActor.run {
                     self.showError("Couldn't save the file. Please try again.")

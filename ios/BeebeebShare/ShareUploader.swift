@@ -170,7 +170,7 @@ final class ShareUploader {
             do { _ = try encryptor.finish() }
             catch { throw UploadError.cryptoUnavailable(error.localizedDescription) }
 
-            try await completeUpload(uploadSessionId: session.upload_session_id)
+            try await completeUpload(uploadSessionId: session.upload_session_id, expectedFileId: fileId)
         } catch {
             await abandonUpload(fileId: fileId)
             throw error
@@ -235,7 +235,7 @@ final class ShareUploader {
             do { _ = try encryptor.finish() }
             catch { throw UploadError.cryptoUnavailable(error.localizedDescription) }
 
-            try await completeUpload(uploadSessionId: session.upload_session_id)
+            try await completeUpload(uploadSessionId: session.upload_session_id, expectedFileId: fileId)
         } catch {
             await abandonUpload(fileId: fileId)
             throw error
@@ -303,6 +303,14 @@ final class ShareUploader {
             await abandonUpload(fileId: fileId)
             throw UploadError.unreadableResponse
         }
+        // Task SF-0001 (2275 L13/A7): the server must echo the id this
+        // extension minted — checked before a single chunk is sealed.
+        do {
+            try UploadItemIdEcho.assertEchoedId(chosen: fileId, echoed: decoded.file_id)
+        } catch {
+            await abandonUpload(fileId: fileId)
+            throw error
+        }
         return decoded
     }
 
@@ -331,7 +339,7 @@ final class ShareUploader {
         }
     }
 
-    private func completeUpload(uploadSessionId: String) async throws {
+    private func completeUpload(uploadSessionId: String, expectedFileId: String) async throws {
         guard let url = URL(string: "\(apiUrl)/api/v1/uploads/\(uploadSessionId)/complete") else {
             throw UploadError.networkError(URLError(.badURL))
         }
@@ -354,6 +362,10 @@ final class ShareUploader {
             Self.logUploadFailureDetail(step: "complete", statusCode: statusCode, body: data)
             throw UploadError.uploadFailed(statusCode)
         }
+        // Task SF-0001 (2275 L13/A7): the completion answer names the item it
+        // finalized — it must be the id this extension proposed.
+        let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        try UploadItemIdEcho.assertEchoedId(chosen: expectedFileId, echoed: payload?["id"] as? String, stage: .completion)
     }
 
     /// Task 1671 (Issue 2b): best-effort — mirrors `abandonTextFileUpload` in
@@ -409,5 +421,49 @@ final class ShareUploader {
         default:
             return false
         }
+    }
+}
+
+/// Task SF-0001 (contract 2275 L13): this extension mints the id it proposes
+/// and requires every init/completion answer to echo it back before anything
+/// is sealed or reported uploaded.
+///
+/// Lives here because the Share target does not link the pod. The enum body is
+/// a VERBATIM copy of modules/beebeeb-crypto/ios/UploadItemIdEcho.swift (its
+/// Swift test covers this copy too); src/lib/sf-0001-r2-wiring.test.ts (M11)
+/// fails on any drift.
+enum UploadItemIdEcho {
+    /// The plain sentence shown when the init or create answer names another item.
+    static let message = "The server answered with a different item. Nothing was uploaded under it."
+    /// After a completion "nothing was uploaded" is not true: the bytes went up
+    /// under our id, but the answer named another item, so this client does not
+    /// count it as uploaded (mobile#259 review M6).
+    static let completionMessage = "The server finished this upload under a different item. Beebeeb did not count it as uploaded."
+    /// The typed code callers and tests assert on.
+    static let errorCode = "server_changed_item_id"
+
+    enum Stage: Equatable {
+        case create
+        case completion
+    }
+
+    /// A `LocalizedError`: `localizedDescription` on an `Error` existential
+    /// reaches `errorDescription`, never a plain property (mobile#259 review M4).
+    struct Mismatch: LocalizedError, Equatable {
+        let code = UploadItemIdEcho.errorCode
+        let stage: Stage
+
+        init(stage: Stage = .create) {
+            self.stage = stage
+        }
+
+        var errorDescription: String? {
+            stage == .completion ? UploadItemIdEcho.completionMessage : UploadItemIdEcho.message
+        }
+    }
+
+    /// Aborts unless `echoed` is exactly the id `chosen` (this client's own).
+    static func assertEchoedId(chosen: String, echoed: String?, stage: Stage = .create) throws {
+        guard let echoed, echoed == chosen else { throw Mismatch(stage: stage) }
     }
 }

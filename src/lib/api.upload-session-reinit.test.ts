@@ -129,7 +129,7 @@ describe('uploadEncryptedChunked — re-init on a swept v2 session (task 1589)',
 
     const { uploadEncryptedChunked } = await loadFreshApi()
     const result = await uploadEncryptedChunked({
-      fileId: 'client-id',
+      fileId: 'F',
       nameEncrypted: 'n',
       plaintextSizeBytes: 5_000_000,
       readEncryptedChunk: async () => new Uint8Array(33),
@@ -162,7 +162,7 @@ describe('uploadEncryptedChunked — re-init on a swept v2 session (task 1589)',
 
     const { uploadEncryptedChunked } = await loadFreshApi()
     const result = await uploadEncryptedChunked({
-      fileId: 'client-id',
+      fileId: 'F',
       nameEncrypted: 'n',
       plaintextSizeBytes: 1_000,
       readEncryptedChunk: async () => new Uint8Array(10),
@@ -186,7 +186,7 @@ describe('uploadEncryptedChunked — re-init on a swept v2 session (task 1589)',
 
     const { uploadEncryptedChunked } = await loadFreshApi()
     const result = await uploadEncryptedChunked({
-      fileId: 'client-id',
+      fileId: 'F',
       nameEncrypted: 'n',
       plaintextSizeBytes: 1_000,
       readEncryptedChunk: async () => new Uint8Array(10),
@@ -209,7 +209,7 @@ describe('uploadEncryptedChunked — re-init on a swept v2 session (task 1589)',
 
     const { uploadEncryptedChunked, UploadRestartFailedError } = await loadFreshApi()
     await expect(uploadEncryptedChunked({
-      fileId: 'client-id',
+      fileId: 'F',
       nameEncrypted: 'n',
       plaintextSizeBytes: 1_000,
       readEncryptedChunk: async () => new Uint8Array(10),
@@ -227,7 +227,7 @@ describe('uploadEncryptedChunked — re-init on a swept v2 session (task 1589)',
 
     const { uploadEncryptedChunked, ApiError } = await loadFreshApi()
     await expect(uploadEncryptedChunked({
-      fileId: 'client-id',
+      fileId: 'F',
       nameEncrypted: 'n',
       plaintextSizeBytes: 1_000,
       readEncryptedChunk: async () => new Uint8Array(10),
@@ -253,7 +253,7 @@ describe('uploadEncryptedChunked — re-init on a swept v2 session (task 1589)',
 
     const { uploadEncryptedChunked } = await loadFreshApi()
     const result = await uploadEncryptedChunked({
-      fileId: 'client-id',
+      fileId: 'F',
       nameEncrypted: 'n',
       plaintextSizeBytes: 1_000,
       readEncryptedChunk: async () => new Uint8Array(10),
@@ -282,7 +282,7 @@ describe('uploadEncryptedChunked — re-init on a swept v2 session (task 1589)',
 
     const { uploadEncryptedChunked } = await loadFreshApi()
     await uploadEncryptedChunked({
-      fileId: 'client-id',
+      fileId: 'F',
       nameEncrypted: 'n',
       plaintextSizeBytes: 1_000,
       readEncryptedChunk: async () => new Uint8Array(10),
@@ -319,18 +319,21 @@ describe('uploadEncryptedChunked — re-init on a swept v2 session (task 1589)',
       { status: 404, body: '{"error":"not found"}' }, // chunk 0 on S1 — swept
     )
 
-    const { uploadEncryptedChunked, ApiError } = await loadFreshApi()
+    // mobile#259 round 3: the typed "another item" error surfaces (not the
+    // session-gone one), and the REQUESTED id's session is abandoned.
+    const { uploadEncryptedChunked, ServerChangedItemIdError } = await loadFreshApi()
     await expect(uploadEncryptedChunked({
-      fileId: 'client-id',
+      fileId: 'F',
       nameEncrypted: 'n',
       plaintextSizeBytes: 1_000,
       readEncryptedChunk: async () => new Uint8Array(10),
-    })).rejects.toBeInstanceOf(ApiError)
+    })).rejects.toBeInstanceOf(ServerChangedItemIdError)
 
-    // Never attempts a chunk PUT against the mismatched-id session — the
-    // ORIGINAL session-gone failure surfaces instead of proceeding.
+    // Never attempts a chunk PUT against the mismatched-id session.
     expect(uploadAsyncCalls).toHaveLength(1)
     expect(fetchCalls.filter((c) => c.url.endsWith('/uploads/init'))).toHaveLength(2)
+    expect(fetchCalls.some((c) => c.url.includes('/F/') && c.url.includes('abandon'))).toBe(true)
+    expect(fetchCalls.some((c) => c.url.includes('WRONG'))).toBe(false)
   })
 })
 
@@ -350,7 +353,7 @@ describe('uploadEncryptedChunked — heartbeat while active (task 1589)', () => 
 
     const { uploadEncryptedChunked } = await loadFreshApi()
     const result = await uploadEncryptedChunked({
-      fileId: 'client-id',
+      fileId: 'F',
       nameEncrypted: 'n',
       plaintextSizeBytes: 1_000,
       readEncryptedChunk: async () => {

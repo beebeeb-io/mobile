@@ -324,8 +324,10 @@ final class ApiClient {
   private(set) var uploadInitFileIds: [String] = []
   /// Scenario hook: each chunk PUT throws the next queued error, then succeeds.
   var chunkFailures: [Error] = []
+  /// SF-0001 round 2: the init answer names this id instead of the requested one.
+  var initEchoOverride: String?
 
-  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); callsLock.lock(); recordedCalls = []; callsLock.unlock(); patchedNames = []; uploadInitFileIds = []; chunkFailures = []; chunkTimeoutsLock.lock(); recordedChunkTimeouts = []; chunkTimeoutsLock.unlock() }
+  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); callsLock.lock(); recordedCalls = []; callsLock.unlock(); patchedNames = []; uploadInitFileIds = []; chunkFailures = []; initEchoOverride = nil; chunkTimeoutsLock.lock(); recordedChunkTimeouts = []; chunkTimeoutsLock.unlock() }
   func count(_ prefix: String) -> Int { calls.filter { $0.hasPrefix(prefix) }.count }
 
   func listFiles(parentId: String?) async throws -> [FileEntryDto] {
@@ -349,7 +351,10 @@ final class ApiClient {
     // Mirror the shipped ApiClient: the server body's file_id is the
     // lowercased argument, and the completion row carries the server id.
     uploadInitFileIds.append(fileId.lowercased())
-    return UploadV2InitResponse(file_id: fileId.lowercased(), upload_session_id: "session", chunk_size_bytes: chunkSizeBytes, chunk_count: chunkCount)
+    return UploadV2InitResponse(file_id: initEchoOverride ?? fileId.lowercased(), upload_session_id: "session", chunk_size_bytes: chunkSizeBytes, chunk_count: chunkCount)
+  }
+  func abandonUploadBestEffort(fileId: String, expectedUser: String?) async {
+    record("upload-abandon \(fileId)")
   }
   /// Task 260 (P2-3): every chunk attempt names its OWN request timeout, so the
   /// extension never inherits the session's 60 s one. Recorded for the budget checks.
@@ -1189,6 +1194,30 @@ func createMintsALowercaseFileIdUsedForDerivation() async {
   check(result.0?.filename == "Notes.txt", "the created item keeps its name, got \(result.0?.filename ?? "nil")")
 }
 
+// ---- SF-0001 round 2 (mobile#259 review M3/M5): another item's echo ----
+// The init answers with an id the extension did not propose: nothing is sealed
+// or PUT under it, and the REQUESTED id's session is abandoned.
+// Round 3: Files gets the dead end -2005 carrying the mismatch sentence. Round
+// 2 chose -1000 on the premise that -2005 is retried; that was wrong. Apple's
+// signalErrorResolved retries only -1000 / insufficientQuota / serverUnreachable,
+// the app signals -1000 on every key provisioning, and Files shows -1000 as a
+// false "Authentication Required" alert.
+func createAbortsOnAnotherItemsEcho() async {
+  reset()
+  ApiClient.shared.initEchoOverride = "server-chosen-id"
+  let result = await createItemFromFilesApp("Echo.txt", bytes: 64)
+  let requested = ApiClient.shared.uploadInitFileIds.first ?? ""
+  check(result.0 == nil, "a mismatched echo creates no item")
+  check(isProviderError(result.1, .cannotSynchronize) && result.1?.localizedDescription == UploadItemIdEcho.message,
+        "a mismatched echo is the dead-end -2005 with the mismatch sentence, got \(describe(result.1)) \(result.1?.localizedDescription ?? "")")
+  check(ApiClient.shared.count("upload-chunk") == 0, "no chunk PUT after a mismatched echo, got \(ApiClient.shared.calls)")
+  check(ApiClient.shared.count("upload-complete") == 0, "no complete after a mismatched echo, got \(ApiClient.shared.calls)")
+  check(!requested.isEmpty && ApiClient.shared.calls.contains("upload-abandon \(requested)"),
+        "the REQUESTED id's session is abandoned, got \(ApiClient.shared.calls)")
+  check(!ApiClient.shared.calls.contains("upload-abandon server-chosen-id"), "the echoed id is never touched")
+  check(!MasterKeyHandle.derivedFileIds.contains("server-chosen-id"), "no key is derived for the echoed id, got \(MasterKeyHandle.derivedFileIds)")
+}
+
 // ---- A dropped chunk request is retried; a refused one is not ----
 // Without a retry, one chunk PUT that timed out failed the whole create and
 // Files restarted the upload from the first byte.
@@ -1268,6 +1297,7 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("materialized-refresh", { await staleMaterializedFoldersAreRefreshed(); workingSetScenariosFinish() }),
   ("create-lowercase-id", createMintsALowercaseFileIdUsedForDerivation),
   ("chunk-retry", createRetriesADroppedChunkAndStopsOnARefusal),
+  ("create-echo-mismatch", createAbortsOnAnotherItemsEcho),
 ]
 
 @main
@@ -1482,6 +1512,12 @@ describe('task 1722 (G4/G5, review I1): content is streamed into the registered 
 describe('SF-0002 part 1: a Files-app create derives keys from the lowercase id it sends', () => {
   nativeSwiftHarnessTest('createItem derives the name and chunk keys from the same lowercase id as file_id', () => {
     expectScenario('create-lowercase-id', 9);
+  }, 300_000);
+});
+
+describe('SF-0001 round 2: a Files-app create whose init names another item', () => {
+  nativeSwiftHarnessTest('aborts with the dead-end -2005 and the mismatch sentence (round 3), abandons the requested id, sends nothing to the echoed one', () => {
+    expectScenario('create-echo-mismatch', 7);
   }, 300_000);
 });
 

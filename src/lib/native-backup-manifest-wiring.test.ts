@@ -352,7 +352,9 @@ describe('2. rows carry the account that owns them', () => {
 
   test('every completed upload records its account', () => {
     const calls = (code(engine).match(/markUploadComplete\(assetId:[^)]*\)/g) ?? []).filter((c) => !c.includes(': String'));
-    expect(calls.length).toBe(2);
+    // SF-0001 round 2 (mobile#259 review M10): a third site records a pre-update
+    // upload that already finished, instead of uploading the photo twice.
+    expect(calls.length).toBe(3);
     for (const c of calls) expect(c).toMatch(/accountId: batchAccountId/);
     const fn = body(engine, 'private func markUploadComplete(assetId: String, remoteFileId: String, accountId: String) -> Bool {');
     expect(fn).toMatch(/return BackupManifestStore\.markUploaded\([\s\S]*accountId: accountId/);
@@ -425,7 +427,8 @@ describe('3. an empty manifest is rebuilt before any upload; uploads are marked 
   test('both upload completions are followed by a server mark', () => {
     const src = code(engine);
     const completions = [...src.matchAll(/markUploadComplete\(assetId: asset\.localAssetId/g)].map((m) => m.index ?? -1);
-    expect(completions.length).toBe(2);
+    // SF-0001 round 2 (M10): the pre-update completion site is the third.
+    expect(completions.length).toBe(3);
     for (const at of completions) {
       const next = src.indexOf('await markOnServer(', at);
       const nextCompletion = src.indexOf('markUploadComplete(assetId:', at + 1);
@@ -637,7 +640,8 @@ describe('7. round 7 sweep: nothing destructive runs on an unconfirmed precondit
   test('an upload the manifest did not record keeps its staged chunks and directory (both completion sites)', () => {
     const src = code(engine);
     const starts = [...src.matchAll(/let recorded: Bool = dbQueue\.sync \{/g)].map((m) => m.index);
-    expect(starts.length).toBe(2);
+    // SF-0001 round 2 (M10): the pre-update completion site is the third.
+    expect(starts.length).toBe(3);
     for (const at of starts) {
       const site = src.slice(at, src.indexOf('removeStagedDirectory(stagedDir: stagedDir, fileId: fileId)', at));
       // Round 8: the fence check comes first in the same block.

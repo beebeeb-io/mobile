@@ -169,61 +169,75 @@ final class NativeEncryptedBackupUploader {
     let chunkSize = Int(plan.chunkSizeBytes)
     let chunkCount = Int(plan.chunkCount)
 
-    // 1. upload/init — wire contract preserved: size_bytes stays the PLAINTEXT
-    //    byte count (the server recomputes the stored size from the chunks);
-    //    chunk_count comes from the core plan.
-    let serverFileId = try initUpload(
+    // Task SF-0001 (mobile#259 review M1): the create runs as
+    // `BackupCreateUploadFlow` — the init answer must echo `fileId` before the
+    // first chunk is encrypted or PUT, every PUT and the complete go to
+    // `fileId` (never to the answer's id), and the completion answer must echo
+    // it before the caller records success.
+    let flow = BackupCreateUploadFlow(
       fileId: fileId,
-      nameEncrypted: nameEncrypted,
-      parentFolderId: parentFolderId,
-      mimeType: mimeType,
-      plaintextSize: plaintext.count,
       chunkCount: chunkCount,
-      authToken: authToken,
-      serverBaseURL: serverBaseURL,
-      accountId: accountId
+      // 1. upload/init — wire contract preserved: size_bytes stays the
+      //    PLAINTEXT byte count (the server recomputes the stored size from
+      //    the chunks); chunk_count comes from the core plan.
+      initUpload: {
+        try self.initUpload(
+          fileId: fileId,
+          nameEncrypted: nameEncrypted,
+          parentFolderId: parentFolderId,
+          mimeType: mimeType,
+          plaintextSize: plaintext.count,
+          chunkCount: chunkCount,
+          authToken: authToken,
+          serverBaseURL: serverBaseURL,
+          accountId: accountId
+        )
+      },
+      // 2. Stream the chunks: slice into plan-sized pieces, encrypt each via
+      //    the core push API, and PUT the returned frame. The flow emits
+      //    exactly `chunkCount` chunks (an empty file → one empty chunk),
+      //    which is what `finish()`'s integrity guard expects.
+      putChunk: { index, destination in
+        let start = index * chunkSize
+        let end = min(start + chunkSize, plaintext.count)
+        let slice = start < end ? plaintext.subdata(in: start..<end) : Data()
+        let chunk = try encryptor.pushChunk(plaintext: slice)
+        try self.putChunk(
+          frame: chunk.data,
+          index: Int(chunk.index),
+          serverFileId: destination,
+          authToken: authToken,
+          serverBaseURL: serverBaseURL,
+          accountId: accountId
+        )
+      },
+      beforeComplete: {
+        // 3. Integrity guard (detects a source that shrank) BEFORE telling the
+        //    server the upload is complete.
+        _ = try encryptor.finish()
+        // Task 1531 [P0]: re-check right before telling the server this
+        // upload is done. The chunk loop above can take a while for a large
+        // export; if the signed-in account changed mid-upload, the ciphertext
+        // was already encrypted under the OLD account's key by this point —
+        // completing the upload can't be undone by refusing later, so refuse
+        // HERE, before the one irreversible step, rather than let a stale
+        // upload land.
+        try Self.requireAccountBinding(accountId)
+      },
+      // 4. upload/complete.
+      complete: { destination in
+        try self.completeUpload(
+          serverFileId: destination,
+          authToken: authToken,
+          serverBaseURL: serverBaseURL,
+          accountId: accountId
+        )
+      },
+      abandon: { requested in
+        self.abandonUpload(fileId: requested, authToken: authToken, serverBaseURL: serverBaseURL, accountId: accountId)
+      }
     )
-
-    // 2. Stream the chunks: slice into plan-sized pieces, encrypt each via the
-    //    core push API, and PUT the returned frame. The loop emits exactly
-    //    `chunkCount` chunks (an empty file → one empty chunk), which is what
-    //    `finish()`'s integrity guard expects.
-    for index in 0..<chunkCount {
-      let start = index * chunkSize
-      let end = min(start + chunkSize, plaintext.count)
-      let slice = start < end ? plaintext.subdata(in: start..<end) : Data()
-      let chunk = try encryptor.pushChunk(plaintext: slice)
-      try putChunk(
-        frame: chunk.data,
-        index: Int(chunk.index),
-        serverFileId: serverFileId,
-        authToken: authToken,
-        serverBaseURL: serverBaseURL,
-        accountId: accountId
-      )
-    }
-
-    // 3. Integrity guard (detects a source that shrank) BEFORE telling the
-    //    server the upload is complete.
-    _ = try encryptor.finish()
-
-    // Task 1531 [P0]: re-check right before telling the server this upload
-    // is done. The chunk loop above can take a while for a large export; if
-    // the signed-in account changed mid-upload, the ciphertext was already
-    // encrypted under the OLD account's key by this point — completing the
-    // upload can't be undone by refusing later, so refuse HERE, before the
-    // one irreversible step, rather than let a stale upload land.
-    try Self.requireAccountBinding(accountId)
-
-    // 4. upload/complete.
-    try completeUpload(
-      serverFileId: serverFileId,
-      authToken: authToken,
-      serverBaseURL: serverBaseURL,
-      accountId: accountId
-    )
-
-    return serverFileId
+    return try flow.run()
   }
 
   /// Task 1531 [P0]: refuse unless `accountId` (the account this plaintext
@@ -268,7 +282,7 @@ final class NativeEncryptedBackupUploader {
     authToken: String,
     serverBaseURL: String,
     accountId: String
-  ) throws -> String {
+  ) throws -> [String: Any] {
     guard let url = URL(string: "\(serverBaseURL)/api/v1/files/upload/init") else {
       throw NativeEncryptedBackupUploadError.invalidBaseURL
     }
@@ -296,14 +310,12 @@ final class NativeEncryptedBackupUploader {
     request.httpBody = bodyData
 
     let data = try sendSync(request)
-    guard
-      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      let serverFileId = object["file_id"] as? String,
-      !serverFileId.isEmpty
-    else {
+    // Task SF-0001: the caller (`BackupCreateUploadFlow`) compares the answer's
+    // `file_id` with the id it proposed; this only parses.
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
       throw NativeEncryptedBackupUploadError.invalidResponse
     }
-    return serverFileId
+    return object
   }
 
   private func putChunk(
@@ -334,7 +346,7 @@ final class NativeEncryptedBackupUploader {
     authToken: String,
     serverBaseURL: String,
     accountId: String
-  ) throws {
+  ) throws -> [String: Any]? {
     guard let url = URL(string: "\(serverBaseURL)/api/v1/files/\(serverFileId)/upload/complete") else {
       throw NativeEncryptedBackupUploadError.invalidBaseURL
     }
@@ -346,7 +358,22 @@ final class NativeEncryptedBackupUploader {
     request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
     request.httpBody = Data("{}".utf8)
 
-    _ = try sendSync(request)
+    let data = try sendSync(request)
+    return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+  }
+
+  /// Task SF-0001 (mobile#259 review M5): best-effort abandon of the requested
+  /// id's upload after an init answer named another item. Never throws.
+  private func abandonUpload(fileId: String, authToken: String, serverBaseURL: String, accountId: String) {
+    guard let url = URL(string: "\(serverBaseURL)/api/v1/files/\(fileId)/upload/abandon") else { return }
+    var request = URLRequest(url: url)
+    ProvenanceHeaders.apply(to: &request)
+    Self.applyExpectedUserHeader(to: &request, accountId: accountId)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+    request.httpBody = Data("{}".utf8)
+    _ = try? sendSync(request)
   }
 
   /// Perform a request synchronously on the current (background) thread. The

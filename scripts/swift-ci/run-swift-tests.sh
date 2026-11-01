@@ -23,6 +23,8 @@ MANIFEST=(
   "preview-chunk-pipeline-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/PreviewChunkPipeline.swift"
   "empty-preview-frame-test.swift|modules/beebeeb-crypto/ios/NativePreviewWorkingStorage.swift modules/beebeeb-crypto/ios/PreviewChunkPipeline.swift"
   "account-refusal-detection-test.swift|modules/beebeeb-crypto/ios/AccountRefusalDetection.swift"
+  "upload-item-id-echo-test.swift|modules/beebeeb-crypto/ios/UploadItemIdEcho.swift"
+  "backup-create-upload-flow-test.swift|modules/beebeeb-crypto/ios/BackupCreateUploadFlow.swift modules/beebeeb-crypto/ios/UploadItemIdEcho.swift"
   "share-upload-request-policy-test.swift|targets/share-extension/ShareUploadRequestPolicy.swift targets/file-provider/AccountMismatchDetection.swift"
   "share-recent-folders-test.swift|targets/share-extension/ShareRecentFolders.swift"
   "backup-manifest-store-test.swift|modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift modules/beebeeb-crypto/ios/RuntimeTrace.swift"
