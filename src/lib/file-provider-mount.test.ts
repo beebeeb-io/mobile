@@ -47,6 +47,10 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   },
   removeFileProviderAccess: async () => ({ registered: false }),
   removeFileProviderEntries: async () => 0,
+  signalFileProviderTrashEnumerator: async () => {
+    nativeCalls.push({ fn: 'signalFileProviderTrashEnumerator', args: [] });
+    return true;
+  },
   setFileProviderProtectedFolder: async (id: string | null) => {
     nativeCalls.push({ fn: 'setFileProviderProtectedFolder', args: [id] });
     return true;
@@ -84,7 +88,7 @@ mock.module('./lock-state', () => ({
   wasRecentlyUnlocked: () => true,
 }));
 
-const { mountTrustedFileProvider, registerTrustedFileProviderDomain, resetTrustedFileProviderDomain, populateFileProviderCache, syncDecryptedEntriesToFileProvider, setFileProviderProtectedBackupsRoot } = await import('./file-provider-mount');
+const { mountTrustedFileProvider, registerTrustedFileProviderDomain, resetTrustedFileProviderDomain, populateFileProviderCache, syncDecryptedEntriesToFileProvider, removeFromFileProviderCache, setFileProviderProtectedBackupsRoot } = await import('./file-provider-mount');
 const { plaintextGate } = await import('./plaintext-gate');
 const decryptMetadata = async () => 'unused';
 
@@ -152,6 +156,21 @@ describe('syncDecryptedEntriesToFileProvider (task 1593 round 4)', () => {
     );
     expect(n).toBe(0);
     expect(nativeCalls.length).toBe(0);
+  });
+
+  test('a restore push signals the dedicated Trash enumerator without adding Trash to the working set', async () => {
+    await syncDecryptedEntriesToFileProvider(
+      [{ id: 'restored', is_folder: false, name_encrypted: 'a', size_bytes: 1, chunk_count: 1, created_at: '', updated_at: '' }],
+      {},
+      null,
+      { trashChanged: true },
+    );
+    expect(nativeCalls.map((call) => call.fn)).toEqual(['syncFileProviderCache', 'signalFileProviderTrashEnumerator']);
+  });
+
+  test('a trash or permanent delete signals the dedicated Trash enumerator even when no cached live row existed', async () => {
+    await removeFromFileProviderCache(['gone']);
+    expect(nativeCalls.map((call) => call.fn)).toEqual(['signalFileProviderTrashEnumerator']);
   });
 });
 

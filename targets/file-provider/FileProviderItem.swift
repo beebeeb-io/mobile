@@ -1,4 +1,5 @@
 import FileProvider
+import Foundation
 import UniformTypeIdentifiers
 
 /// `NSFileProviderItem` implementation backed by a row in the SQLite cache.
@@ -42,6 +43,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
   // MARK: - Display
 
   var filename: String {
+    if let display = cached.displayName, !display.isEmpty { return display }
     if let decrypted = cached.nameDecrypted, !decrypted.isEmpty { return decrypted }
     // If the encrypted name is not JSON (legacy plaintext), use it directly.
     if let raw = cached.nameEncrypted, !raw.isEmpty, !raw.hasPrefix("{") {
@@ -52,12 +54,12 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     // this is a single undecryptable name. The label is unique per item: the
     // old constant "Folder" / "Open Beebeeb to decrypt" collided between
     // siblings and fileproviderd bounced them to "Folder 2", "Folder 3".
-    return Self.unresolvedNameLabel(id: cached.id)
+    return FileProviderDisplayNames.unresolvedNameLabel(id: cached.id)
   }
 
   /// "Encrypted item · 1a2b3c4d": the first 8 characters of the server id.
   static func unresolvedNameLabel(id: String) -> String {
-    "Encrypted item \u{00B7} \(id.prefix(8))"
+    FileProviderDisplayNames.unresolvedNameLabel(id: id)
   }
 
   var contentType: UTType {
@@ -84,11 +86,11 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
 
   var capabilities: NSFileProviderItemCapabilities {
     // Trash is a read-only view: open and copy out; no rename, move or delete. A folder keeps
-    // `allowsAddingSubItems`: without it fileproviderd could not create the folder on the
-    // device (cannotSetMetadata, an error on the whole location). Adding is refused by the
-    // extension instead (createItem), so nothing can be written in.
+    // `allowsAddingSubItems` / `allowsWriting`: without it fileproviderd cannot create the item
+    // on disk (cannotSetMetadata, an error on the whole location). Writes are refused by the
+    // extension instead, so the server view remains read-only.
     if FilesTrash.isTrashNamespace(cached.id) {
-      return cached.isFolder ? [.allowsContentEnumerating, .allowsAddingSubItems] : [.allowsReading]
+      return cached.isFolder ? [.allowsContentEnumerating, .allowsAddingSubItems] : [.allowsReading, .allowsWriting]
     }
     var capabilities: NSFileProviderItemCapabilities = cached.isFolder
       ? [.allowsContentEnumerating, .allowsAddingSubItems, .allowsRenaming, .allowsDeleting, .allowsReparenting]
@@ -119,7 +121,13 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     // A protected folder gets its own version, so Files re-reads its capabilities when the
     // app publishes the id.
     let protectedMarker = cached.isProtectedBackupsRoot ? "|protected" : ""
-    let metadataPayload = "\(contentPayload)|\(cached.nameDecrypted ?? "")|\(cached.nameEncrypted ?? "")|\(cached.parentId ?? "")\(protectedMarker)"
+    // Namespaced Trash rows need a distinct version after their advertised capabilities change.
+    // Existing installations then replace snapshots captured before that capability change.
+    let trashCapabilitiesMarker = cached.id.hasPrefix(FilesTrash.itemPrefix) ? "|trash-capabilities-v2" : ""
+    // v2 records that aliases are tied to the real name and parent they were derived from. The
+    // marker is unconditional so upgraded installs replace snapshots carrying a stale v1 alias.
+    let displayNameMarker = "|display-name-v2"
+    let metadataPayload = "\(contentPayload)|\(cached.nameDecrypted ?? "")|\(cached.nameEncrypted ?? "")|\(cached.displayName ?? "")|\(cached.parentId ?? "")\(protectedMarker)\(trashCapabilitiesMarker)\(displayNameMarker)"
     return NSFileProviderItemVersion(
       contentVersion: Data(contentPayload.utf8),
       metadataVersion: Data(metadataPayload.utf8)

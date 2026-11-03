@@ -127,9 +127,7 @@ enum CryptoBridge {
     fileId: String,
     filename: String
   ) throws -> String {
-    let fkh = try masterKeyHandle.deriveFileKey(fileId: Data(fileId.utf8))
-    let blob = try fkh.encryptMetadata(metadata: filename)
-    return try encodeNamePayload(nonce: blob.nonce, ciphertext: blob.ciphertext)
+    try masterKeyHandle.encryptName(fileId: fileId, filename: filename, mimeType: nil)
   }
 
   // MARK: - Chunk codec
@@ -262,13 +260,4 @@ enum CryptoBridge {
     return DecryptedName(name: name, mimeType: dict["mime_type"] as? String)
   }
 
-  private static func encodeNamePayload(nonce: Data, ciphertext: Data) throws -> String {
-    let payload: [String: String] = [
-      "nonce": nonce.base64EncodedString(),
-      "ciphertext": ciphertext.base64EncodedString(),
-    ]
-    let data = try JSONSerialization.data(withJSONObject: payload)
-    guard let str = String(data: data, encoding: .utf8) else { throw CryptoBridgeError.decodeFailed }
-    return str
-  }
 }

@@ -103,7 +103,11 @@ import { useCrypto } from '../lib/crypto-context';
 import { decryptMetadata as decryptMetadataWithKey } from '../../modules/beebeeb-crypto';
 import { isRequestUpload } from '../lib/file-request-crypto';
 import { encryptedMetadataPayloadToBytes, encryptedMetadataToJson, fileMetadataPlaintext } from '../lib/encrypted-metadata';
-import { syncDecryptedEntriesToFileProvider, removeFromFileProviderCache } from '../lib/file-provider-mount';
+import {
+  syncDecryptedEntriesToFileProvider,
+  removeFromFileProviderCache,
+  signalFileProviderTrashChanged,
+} from '../lib/file-provider-mount';
 import { useAuth } from '../lib/auth';
 import { encryptedUpload, generateFileId } from '../lib/encrypted-upload';
 import { uploadReplacingOrAdding } from '../lib/replace-or-add';
@@ -3918,6 +3922,7 @@ export default function FilesScreen() {
       trashFiles: trashFilesApi,
       restoreFile,
       removeFromFileProviderCache,
+      signalFileProviderTrashChanged,
       restoreFileProviderCache: async (restoredIds) => {
         const restoredSubtree = expandRoots(restoredIds);
         const restoredEntries = restoredSubtree.map((id) => snapshotEntries.get(id)).filter((entry): entry is FileEntry => !!entry);

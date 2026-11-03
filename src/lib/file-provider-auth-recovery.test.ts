@@ -11,6 +11,19 @@ test('trusted registration resumes Files authentication throttling before enumer
   expect(registration.indexOf('await resumeFileProviderAuthenticationIfReady')).toBeLessThan(registration.indexOf('let rootError = await signalFileProviderEnumerator'));
 });
 
+test('legacy cannotSynchronize recovery runs once after success and stays retryable after failure', () => {
+  const start = source.indexOf('private func resumeFileProviderAuthenticationIfReady(');
+  const end = source.indexOf('private func removeMountedFileProviderDomain(', start);
+  const recovery = source.slice(start, end);
+  expect(recovery).toContain('files.cannotSynchronizeRecovery.v2');
+  expect(recovery).toContain('if defaults?.bool(forKey: cannotSynchronizeRecoveryKey) != true');
+  expect(recovery).toContain('defaults?.set(true, forKey: cannotSynchronizeRecoveryKey)');
+  expect(recovery.indexOf('try await manager.signalErrorResolved(NSFileProviderError(.cannotSynchronize))'))
+    .toBeLessThan(recovery.indexOf('defaults?.set(true, forKey: cannotSynchronizeRecoveryKey)'));
+  expect(recovery).not.toContain('reimportItems');
+  expect(recovery).not.toContain('removeDomain');
+});
+
 // Task 1722 review round 2 (items 4/5): the resume no longer decides from "both keychain items
 // exist" (hasFileProviderKey); it hands the vault key and its consent rule (consent flags, purge
 // generation, purge marker) to the one locked Files key writer, which unwraps to check.
@@ -144,6 +157,7 @@ ${helper}
     var count = 0
     func reset() {
       defaults.set(true, forKey: "trusted"); defaults.set(true, forKey: "enabled")
+      defaults.removeObject(forKey: "files.cannotSynchronizeRecovery.v2")
       PlaintextStorageProtection.pending = false
       BeebeebKeychainCore.strings = ["token": "token", "owner": "A", "user": "A"]
       BeebeebCryptoBridge.snapshot = .init(handle: FakeHandle(), ownerId: "A")
@@ -194,6 +208,28 @@ ${helper}
     await run("retry callback failure", { NSFileProviderManager.fail = true }, ready: true, provisions: true)
     precondition(RuntimeTrace.events == ["fileprovider.authentication_retry.failed", "fileprovider.authentication_retry.failed"], "\\(RuntimeTrace.events)")
 
+    reset()
+    await resumeFileProviderAuthenticationIfReady(domain: domain, defaults: defaults)
+    await resumeFileProviderAuthenticationIfReady(domain: domain, defaults: defaults)
+    precondition(NSFileProviderManager.calls == [
+      NSFileProviderError.notAuthenticated.rawValue,
+      NSFileProviderError.cannotSynchronize.rawValue,
+      NSFileProviderError.notAuthenticated.rawValue,
+    ], "successful cannotSynchronize recovery ran more than once: \\(NSFileProviderManager.calls)")
+    precondition(defaults.bool(forKey: "files.cannotSynchronizeRecovery.v2"), "successful recovery was not remembered")
+    count += 1
+
+    reset(); NSFileProviderManager.fail = true
+    await resumeFileProviderAuthenticationIfReady(domain: domain, defaults: defaults)
+    await resumeFileProviderAuthenticationIfReady(domain: domain, defaults: defaults)
+    precondition(NSFileProviderManager.calls == [
+      NSFileProviderError.notAuthenticated.rawValue,
+      NSFileProviderError.cannotSynchronize.rawValue,
+      NSFileProviderError.notAuthenticated.rawValue,
+      NSFileProviderError.cannotSynchronize.rawValue,
+    ], "failed cannotSynchronize recovery was not retried: \\(NSFileProviderManager.calls)")
+    precondition(!defaults.bool(forKey: "files.cannotSynchronizeRecovery.v2"), "failed recovery was marked complete")
+    count += 1
 
     // Task 1722 review M1 + round 2 item 4: a sign-out purge or a Settings toggle-off can land at
     // any point (the resume runs on a Swift Task with no ordering against the purge queue). The
@@ -257,7 +293,7 @@ ${helper}
   const text = readFileSync(output, 'utf8');
   // eslint-disable-next-line no-console
   if (!text.includes('PASS')) console.log(text);
-  expect(text).toContain('PASS native authentication recovery cases=24');
+  expect(text).toContain('PASS native authentication recovery cases=26');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

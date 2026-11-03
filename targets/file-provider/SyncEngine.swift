@@ -5,10 +5,13 @@ import UniformTypeIdentifiers
 /// Result of refreshing a File Provider container. Initial empty-cache
 /// enumeration uses this to distinguish a genuinely empty folder from a
 /// provider that cannot authenticate or reach the server.
-enum FileProviderRefreshOutcome {
+enum FileProviderRefreshOutcome: Equatable {
   case success
   case notAuthenticated
   case serverUnreachable
+  case insufficientQuota
+  case noSuchItem
+  case cannotSynchronize
 
   var fileProviderError: Error {
     switch self {
@@ -18,6 +21,12 @@ enum FileProviderRefreshOutcome {
       return NSFileProviderError(.notAuthenticated)
     case .serverUnreachable:
       return NSFileProviderError(.serverUnreachable)
+    case .insufficientQuota:
+      return NSFileProviderError(.insufficientQuota)
+    case .noSuchItem:
+      return NSFileProviderError(.noSuchItem)
+    case .cannotSynchronize:
+      return NSFileProviderError(.cannotSynchronize)
     }
   }
 }
@@ -41,24 +50,99 @@ enum FileProviderAuthRequirement {
 /// Initial empty-cache enumeration must inspect the returned outcome so Files
 /// does not cache an empty provider when auth or network refresh failed.
 enum SyncEngine {
+  private static let refreshGenerationLock = NSLock()
+  private static var refreshGenerations: [String: UInt64] = [:]
+  private static var publishedRefreshGenerations: [String: UInt64] = [:]
+  private static let supersededRefreshPassLimit = 3
+
+  private enum RefreshPassResult {
+    case finished(FileProviderRefreshOutcome)
+    case superseded(UInt64)
+  }
+
+  private static func beginRefresh(containerId: String) -> UInt64 {
+    refreshGenerationLock.lock()
+    defer { refreshGenerationLock.unlock() }
+    let generation = (refreshGenerations[containerId] ?? 0) &+ 1
+    refreshGenerations[containerId] = generation
+    return generation
+  }
+
+  /// Commits while holding the generation lock. A newer refresh therefore either starts before
+  /// this check (and makes this response stale), or starts after this commit and supersedes it.
+  private static func commitLatestRefresh(
+    containerId: String,
+    generation: UInt64,
+    _ commit: () -> Bool
+  ) -> Bool? {
+    refreshGenerationLock.lock()
+    defer { refreshGenerationLock.unlock() }
+    let isLatest = refreshGenerations[containerId] == generation
+    let hasPublishedListing = CacheManager.shared.syncState(key: "container.\(containerId).anchor") != nil
+    // A first successful response is a provisional fallback even when a newer request has
+    // started. If that newer request fails, Files still receives a real first listing; if it
+    // succeeds, its later generation replaces this one. Once any listing has been published,
+    // only the newest response may commit.
+    guard isLatest || !hasPublishedListing else { return nil }
+    let committed = commit()
+    if committed {
+      publishedRefreshGenerations[containerId] = max(
+        publishedRefreshGenerations[containerId] ?? 0,
+        generation
+      )
+    }
+    return committed
+  }
+
+  private static func newerRefreshPublished(containerId: String, than generation: UInt64) -> Bool {
+    refreshGenerationLock.lock()
+    defer { refreshGenerationLock.unlock() }
+    return (publishedRefreshGenerations[containerId] ?? 0) > generation
+  }
+
   /// Refresh the children of `containerId` from the API and signal the system
   /// when changes land.
   @discardableResult
-  static func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome {
+  static func refreshContainer(
+    containerId: String,
+    signalSystem: Bool = true,
+    retryWhenSuperseded: Bool = false
+  ) async -> FileProviderRefreshOutcome {
+    let passLimit = retryWhenSuperseded ? supersededRefreshPassLimit : 1
+    for pass in 1...passLimit {
+      switch await refreshContainerPass(containerId: containerId, signalSystem: signalSystem) {
+      case .finished(let outcome):
+        return outcome
+      case .superseded(let generation):
+        guard retryWhenSuperseded else { return .success }
+        // A change observer can safely compare its anchor with a snapshot committed by the newer
+        // pass. If nothing newer published, retry only within the fixed budget and then let iOS
+        // ask again later instead of holding the observer open indefinitely.
+        if newerRefreshPublished(containerId: containerId, than: generation) {
+          return .success
+        }
+        if pass == passLimit {
+          NSLog("[Beebeeb] refreshContainer(\(containerId)) stopped after \(passLimit) superseded passes")
+          return .serverUnreachable
+        }
+      }
+    }
+    return .serverUnreachable
+  }
+
+  private static func refreshContainerPass(
+    containerId: String,
+    signalSystem: Bool
+  ) async -> RefreshPassResult {
+    let refreshGeneration = beginRefresh(containerId: containerId)
     // A normal folder, Trash's flat top level, or a trashed folder: where to ask, where to cache.
     let listing = FilesTrash.listing(forContainer: containerId)
     let parentId = listing.serverParent
 
-    // Task 1593 round 7 (C1) — read BEFORE the network fetch below, which
-    // can take an arbitrary amount of time. If a sign-out purge starts
-    // while this call is in flight, the main app process bumps this SAME
-    // cache database's `PRAGMA user_version` (round 8/R2 — see
-    // `CacheManager.replaceChildren`'s doc comment for why this moved out
-    // of App Group UserDefaults); the write at the bottom of this function
-    // re-checks it under a real cross-process lock immediately before
-    // committing and refuses to land if it has changed, so a fetch that
-    // started against the outgoing account can't reinsert its decrypted
-    // names after the purge's sweep.
+    // Read this before the network fetch, which can take an arbitrary amount of time. If a
+    // sign-out purge starts while the call is in flight, the main app process bumps this same
+    // cache database's `PRAGMA user_version`. The write below rechecks it under a cross-process
+    // lock immediately before committing, so an outgoing account cannot reinsert decrypted names.
     let epochAtStart = CacheManager.shared.currentPurgeEpoch()
 
     var entries: [ApiClient.FileEntryDto]
@@ -70,7 +154,7 @@ enum SyncEngine {
       )
     } catch {
       NSLog("[Beebeeb] refreshContainer(\(containerId)) failed: \(error)")
-      return mapRefreshError(error)
+      return .finished(mapRefreshError(error))
     }
 
     // Prefer extension-local decryption so iOS Files can open any folder even
@@ -113,7 +197,7 @@ enum SyncEngine {
     if masterKeyHandle == nil,
        entries.contains(where: { needsKeyForName($0, prior: cachedById[rowId($0)]) }) {
       NSLog("[Beebeeb] refreshContainer(\(containerId)) refused: names need the vault key")
-      return .notAuthenticated
+      return .finished(.notAuthenticated)
     }
 
     var rowsToUpsert: [CachedItem] = []
@@ -144,30 +228,46 @@ enum SyncEngine {
         createdAt: dto.created_at,
         updatedAt: dto.updated_at,
         syncAnchor: bumpAnchor(prior?.syncAnchor),
-        isMaterialized: prior?.isMaterialized ?? false
+        isMaterialized: prior?.isMaterialized ?? false,
+        displayName: prior?.displayName,
+        displayNameSourceName: prior?.displayNameSourceName,
+        displayNameSourceParent: prior?.displayNameSourceParent
       )
       rowsToUpsert.append(item)
     }
+    rowsToUpsert = FileProviderDisplayNames.assign(rowsToUpsert)
 
-    let committed = CacheManager.shared.replaceChildren(
-      parent: listing.cacheParent,
-      with: rowsToUpsert,
-      expectedEpoch: epochAtStart,
-      pruningNamespacePrefix: listing.isTrashRoot ? FilesTrash.itemPrefix : nil
-    )
-    guard committed else {
-      // Task 1593 round 7 (C1) — a sign-out purge ran while this fetch was
-      // in flight. Discard the response instead of writing decrypted names
-      // for an account that is (or is about to be) signed out; the next
-      // enumeration after a fresh sign-in re-fetches this container anyway.
-      NSLog("[Beebeeb] refreshContainer(\(containerId)) discarded — purge epoch changed during fetch")
-      return .serverUnreachable
+    let latestCommit = commitLatestRefresh(
+      containerId: containerId,
+      generation: refreshGeneration
+    ) {
+      let replaced = CacheManager.shared.replaceChildren(
+        parent: listing.cacheParent,
+        with: rowsToUpsert,
+        expectedEpoch: epochAtStart,
+        pruningNamespacePrefix: listing.isTrashRoot ? FilesTrash.itemPrefix : nil
+      )
+      if replaced {
+        CacheManager.shared.setSyncState(
+          key: "container.\(containerId).anchor",
+          value: String(Date().timeIntervalSince1970)
+        )
+      }
+      return replaced
     }
-    CacheManager.shared.setSyncState(
-      key: "container.\(containerId).anchor",
-      value: String(Date().timeIntervalSince1970)
-    )
-
+    guard let committed = latestCommit else {
+      NSLog("[Beebeeb] refreshContainer(\(containerId)) discarded — a newer refresh started")
+      return .superseded(refreshGeneration)
+    }
+    guard committed else {
+      // A sign-out purge ran while this fetch was in flight. Discard the response instead of
+      // writing names for the outgoing account; a fresh sign-in re-fetches the container.
+      NSLog("[Beebeeb] refreshContainer(\(containerId)) discarded — purge epoch changed during fetch")
+      return .finished(.serverUnreachable)
+    }
+    // enumerateChanges has an observer waiting for this snapshot. Re-signaling the same
+    // enumerator here would recursively start another server refresh.
+    guard signalSystem else { return .finished(.success) }
     // Tell the system both the opened container and the working set changed.
     // Signaling only .workingSet leaves newly opened subfolders stuck on the
     // empty cached listing even after the API refresh has inserted children.
@@ -176,7 +276,7 @@ enum SyncEngine {
       : NSFileProviderItemIdentifier(containerId)
     guard let manager = NSFileProviderManager(for: BeebeebConstants.fileProviderDomain) else {
       NSLog("[Beebeeb] signalEnumerator(\(containerId)) failed: File Provider manager unavailable")
-      return .success
+      return .finished(.success)
     }
     manager.signalEnumerator(for: itemIdentifier) { error in
       if let error { NSLog("[Beebeeb] signalEnumerator(\(containerId)) failed: \(error)") }
@@ -187,7 +287,7 @@ enum SyncEngine {
         if let error { NSLog("[Beebeeb] signalEnumerator workingSet failed: \(error)") }
       }
     }
-    return .success
+    return .finished(.success)
   }
 
   /// What the app's Trash shows: the server's flat trashed listing holds every trashed row, the
@@ -244,8 +344,15 @@ enum SyncEngine {
       let listed = CacheManager.shared.syncState(key: "container.\(id).anchor").flatMap(Double.init) ?? 0
       return max(listed, attempts[id] ?? 0)
     }
-    let due = CacheManager.shared.materializedContainerIds()
-      .filter { $0 != BeebeebConstants.rootContainerIdentifier && !FilesTrash.isTrashNamespace($0) }
+    var refreshCandidates = Set(CacheManager.shared.materializedContainerIds())
+    // Trash changes in the app without Files opening it again. Refresh its flat listing on the
+    // same bounded cadence as materialized folders, while keeping it out of the working set.
+    refreshCandidates.insert(BeebeebConstants.trashContainerIdentifier)
+    let due = refreshCandidates
+      .filter {
+        $0 != BeebeebConstants.rootContainerIdentifier
+          && ($0 == BeebeebConstants.trashContainerIdentifier || !FilesTrash.isTrashNamespace($0))
+      }
       .map { (id: $0, seen: lastSeen($0)) }
       .filter { nowSeconds - $0.seen >= materializedRefreshInterval }
       .sorted { $0.seen < $1.seen }
@@ -299,8 +406,20 @@ enum SyncEngine {
       switch apiError {
       case .notAuthenticated, .accountMismatch:
         return .notAuthenticated
-      case .invalidResponse, .statusCode:
+      case .invalidResponse:
         return .serverUnreachable
+      case .quotaExceeded:
+        return .insufficientQuota
+      case .uploadSessionUnavailable, .retryableConflict:
+        return .serverUnreachable
+      case .parentUnavailable, .itemUnavailable:
+        return .noSuchItem
+      case .statusCode(let status):
+        if status == 404 { return .noSuchItem }
+        if status == 408 || status == 425 || status == 429 || (500...599).contains(status) {
+          return .serverUnreachable
+        }
+        return .cannotSynchronize
       }
     }
     let nsError = error as NSError
@@ -325,7 +444,7 @@ enum SyncEngine {
     return max(prior ?? 0, now)
   }
 
-  private static func decryptName(
+  static func decryptName(
     dto: ApiClient.FileEntryDto,
     masterKeyHandle: MasterKeyHandle?,
     fallback: String?

@@ -393,7 +393,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     // Trash is read-only: nothing is created in it (or in a trashed folder).
     if FilesTrash.isTrashNamespace(itemTemplate.parentItemIdentifier.rawValue) {
       NSLog("[Beebeeb] createItem refused: parent is read-only Trash")
-      completionHandler(nil, [], false, NSFileProviderError(.cannotSynchronize))
+      completionHandler(nil, [], false, Self.readOnlyTrashError)
       return progress
     }
 
@@ -407,21 +407,32 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           // new folder. The id is minted lowercase once: the name is sealed under a key derived
           // from it and the server stores that same string.
           let owned = try self.masterKey()
+          let parentRaw = itemTemplate.parentItemIdentifier.rawValue
+          let parentId: String? = (parentRaw == NSFileProviderItemIdentifier.rootContainer.rawValue) ? nil : parentRaw
+          if let existing = try await Self.existingFolder(
+            named: itemTemplate.filename,
+            parentId: parentId,
+            masterKey: owned.handle,
+            expectedUser: owned.owner,
+            expectedEpoch: epochAtStart
+          ) {
+            completionHandler(FileProviderItem(cached: existing), [], false, nil)
+            return
+          }
           let folderId = UUID().uuidString.lowercased()
           let nameEncrypted = try CryptoBridge.encryptFilename(
             masterKeyHandle: owned.handle,
             fileId: folderId,
             filename: itemTemplate.filename
           )
-          let parentRaw = itemTemplate.parentItemIdentifier.rawValue
-          let parentId: String? = (parentRaw == NSFileProviderItemIdentifier.rootContainer.rawValue) ? nil : parentRaw
           let response = try await ApiClient.shared.createFolder(
             folderId: folderId, nameEncrypted: nameEncrypted, parentId: parentId, expectedUser: owned.owner
           )
+          try UploadItemIdEcho.assertEchoedId(chosen: folderId, echoed: response.id)
           let cached = CachedItem(
             id: response.id,
             parentId: parentId,
-            nameEncrypted: response.name_encrypted ?? nameEncrypted,
+            nameEncrypted: response.name_encrypted,
             nameDecrypted: itemTemplate.filename,
             mimeType: nil,
             sizeBytes: 0,
@@ -431,14 +442,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             thumbnailData: nil,
             thumbnailNonce: nil,
             createdAt: response.created_at,
-            updatedAt: response.updated_at ?? response.created_at,
+            updatedAt: response.created_at,
             syncAnchor: Int64(Date().timeIntervalSince1970 * 1000),
             isMaterialized: false
           )
-          if !CacheManager.shared.upsert(cached, expectedEpoch: epochAtStart) {
+          let cacheWritten = CacheManager.shared.upsert(cached, expectedEpoch: epochAtStart)
+          if !cacheWritten {
             NSLog("[Beebeeb] createItem cache write discarded — purge epoch changed during folder create")
           }
-          completionHandler(FileProviderItem(cached: cached), [], false, nil)
+          let delivered = cacheWritten ? (CacheManager.shared.item(id: cached.id) ?? cached) : cached
+          completionHandler(FileProviderItem(cached: delivered), [], false, nil)
           return
         }
 
@@ -480,8 +493,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           nameEncrypted: nameEncrypted,
           mimeType: mimeType,
           parentId: parentId,
-          isMedia: Self.isMediaContent(itemTemplate.contentType),
-          masterKey: masterKey,
+            isMedia: Self.isMediaContent(itemTemplate.contentType),
+            isReplacement: false,
+            masterKey: masterKey,
           expectedUser: owned.owner,
           progress: progress,
           progressBase: 10,
@@ -506,7 +520,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           syncAnchor: Int64(Date().timeIntervalSince1970 * 1000),
           isMaterialized: false
         )
-        if !CacheManager.shared.upsert(cached, expectedEpoch: epochAtStart) {
+        let cacheWritten = CacheManager.shared.upsert(cached, expectedEpoch: epochAtStart)
+        if !cacheWritten {
           // Task 1593 round 8 (R3) — the upload itself already succeeded
           // server-side; only the LOCAL cache write is skipped when a
           // sign-out purge raced it. Still hand back the in-memory item —
@@ -516,7 +531,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
 
         progress.completedUnitCount = 100
-        completionHandler(FileProviderItem(cached: cached), [], false, nil)
+        let delivered = cacheWritten ? (CacheManager.shared.item(id: cached.id) ?? cached) : cached
+        completionHandler(FileProviderItem(cached: delivered), [], false, nil)
       } catch {
         NSLog("[Beebeeb] createItem failed: \(error)")
         self.invalidateCacheOnAccountMismatch(error)
@@ -525,6 +541,55 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     }
     progress.cancellationHandler = { task.cancel() }
     return progress
+  }
+
+  /// A folder create can have committed even when its response was lost. Match
+  /// the live sibling by its decrypted name before minting another id. Files
+  /// are intentionally excluded: replacing or coalescing same-name files would
+  /// discard distinct user content.
+  private static func existingFolder(
+    named name: String,
+    parentId: String?,
+    masterKey: MasterKeyHandle,
+    expectedUser: String?,
+    expectedEpoch: Int
+  ) async throws -> CachedItem? {
+    // A same-name cache row may have been trashed or deleted remotely. Only
+    // the live server listing can authorize reusing its id for new children.
+    let entries: [ApiClient.FileEntryDto]
+    do {
+      entries = try await ApiClient.shared.listFiles(parentId: parentId, expectedUser: expectedUser)
+    } catch ApiError.statusCode(404) where parentId != nil {
+      throw ApiError.parentUnavailable(parentId)
+    }
+    guard let dto = entries.first(where: { entry in
+      guard entry.is_folder else { return false }
+      return SyncEngine.decryptName(dto: entry, masterKeyHandle: masterKey, fallback: nil).name == name
+    }) else { return nil }
+
+    let decrypted = SyncEngine.decryptName(dto: dto, masterKeyHandle: masterKey, fallback: nil)
+    let item = CachedItem(
+      id: dto.id,
+      parentId: dto.parent_id ?? parentId,
+      nameEncrypted: dto.name_encrypted,
+      nameDecrypted: decrypted.name,
+      mimeType: nil,
+      sizeBytes: 0,
+      isFolder: true,
+      isPinned: false,
+      hasThumbnail: false,
+      thumbnailData: nil,
+      thumbnailNonce: nil,
+      createdAt: dto.created_at,
+      updatedAt: dto.updated_at,
+      syncAnchor: Int64(Date().timeIntervalSince1970 * 1000),
+      isMaterialized: false
+    )
+    let cacheWritten = CacheManager.shared.upsert(item, expectedEpoch: expectedEpoch)
+    if !cacheWritten {
+      NSLog("[Beebeeb] createItem cache write discarded — purge epoch changed while matching a folder retry")
+    }
+    return cacheWritten ? (CacheManager.shared.item(id: item.id) ?? item) : item
   }
 
   // MARK: - Modify (rename / move / content update)
@@ -583,7 +648,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     // Trash is read-only: nothing in it is renamed, moved or changed, and nothing is moved into it.
     if FilesTrash.isTrashNamespace(cached.id) || FilesTrash.isTrashNamespace(item.parentItemIdentifier.rawValue) {
       NSLog("[Beebeeb] modifyItem(\(cached.id)) refused: read-only Trash")
-      completionHandler(nil, [], false, NSFileProviderError(.cannotSynchronize))
+      if changedFields.contains(.contents) {
+        // iOS needs allowsWriting to materialize these files, so a direct writer can still hand
+        // us edited bytes. Refuse the propagation definitively without requesting a refetch:
+        // Files retains the local bytes so the user can copy them out.
+        completionHandler(nil, [], false, Self.readOnlyTrashContentError)
+        return progress
+      }
+      // Metadata-only edits are reverted by returning the current provider item.
+      completionHandler(
+        FileProviderItem(cached: cached),
+        [],
+        false,
+        nil
+      )
       return progress
     }
 
@@ -662,24 +740,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         if changedFields.contains(.contents), let newContents {
           let mimeType = item.contentType?.preferredMIMEType ?? cached.mimeType
-          // The v2 init endpoint requires an encrypted file name. If the
-          // cached row lacks one (legacy plaintext-named files), encrypt
-          // the current name on the fly using the existing file id.
-          let nameForUpload: String
-          if let existing = nextNameEncrypted {
-            nameForUpload = existing
-          } else {
-            // Task 1722 (d): no server name and no readable one: the only
-            // name available is our label, which must never become the
-            // file's name. Definitively unsyncable until the item changes.
-            guard !nameIsUnresolved else { throw NSFileProviderError(.cannotSynchronize) }
-            nameForUpload = try CryptoBridge.encryptFilename(
-              masterKeyHandle: masterKey,
-              fileId: cached.id,
-              filename: item.filename
-            )
-            nextNameEncrypted = nameForUpload
-          }
+          // Always derive upload metadata from the authoritative server name, never the
+          // File Provider-only display alias (for example "report (2).txt"). This also upgrades
+          // a legacy name envelope to the canonical write format on the next content update.
+          guard !nameIsUnresolved else { throw NSFileProviderError(.cannotSynchronize) }
+          let realName = nextName
+            ?? cached.nameEncrypted.flatMap { $0.utf8.first == 123 ? nil : $0 }
+          guard let realName, !realName.isEmpty else { throw NSFileProviderError(.cannotSynchronize) }
+          let nameForUpload = try CryptoBridge.encryptFilename(
+            masterKeyHandle: masterKey,
+            fileId: cached.id,
+            filename: realName
+          )
+          nextNameEncrypted = nameForUpload
           let response = try await Self.streamUpload(
             sourceUrl: newContents,
             fileId: cached.id,
@@ -687,6 +760,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             mimeType: mimeType,
             parentId: nextParentId,
             isMedia: Self.isMediaContent(item.contentType),
+            isReplacement: true,
             masterKey: masterKey,
             expectedUser: owned.owner,
             progress: progress,
@@ -711,6 +785,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           nextUpdatedAt = patched.updated_at ?? nextUpdatedAt
         }
 
+        let resetsDisplayName = renamesOnServer || movesOnServer
         let updated = CachedItem(
           id: cached.id,
           parentId: nextParentId,
@@ -726,16 +801,21 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
           createdAt: cached.createdAt,
           updatedAt: nextUpdatedAt,
           syncAnchor: Int64(Date().timeIntervalSince1970 * 1000),
-          isMaterialized: changedFields.contains(.contents) ? false : cached.isMaterialized
+          isMaterialized: changedFields.contains(.contents) ? false : cached.isMaterialized,
+          displayName: resetsDisplayName ? nil : cached.displayName,
+          displayNameSourceName: resetsDisplayName ? nil : cached.displayNameSourceName,
+          displayNameSourceParent: resetsDisplayName ? nil : cached.displayNameSourceParent
         )
-        if !CacheManager.shared.upsert(updated, expectedEpoch: epochAtStart) {
+        let cacheWritten = CacheManager.shared.upsert(updated, expectedEpoch: epochAtStart)
+        if !cacheWritten {
           // Task 1593 round 8 (R3) — see the matching note in createItem
           // above: the server-side change already succeeded, only the
           // local cache write is skipped.
           NSLog("[Beebeeb] modifyItem cache write discarded — purge epoch changed during the operation")
         }
+        let delivered = cacheWritten ? (CacheManager.shared.item(id: updated.id) ?? updated) : updated
         progress.completedUnitCount = 100
-        completionHandler(FileProviderItem(cached: updated), Self.declinedFields(changedFields), false, nil)
+        completionHandler(FileProviderItem(cached: delivered), Self.declinedFields(changedFields), false, nil)
       } catch {
         NSLog("[Beebeeb] modifyItem failed: \(error)")
         self.invalidateCacheOnAccountMismatch(error)
@@ -777,14 +857,23 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     // Trash and everything in it is read-only; restoring and deleting forever stay in the app.
     if FilesTrash.isTrashNamespace(identifier.rawValue) {
       NSLog("[Beebeeb] deleteItem(\(identifier.rawValue)) refused: read-only Trash")
-      completionHandler(NSFileProviderError(.deletionRejected))
+      let current: FileProviderItem
+      if identifier.rawValue == FilesTrash.containerId {
+        current = FileProviderItem(cached: .trashContainer())
+      } else if let cached = CacheManager.shared.item(id: identifier.rawValue) {
+        current = FileProviderItem(cached: cached)
+      } else {
+        completionHandler(nil)
+        return progress
+      }
+      completionHandler(NSError.fileProviderErrorForRejectedDeletion(of: current))
       return progress
     }
 
     // The root Backups folder cannot be deleted, whatever Files sends.
     if let cached = CacheManager.shared.item(id: identifier.rawValue), cached.isProtectedBackupsRoot {
       NSLog("[Beebeeb] deleteItem(\(identifier.rawValue)) refused: protected system folder")
-      completionHandler(NSFileProviderError(.deletionRejected))
+      completionHandler(NSError.fileProviderErrorForRejectedDeletion(of: FileProviderItem(cached: cached)))
       return progress
     }
 
@@ -805,6 +894,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         progress.completedUnitCount = 1
         completionHandler(nil)
       } catch {
+        if let api = error as? ApiError, case .statusCode(404) = api {
+          // File Provider's delete contract says an item already removed
+          // remotely is a successful deletion, not a noSuchItem failure.
+          if !CacheManager.shared.delete(id: identifier.rawValue, expectedEpoch: epochAtStart) {
+            NSLog("[Beebeeb] deleteItem cache removal discarded — purge epoch changed after remote item was already gone")
+          }
+          progress.completedUnitCount = 1
+          completionHandler(nil)
+          return
+        }
         NSLog("[Beebeeb] deleteItem(\(identifier.rawValue)) failed: \(error)")
         self.invalidateCacheOnAccountMismatch(error)
         completionHandler(Self.mapError(error))
@@ -835,6 +934,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     domain: NSCocoaErrorDomain,
     code: NSFileReadNoPermissionError,
     userInfo: [NSLocalizedDescriptionKey: "Restore it in the Beebeeb app to open it."]
+  )
+
+  static let readOnlyTrashError = NSFileProviderError(
+    .cannotSynchronize,
+    userInfo: [NSLocalizedDescriptionKey: "Trash is read-only in Files. Restore the item in Beebeeb to change it."]
+  )
+
+  static let readOnlyTrashContentError = NSFileProviderError(
+    .cannotSynchronize,
+    userInfo: [NSLocalizedDescriptionKey: "Trash is read-only in Files. Copy the edited file elsewhere to keep your changes."]
   )
 
   /// Task 1722 (e): the answer for every trash-container request.
@@ -887,6 +996,53 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     mimeType: String?,
     parentId: String?,
     isMedia: Bool,
+    isReplacement: Bool,
+    masterKey: MasterKeyHandle,
+    expectedUser: String?,
+    progress: Progress,
+    progressBase: Int64,
+    progressSpan: Int64
+  ) async throws -> ApiClient.UploadResponseDto {
+    for attempt in 0..<2 {
+      do {
+        return try await streamUploadOneSession(
+          sourceUrl: sourceUrl,
+          fileId: fileId,
+          nameEncrypted: nameEncrypted,
+          mimeType: mimeType,
+          parentId: parentId,
+          isMedia: isMedia,
+          isReplacement: isReplacement,
+          masterKey: masterKey,
+          expectedUser: expectedUser,
+          progress: progress,
+          progressBase: progressBase,
+          progressSpan: progressSpan
+        )
+      } catch ApiError.uploadSessionUnavailable {
+        // A lost session can leave a live lease and an uploading placeholder.
+        // End that version before re-init so the server can reuse this file id.
+        try await ApiClient.shared.abandonUploadForRestart(fileId: fileId, expectedUser: expectedUser)
+        if attempt == 0 {
+          NSLog("[Beebeeb] upload session disappeared; abandoned it and restarting from init")
+          continue
+        }
+        throw ApiError.uploadSessionUnavailable
+      }
+    }
+    throw ApiError.uploadSessionUnavailable
+  }
+
+  /// Performs one complete init/chunk/finalize attempt. A caller restarts this
+  /// whole method when the server says the session or its lease is gone.
+  private static func streamUploadOneSession(
+    sourceUrl: URL,
+    fileId: String,
+    nameEncrypted: String,
+    mimeType: String?,
+    parentId: String?,
+    isMedia: Bool,
+    isReplacement: Bool,
     masterKey: MasterKeyHandle,
     expectedUser: String?,
     progress: Progress,
@@ -912,6 +1068,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
       isMedia: isMedia,
       chunkSizeBytes: chunkSize,
       chunkCount: chunkCount,
+      isReplacement: isReplacement,
       expectedUser: expectedUser
     )
     // Task SF-0001 (2275 L13/A7): the id this extension minted must be the id
@@ -968,7 +1125,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     // Task SF-0001 (2275 L13/A7): the completion answer must name the same id
     // — nothing is cached, listed or written under anything else.
     try UploadItemIdEcho.assertEchoedId(chosen: fileId, echoed: completed.id, stage: .completion)
-    return completed
+    return ApiClient.UploadResponseDto(
+      id: completed.id,
+      name_encrypted: completed.name_encrypted ?? nameEncrypted,
+      size_bytes: completed.size_bytes ?? Int(fileSize),
+      chunk_count: completed.chunk_count ?? chunkCount,
+      created_at: completed.created_at,
+      updated_at: completed.updated_at
+    )
   }
 
   /// PUTs one chunk, retrying a timeout, a dropped connection, 429 or 5xx with
@@ -1021,7 +1185,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
   private static func isRetryableChunkError(_ error: Error) -> Bool {
     if case ApiError.statusCode(let status) = error {
-      return status == 429 || status >= 500
+      return status == 408 || status == 425 || status == 429 || status >= 500
     }
     if let urlError = error as? URLError {
       return urlError.code != .cancelled
@@ -1090,7 +1254,37 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     if let api = error as? ApiError {
       switch api {
       case .notAuthenticated: return NSFileProviderError(.notAuthenticated)
-      case .invalidResponse, .statusCode: return NSFileProviderError(.serverUnreachable)
+      case .invalidResponse: return NSFileProviderError(.serverUnreachable)
+      case .quotaExceeded: return NSFileProviderError(.insufficientQuota)
+      case .uploadSessionUnavailable, .retryableConflict:
+        return NSFileProviderError(.serverUnreachable)
+      case .parentUnavailable(let identifier):
+        guard let identifier else { return NSFileProviderError(.noSuchItem) }
+        return NSError.fileProviderErrorForNonExistentItem(withIdentifier: NSFileProviderItemIdentifier(identifier))
+      case .itemUnavailable:
+        return NSFileProviderError(.noSuchItem)
+      case .statusCode(let status):
+        if status == 404 { return NSFileProviderError(.noSuchItem) }
+        if status == 408 || status == 425 || status == 429 || (500...599).contains(status) {
+          return NSFileProviderError(.serverUnreachable)
+        }
+        let message: String
+        switch status {
+        case 403:
+          message = "You do not have permission to sync this change."
+        case 409:
+          message = "This item changed on the server. Refresh and try again."
+        case 413:
+          message = "This item is too large to sync."
+        case 422:
+          message = "The server could not accept this item."
+        default:
+          message = "The server refused this change (HTTP \(status))."
+        }
+        return NSFileProviderError(
+          .cannotSynchronize,
+          userInfo: [NSLocalizedDescriptionKey: message]
+        )
       // Task 1594 round 4 (Codex P1, FileProviderExtension.swift:73): the
       // server rejected this exact request because its account didn't match
       // `X-Beebeeb-Expected-User` — the extension's cached key belongs to a

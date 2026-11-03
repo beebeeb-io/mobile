@@ -30,7 +30,8 @@ function staticFunctionBody(name: string): string {
 }
 
 describe('File Provider upload throughput', () => {
-  const upload = staticFunctionBody('streamUpload');
+  const upload = staticFunctionBody('streamUploadOneSession');
+  const restart = staticFunctionBody('streamUpload');
 
   test('rule 1: chunk size is planned by the core and capped for the extension memory budget', () => {
     expect(/planChunks\(fileSizeBytes:\s*UInt64\(fileSize\),\s*profile:\s*"mobile"\)/.test(upload)).toBe(true);
@@ -40,7 +41,7 @@ describe('File Provider upload throughput', () => {
   });
 
   test('rule 2: chunks go up one at a time', () => {
-    expect(/TaskGroup|addTask|async let/.test(upload)).toBe(false);
+    expect(/TaskGroup|addTask|async let/.test(upload + restart)).toBe(false);
     const read = upload.indexOf('handle.read(upToCount: chunkSize)');
     const put = upload.indexOf('try await uploadChunkWithRetry(');
     expect(read).toBeGreaterThan(-1);

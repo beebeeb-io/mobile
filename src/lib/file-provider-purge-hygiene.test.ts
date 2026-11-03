@@ -553,7 +553,7 @@ describe('C1 (round 7, P1): the File Provider extension refuses a write whose pu
   });
 
   test('SyncEngine.refreshContainer captures the epoch BEFORE the network fetch, not after', () => {
-    const body = bracedBody(syncEngineSwift, 'static func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome {');
+    const body = bracedBody(syncEngineSwift, 'private static func refreshContainerPass(');
     const epochIdx = body.indexOf('CacheManager.shared.currentPurgeEpoch()');
     const fetchIdx = body.search(
       /ApiClient\.shared\.listFiles\(\s*parentId: parentId,\s*trashed: listing\.trashed,\s*maxEntries: listing\.isTrashRoot \? FilesTrash\.rootListingLimit : nil\s*\)/,
@@ -564,14 +564,16 @@ describe('C1 (round 7, P1): the File Provider extension refuses a write whose pu
   });
 
   test('SyncEngine.refreshContainer passes that captured epoch to replaceChildren and discards on refusal', () => {
-    const body = bracedBody(syncEngineSwift, 'static func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome {');
+    const body = bracedBody(syncEngineSwift, 'private static func refreshContainerPass(');
     expect(body).toMatch(/replaceChildren\(\s*parent: listing\.cacheParent,\s*with: rowsToUpsert,\s*expectedEpoch: epochAtStart,\s*pruningNamespacePrefix: listing\.isTrashRoot \? FilesTrash\.itemPrefix : nil\s*\)/);
-    expect(body).toMatch(/guard committed else \{[\s\S]*?return \.serverUnreachable\s*\}/);
-    // A discarded write must not update sync_state as if it had landed.
+    expect(body).toMatch(/guard committed else \{[\s\S]*?return \.finished\(\.serverUnreachable\)\s*\}/);
+    // A discarded write must not update sync_state as if it had landed. The marker is written
+    // inside the generation-locked commit closure so a superseded first load cannot race it.
     const guardIdx = body.indexOf('guard committed else');
     const setSyncStateIdx = body.indexOf('setSyncState(');
     expect(guardIdx).toBeGreaterThan(-1);
-    expect(setSyncStateIdx).toBeGreaterThan(guardIdx);
+    expect(setSyncStateIdx).toBeLessThan(guardIdx);
+    expect(body.slice(0, guardIdx)).toMatch(/if replaced \{[\s\S]*?setSyncState\(/);
   });
 });
 
@@ -943,8 +945,8 @@ describe('R3 (round 8, P2): CacheManager gains epoch-gated upsert/delete variant
     expect(deleteIdx).toBeLessThan(commitIdx);
   });
 
-  test('the plain (non-gated) upsert/delete overloads are unchanged and still exist for internal cache-refresh use', () => {
-    expect(cacheManagerSwift).toMatch(/func upsert\(_ item: CachedItem\) \{\s*\n\s*queue\.sync \{ _upsert\(item\) \}/);
+  test('the plain upsert refuses a missing schema while delete remains available for cleanup', () => {
+    expect(cacheManagerSwift).toMatch(/func upsert\(_ item: CachedItem\) \{[\s\S]*?guard ensureSchemaReady\(\) else \{ return \}[\s\S]*?_upsert\(item\)/);
     expect(cacheManagerSwift).toMatch(/func delete\(id: String\) \{\s*\n\s*queue\.sync \{ _delete\(id: id\) \}/);
   });
 });

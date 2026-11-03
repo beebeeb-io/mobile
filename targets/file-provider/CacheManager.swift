@@ -15,6 +15,11 @@ final class CacheManager {
 
   private let queue = DispatchQueue(label: "io.beebeeb.fileprovider.cache")
   private var db: OpaquePointer?
+  private var schemaReady = false
+
+  #if DEBUG
+  private(set) var aliasSiblingQueryCountForTesting = 0
+  #endif
 
   private init() {
     let path = AppGroupContainer.cacheDatabaseUrl.path
@@ -66,7 +71,7 @@ final class CacheManager {
     // ahead of the migrations that follow, so it is already in effect
     // before this connection issues any statement.
     execute("PRAGMA secure_delete = ON")
-    runMigrations()
+    schemaReady = runMigrations()
   }
 
   deinit {
@@ -75,7 +80,11 @@ final class CacheManager {
 
   // MARK: - Migrations
 
-  private func runMigrations() {
+  @discardableResult
+  private func runMigrations() -> Bool {
+    let displayNameColumn = (table: "file_cache", column: "display_name", definition: "TEXT")
+    let displayNameSourceNameColumn = (table: "file_cache", column: "display_name_source_name", definition: "TEXT")
+    let displayNameSourceParentColumn = (table: "file_cache", column: "display_name_source_parent", definition: "TEXT")
     let statements = [
       """
       CREATE TABLE IF NOT EXISTS file_cache (
@@ -83,6 +92,9 @@ final class CacheManager {
         parent_id TEXT,
         name_encrypted TEXT,
         name_decrypted TEXT,
+        display_name TEXT,
+        display_name_source_name TEXT,
+        display_name_source_parent TEXT,
         mime_type TEXT,
         size_bytes INTEGER NOT NULL DEFAULT 0,
         is_folder INTEGER NOT NULL DEFAULT 0,
@@ -115,15 +127,29 @@ final class CacheManager {
       );
       """,
     ]
+    var ready = true
     for sql in statements {
-      execute(sql)
+      if !execute(sql) { ready = false }
     }
+    if !ensureColumn(table: displayNameColumn.table, column: displayNameColumn.column, definition: displayNameColumn.definition) { ready = false }
+    if !ensureColumn(table: displayNameSourceNameColumn.table, column: displayNameSourceNameColumn.column, definition: displayNameSourceNameColumn.definition) { ready = false }
+    if !ensureColumn(table: displayNameSourceParentColumn.table, column: displayNameSourceParentColumn.column, definition: displayNameSourceParentColumn.definition) { ready = false }
+    return ready
+  }
+
+  private func ensureSchemaReady() -> Bool {
+    if schemaReady { return true }
+    schemaReady = runMigrations()
+    return schemaReady
   }
 
   // MARK: - Public API
 
   func upsert(_ item: CachedItem) {
-    queue.sync { _upsert(item) }
+    queue.sync {
+      guard ensureSchemaReady() else { return }
+      _upsert(item)
+    }
   }
 
   /// Task 1593 round 7 (C1) — `expectedEpoch` is the purge-epoch value the
@@ -160,6 +186,7 @@ final class CacheManager {
     pruningNamespacePrefix: String? = nil
   ) -> Bool {
     queue.sync {
+      guard ensureSchemaReady() else { return false }
       guard beginImmediate() else { return false }
       guard currentEpochMatches(expectedEpoch) else {
         execute("ROLLBACK")
@@ -184,6 +211,7 @@ final class CacheManager {
   @discardableResult
   func upsert(_ item: CachedItem, expectedEpoch: Int) -> Bool {
     queue.sync {
+      guard ensureSchemaReady() else { return false }
       guard beginImmediate() else { return false }
       guard currentEpochMatches(expectedEpoch) else {
         execute("ROLLBACK")
@@ -371,12 +399,59 @@ final class CacheManager {
   }
 
   func item(id: String) -> CachedItem? {
-    queue.sync { _item(id: id) }
+    queue.sync {
+      guard ensureSchemaReady() else {
+        return FileProviderDisplayNames.assign(_legacyChildren(parent: _legacyItem(id: id)?.parentId))
+          .first { $0.id == id }
+      }
+      guard var row = _item(id: id) else { return nil }
+      if FileProviderDisplayNames.hasValidAlias(row) { return row }
+
+      // The ordinary item(for:) path stops above after its single-row lookup. Only a new or
+      // invalid app-written row needs the sibling projection, and that projection excludes all
+      // thumbnail blobs. Retry once if the app moved or renamed this row between the two reads.
+      for _ in 0..<2 {
+        let resolved = _resolvedDisplayNameRows(parent: row.parentId)
+        if let alias = resolved.first(where: { $0.id == id }),
+           let merged = mergingDisplayName(from: alias, into: row) {
+          return merged
+        }
+        guard let current = _item(id: id) else { return nil }
+        if FileProviderDisplayNames.hasValidAlias(current) { return current }
+        row = current
+      }
+      return row
+    }
   }
 
   func children(parent: String?) -> [CachedItem] {
-    queue.sync { _children(parent: parent) }
+    queue.sync {
+      guard ensureSchemaReady() else {
+        return FileProviderDisplayNames.assign(_legacyChildren(parent: parent))
+      }
+      let resolved = _resolvedDisplayNameRows(parent: parent)
+      let rows = _children(parent: parent)
+      let aliasesById = Dictionary(uniqueKeysWithValues: resolved.map { ($0.id, $0) })
+      var allRowsMatched = rows.count == resolved.count
+      let merged = rows.map { row -> CachedItem in
+        guard let alias = aliasesById[row.id],
+              let item = mergingDisplayName(from: alias, into: row) else {
+          allRowsMatched = false
+          return row
+        }
+        return item
+      }
+      // A cross-process app write may land between the light projection and the full result read.
+      // Resolve that uncommon snapshot in memory; its next cache read will persist the alias.
+      return allRowsMatched ? merged : FileProviderDisplayNames.assign(merged)
+    }
   }
+
+  #if DEBUG
+  func resetAliasSiblingQueryCountForTesting() {
+    queue.sync { aliasSiblingQueryCountForTesting = 0 }
+  }
+  #endif
 
   func setPinned(id: String, pinned: Bool) {
     queue.sync {
@@ -513,14 +588,18 @@ final class CacheManager {
   private func _upsert(_ item: CachedItem) {
     let sql = """
     INSERT INTO file_cache(
-      id, parent_id, name_encrypted, name_decrypted, mime_type, size_bytes,
+      id, parent_id, name_encrypted, name_decrypted, display_name,
+      display_name_source_name, display_name_source_parent, mime_type, size_bytes,
       is_folder, is_pinned, has_thumbnail, thumbnail_data, thumbnail_nonce,
       created_at, updated_at, sync_anchor, is_materialized
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       parent_id = excluded.parent_id,
       name_encrypted = excluded.name_encrypted,
       name_decrypted = COALESCE(excluded.name_decrypted, file_cache.name_decrypted),
+      display_name = excluded.display_name,
+      display_name_source_name = excluded.display_name_source_name,
+      display_name_source_parent = excluded.display_name_source_parent,
       mime_type = excluded.mime_type,
       size_bytes = excluded.size_bytes,
       is_folder = excluded.is_folder,
@@ -536,17 +615,20 @@ final class CacheManager {
       bindNullable(stmt, 2, item.parentId)
       bindNullable(stmt, 3, item.nameEncrypted)
       bindNullable(stmt, 4, item.nameDecrypted)
-      bindNullable(stmt, 5, item.mimeType)
-      sqlite3_bind_int64(stmt, 6, Int64(item.sizeBytes))
-      sqlite3_bind_int(stmt, 7, item.isFolder ? 1 : 0)
-      sqlite3_bind_int(stmt, 8, item.isPinned ? 1 : 0)
-      sqlite3_bind_int(stmt, 9, item.hasThumbnail ? 1 : 0)
-      bindBlob(stmt, 10, item.thumbnailData)
-      bindBlob(stmt, 11, item.thumbnailNonce)
-      bindNullable(stmt, 12, item.createdAt)
-      bindNullable(stmt, 13, item.updatedAt)
-      sqlite3_bind_int64(stmt, 14, item.syncAnchor)
-      sqlite3_bind_int(stmt, 15, item.isMaterialized ? 1 : 0)
+      bindNullable(stmt, 5, item.displayName)
+      bindNullable(stmt, 6, item.displayNameSourceName)
+      bindNullable(stmt, 7, item.displayNameSourceParent)
+      bindNullable(stmt, 8, item.mimeType)
+      sqlite3_bind_int64(stmt, 9, Int64(item.sizeBytes))
+      sqlite3_bind_int(stmt, 10, item.isFolder ? 1 : 0)
+      sqlite3_bind_int(stmt, 11, item.isPinned ? 1 : 0)
+      sqlite3_bind_int(stmt, 12, item.hasThumbnail ? 1 : 0)
+      bindBlob(stmt, 13, item.thumbnailData)
+      bindBlob(stmt, 14, item.thumbnailNonce)
+      bindNullable(stmt, 15, item.createdAt)
+      bindNullable(stmt, 16, item.updatedAt)
+      sqlite3_bind_int64(stmt, 17, item.syncAnchor)
+      sqlite3_bind_int(stmt, 18, item.isMaterialized ? 1 : 0)
     }
   }
 
@@ -608,15 +690,31 @@ final class CacheManager {
   }
 
   private func _item(id: String) -> CachedItem? {
+    item(id: id, selectSql: rowSelectSql)
+  }
+
+  private func _legacyItem(id: String) -> CachedItem? {
+    item(id: id, selectSql: legacyRowSelectSql)
+  }
+
+  private func item(id: String, selectSql: String) -> CachedItem? {
     var stmt: OpaquePointer?
     defer { sqlite3_finalize(stmt) }
-    guard prepare(rowSelectSql + " WHERE id = ?", &stmt) else { return nil }
+    guard prepare(selectSql + " WHERE id = ?", &stmt) else { return nil }
     bindText(stmt, 1, id)
     guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
     return readRow(stmt)
   }
 
   private func _children(parent: String?) -> [CachedItem] {
+    children(parent: parent, selectSql: rowSelectSql)
+  }
+
+  private func _legacyChildren(parent: String?) -> [CachedItem] {
+    children(parent: parent, selectSql: legacyRowSelectSql)
+  }
+
+  private func children(parent: String?, selectSql: String) -> [CachedItem] {
     var stmt: OpaquePointer?
     defer { sqlite3_finalize(stmt) }
     let where_: String
@@ -625,7 +723,7 @@ final class CacheManager {
     } else {
       where_ = " WHERE parent_id = ?"
     }
-    guard prepare(rowSelectSql + where_ + " ORDER BY is_folder DESC, name_decrypted ASC", &stmt) else {
+    guard prepare(selectSql + where_ + " ORDER BY is_folder DESC, name_decrypted ASC", &stmt) else {
       return []
     }
     if let parent { bindText(stmt, 1, parent) }
@@ -636,12 +734,110 @@ final class CacheManager {
     return rows
   }
 
+  private func _aliasChildren(parent: String?) -> [CachedItem] {
+    #if DEBUG
+    aliasSiblingQueryCountForTesting += 1
+    #endif
+    var stmt: OpaquePointer?
+    defer { sqlite3_finalize(stmt) }
+    let where_: String
+    if parent == nil {
+      where_ = " WHERE parent_id IS NULL"
+    } else {
+      where_ = " WHERE parent_id = ?"
+    }
+    guard prepare(aliasRowSelectSql + where_, &stmt) else { return [] }
+    if let parent { bindText(stmt, 1, parent) }
+    var rows: [CachedItem] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      if let row = readAliasRow(stmt) { rows.append(row) }
+    }
+    return rows
+  }
+
+  /// Repairs aliases while rows are served, not only after a network refresh. Alias assignment
+  /// reads only its small text projection; the full rows (and any thumbnail blobs) are loaded at
+  /// most once afterward when an enumerator actually needs to vend all children.
+  private func _resolvedDisplayNameRows(parent: String?) -> [CachedItem] {
+    let initial = _aliasChildren(parent: parent)
+    let initialResolved = FileProviderDisplayNames.assign(initial)
+    guard displayNamesChanged(from: initial, to: initialResolved) else { return initialResolved }
+
+    // Serialize repairs with the app process. If a purge is active or the lock cannot be acquired,
+    // still vend the resolved in-memory rows; a later enumeration will retry persistence.
+    guard beginImmediate() else { return initialResolved }
+    let current = _aliasChildren(parent: parent)
+    let resolved = FileProviderDisplayNames.assign(current)
+    let currentById = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+    for item in resolved {
+      guard let prior = currentById[item.id],
+            displayNameChanged(from: prior, to: item) else { continue }
+      _updateDisplayName(item)
+    }
+    guard commitOrRollback() else { return resolved }
+    return resolved
+  }
+
+  private func displayNamesChanged(from old: [CachedItem], to new: [CachedItem]) -> Bool {
+    guard old.count == new.count else { return true }
+    let oldById = Dictionary(uniqueKeysWithValues: old.map { ($0.id, $0) })
+    return new.contains { item in
+      guard let prior = oldById[item.id] else { return true }
+      return displayNameChanged(from: prior, to: item)
+    }
+  }
+
+  private func displayNameChanged(from old: CachedItem, to new: CachedItem) -> Bool {
+    old.displayName != new.displayName
+      || old.displayNameSourceName != new.displayNameSourceName
+      || old.displayNameSourceParent != new.displayNameSourceParent
+  }
+
+  private func _updateDisplayName(_ item: CachedItem) {
+    executeBindable(
+      "UPDATE file_cache SET display_name = ?, display_name_source_name = ?, display_name_source_parent = ? WHERE id = ?"
+    ) { stmt in
+      bindNullable(stmt, 1, item.displayName)
+      bindNullable(stmt, 2, item.displayNameSourceName)
+      bindNullable(stmt, 3, item.displayNameSourceParent)
+      bindText(stmt, 4, item.id)
+    }
+  }
+
+  private func mergingDisplayName(from alias: CachedItem, into item: CachedItem) -> CachedItem? {
+    guard alias.id == item.id,
+          FileProviderDisplayNames.alias(alias, belongsTo: item) else { return nil }
+    var merged = item
+    merged.displayName = alias.displayName
+    merged.displayNameSourceName = alias.displayNameSourceName
+    merged.displayNameSourceParent = alias.displayNameSourceParent
+    return merged
+  }
+
   // MARK: - Row helpers
 
   private let rowSelectSql = """
-  SELECT id, parent_id, name_encrypted, name_decrypted, mime_type, size_bytes,
+  SELECT id, parent_id, name_encrypted, name_decrypted, display_name,
+         display_name_source_name, display_name_source_parent, mime_type, size_bytes,
          is_folder, is_pinned, has_thumbnail, thumbnail_data, thumbnail_nonce,
          created_at, updated_at, sync_anchor, is_materialized
+  FROM file_cache
+  """
+
+  /// Existing caches can be read while another process temporarily blocks the alias-column
+  /// migration. The three NULLs keep readRow's column indexes identical; the next open retries
+  /// the migration before any write is allowed.
+  private let legacyRowSelectSql = """
+  SELECT id, parent_id, name_encrypted, name_decrypted, NULL,
+         NULL, NULL, mime_type, size_bytes,
+         is_folder, is_pinned, has_thumbnail, thumbnail_data, thumbnail_nonce,
+         created_at, updated_at, sync_anchor, is_materialized
+  FROM file_cache
+  """
+
+  private let aliasRowSelectSql = """
+  SELECT id, parent_id, name_decrypted, name_encrypted, display_name,
+         display_name_source_name, display_name_source_parent, created_at
   FROM file_cache
   """
 
@@ -652,18 +848,62 @@ final class CacheManager {
       parentId: textColumn(stmt, 1),
       nameEncrypted: textColumn(stmt, 2),
       nameDecrypted: textColumn(stmt, 3),
-      mimeType: textColumn(stmt, 4),
-      sizeBytes: Int(sqlite3_column_int64(stmt, 5)),
-      isFolder: sqlite3_column_int(stmt, 6) != 0,
-      isPinned: sqlite3_column_int(stmt, 7) != 0,
-      hasThumbnail: sqlite3_column_int(stmt, 8) != 0,
-      thumbnailData: blobColumn(stmt, 9),
-      thumbnailNonce: blobColumn(stmt, 10),
-      createdAt: textColumn(stmt, 11),
-      updatedAt: textColumn(stmt, 12),
-      syncAnchor: sqlite3_column_int64(stmt, 13),
-      isMaterialized: sqlite3_column_int(stmt, 14) != 0
+      mimeType: textColumn(stmt, 7),
+      sizeBytes: Int(sqlite3_column_int64(stmt, 8)),
+      isFolder: sqlite3_column_int(stmt, 9) != 0,
+      isPinned: sqlite3_column_int(stmt, 10) != 0,
+      hasThumbnail: sqlite3_column_int(stmt, 11) != 0,
+      thumbnailData: blobColumn(stmt, 12),
+      thumbnailNonce: blobColumn(stmt, 13),
+      createdAt: textColumn(stmt, 14),
+      updatedAt: textColumn(stmt, 15),
+      syncAnchor: sqlite3_column_int64(stmt, 16),
+      isMaterialized: sqlite3_column_int(stmt, 17) != 0,
+      displayName: textColumn(stmt, 4),
+      displayNameSourceName: textColumn(stmt, 5),
+      displayNameSourceParent: textColumn(stmt, 6)
     )
+  }
+
+  private func readAliasRow(_ stmt: OpaquePointer?) -> CachedItem? {
+    guard let stmt, let idCstr = sqlite3_column_text(stmt, 0) else { return nil }
+    return CachedItem(
+      id: String(cString: idCstr),
+      parentId: textColumn(stmt, 1),
+      nameEncrypted: textColumn(stmt, 3),
+      nameDecrypted: textColumn(stmt, 2),
+      mimeType: nil,
+      sizeBytes: 0,
+      isFolder: false,
+      isPinned: false,
+      hasThumbnail: false,
+      thumbnailData: nil,
+      thumbnailNonce: nil,
+      createdAt: textColumn(stmt, 7),
+      updatedAt: nil,
+      syncAnchor: 0,
+      isMaterialized: false,
+      displayName: textColumn(stmt, 4),
+      displayNameSourceName: textColumn(stmt, 5),
+      displayNameSourceParent: textColumn(stmt, 6)
+    )
+  }
+
+  private func ensureColumn(table: String, column: String, definition: String) -> Bool {
+    if hasColumn(table: table, column: column) { return true }
+    _ = execute("ALTER TABLE \(table) ADD COLUMN \(column) \(definition)")
+    // Re-check even after ALTER failed: another process may have won the same migration.
+    return hasColumn(table: table, column: column)
+  }
+
+  private func hasColumn(table: String, column: String) -> Bool {
+    var stmt: OpaquePointer?
+    defer { sqlite3_finalize(stmt) }
+    guard prepare("PRAGMA table_info(\(table))", &stmt) else { return false }
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      if textColumn(stmt, 1) == column { return true }
+    }
+    return false
   }
 
   private func textColumn(_ stmt: OpaquePointer?, _ index: Int32) -> String? {
@@ -754,4 +994,86 @@ struct CachedItem {
   let updatedAt: String?
   let syncAnchor: Int64
   var isMaterialized: Bool
+  /// Stable File Provider-only alias used when the server permits duplicate sibling names.
+  /// Never encrypted or sent to the server.
+  var displayName: String? = nil
+  /// The visible base name and parent from which `displayName` was derived. Root is encoded as
+  /// an empty parent string so nil remains an unambiguous legacy/invalid provenance marker.
+  var displayNameSourceName: String? = nil
+  var displayNameSourceParent: String? = nil
+}
+
+/// File Provider requires sibling filenames to be unique even though the server permits
+/// duplicates. An alias is reusable only while both its real base name and parent match the
+/// provenance stored with it; app-side renames and moves therefore cannot carry an old alias
+/// into a new listing. New aliases are assigned by stable created-at/id order.
+enum FileProviderDisplayNames {
+  static func hasValidAlias(_ item: CachedItem) -> Bool {
+    guard let displayName = item.displayName, !displayName.isEmpty else { return false }
+    return item.displayNameSourceName == visibleBaseName(item)
+      && item.displayNameSourceParent == (item.parentId ?? "")
+  }
+
+  static func alias(_ alias: CachedItem, belongsTo item: CachedItem) -> Bool {
+    hasValidAlias(alias)
+      && alias.displayNameSourceName == visibleBaseName(item)
+      && alias.displayNameSourceParent == (item.parentId ?? "")
+  }
+
+  static func assign(_ rows: [CachedItem]) -> [CachedItem] {
+    var result = rows
+    let order = result.indices.sorted { left, right in
+      let lhs = (result[left].createdAt ?? "", result[left].id)
+      let rhs = (result[right].createdAt ?? "", result[right].id)
+      return lhs < rhs
+    }
+    var used = Set<String>()
+    var assigned = Set<Int>()
+
+    for index in order {
+      guard hasValidAlias(result[index]), let displayName = result[index].displayName else { continue }
+      let key = normalized(displayName)
+      guard used.insert(key).inserted else { continue }
+      assigned.insert(index)
+    }
+
+    for index in order where !assigned.contains(index) {
+      let base = visibleBaseName(result[index])
+      var candidate = base
+      var suffix = 2
+      while used.contains(normalized(candidate)) {
+        candidate = suffixed(base, suffix: suffix)
+        suffix += 1
+      }
+      result[index].displayName = candidate
+      result[index].displayNameSourceName = base
+      result[index].displayNameSourceParent = result[index].parentId ?? ""
+      used.insert(normalized(candidate))
+    }
+    return result
+  }
+
+  static func unresolvedNameLabel(id: String) -> String {
+    "Encrypted item · \(id.prefix(8))"
+  }
+
+  private static func visibleBaseName(_ item: CachedItem) -> String {
+    if let name = item.nameDecrypted, !name.isEmpty { return name }
+    if let raw = item.nameEncrypted, !raw.isEmpty, raw.utf8.first != 123 { return raw }
+    return unresolvedNameLabel(id: item.id)
+  }
+
+  private static func normalized(_ name: String) -> String {
+    name.precomposedStringWithCanonicalMapping.folding(
+      options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+      locale: Locale(identifier: "en_US_POSIX")
+    )
+  }
+
+  private static func suffixed(_ base: String, suffix: Int) -> String {
+    let path = base as NSString
+    let ext = path.pathExtension
+    guard !ext.isEmpty else { return "\(base) (\(suffix))" }
+    return "\(path.deletingPathExtension) (\(suffix)).\(ext)"
+  }
 }

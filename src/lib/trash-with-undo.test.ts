@@ -12,6 +12,7 @@ function harness(overrides: Record<string, unknown> = {}) {
   const countChanges: number[] = [];
   const restored: string[] = [];
   const refreshed: string[][] = [];
+  let fileProviderTrashSignals = 0;
   let trashChanged = 0;
   let openedTrash = 0;
   const deps = {
@@ -29,6 +30,7 @@ function harness(overrides: Record<string, unknown> = {}) {
     collectSubtreeIds: (ids: string[]) => [...ids, ...ids.filter((id) => id === 'a').map(() => 'a-child')],
     refreshAfterRestore: (ids: string[]) => { refreshed.push(ids); },
     restoreFileProviderCache: async (ids: string[]) => { cacheRestores.push(ids); },
+    signalFileProviderTrashChanged: async () => { fileProviderTrashSignals += 1; },
     changeTrashCount: (delta: number) => { countChanges.push(delta); },
     showToast: (t: any) => { toasts.push(t); },
     openTrash: () => { openedTrash += 1; },
@@ -37,7 +39,7 @@ function harness(overrides: Record<string, unknown> = {}) {
     notifyTrashChanged: () => { trashChanged += 1; },
     ...overrides,
   };
-  return { deps, log, visible, toasts, cacheRemovals, cacheRestores, countChanges, restored, refreshed, get trashChanged() { return trashChanged; }, get openedTrash() { return openedTrash; } };
+  return { deps, log, visible, toasts, cacheRemovals, cacheRestores, countChanges, restored, refreshed, get fileProviderTrashSignals() { return fileProviderTrashSignals; }, get trashChanged() { return trashChanged; }, get openedTrash() { return openedTrash; } };
 }
 
 describe('moveToTrashWithUndo', () => {
@@ -49,6 +51,7 @@ describe('moveToTrashWithUndo', () => {
     expect([...h.visible].sort()).toEqual(['backups', 'c']);
     expect(outcome.trashed).toEqual(['a', 'b']);
     expect(h.cacheRemovals).toEqual([['a', 'b', 'a-child']]);
+    expect(h.fileProviderTrashSignals).toBe(1);
     expect(h.trashChanged).toBe(1);
     expect(h.toasts).toHaveLength(1);
     const toast = h.toasts[0];
@@ -127,6 +130,7 @@ describe('moveToTrashWithUndo', () => {
     expect([...h.visible].sort()).toEqual(['a', 'b', 'backups', 'c']);
     expect(h.refreshed).toEqual([['a', 'b']]);
     expect(h.cacheRestores).toEqual([['a', 'b']]);
+    expect(h.fileProviderTrashSignals).toBe(2);
     expect(h.countChanges).toEqual([2, -2]);
     expect(h.trashChanged).toBe(2);
     expect(h.toasts[1]).toEqual({ type: 'success', message: '2 items restored' });
@@ -192,6 +196,7 @@ describe('moveToTrashWithUndo', () => {
     expect(h.cacheRestores).toEqual([]);
     expect(h.countChanges).toEqual([1]);
     expect(h.refreshed).toEqual([['a']]);
+    expect(h.fileProviderTrashSignals).toBe(2);
     expect(h.trashChanged).toBe(2);
     expect(h.toasts[1]).toEqual({
       type: 'info',

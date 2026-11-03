@@ -48,6 +48,7 @@ import UniformTypeIdentifiers
 
 enum BeebeebConstants {
   static let rootContainerIdentifier = "io.beebeeb.root"
+  static let trashContainerIdentifier = "io.beebeeb.trash"
 }
 
 struct CachedItem {
@@ -84,6 +85,9 @@ enum FileProviderRefreshOutcome {
   case success
   case notAuthenticated
   case serverUnreachable
+  case insufficientQuota
+  case noSuchItem
+  case cannotSynchronize
 
   var fileProviderError: Error {
     switch self {
@@ -93,12 +97,22 @@ enum FileProviderRefreshOutcome {
       return NSFileProviderError(.notAuthenticated)
     case .serverUnreachable:
       return NSFileProviderError(.serverUnreachable)
+    case .insufficientQuota:
+      return NSFileProviderError(.insufficientQuota)
+    case .noSuchItem:
+      return NSFileProviderError(.noSuchItem)
+    case .cannotSynchronize:
+      return NSFileProviderError(.cannotSynchronize)
     }
   }
 }
 
 enum SyncEngine {
-  static func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome { .success }
+  static func refreshContainer(
+    containerId: String,
+    signalSystem: Bool = true,
+    retryWhenSuperseded: Bool = false
+  ) async -> FileProviderRefreshOutcome { .success }
   @discardableResult
   static func refreshMaterializedContainers() async -> [String] { [] }
 }
@@ -522,7 +536,7 @@ struct WorkingSetMain {
     _ = cache.noteContainerMaterialized("F")
     let ws = workingSet(cache)
     let listed = list(ws)
-    check(listed.ids == ["F", "c1", "c2", "io.beebeeb.trash", "readme"], "working set: root rows + the materialized folder's children, got \(listed.ids)")
+    check(listed.ids == ["F", "c1", "c2", "io.beebeeb.trash", "readme"], "working set: root rows + the materialized folder's children and the synthetic Trash folder, got \(listed.ids)")
 
     // W2. The working set anchor follows the materialized folders, and only them.
     let base = anchor(ws)
