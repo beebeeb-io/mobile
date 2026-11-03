@@ -64,6 +64,15 @@ final class MasterKeyHandle {
     material.append(fileId)
     return FileKeyHandle(key: Data(SHA256.hash(data: material)))
   }
+  func encryptName(fileId: String, filename: String, mimeType: String?) throws -> String {
+    let blob = try deriveFileKey(fileId: Data(fileId.utf8)).encryptMetadata(metadata: filename)
+    let payload: [String: Any] = [
+      "cipher_suite": "V1Aes256Gcm",
+      "nonce": Array(blob.nonce),
+      "ciphertext": Array(blob.ciphertext),
+    ]
+    return String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8)!
+  }
   func decryptNameWithMime(fileId: String, nameEncrypted: String) throws -> DecryptedNameWithMime {
     throw CryptoBridge.CryptoBridgeError.decodeFailed
   }

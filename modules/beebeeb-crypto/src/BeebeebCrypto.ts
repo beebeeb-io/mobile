@@ -1171,6 +1171,12 @@ export async function signalFileProviderEnumerators(): Promise<boolean> {
   return BeebeebCryptoModule.signalFileProviderEnumerators()
 }
 
+/** Signals the read-only Beebeeb Trash folder without adding it to Recents/search. */
+export async function signalFileProviderTrashEnumerator(): Promise<boolean> {
+  if (typeof BeebeebCryptoModule.signalFileProviderTrashEnumerator !== 'function') return false
+  return BeebeebCryptoModule.signalFileProviderTrashEnumerator()
+}
+
 /**
  * Publish the id of the protected root "Backups" folder to the Files app extension (`null`
  * clears it), so the extension offers no delete, rename or move for it. iOS only; no-op

@@ -40,7 +40,11 @@ import {
   type EmptyTrashProgress,
 } from '../lib/trash-delete';
 import { requestDeviceOwnerAuth } from '../lib/device-owner-auth';
-import { removeFromFileProviderCache, syncDecryptedEntriesToFileProvider } from '../lib/file-provider-mount';
+import {
+  removeFromFileProviderCache,
+  signalFileProviderTrashChanged,
+  syncDecryptedEntriesToFileProvider,
+} from '../lib/file-provider-mount';
 import { useCrypto } from '../lib/crypto-context';
 import { useProtectedBackupsRootId } from '../lib/use-protected-backups-root';
 import { formatBytes as formatSize } from '../lib/format';
@@ -344,6 +348,7 @@ export default function TrashScreen() {
           onPress: async () => {
             try {
               const result = await restoreFile(item.id);
+              void signalFileProviderTrashChanged();
               if (!result.complete) {
                 notifyTrashChanged();
                 showToast({
@@ -360,6 +365,7 @@ export default function TrashScreen() {
               void syncDecryptedEntriesToFileProvider(
                 [item],
                 { [item.id]: decryptedNames[item.id] ?? name },
+                item.parent_id ?? null,
               );
               adjustTrashCount(-1);
               notifyTrashChanged();

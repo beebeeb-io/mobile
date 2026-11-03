@@ -16,6 +16,15 @@ type MountTrustedFileProviderOptions = {
   vaultUnlocked?: boolean;
 };
 
+export async function signalFileProviderTrashChanged(): Promise<void> {
+  if (Platform.OS !== 'ios') return;
+  try {
+    await BeebeebCrypto.signalFileProviderTrashEnumerator();
+  } catch {
+    // best-effort — the extension's rate-limited refresh also reconciles Trash
+  }
+}
+
 async function mirrorSessionForFileProvider(): Promise<void> {
   const token = await getToken();
   if (!token) {
@@ -131,7 +140,7 @@ export async function syncDecryptedEntriesToFileProvider(
   files: FileEntry[],
   decryptedNames: Record<string, string>,
   parentId?: string | null,
-  options: { prune?: boolean; pruneParents?: (string | null)[] } = {},
+  options: { prune?: boolean; pruneParents?: (string | null)[]; trashChanged?: boolean } = {},
 ): Promise<number> {
   if (Platform.OS !== 'ios') return 0;
 
@@ -163,10 +172,14 @@ export async function syncDecryptedEntriesToFileProvider(
     : null;
 
   try {
-    return await withPlaintextLease('file provider cache push', async (lease) => {
+    const synced = await withPlaintextLease('file provider cache push', async (lease) => {
       lease.assertValid();
       return BeebeebCrypto.syncFileProviderCache(entries, prune, pruneParents);
     });
+    if (options.trashChanged) {
+      await signalFileProviderTrashChanged();
+    }
+    return synced;
   } catch (err) {
     if (isPlaintextGateClosed(err)) return 0;
     throw err;
@@ -186,6 +199,7 @@ export async function removeFromFileProviderCache(ids: string[]): Promise<void> 
   } catch {
     // best-effort — next folder enumeration will reconcile
   }
+  await signalFileProviderTrashChanged();
 }
 
 /**

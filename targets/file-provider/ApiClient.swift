@@ -57,6 +57,19 @@ final class ApiClient {
     let updated_at: String?
   }
 
+  /// Exact response from POST /api/v1/files/folder. Folder rows do not carry
+  /// file-only size or chunk metadata in this response.
+  struct FolderCreateResponseDto: Decodable {
+    let id: String
+    let name_encrypted: String
+    let is_folder: Bool
+    let created_at: String
+
+    static func decode(_ data: Data) throws -> Self {
+      try JSONDecoder().decode(Self.self, from: data)
+    }
+  }
+
   struct ListResponse: Decodable {
     let files: [FileEntryDto]
     let next_cursor: String?
@@ -71,6 +84,21 @@ final class ApiClient {
     let updated_at: String?
   }
 
+  /// A normal completion returns full metadata. An idempotent retry after the
+  /// first completion committed returns only id/status/already_completed.
+  struct UploadCompleteResponseDto: Decodable {
+    let id: String
+    let name_encrypted: String?
+    let size_bytes: Int?
+    let chunk_count: Int?
+    let created_at: String?
+    let updated_at: String?
+
+    static func decode(_ data: Data) throws -> Self {
+      try JSONDecoder().decode(Self.self, from: data)
+    }
+  }
+
   struct UploadV2InitResponse: Decodable {
     let file_id: String
     let upload_session_id: String
@@ -82,7 +110,12 @@ final class ApiClient {
 
   /// List the children of `parentId`. Pass `nil` for the root. `trashed` lists what the app's
   /// Trash holds instead (`GET /api/v1/files?trashed=true`): with no parent, every trashed row.
-  func listFiles(parentId: String?, trashed: Bool = false, maxEntries: Int? = nil) async throws -> [FileEntryDto] {
+  func listFiles(
+    parentId: String?,
+    trashed: Bool = false,
+    maxEntries: Int? = nil,
+    expectedUser: String? = nil
+  ) async throws -> [FileEntryDto] {
     if let maxEntries, maxEntries <= 0 { return [] }
     var entries: [FileEntryDto] = []
     var cursor: String?
@@ -95,7 +128,7 @@ final class ApiClient {
       if trashed { query.append(URLQueryItem(name: "trashed", value: "true")) }
       if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
       components.queryItems = query.isEmpty ? nil : query
-      let request = try authedRequest(url: components.url!, method: "GET")
+      let request = try authedRequest(url: components.url!, method: "GET", expectedUser: expectedUser)
       let (data, response) = try await session.data(for: request)
       try validate(response, data)
       let page = try JSONDecoder().decode(ListResponse.self, from: data)
@@ -132,6 +165,10 @@ final class ApiClient {
       // account-mismatch check, then drop the file.
       let body = (try? Data(contentsOf: location)) ?? Data()
       try? FileManager.default.removeItem(at: location)
+      if responseStatus(response) == 409,
+         responseErrorCode(body) == "upload is still in progress" {
+        throw ApiError.retryableConflict
+      }
       try validate(response, body)
       throw ApiError.invalidResponse
     }
@@ -162,6 +199,7 @@ final class ApiClient {
     isMedia: Bool,
     chunkSizeBytes: Int,
     chunkCount: Int,
+    isReplacement: Bool,
     expectedUser: String?
   ) async throws -> UploadV2InitResponse {
     var request = try authedRequest(
@@ -185,6 +223,18 @@ final class ApiClient {
     request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
     let (data, response) = try await session.data(for: request)
+    let status = responseStatus(response)
+    let code = responseErrorCode(data)
+    if status == 409, code == "upload is already in progress for this file" {
+      throw ApiError.retryableConflict
+    }
+    if status == 404 {
+      if !isReplacement, let parentId { throw ApiError.parentUnavailable(parentId) }
+      // There is no session yet at init. A root replacement may have raced a
+      // server-side lease/file transition; it must remain retryable instead of
+      // telling Files that its live local item was deleted.
+      throw ApiError.uploadSessionUnavailable
+    }
     try validate(response, data)
     return try JSONDecoder().decode(UploadV2InitResponse.self, from: data)
   }
@@ -204,31 +254,48 @@ final class ApiClient {
     request.timeoutInterval = timeout
 
     let (data, response) = try await session.data(for: request)
+    if responseStatus(response) == 404 { throw ApiError.uploadSessionUnavailable }
     try validate(response, data)
+  }
+
+  /// End an unavailable v2 session before starting another one for the same file id.
+  /// The server deletes a never-completed placeholder or restores the previous
+  /// version of a replacement. A missing row means expiry already did that work.
+  func abandonUploadForRestart(fileId: String, expectedUser: String?) async throws {
+    let url = baseUrl.appendingPathComponent("/api/v1/files/\(fileId)/upload/abandon")
+    var request = try authedRequest(url: url, method: "POST", expectedUser: expectedUser)
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = Data("{}".utf8)
+    let (data, response) = try await session.data(for: request)
+    if responseStatus(response) == 404 { return }
+    try validate(response, data)
+  }
+
+  /// Best-effort form for an invalid init response, where upload cannot proceed.
+  func abandonUploadBestEffort(fileId: String, expectedUser: String?) async {
+    try? await abandonUploadForRestart(fileId: fileId, expectedUser: expectedUser)
   }
 
   /// Finalize a v2 chunked upload. Server verifies all chunks are present,
   /// updates the file row, and returns the canonical file metadata.
-  /// Task SF-0001 (mobile#259 review M5): best-effort abandon of the upload
-  /// session for the id this extension REQUESTED, after an init answer named
-  /// another item. Never throws: an unknown session is already gone.
-  func abandonUploadBestEffort(fileId: String, expectedUser: String?) async {
-    let url = baseUrl.appendingPathComponent("/api/v1/files/\(fileId)/upload/abandon")
-    guard var request = try? authedRequest(url: url, method: "POST", expectedUser: expectedUser) else { return }
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.httpBody = Data("{}".utf8)
-    _ = try? await session.data(for: request)
-  }
-
-  func completeUploadV2(uploadSessionId: String, expectedUser: String?) async throws -> UploadResponseDto {
+  func completeUploadV2(uploadSessionId: String, expectedUser: String?) async throws -> UploadCompleteResponseDto {
     let url = baseUrl.appendingPathComponent("/api/v1/uploads/\(uploadSessionId)/complete")
     var request = try authedRequest(url: url, method: "POST", expectedUser: expectedUser)
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.httpBody = Data("{}".utf8)
 
     let (data, response) = try await session.data(for: request)
+    let status = responseStatus(response)
+    let code = responseErrorCode(data)
+    if status == 404
+      || (status == 409 && code?.contains("upload session no longer exists") == true) {
+      throw ApiError.uploadSessionUnavailable
+    }
+    if status == 409, code?.contains("file is in trash") == true {
+      throw ApiError.itemUnavailable
+    }
     try validate(response, data)
-    return try JSONDecoder().decode(UploadResponseDto.self, from: data)
+    return try UploadCompleteResponseDto.decode(data)
   }
 
   /// Patch encrypted metadata for a file. The server route accepts rename and
@@ -248,13 +315,27 @@ final class ApiClient {
     request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
     let (data, response) = try await session.data(for: request)
+    let status = responseStatus(response)
+    let code = responseErrorCode(data)
+    if status == 404 { throw ApiError.itemUnavailable }
+    if status == 400, code == "parent_id must refer to an existing folder owned by you" {
+      throw ApiError.parentUnavailable(parentId)
+    }
+    if status == 409 {
+      switch code {
+      case "parent_trashed": throw ApiError.parentUnavailable(parentId)
+      case "item_trashed": throw ApiError.itemUnavailable
+      case "item_moved", "share_busy": throw ApiError.retryableConflict
+      default: break
+      }
+    }
     try validate(response, data)
     return try JSONDecoder().decode(FileEntryDto.self, from: data)
   }
 
   /// Create a folder (`POST /api/v1/files/folder`). `folderId` is minted by the caller (lowercase):
   /// the folder's name is sealed under a key derived from it.
-  func createFolder(folderId: String, nameEncrypted: String, parentId: String?, expectedUser: String?) async throws -> FileEntryDto {
+  func createFolder(folderId: String, nameEncrypted: String, parentId: String?, expectedUser: String?) async throws -> FolderCreateResponseDto {
     var request = try authedRequest(
       url: baseUrl.appendingPathComponent("/api/v1/files/folder"),
       method: "POST",
@@ -268,8 +349,12 @@ final class ApiClient {
     ]
     request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
     let (data, response) = try await session.data(for: request)
+    let status = responseStatus(response)
+    let code = responseErrorCode(data)
+    if status == 404 { throw ApiError.parentUnavailable(parentId) }
+    if status == 409, code == "parent_trashed" { throw ApiError.parentUnavailable(parentId) }
     try validate(response, data)
-    return try JSONDecoder().decode(FileEntryDto.self, from: data)
+    return try FolderCreateResponseDto.decode(data)
   }
 
   /// Soft-delete (trash) a file.
@@ -323,8 +408,21 @@ final class ApiClient {
       throw ApiError.accountMismatch
     }
     if !(200..<300).contains(http.statusCode) {
+      if let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+         let code = body["error"] as? String,
+         code == "quota_exceeded" || code == "object_budget_exceeded" {
+        throw ApiError.quotaExceeded
+      }
       throw ApiError.statusCode(http.statusCode)
     }
+  }
+
+  private func responseStatus(_ response: URLResponse) -> Int? {
+    (response as? HTTPURLResponse)?.statusCode
+  }
+
+  private func responseErrorCode(_ data: Data) -> String? {
+    (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
   }
 
 }
@@ -333,6 +431,17 @@ enum ApiError: Error {
   case notAuthenticated
   case invalidResponse
   case statusCode(Int)
+  case quotaExceeded
+  /// A chunk/complete session disappeared or expired. The upload is restarted
+  /// from init; if that restart is exhausted Files receives a transient error.
+  case uploadSessionUnavailable
+  /// A lease or short-lived server-side race that clears without changing the
+  /// requested local operation.
+  case retryableConflict
+  /// A create or move destination no longer exists as a live folder.
+  case parentUnavailable(String?)
+  /// The item targeted by a read or metadata update is no longer live.
+  case itemUnavailable
   /// Task 1594 round 4: 409 `account_mismatch` — the session's account
   /// doesn't match the `X-Beebeeb-Expected-User` header this request sent.
   case accountMismatch

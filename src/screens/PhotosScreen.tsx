@@ -97,7 +97,11 @@ import { getCachedThumbnail, pruneThumbnailsForRemoteFiles } from '../lib/thumbn
 import { decryptToTempFile } from '../lib/native-decrypt';
 import { prunePhotoCacheForRemoteFiles } from '../lib/photo-cache';
 import { onFilesDeleted } from '../lib/delete-cascade';
-import { removeFromFileProviderCache, syncDecryptedEntriesToFileProvider } from '../lib/file-provider-mount';
+import {
+  removeFromFileProviderCache,
+  signalFileProviderTrashChanged,
+  syncDecryptedEntriesToFileProvider,
+} from '../lib/file-provider-mount';
 import { loadCachedFileIndex } from '../lib/file-index-cache';
 import { getRemoteCreatedAtMap, getRemoteToLocalMap, markUploadComplete } from '../services/BackupDatabase';
 import { backupWriteTicket } from '../lib/backup-write-ticket';
@@ -1388,6 +1392,7 @@ export default function PhotosScreen() {
               trashFiles: trashFilesApi,
               restoreFile,
               removeFromFileProviderCache,
+              signalFileProviderTrashChanged,
               restoreFileProviderCache: async (restoredIds) => {
                 const restored = restoredIds.map((id) => selectedById.get(id)).filter((photo): photo is FileEntry => !!photo);
                 const names: Record<string, string> = {};

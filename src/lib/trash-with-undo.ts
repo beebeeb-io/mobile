@@ -25,6 +25,8 @@ export interface MoveToTrashDeps {
   removeFromFileProviderCache: (ids: string[]) => Promise<void>;
   /** Rebuild/re-add File Provider rows after Undo. */
   restoreFileProviderCache?: (ids: string[]) => Promise<void>;
+  /** Refresh the read-only Trash listing after a restore is accepted. */
+  signalFileProviderTrashChanged?: () => Promise<void>;
   showToast: (toast: TrashToast) => void;
   openTrash: () => void;
   /** Optimistically take the rows out of the visible list. */
@@ -227,6 +229,7 @@ async function reconcileTrash(
     await deps.removeFromFileProviderCache(subtree).catch(() => {});
     await deps.onTrashed?.(subtree);
     deps.trace?.('trash.cache_remove_complete', { count: subtree.length, elapsedMs: Date.now() - startedAt });
+    await deps.signalFileProviderTrashChanged?.().catch(() => {});
   }
   if (missing.length > 0) await deps.onMissing?.(missing);
   if (trashed.length > 0 || missing.length > 0) deps.notifyTrashChanged?.();
@@ -276,6 +279,7 @@ async function undoTrash(ids: string[], deps: MoveToTrashDeps, startedAt: number
     deps.changeTrashCount?.(-restored.length);
   }
   if (restored.length > 0 || pending.length > 0) {
+    await deps.signalFileProviderTrashChanged?.().catch(() => {});
     deps.refreshAfterRestore?.([...restored, ...pending]);
     deps.notifyTrashChanged?.();
   }

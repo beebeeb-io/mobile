@@ -151,7 +151,11 @@ import { RawRenderer } from '../components/preview/RawRenderer';
 import { ZoomableImage } from '../components/preview/ZoomableImage';
 import { PhotoPageVideo } from '../components/preview/PhotoPageVideo';
 import { previewSurfaceIsDark, statusBarStyleFor } from '../lib/status-bar-style';
-import { removeFromFileProviderCache, syncDecryptedEntriesToFileProvider } from '../lib/file-provider-mount';
+import {
+  removeFromFileProviderCache,
+  signalFileProviderTrashChanged,
+  syncDecryptedEntriesToFileProvider,
+} from '../lib/file-provider-mount';
 import { onFilesDeleted } from '../lib/delete-cascade';
 import { moveToTrashWithUndo } from '../lib/trash-with-undo';
 import {
@@ -4833,6 +4837,7 @@ export default function PreviewScreen() {
               trashFiles: trashFilesApi,
               restoreFile,
               removeFromFileProviderCache,
+              signalFileProviderTrashChanged,
               restoreFileProviderCache: async (restoredIds) => {
                 const restored = (await Promise.all(restoredIds.map((id) => getFile(id).catch(() => null))))
                   .filter((entry) => entry !== null);

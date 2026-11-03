@@ -29,12 +29,23 @@ protocol FileProviderContainerRefreshing {
   func refreshMaterializedContainers() async
 }
 
-struct SyncEngineContainerRefresher: FileProviderContainerRefreshing {
+private protocol FileProviderChangeRefreshing {
+  func refreshContainerForChanges(containerId: String) async -> FileProviderRefreshOutcome
+}
+
+struct SyncEngineContainerRefresher: FileProviderContainerRefreshing, FileProviderChangeRefreshing {
   func refreshContainer(containerId: String) async -> FileProviderRefreshOutcome {
     await SyncEngine.refreshContainer(containerId: containerId)
   }
   func refreshMaterializedContainers() async {
     _ = await SyncEngine.refreshMaterializedContainers()
+  }
+  func refreshContainerForChanges(containerId: String) async -> FileProviderRefreshOutcome {
+    await SyncEngine.refreshContainer(
+      containerId: containerId,
+      signalSystem: false,
+      retryWhenSuperseded: true
+    )
   }
 }
 
@@ -117,7 +128,7 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
 
     if rows.isEmpty {
       refreshTask?.cancel()
-      refreshTask = Task { [containerId, cache, refresher] in
+      refreshTask = Task { [containerId, refresher] in
         let outcome = await refresher.refreshContainer(containerId: containerId)
         guard !Task.isCancelled else { return }
         switch outcome {
@@ -143,6 +154,8 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
           }
         case .serverUnreachable:
           observer.finishEnumeratingWithError(outcome.fileProviderError)
+        case .insufficientQuota, .noSuchItem, .cannotSynchronize:
+          observer.finishEnumeratingWithError(outcome.fileProviderError)
         }
       }
       return
@@ -166,42 +179,50 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
   // MARK: - Background refresh
 
   private static let refreshLock = NSLock()
-  private static var refreshesInFlight = Set<String>()
-  private static var refreshesQueued = Set<String>()
+  private struct RefreshEntry {
+    var activeToken: UUID
+    var activeTask: Task<FileProviderRefreshOutcome, Never>
+    var queuedToken: UUID?
+    var queuedTask: Task<FileProviderRefreshOutcome, Never>?
+  }
+  private static var refreshes: [String: RefreshEntry] = [:]
 
   /// Refreshes the container after its cached listing was delivered. iOS invalidates an
   /// enumerator right after `enumerateItems`, so this must not hang off `refreshTask`: that
   /// cancelled every refresh (NSURLError -999) and rows deleted elsewhere were never pruned.
-  /// Coalesced per container across enumerators: one pass in flight, and a request that
-  /// arrives meanwhile queues exactly one more pass, which sees the newest server state.
+  /// Coalesced per container across both item and change enumerations: one pass in flight, and
+  /// a request that arrives meanwhile queues exactly one more pass. Keeping both entry points on
+  /// this coordinator prevents their independently-started generations from discarding the pass
+  /// whose observer is responsible for reporting the new snapshot.
   /// The sign-out and purge-epoch guards live in `SyncEngine.refreshContainer`.
   private func startBackgroundRefresh() {
     let id = containerId
-    Self.refreshLock.lock()
-    if Self.refreshesInFlight.contains(id) {
-      Self.refreshesQueued.insert(id)
-      Self.refreshLock.unlock()
-      return
-    }
-    Self.refreshesInFlight.insert(id)
-    Self.refreshLock.unlock()
-
-    Task.detached { [refresher] in
-      while true {
-        _ = await refresher.refreshContainer(containerId: id)
-        Self.refreshLock.lock()
-        if Self.refreshesQueued.remove(id) == nil {
-          Self.refreshesInFlight.remove(id)
-          Self.refreshLock.unlock()
-          return
-        }
-        Self.refreshLock.unlock()
-      }
+    let shared = Self.coordinatedRefresh(containerId: id, refresher: refresher, forChanges: false)
+    Task.detached {
+      _ = await shared.1.value
+      Self.finishRefresh(containerId: id, token: shared.0)
     }
   }
 
   func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
+    if containerId == BeebeebConstants.trashContainerIdentifier {
+      let shared = Self.coordinatedRefresh(containerId: containerId, refresher: refresher, forChanges: true)
+      Task.detached { [self] in
+        let outcome = await shared.1.value
+        Self.finishRefresh(containerId: containerId, token: shared.0)
+        guard outcome == .success else {
+          observer.finishEnumeratingWithError(outcome.fileProviderError)
+          return
+        }
+        finishCachedChanges(for: observer, from: anchor)
+      }
+      return
+    }
     startMaterializedRefresh()
+    finishCachedChanges(for: observer, from: anchor)
+  }
+
+  private func finishCachedChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
     let current = snapshotAnchor()
     guard anchor == current else {
       // Both processes mutate this cache, and deletions are not journaled.
@@ -214,7 +235,89 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
     observer.finishEnumeratingChanges(upTo: current, moreComing: false)
   }
 
-  /// The items for `rows` (the Trash folder is already among them for the root and working set).
+  /// App signals can arrive in a burst. There is one active listing and at most one queued
+  /// listing; calls covered by the queued pass share it. A request arriving while a listing is
+  /// active is therefore covered by a pass that starts later, so a permanent-delete signal can
+  /// never be answered only from a response captured before deletion.
+  private static func coordinatedRefresh(
+    containerId: String,
+    refresher: FileProviderContainerRefreshing,
+    forChanges: Bool
+  ) -> (UUID, Task<FileProviderRefreshOutcome, Never>) {
+    refreshLock.lock()
+    if var existing = refreshes[containerId] {
+      if let token = existing.queuedToken, let task = existing.queuedTask {
+        refreshLock.unlock()
+        return (token, task)
+      }
+
+      let token = UUID()
+      let preceding = existing.activeTask
+      // The gate makes the queue entry visible before its task can promote itself.
+      let installed = DispatchSemaphore(value: 0)
+      let task = Task.detached {
+        _ = await preceding.value
+        installed.wait()
+        Self.promoteQueuedRefresh(containerId: containerId, token: token)
+        return await Self.performRefresh(containerId: containerId, refresher: refresher, forChanges: forChanges)
+      }
+      existing.queuedToken = token
+      existing.queuedTask = task
+      refreshes[containerId] = existing
+      installed.signal()
+      refreshLock.unlock()
+      return (token, task)
+    }
+
+    let token = UUID()
+    let task = Task.detached {
+      await Self.performRefresh(containerId: containerId, refresher: refresher, forChanges: forChanges)
+    }
+    refreshes[containerId] = RefreshEntry(
+      activeToken: token,
+      activeTask: task,
+      queuedToken: nil,
+      queuedTask: nil
+    )
+    refreshLock.unlock()
+    return (token, task)
+  }
+
+  private static func performRefresh(
+    containerId: String,
+    refresher: FileProviderContainerRefreshing,
+    forChanges: Bool
+  ) async -> FileProviderRefreshOutcome {
+    if forChanges, let changeRefresher = refresher as? FileProviderChangeRefreshing {
+      return await changeRefresher.refreshContainerForChanges(containerId: containerId)
+    }
+    return await refresher.refreshContainer(containerId: containerId)
+  }
+
+  private static func promoteQueuedRefresh(containerId: String, token: UUID) {
+    refreshLock.lock()
+    defer { refreshLock.unlock() }
+    guard var entry = refreshes[containerId],
+          entry.queuedToken == token,
+          let task = entry.queuedTask else { return }
+    entry.activeToken = token
+    entry.activeTask = task
+    entry.queuedToken = nil
+    entry.queuedTask = nil
+    refreshes[containerId] = entry
+  }
+
+  private static func finishRefresh(containerId: String, token: UUID) {
+    refreshLock.lock()
+    if let entry = refreshes[containerId],
+       entry.activeToken == token,
+       entry.queuedToken == nil {
+      refreshes[containerId] = nil
+    }
+    refreshLock.unlock()
+  }
+
+  /// The items for `rows` (the Trash folder is added to the root and working set).
   private func deliveredItems(_ rows: [CachedItem]) -> [NSFileProviderItem] {
     rows.map { FileProviderItem(cached: $0) as NSFileProviderItem }
   }
@@ -231,14 +334,14 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
     // rows assembled here.
     var rows = ownRows
     // The read-only Trash folder itself (never its contents) is part of the location's top level
-    // and of the working set: iOS never lists a materialized folder again, so the working set is
-    // how an existing install learns the folder is there.
+    // and the working set. Existing installs may never enumerate the root again, so a working-set
+    // rebuild must continue to publish the synthetic folder.
     if containerId == BeebeebConstants.rootContainerIdentifier { rows.append(.trashContainer()) }
     guard isWorkingSet else { return rows }
     var seen = Set(rows.map(\.id))
     let lookup = cache as? FileProviderItemLookup
     for folder in cache.materializedContainerIds() where folder != BeebeebConstants.rootContainerIdentifier {
-      // Trash is its own read-only place, never part of the working set (Recents, search).
+      // Trash contents stay in their own read-only place, never in the working set.
       if FilesTrash.isTrashNamespace(folder) { continue }
       // A folder that has left the cache (trashed or deleted elsewhere) takes its children with
       // it: pruning a listing removes the folder's row, not the rows below it.

@@ -111,10 +111,12 @@ final class NSFileProviderManager {
   // Task 1722 round 4: what the system reports as materialized, and every signal sent.
   private static var _materialized: [NSFileProviderItem] = []
   private static var _signals: [String] = []
+  private static var _resolvedErrors: [Int] = []
   static var signalDelay: TimeInterval = 0
   static func setMaterialized(_ items: [NSFileProviderItem]) { lock.lock(); _materialized = items; lock.unlock() }
   static var signals: [String] { lock.lock(); defer { lock.unlock() }; return _signals }
-  static func resetRecords() { lock.lock(); _materialized = []; _signals = []; lock.unlock() }
+  static var resolvedErrors: [Int] { lock.lock(); defer { lock.unlock() }; return _resolvedErrors }
+  static func resetRecords() { lock.lock(); _materialized = []; _signals = []; _resolvedErrors = []; lock.unlock() }
   init?(for domain: NSFileProviderDomain) {}
   func temporaryDirectoryURL() throws -> URL {
     Self.lock.lock(); Self._temporaryDirectoryCalls += 1; Self.lock.unlock()
@@ -123,6 +125,10 @@ final class NSFileProviderManager {
   func signalEnumerator(for container: NSFileProviderItemIdentifier, completionHandler: @escaping (Error?) -> Void) {
     Thread.sleep(forTimeInterval: Self.signalDelay)
     Self.lock.lock(); Self._signals.append(container.rawValue); Self.lock.unlock()
+    completionHandler(nil)
+  }
+  func signalErrorResolved(_ error: NSError, completionHandler: @escaping (Error?) -> Void) {
+    Self.lock.lock(); Self._resolvedErrors.append(error.code); Self.lock.unlock()
     completionHandler(nil)
   }
   func enumeratorForMaterializedItems() -> NSFileProviderEnumerator {
@@ -180,6 +186,15 @@ final class MasterKeyHandle {
     MasterKeyHandle.derivedFileIds.append(String(data: fileId, encoding: .utf8) ?? "<non-utf8-id>")
     return FileKeyHandle(key: Data(SHA256.hash(data: key + fileId)))
   }
+  func encryptName(fileId: String, filename: String, mimeType: String?) throws -> String {
+    let blob = try deriveFileKey(fileId: Data(fileId.utf8)).encryptMetadata(metadata: filename)
+    let payload: [String: Any] = [
+      "cipher_suite": "V1Aes256Gcm",
+      "nonce": Array(blob.nonce),
+      "ciphertext": Array(blob.ciphertext),
+    ]
+    return String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8)!
+  }
   // Forces CryptoBridge onto its JSON-envelope path, which encryptFilename produces.
   func decryptNameWithMime(fileId: String, nameEncrypted: String) throws -> DecryptedNameWithMime {
     throw FixtureCryptoError()
@@ -226,6 +241,7 @@ func planChunks(fileSizeBytes: UInt64, profile: String) throws -> ChunkPlanResul
 
 // ---- shared metadata cache: in-memory, records every write ----
 __CACHED_ITEM__
+__DISPLAY_NAMES__
 
 final class CacheManager {
   static let shared = CacheManager()
@@ -237,13 +253,14 @@ final class CacheManager {
   /// Scenario hook: runs on the Nth purgeEpochUnchanged call (a purge or a cancel landing mid-stream).
   var onEpochCheck: (count: Int, action: () -> Void)?
   private(set) var epochChecks = 0
+  private(set) var siblingAliasQueries = 0
 
   /// Task 1722 round 4: the folders the system has materialized (not counted in writes).
   var materialized: Set<String> = []
 
   func reset() {
     lock.lock(); defer { lock.unlock() }
-    rows = [:]; state = [:]; epoch = 7; writes = []; onEpochCheck = nil; epochChecks = 0; materialized = []
+    rows = [:]; state = [:]; epoch = 7; writes = []; onEpochCheck = nil; epochChecks = 0; siblingAliasQueries = 0; materialized = []
   }
   func materializedContainerIds() -> [String] { lock.lock(); defer { lock.unlock() }; return materialized.sorted() }
   @discardableResult
@@ -258,10 +275,22 @@ final class CacheManager {
     defer { materialized = ids }
     return materialized != ids
   }
-  func item(id: String) -> CachedItem? { lock.lock(); defer { lock.unlock() }; return rows[id] }
+  private func repairedChildren(parent: String?) -> [CachedItem] {
+    siblingAliasQueries += 1
+    let current = rows.values.filter { $0.parentId == parent }.sorted { $0.id < $1.id }
+    let repaired = FileProviderDisplayNames.assign(current)
+    for item in repaired { rows[item.id] = item }
+    return repaired
+  }
+  func item(id: String) -> CachedItem? {
+    lock.lock(); defer { lock.unlock() }
+    guard let row = rows[id] else { return nil }
+    if FileProviderDisplayNames.hasValidAlias(row) { return row }
+    return repairedChildren(parent: row.parentId).first { $0.id == id }
+  }
   func children(parent: String?) -> [CachedItem] {
     lock.lock(); defer { lock.unlock() }
-    return rows.values.filter { $0.parentId == parent }.sorted { $0.id < $1.id }
+    return repairedChildren(parent: parent)
   }
   @discardableResult
   func replaceChildren(parent: String?, with items: [CachedItem], expectedEpoch: Int, pruningNamespacePrefix: String? = nil) -> Bool {
@@ -321,7 +350,9 @@ __DEFAULT_CHUNK_SIZE__
 final class ApiClient {
   static let shared = ApiClient()
   __FILE_ENTRY_DTO__
+  __FOLDER_CREATE_RESPONSE_DTO__
   __UPLOAD_RESPONSE_DTO__
+  __UPLOAD_COMPLETE_RESPONSE_DTO__
   __UPLOAD_INIT_DTO__
 
   var listings: [String: Result<[FileEntryDto], Error>] = [:]
@@ -331,22 +362,57 @@ final class ApiClient {
   var calls: [String] { callsLock.lock(); defer { callsLock.unlock() }; return recordedCalls }
   private func record(_ call: String) { callsLock.lock(); recordedCalls.append(call); callsLock.unlock() }
   private(set) var patchedNames: [String?] = []
+  private(set) var createdFolderNames: [String] = []
+  private(set) var uploadInitNames: [String] = []
   private(set) var listLimits: [Int?] = []
+  private(set) var listExpectedUsers: [String?] = []
+  struct ListingReply {
+    let delayNanoseconds: UInt64
+    let result: Result<[FileEntryDto], Error>
+  }
+  private let listingRepliesLock = NSLock()
+  private var listingReplies: [String: [ListingReply]] = [:]
+  private var activeListings = 0
+  private(set) var maximumConcurrentListings = 0
   /// SF-0002 part 1: the file_id the real ApiClient puts in the upload-init
   /// body (it sends fileId.lowercased(), ApiClient.swift).
   private(set) var uploadInitFileIds: [String] = []
   /// Scenario hook: each chunk PUT throws the next queued error, then succeeds.
   var chunkFailures: [Error] = []
+  var initFailures: [Error] = []
+  var completeFailures: [Error] = []
+  private(set) var serverFileRows = Set<String>()
+  private var activeUploadFileIds = Set<String>()
+  private var uploadSessionSequence = 0
   /// SF-0001 round 2: the init answer names this id instead of the requested one.
   var initEchoOverride: String?
+  var completeReplyData: Data?
+  var completeAsIdempotentRetry = false
+  var deleteFailure: Error?
 
-  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); callsLock.lock(); recordedCalls = []; callsLock.unlock(); patchedNames = []; listLimits = []; createdFolderIds = []; createFolderFailure = nil; uploadInitFileIds = []; chunkFailures = []; initEchoOverride = nil; chunkTimeoutsLock.lock(); recordedChunkTimeouts = []; chunkTimeoutsLock.unlock() }
+  func reset() { listings = [:]; downloadResult = .failure(ApiError.invalidResponse); callsLock.lock(); recordedCalls = []; callsLock.unlock(); patchedNames = []; createdFolderNames = []; uploadInitNames = []; listLimits = []; listExpectedUsers = []; listingRepliesLock.lock(); listingReplies = [:]; activeListings = 0; maximumConcurrentListings = 0; listingRepliesLock.unlock(); createdFolderIds = []; createFolderFailure = nil; failCreateAfterServerWrite = false; folderEchoOverride = nil; uploadInitFileIds = []; chunkFailures = []; initFailures = []; completeFailures = []; serverFileRows = []; activeUploadFileIds = []; uploadSessionSequence = 0; initEchoOverride = nil; completeReplyData = nil; completeAsIdempotentRetry = false; deleteFailure = nil; chunkTimeoutsLock.lock(); recordedChunkTimeouts = []; chunkTimeoutsLock.unlock() }
   func count(_ prefix: String) -> Int { calls.filter { $0.hasPrefix(prefix) }.count }
+  func scriptListings(_ key: String, _ replies: [ListingReply]) {
+    listingRepliesLock.lock(); listingReplies[key] = replies; listingRepliesLock.unlock()
+  }
 
-  func listFiles(parentId: String?, trashed: Bool = false, maxEntries: Int? = nil) async throws -> [FileEntryDto] {
+  func listFiles(parentId: String?, trashed: Bool = false, maxEntries: Int? = nil, expectedUser: String? = nil) async throws -> [FileEntryDto] {
     record("\(trashed ? "list-trashed" : "list") \(parentId ?? "root")")
     listLimits.append(maxEntries)
-    let rows = try (listings[(trashed ? "trashed:" : "") + (parentId ?? "root")] ?? .success([])).get()
+    listExpectedUsers.append(expectedUser)
+    let key = (trashed ? "trashed:" : "") + (parentId ?? "root")
+    listingRepliesLock.lock()
+    let scripted = listingReplies[key]?.isEmpty == false ? listingReplies[key]?.removeFirst() : nil
+    activeListings += 1
+    maximumConcurrentListings = max(maximumConcurrentListings, activeListings)
+    listingRepliesLock.unlock()
+    defer {
+      listingRepliesLock.lock()
+      activeListings -= 1
+      listingRepliesLock.unlock()
+    }
+    if let delay = scripted?.delayNanoseconds, delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+    let rows = try (scripted?.result ?? listings[key] ?? .success([])).get()
     return maxEntries.map { Array(rows.prefix($0)) } ?? rows
   }
   func downloadEncrypted(fileId: String) async throws -> DownloadedEncryptedFile {
@@ -359,26 +425,56 @@ final class ApiClient {
     return FileEntryDto(id: fileId, parent_id: parentId, name_encrypted: nameEncrypted, name_nonce: nil, mime_type: nil,
                         size_bytes: 0, is_folder: false, chunk_count: 1, created_at: nil, updated_at: "2026-10-14T00:00:00Z")
   }
-  func deleteFile(fileId: String, expectedUser: String?) async throws { record("delete \(fileId)") }
+  func deleteFile(fileId: String, expectedUser: String?) async throws {
+    record("delete \(fileId)")
+    if let deleteFailure { throw deleteFailure }
+  }
   private(set) var createdFolderIds: [String] = []
   var createFolderFailure: Error?
-  func createFolder(folderId: String, nameEncrypted: String, parentId: String?, expectedUser: String?) async throws -> FileEntryDto {
+  var failCreateAfterServerWrite = false
+  var folderEchoOverride: String?
+  func createFolder(folderId: String, nameEncrypted: String, parentId: String?, expectedUser: String?) async throws -> FolderCreateResponseDto {
     record("create-folder \(folderId) parent=\(parentId ?? "root")")
-    if let createFolderFailure { throw createFolderFailure }
     createdFolderIds.append(folderId)
-    return FileEntryDto(id: folderId, parent_id: parentId, name_encrypted: nameEncrypted, name_nonce: nil, mime_type: nil,
-                        size_bytes: 0, is_folder: true, chunk_count: 0, created_at: "2026-10-14T00:00:00Z", updated_at: "2026-10-14T00:00:00Z")
+    createdFolderNames.append(nameEncrypted)
+    let listingKey = parentId ?? "root"
+    var rows = try (listings[listingKey] ?? .success([])).get()
+    rows.append(FileEntryDto(id: folderId, parent_id: parentId, name_encrypted: nameEncrypted, name_nonce: nil, mime_type: nil,
+                             size_bytes: 0, is_folder: true, chunk_count: 0, created_at: "2026-10-14T00:00:00Z", updated_at: "2026-10-14T00:00:00Z"))
+    listings[listingKey] = .success(rows)
+    if failCreateAfterServerWrite {
+      failCreateAfterServerWrite = false
+      throw createFolderFailure ?? URLError(.networkConnectionLost)
+    }
+    if let createFolderFailure { throw createFolderFailure }
+    let escapedName = nameEncrypted.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    let echoedId = folderEchoOverride ?? folderId
+    let data = Data("{\"id\":\"\(echoedId)\",\"name_encrypted\":\"\(escapedName)\",\"is_folder\":true,\"created_at\":\"2026-10-14T00:00:00Z\"}".utf8)
+    return try FolderCreateResponseDto.decode(data)
   }
   func initUploadV2(fileId: String, nameEncrypted: String, fileSizeBytes: Int64, mimeType: String?, parentId: String?,
-                    isMedia: Bool, chunkSizeBytes: Int, chunkCount: Int, expectedUser: String?) async throws -> UploadV2InitResponse {
+                    isMedia: Bool, chunkSizeBytes: Int, chunkCount: Int, isReplacement: Bool, expectedUser: String?) async throws -> UploadV2InitResponse {
     record("upload-init \(fileId)")
+    if !initFailures.isEmpty { throw initFailures.removeFirst() }
+    if activeUploadFileIds.contains(fileId) { throw ApiError.retryableConflict }
     // Mirror the shipped ApiClient: the server body's file_id is the
     // lowercased argument, and the completion row carries the server id.
     uploadInitFileIds.append(fileId.lowercased())
-    return UploadV2InitResponse(file_id: initEchoOverride ?? fileId.lowercased(), upload_session_id: "session", chunk_size_bytes: chunkSizeBytes, chunk_count: chunkCount)
+    serverFileRows.insert(fileId)
+    activeUploadFileIds.insert(fileId)
+    uploadInitNames.append(nameEncrypted)
+    uploadSessionSequence += 1
+    return UploadV2InitResponse(file_id: initEchoOverride ?? fileId.lowercased(), upload_session_id: "session-\(uploadSessionSequence)", chunk_size_bytes: chunkSizeBytes, chunk_count: chunkCount)
   }
   func abandonUploadBestEffort(fileId: String, expectedUser: String?) async {
     record("upload-abandon \(fileId)")
+    activeUploadFileIds.remove(fileId)
+    serverFileRows.remove(fileId)
+  }
+  func abandonUploadForRestart(fileId: String, expectedUser: String?) async throws {
+    record("upload-abandon-for-restart \(fileId)")
+    activeUploadFileIds.remove(fileId)
+    serverFileRows.remove(fileId)
   }
   /// Task 260 (P2-3): every chunk attempt names its OWN request timeout, so the
   /// extension never inherits the session's 60 s one. Recorded for the budget checks.
@@ -390,19 +486,28 @@ final class ApiClient {
     chunkTimeoutsLock.lock(); recordedChunkTimeouts.append(timeout); chunkTimeoutsLock.unlock()
     if !chunkFailures.isEmpty { throw chunkFailures.removeFirst() }
   }
-  func completeUploadV2(uploadSessionId: String, expectedUser: String?) async throws -> UploadResponseDto {
+  func completeUploadV2(uploadSessionId: String, expectedUser: String?) async throws -> UploadCompleteResponseDto {
     record("upload-complete")
-    return UploadResponseDto(id: uploadInitFileIds.last ?? "uploaded", name_encrypted: nil, size_bytes: 0, chunk_count: 1, created_at: nil, updated_at: nil)
+    if !completeFailures.isEmpty { throw completeFailures.removeFirst() }
+    let id = uploadInitFileIds.last ?? "uploaded"
+    activeUploadFileIds.remove(id)
+    let fallback = completeAsIdempotentRetry
+      ? Data("{\"id\":\"\(id)\",\"status\":\"completed\",\"already_completed\":true}".utf8)
+      : Data("{\"id\":\"\(id)\",\"name_encrypted\":null,\"size_bytes\":0,\"chunk_count\":1}".utf8)
+    return try UploadCompleteResponseDto.decode(completeReplyData ?? fallback)
   }
 }
 `
   .replace('__LOAD_ERROR__', declaration(keychainCore, 'enum LoadError: Error {'))
   .replace('__CACHED_ITEM__', declaration(cacheManager, 'struct CachedItem {'))
+  .replace('__DISPLAY_NAMES__', declaration(cacheManager, 'enum FileProviderDisplayNames {'))
   .replace('__API_ERROR__', declaration(apiClient, 'enum ApiError: Error {'))
   .replace('__DOWNLOADED_FILE__', declaration(apiClient, 'struct DownloadedEncryptedFile {'))
   .replace('__DEFAULT_CHUNK_SIZE__', line(apiClient, 'let defaultPlaintextChunkSize'))
   .replace('__FILE_ENTRY_DTO__', declaration(apiClient, 'struct FileEntryDto: Decodable {'))
+  .replace('__FOLDER_CREATE_RESPONSE_DTO__', declaration(apiClient, 'struct FolderCreateResponseDto: Decodable {'))
   .replace('__UPLOAD_RESPONSE_DTO__', declaration(apiClient, 'struct UploadResponseDto: Decodable {'))
+  .replace('__UPLOAD_COMPLETE_RESPONSE_DTO__', declaration(apiClient, 'struct UploadCompleteResponseDto: Decodable {'))
   .replace('__UPLOAD_INIT_DTO__', declaration(apiClient, 'struct UploadV2InitResponse: Decodable {'));
 
 const scenarios = String.raw`
@@ -430,6 +535,32 @@ func row(_ id: String, parent: String? = nil, name: String? = nil, encrypted: St
   CachedItem(id: id, parentId: parent, nameEncrypted: encrypted, nameDecrypted: name, mimeType: folder ? nil : mime,
              sizeBytes: size, isFolder: folder, isPinned: false, hasThumbnail: false, thumbnailData: nil, thumbnailNonce: nil,
              createdAt: nil, updatedAt: "2026-10-14T00:00:00Z", syncAnchor: 1, isMaterialized: false)
+}
+
+/// What the app's native write-through used to do before aliases carried provenance: replace the real server name
+/// and/or parent while leaving the File Provider-only alias untouched.
+func appWriteThrough(_ id: String, parent: String?, name: String) {
+  let old = CacheManager.shared.rows[id]!
+  CacheManager.shared.rows[id] = CachedItem(
+    id: old.id,
+    parentId: parent,
+    nameEncrypted: encryptedName(id, name),
+    nameDecrypted: name,
+    mimeType: old.mimeType,
+    sizeBytes: old.sizeBytes,
+    isFolder: old.isFolder,
+    isPinned: old.isPinned,
+    hasThumbnail: old.hasThumbnail,
+    thumbnailData: old.thumbnailData,
+    thumbnailNonce: old.thumbnailNonce,
+    createdAt: old.createdAt,
+    updatedAt: old.updatedAt,
+    syncAnchor: old.syncAnchor + 1,
+    isMaterialized: old.isMaterialized,
+    displayName: old.displayName,
+    displayNameSourceName: old.displayNameSourceName,
+    displayNameSourceParent: old.displayNameSourceParent
+  )
 }
 
 func reset() {
@@ -538,12 +669,37 @@ let fixtureMaster = try! MasterKeyHandle.fromKeychainBytes(bytes: BeebeebKeychai
 func encryptedName(_ id: String, _ name: String) -> String {
   try! CryptoBridge.encryptFilename(masterKeyHandle: fixtureMaster, fileId: id, filename: "{\"name\":\"\(name)\"}")
 }
+func legacyEncryptedName(_ id: String, _ name: String) -> String {
+  let key = try! fixtureMaster.deriveFileKey(fileId: Data(id.utf8))
+  let blob = try! key.encryptMetadata(metadata: name)
+  let payload = [
+    "nonce": blob.nonce.base64EncodedString(),
+    "ciphertext": blob.ciphertext.base64EncodedString(),
+  ]
+  return String(data: try! JSONSerialization.data(withJSONObject: payload), encoding: .utf8)!
+}
+func serverAcceptsNamePayload(_ raw: String?) -> Bool {
+  guard let raw, let data = raw.data(using: .utf8),
+        let object = try? JSONSerialization.jsonObject(with: data),
+        let payload = object as? [String: Any],
+        payload["cipher_suite"] as? String == "V1Aes256Gcm",
+        let nonce = payload["nonce"] as? [Any], nonce.count == 12,
+        let ciphertext = payload["ciphertext"] as? [Any] else { return false }
+  func bytes(_ values: [Any]) -> Bool {
+    values.allSatisfy { value in
+      guard let number = value as? NSNumber else { return false }
+      let int = number.intValue
+      return int >= 0 && int <= 255 && number.doubleValue == Double(int)
+    }
+  }
+  return bytes(nonce) && bytes(ciphertext)
+}
 /// A well-formed envelope this account's key cannot open.
 let undecryptable = #"{"nonce":"AAAAAAAAAAAAAAAA","ciphertext":"AAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#
 
-func dto(_ id: String, parent: String?, name: String?, folder: Bool = false) -> ApiClient.FileEntryDto {
+func dto(_ id: String, parent: String?, name: String?, folder: Bool = false, created: String? = nil) -> ApiClient.FileEntryDto {
   ApiClient.FileEntryDto(id: id, parent_id: parent, name_encrypted: name, name_nonce: nil, mime_type: folder ? nil : "text/plain",
-                         size_bytes: folder ? 0 : 5, is_folder: folder, chunk_count: 1, created_at: nil, updated_at: "2026-10-14T00:00:00Z")
+                         size_bytes: folder ? 0 : 5, is_folder: folder, chunk_count: 1, created_at: created, updated_at: "2026-10-14T00:00:00Z")
 }
 
 func noKeyRefusesListingInsteadOfPlaceholders() async {
@@ -629,6 +785,126 @@ func undecryptableNameGetsUniqueLabelWithoutRename() async {
   }
 }
 
+// The API permits same-name siblings, while File Provider requires every child
+// of a directory to have a distinct filename. The displayed aliases are stable across server
+// reorder/removal, and the real decrypted name remains the one used for server writes.
+func duplicateSiblingNamesGetStableDisplayAliases() async {
+  reset()
+  let rows = [
+    dto("c", parent: "D", name: encryptedName("c", "report.txt"), created: "2026-03-03T00:00:00Z"),
+    dto("a", parent: "D", name: encryptedName("a", "report.txt"), created: "2026-03-01T00:00:00Z"),
+    dto("b", parent: "D", name: encryptedName("b", "report.txt"), created: "2026-03-02T00:00:00Z"),
+  ]
+  ApiClient.shared.listings["D"] = .success(rows)
+  let first = await list("D")
+  let firstById = Dictionary(uniqueKeysWithValues: first.items.map { ($0.itemIdentifier.rawValue, $0.filename) })
+  check(first.error == nil && Set(firstById.values).count == 3,
+        "normal-folder duplicate names are made unique, got \(firstById)")
+  check(firstById == ["a": "report.txt", "b": "report (2).txt", "c": "report (3).txt"],
+        "aliases follow stable created-at/id order, got \(firstById)")
+  check(["a", "b", "c"].allSatisfy { CacheManager.shared.item(id: $0)?.nameDecrypted == "report.txt" },
+        "display aliases never replace the real cached server name")
+
+  ApiClient.shared.listings["D"] = .success([rows[1], rows[2], rows[0]])
+  _ = await SyncEngine.refreshContainer(containerId: "D")
+  let reorderedById = Dictionary(uniqueKeysWithValues: CacheManager.shared.children(parent: "D").map {
+    ($0.id, FileProviderItem(cached: $0).filename)
+  })
+  check(reorderedById == firstById, "aliases survive server reorder, got \(reorderedById)")
+
+  ApiClient.shared.listings["D"] = .success([rows[1], rows[2]])
+  _ = await SyncEngine.refreshContainer(containerId: "D")
+  let removedById = Dictionary(uniqueKeysWithValues: CacheManager.shared.children(parent: "D").map {
+    ($0.id, FileProviderItem(cached: $0).filename)
+  })
+  check(removedById == ["a": "report.txt", "b": "report (2).txt"],
+        "removing a sibling does not rename the survivors, got \(removedById)")
+
+  let version = FileProviderItem(cached: CacheManager.shared.item(id: "a")!).itemVersion.metadataVersion
+  check(String(data: version, encoding: .utf8)?.contains("display-name-v2") == true,
+        "even the unsuffixed sibling carries the display-name version marker")
+
+  reset()
+  CacheManager.shared.setSyncState(key: FileProviderItem.protectedBackupsRootKey, value: "backups-root")
+  ApiClient.shared.listings["trashed:root"] = .success([
+    dto("d2", parent: nil, name: encryptedName("d2", ".device.json"), created: "2026-03-02T00:00:00Z"),
+    dto("d1", parent: nil, name: encryptedName("d1", ".device.json"), created: "2026-03-01T00:00:00Z"),
+  ])
+  let trash = await list(trashId)
+  check(Set(trash.items.map(\.filename)) == [".device.json", ".device (2).json"],
+        "Trash duplicate dotfiles are unique, got \(trash.items.map(\.filename))")
+}
+
+// Aliases are valid only for the real name and parent from which they were
+// derived. The app can update the shared cache before the extension's next server refresh, so
+// cache-only enumeration must also repair new or invalid aliases.
+func appWritesCannotLeaveStaleOrCollidingAliases() async {
+  reset()
+  var stable = row("stable", parent: "D", name: "photo.jpg", encrypted: encryptedName("stable", "photo.jpg"))
+  stable.displayName = "photo.jpg"
+  stable.displayNameSourceName = "photo.jpg"
+  stable.displayNameSourceParent = "D"
+  CacheManager.shared.rows["stable"] = stable
+  CacheManager.shared.rows["other"] = row("other", parent: "D", name: "other.jpg", encrypted: encryptedName("other", "other.jpg"))
+  let queriesBefore = CacheManager.shared.siblingAliasQueries
+  check(CacheManager.shared.item(id: "stable")?.displayName == "photo.jpg",
+        "a valid alias is returned directly")
+  check(CacheManager.shared.siblingAliasQueries == queriesBefore,
+        "a valid item lookup does not read or resolve its siblings")
+
+  reset()
+  ApiClient.shared.listings["D"] = .success([
+    dto("rename", parent: "D", name: encryptedName("rename", "a.txt"), created: "2026-03-01T00:00:00Z"),
+  ])
+  _ = await SyncEngine.refreshContainer(containerId: "D")
+  appWriteThrough("rename", parent: "D", name: "b.txt")
+  ApiClient.shared.listings["D"] = .success([
+    dto("rename", parent: "D", name: encryptedName("rename", "b.txt"), created: "2026-03-01T00:00:00Z"),
+  ])
+  _ = await SyncEngine.refreshContainer(containerId: "D")
+  check(FileProviderItem(cached: CacheManager.shared.item(id: "rename")!).filename == "b.txt",
+        "an app rename followed by refresh cannot preserve the old alias")
+
+  reset()
+  ApiClient.shared.listings["P"] = .success([
+    dto("stay", parent: "P", name: encryptedName("stay", "report.txt"), created: "2026-03-01T00:00:00Z"),
+    dto("move", parent: "P", name: encryptedName("move", "report.txt"), created: "2026-03-02T00:00:00Z"),
+  ])
+  _ = await SyncEngine.refreshContainer(containerId: "P")
+  check(CacheManager.shared.item(id: "move")?.displayName == "report (2).txt", "setup: the moved row starts with an old-parent alias")
+  appWriteThrough("move", parent: "Q", name: "report.txt")
+  ApiClient.shared.listings["Q"] = .success([
+    dto("move", parent: "Q", name: encryptedName("move", "report.txt"), created: "2026-03-02T00:00:00Z"),
+  ])
+  _ = await SyncEngine.refreshContainer(containerId: "Q")
+  check(FileProviderItem(cached: CacheManager.shared.item(id: "move")!).filename == "report.txt",
+        "an app move followed by refresh cannot preserve an alias from the old parent")
+
+  reset()
+  CacheManager.shared.rows["first"] = row("first", parent: "D", name: "report.txt", encrypted: encryptedName("first", "report.txt"))
+  CacheManager.shared.rows["app-new"] = row("app-new", parent: "D", name: "report.txt", encrypted: encryptedName("app-new", "report.txt"))
+  let appWritten = CacheManager.shared.item(id: "app-new")
+  check(appWritten?.displayName != CacheManager.shared.item(id: "first")?.displayName,
+        "an app-written duplicate is unique through item(id:), got \(String(describing: appWritten?.displayName))")
+  let cacheOnly = FileProviderEnumerator(containerIdentifier: NSFileProviderItemIdentifier("D"), cache: CacheManager.shared, refresher: NoRefresh())
+  let cacheOnlyNames = await enumerateOnce(cacheOnly).items.map(\.filename)
+  check(cacheOnlyNames.count == 2 && Set(cacheOnlyNames).count == 2,
+        "an app-written duplicate is unique on cache-only enumeration, got \(cacheOnlyNames)")
+
+  reset()
+  CacheManager.shared.rows["a"] = row("a", parent: "D", name: "report.txt", encrypted: encryptedName("a", "report.txt"))
+  CacheManager.shared.rows["b"] = row("b", parent: "D", name: "draft.txt", encrypted: encryptedName("b", "draft.txt"))
+  let renameOutcome = await modify(Template("b", parent: "D", filename: "report.txt"), [.filename])
+  let afterRename = FileProviderEnumerator(containerIdentifier: NSFileProviderItemIdentifier("D"), cache: CacheManager.shared, refresher: NoRefresh())
+  let renamedItems = await enumerateOnce(afterRename).items
+  let renamedNames = renamedItems.map(\.filename)
+  check(renameOutcome.1 == nil && renamedNames.count == 2 && Set(renamedNames).count == 2,
+        "the extension's own rename cannot store a typed name that collides with a sibling alias, got \(renamedNames)")
+  check(CacheManager.shared.item(id: "b")?.nameDecrypted == "report.txt"
+          && CacheManager.shared.item(id: "b")?.displayName == "report (2).txt",
+        "the typed server name stays real while only its display alias is disambiguated")
+}
+
 final class Template: NSObject, NSFileProviderItem {
   let itemIdentifier: NSFileProviderItemIdentifier
   let parentItemIdentifier: NSFileProviderItemIdentifier
@@ -641,15 +917,21 @@ final class Template: NSObject, NSFileProviderItem {
   }
 }
 
-/// modifyItem's completion: the returned item, the fields left still pending, the error.
-func modifyReturningPending(_ template: NSFileProviderItem, _ fields: NSFileProviderItemFields) async -> (NSFileProviderItem?, NSFileProviderItemFields, NSError?) {
+/// modifyItem's completion: the returned item, the fields left still pending, whether Files
+/// should refetch content, and the error.
+func modifyOutcome(_ template: NSFileProviderItem, _ fields: NSFileProviderItemFields, contents: URL? = nil) async -> (NSFileProviderItem?, NSFileProviderItemFields, Bool, NSError?) {
   let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
   return await withCheckedContinuation { continuation in
     _ = ext.modifyItem(template, baseVersion: NSFileProviderItemVersion(contentVersion: Data(), metadataVersion: Data()),
-                       changedFields: fields, contents: nil, options: [], request: NSFileProviderRequest()) { item, pending, _, error in
-      continuation.resume(returning: (item, pending, error as NSError?))
+                       changedFields: fields, contents: contents, options: [], request: NSFileProviderRequest()) { item, pending, shouldFetch, error in
+      continuation.resume(returning: (item, pending, shouldFetch, error as NSError?))
     }
   }
+}
+
+func modifyReturningPending(_ template: NSFileProviderItem, _ fields: NSFileProviderItemFields, contents: URL? = nil) async -> (NSFileProviderItem?, NSFileProviderItemFields, NSError?) {
+  let (item, pending, _, error) = await modifyOutcome(template, fields, contents: contents)
+  return (item, pending, error)
 }
 
 func modify(_ template: NSFileProviderItem, _ fields: NSFileProviderItemFields) async -> (NSFileProviderItem?, NSError?) {
@@ -715,7 +997,8 @@ func metadataOnlyModifyKeepsTheItem() async {
   for (label, fields) in changes {
     reset()
     CacheManager.shared.rows["r1"] = row("r1", name: "notes.md", encrypted: encryptedName("r1", "notes.md"), size: 207, mime: nil)
-    let before = FileProviderItem(cached: CacheManager.shared.rows["r1"]!)
+    // Observe the same repaired cache row that item(for:) / enumeration gives fileproviderd.
+    let before = FileProviderItem(cached: CacheManager.shared.item(id: "r1")!)
     let (after, pending, error) = await modifyReturningPending(Template("r1", parent: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "notes.md"), fields)
     check(error == nil, "\(label): no error, got \(describe(error))")
     check(after?.itemVersion?.contentVersion == before.itemVersion.contentVersion, "\(label): the content version is unchanged (no re-download)")
@@ -1177,6 +1460,317 @@ func staleMaterializedFoldersAreRefreshed() async {
   ws.invalidate()
 }
 
+func staleTrashIsRefreshedOutsideTheWorkingSet() async {
+  reset()
+  NSFileProviderManager.resetRecords()
+  CacheManager.shared.rows["trash:t1"] = row("trash:t1", parent: trashId, name: "gone.txt")
+  CacheManager.shared.setSyncState(key: "container.\(trashId).anchor", value: "1")
+  ApiClient.shared.listings["trashed:root"] = .success([])
+  _ = await SyncEngine.refreshMaterializedContainers(now: Date())
+  check(ApiClient.shared.count("list-trashed root") == 1, "the rate-limited refresh lists Trash")
+  check(CacheManager.shared.item(id: "trash:t1") == nil, "an emptied Trash prunes its cached rows")
+  check(NSFileProviderManager.signals.contains(trashId), "the Trash enumerator is signalled, got \(NSFileProviderManager.signals)")
+  check(!NSFileProviderManager.signals.contains(NSFileProviderItemIdentifier.workingSet.rawValue),
+        "a Trash-only refresh does not signal the working set")
+
+  reset()
+  NSFileProviderManager.resetRecords()
+  let changed = dtoUpdated("changed", parent: nil, name: encryptedName("changed", "changed.txt"), updated: "2026-10-15T00:00:00Z")
+  ApiClient.shared.listings["trashed:root"] = .success([changed])
+  _ = await SyncEngine.refreshContainer(containerId: trashId)
+  let cached = CacheManager.shared.item(id: "trash:changed")!
+  let contentPayload = "\(cached.updatedAt ?? "")|\(cached.sizeBytes)"
+  let preCapabilityVersion = Data("\(contentPayload)|\(cached.nameDecrypted ?? "")|\(cached.nameEncrypted ?? "")|\(cached.parentId ?? "")".utf8)
+  let delivered = await list(trashId)
+  let deliveredVersion = delivered.items.first { $0.itemIdentifier.rawValue == "trash:changed" }?.itemVersion?.metadataVersion
+  check(deliveredVersion == FileProviderItem(cached: cached).itemVersion.metadataVersion
+          && deliveredVersion != preCapabilityVersion,
+        "the signalled Trash listing re-delivers the row with a capability-version marker")
+  check(NSFileProviderManager.signals.contains(trashId), "the versioned Trash row was signalled to its enumerator")
+}
+
+func newerTrashRefreshWinsAfterTheAppSignal() async {
+  reset()
+  NSFileProviderManager.resetRecords()
+  CacheManager.shared.rows["trash:old"] = row("trash:old", parent: trashId, name: "old.txt")
+  CacheManager.shared.setSyncState(key: "container.\(trashId).anchor", value: "1")
+  let oldPage = [dto("old", parent: nil, name: encryptedName("old", "old.txt"))]
+  let freshPage = oldPage + [dto("new", parent: nil, name: encryptedName("new", "newly trashed.txt"))]
+  ApiClient.shared.listings["trashed:root"] = .success(freshPage)
+  ApiClient.shared.scriptListings("trashed:root", [
+    .init(delayNanoseconds: 150_000_000, result: .success(freshPage)),
+    .init(delayNanoseconds: 150_000_000, result: .success(freshPage)),
+  ])
+  ApiClient.shared.scriptListings("trashed:root", [
+    .init(delayNanoseconds: 250_000_000, result: .success(oldPage)),
+    .init(delayNanoseconds: 10_000_000, result: .success(freshPage)),
+  ])
+
+  let staleRefresh = Task { await SyncEngine.refreshContainer(containerId: trashId) }
+  let olderStarted = await waitUntil { ApiClient.shared.count("list-trashed root") == 1 }
+  check(olderStarted, "the older Trash request started")
+  let signalEnumerator = FileProviderEnumerator(
+    containerIdentifier: NSFileProviderItemIdentifier(trashId),
+    cache: CacheManager.shared,
+    refresher: SyncEngineContainerRefresher()
+  )
+  var anchor: NSFileProviderSyncAnchor?
+  signalEnumerator.currentSyncAnchor { anchor = $0 }
+  let before = await enumerateOnce(FileProviderEnumerator(
+    containerIdentifier: NSFileProviderItemIdentifier(trashId),
+    cache: CacheManager.shared,
+    refresher: NoRefresh()
+  ))
+  check(before.items.map(\.filename) == ["old.txt"], "the signal first delivers the cached Trash listing")
+  let change = ChangeObserver()
+  signalEnumerator.enumerateChanges(for: change, from: anchor!)
+  let newerStarted = await waitUntil { ApiClient.shared.count("list-trashed root") >= 2 }
+  check(newerStarted, "enumerateChanges after the app signal triggered a fresh Trash listing")
+  let changeFinished = await waitUntil { change.error != nil || change.finished != nil }
+  check(changeFinished && isProviderError(change.error, .syncAnchorExpired),
+        "the real change-enumeration path reports the refreshed Trash snapshot")
+  _ = await staleRefresh.value
+  signalEnumerator.invalidate()
+
+  let stableEnumerator = FileProviderEnumerator(
+    containerIdentifier: NSFileProviderItemIdentifier(trashId),
+    cache: CacheManager.shared,
+    refresher: NoRefresh()
+  )
+  let after = await enumerateOnce(stableEnumerator)
+  stableEnumerator.invalidate()
+  check(after.items.map(\.filename).sorted() == ["newly trashed.txt", "old.txt"],
+        "the newly trashed file remains in the listing after the older response finishes")
+  check(!NSFileProviderManager.signals.contains(trashId),
+        "the observer receives the fresh snapshot without recursively signaling its own enumerator")
+}
+
+func idleTrashBurstDeliversEveryNewRow() async {
+  reset()
+  NSFileProviderManager.resetRecords()
+  CacheManager.shared.rows["trash:known"] = row("trash:known", parent: trashId, name: "known.txt")
+  CacheManager.shared.setSyncState(key: "container.\(trashId).anchor", value: "1")
+
+  let listedEnumerator = FileProviderEnumerator(
+    containerIdentifier: NSFileProviderItemIdentifier(trashId),
+    cache: CacheManager.shared,
+    refresher: NoRefresh()
+  )
+  let known = await enumerateOnce(listedEnumerator)
+  check(known.items.map(\.filename) == ["known.txt"], "Files first knows the existing Trash listing")
+  var anchor: NSFileProviderSyncAnchor?
+  listedEnumerator.currentSyncAnchor { anchor = $0 }
+  listedEnumerator.invalidate()
+
+  let freshPage = [
+    dto("known", parent: nil, name: encryptedName("known", "known.txt")),
+    dto("burst-one", parent: nil, name: encryptedName("burst-one", "burst one.txt")),
+    dto("burst-two", parent: nil, name: encryptedName("burst-two", "burst two.txt")),
+    dto("burst-three", parent: nil, name: encryptedName("burst-three", "burst three.txt")),
+  ]
+  ApiClient.shared.listings["trashed:root"] = .success(freshPage)
+  let signalEnumerator = FileProviderEnumerator(
+    containerIdentifier: NSFileProviderItemIdentifier(trashId),
+    cache: CacheManager.shared,
+    refresher: SyncEngineContainerRefresher()
+  )
+  let observers = [ChangeObserver(), ChangeObserver(), ChangeObserver()]
+  for observer in observers {
+    signalEnumerator.enumerateChanges(for: observer, from: anchor!)
+  }
+  let reopened = FileProviderEnumerator(
+    containerIdentifier: NSFileProviderItemIdentifier(trashId),
+    cache: CacheManager.shared,
+    refresher: SyncEngineContainerRefresher()
+  )
+  _ = await enumerateOnce(reopened)
+  let allFinished = await waitUntil {
+    observers.allSatisfy { $0.error != nil || $0.finished != nil }
+  }
+  check(allFinished, "every observer in the three-signal burst settles")
+  check(observers.allSatisfy { isProviderError($0.error, .syncAnchorExpired) },
+        "every burst observer sees that the delivered Trash snapshot changed")
+  check(ApiClient.shared.count("list-trashed root") == 2,
+        "the idle signal starts one pass and the burst queues exactly one later pass")
+  check(ApiClient.shared.maximumConcurrentListings == 1,
+        "signal, reopen, and queued Trash passes never publish against overlapping server snapshots")
+
+  let delivered = await enumerateOnce(FileProviderEnumerator(
+    containerIdentifier: NSFileProviderItemIdentifier(trashId),
+    cache: CacheManager.shared,
+    refresher: NoRefresh()
+  ))
+  check(delivered.items.map(\.filename).sorted() == ["burst one.txt", "burst three.txt", "burst two.txt", "known.txt"],
+        "all three newly trashed rows are delivered after the burst")
+  check(["trash:burst-one", "trash:burst-two", "trash:burst-three"].allSatisfy { CacheManager.shared.item(id: $0) != nil },
+        "all three newly trashed rows were published into the namespaced cache")
+  signalEnumerator.invalidate()
+  reopened.invalidate()
+}
+
+func supersededTrashChangeStillPublishesBeforeReplying() async {
+  reset()
+  CacheManager.shared.rows["trash:known"] = row("trash:known", parent: trashId, name: "known.txt")
+  CacheManager.shared.setSyncState(key: "container.\(trashId).anchor", value: "1")
+  let freshPage = [
+    dto("known", parent: nil, name: encryptedName("known", "known.txt")),
+    dto("new", parent: nil, name: encryptedName("new", "new.txt")),
+  ]
+  ApiClient.shared.listings["trashed:root"] = .success(freshPage)
+  ApiClient.shared.scriptListings("trashed:root", [
+    .init(delayNanoseconds: 200_000_000, result: .success(freshPage)),
+    .init(delayNanoseconds: 10_000_000, result: .failure(URLError(.timedOut))),
+    .init(delayNanoseconds: 10_000_000, result: .success(freshPage)),
+  ])
+
+  let enumerator = FileProviderEnumerator(
+    containerIdentifier: NSFileProviderItemIdentifier(trashId),
+    cache: CacheManager.shared,
+    refresher: SyncEngineContainerRefresher()
+  )
+  var anchor: NSFileProviderSyncAnchor?
+  enumerator.currentSyncAnchor { anchor = $0 }
+  let observer = ChangeObserver()
+  enumerator.enumerateChanges(for: observer, from: anchor!)
+  let changeStarted = await waitUntil { ApiClient.shared.count("list-trashed root") == 1 }
+  check(changeStarted, "the signal-driven Trash listing started from an idle coordinator")
+
+  let periodic = Task { await SyncEngine.refreshContainer(containerId: trashId) }
+  let periodicOutcome = await periodic.value
+  check(periodicOutcome == .serverUnreachable, "the superseding periodic listing exposed its failure")
+  let finished = await waitUntil { observer.error != nil || observer.finished != nil }
+  check(finished && isProviderError(observer.error, .syncAnchorExpired),
+        "the change observer replies only after a successful listing publishes")
+  check(ApiClient.shared.count("list-trashed root") == 3,
+        "a superseded change listing retries after the newer direct listing fails")
+  check(CacheManager.shared.item(id: "trash:new") != nil,
+        "the retried listing publishes the newly trashed row before the observer replies")
+  enumerator.invalidate()
+}
+
+func repeatedSupersessionStopsAfterTheRetryLimit() async {
+  reset()
+  CacheManager.shared.rows["trash:known"] = row("trash:known", parent: trashId, name: "known.txt")
+  CacheManager.shared.setSyncState(key: "container.\(trashId).anchor", value: "1")
+  let freshPage = [
+    dto("known", parent: nil, name: encryptedName("known", "known.txt")),
+    dto("bounded", parent: nil, name: encryptedName("bounded", "bounded.txt")),
+  ]
+  ApiClient.shared.listings["trashed:root"] = .failure(URLError(.timedOut))
+  ApiClient.shared.scriptListings("trashed:root", [
+    .init(delayNanoseconds: 150_000_000, result: .success(freshPage)),
+    .init(delayNanoseconds: 10_000_000, result: .failure(URLError(.timedOut))),
+    .init(delayNanoseconds: 150_000_000, result: .success(freshPage)),
+    .init(delayNanoseconds: 10_000_000, result: .failure(URLError(.timedOut))),
+    .init(delayNanoseconds: 150_000_000, result: .success(freshPage)),
+    .init(delayNanoseconds: 10_000_000, result: .failure(URLError(.timedOut))),
+  ])
+
+  let enumerator = FileProviderEnumerator(
+    containerIdentifier: NSFileProviderItemIdentifier(trashId),
+    cache: CacheManager.shared,
+    refresher: SyncEngineContainerRefresher()
+  )
+  var anchor: NSFileProviderSyncAnchor?
+  enumerator.currentSyncAnchor { anchor = $0 }
+  let observer = ChangeObserver()
+  enumerator.enumerateChanges(for: observer, from: anchor!)
+  let firstStarted = await waitUntil { ApiClient.shared.count("list-trashed root") == 1 }
+  check(firstStarted,
+        "the bounded change refresh starts its first pass")
+
+  let firstSuperseder = Task { await SyncEngine.refreshContainer(containerId: trashId) }
+  let firstOutcome = await firstSuperseder.value
+  check(firstOutcome == .serverUnreachable,
+        "the first superseding pass fails without publishing")
+  let secondStarted = await waitUntil { ApiClient.shared.count("list-trashed root") == 3 }
+  check(secondStarted,
+        "the change refresh starts its second pass")
+
+  let secondSuperseder = Task { await SyncEngine.refreshContainer(containerId: trashId) }
+  let secondOutcome = await secondSuperseder.value
+  check(secondOutcome == .serverUnreachable,
+        "the second superseding pass fails without publishing")
+  let finalStarted = await waitUntil { ApiClient.shared.count("list-trashed root") == 5 }
+  check(finalStarted,
+        "the change refresh starts its final allowed pass")
+
+  let thirdSuperseder = Task { await SyncEngine.refreshContainer(containerId: trashId) }
+  let thirdOutcome = await thirdSuperseder.value
+  check(thirdOutcome == .serverUnreachable,
+        "the third superseding pass fails without publishing")
+  let finished = await waitUntil { observer.error != nil || observer.finished != nil }
+  check(finished && isProviderError(observer.error, .serverUnreachable),
+        "an observer with no published replacement receives a retryable error")
+  check(ApiClient.shared.count("list-trashed root") == 6,
+        "three change passes and their superseders are the complete bounded listing set")
+  check(CacheManager.shared.item(id: "trash:bounded") == nil,
+        "no discarded response is mistaken for a published snapshot")
+  try? await Task.sleep(nanoseconds: 100_000_000)
+  check(ApiClient.shared.count("list-trashed root") == 6,
+        "no listing continues after the retry bound is exhausted")
+  enumerator.invalidate()
+}
+
+func permanentDeleteSignalQueuesANewerTrashRefresh() async {
+  reset()
+  NSFileProviderManager.resetRecords()
+  CacheManager.shared.rows["trash:deleted"] = row("trash:deleted", parent: trashId, name: "delete me.txt")
+  CacheManager.shared.setSyncState(key: "container.\(trashId).anchor", value: "1")
+  let stalePage = [dto("deleted", parent: nil, name: encryptedName("deleted", "delete me.txt"))]
+  ApiClient.shared.scriptListings("trashed:root", [
+    .init(delayNanoseconds: 250_000_000, result: .success(stalePage)),
+    .init(delayNanoseconds: 10_000_000, result: .success([])),
+  ])
+
+  let enumerator = FileProviderEnumerator(
+    containerIdentifier: NSFileProviderItemIdentifier(trashId),
+    cache: CacheManager.shared,
+    refresher: SyncEngineContainerRefresher()
+  )
+  var anchor: NSFileProviderSyncAnchor?
+  enumerator.currentSyncAnchor { anchor = $0 }
+
+  // A prior signal is already listing the server when the permanent-delete signal arrives.
+  let prior = ChangeObserver()
+  enumerator.enumerateChanges(for: prior, from: anchor!)
+  let priorStarted = await waitUntil { ApiClient.shared.count("list-trashed root") == 1 }
+  check(priorStarted, "the pre-delete Trash refresh started")
+
+  let deletion = ChangeObserver()
+  enumerator.enumerateChanges(for: deletion, from: anchor!)
+  let postDeleteStarted = await waitUntil { ApiClient.shared.count("list-trashed root") == 2 }
+  check(postDeleteStarted, "a permanent-delete signal queues a listing that starts after the older one")
+  let deletionFinished = await waitUntil { deletion.error != nil || deletion.finished != nil }
+  check(deletionFinished && isProviderError(deletion.error, .syncAnchorExpired),
+        "the permanent-delete observer reports the removed row")
+  check(CacheManager.shared.item(id: "trash:deleted") == nil,
+        "the post-delete listing prunes the namespaced Trash row")
+  let priorFinished = await waitUntil { prior.error != nil || prior.finished != nil }
+  check(priorFinished, "the older change observer also settles")
+  enumerator.invalidate()
+}
+
+func firstSuccessfulListingSurvivesANewerFailure() async {
+  reset()
+  ApiClient.shared.scriptListings("F", [
+    .init(delayNanoseconds: 150_000_000, result: .success([dto("one", parent: "F", name: "one.txt")])),
+    .init(delayNanoseconds: 10_000_000, result: .failure(URLError(.timedOut))),
+  ])
+  let first = Task { await SyncEngine.refreshContainer(containerId: "F") }
+  let firstStarted = await waitUntil { ApiClient.shared.count("list F") == 1 }
+  check(firstStarted, "the first listing started")
+  let newer = Task { await SyncEngine.refreshContainer(containerId: "F") }
+  let newerOutcome = await newer.value
+  let firstOutcome = await first.value
+  check(newerOutcome == .serverUnreachable && firstOutcome == .success,
+        "the newer failure is reported while the successful fallback remains usable")
+  check(CacheManager.shared.children(parent: "F").map(\.id) == ["one"],
+        "a never-listed folder is not left permanently empty")
+  check(CacheManager.shared.syncState(key: "container.F.anchor") != nil,
+        "the provisional first listing is marked as published")
+}
+
 func workingSetScenariosFinish() {
   check(softFailures == 0, "\(softFailures) working set check(s) failed")
 }
@@ -1298,6 +1892,64 @@ func createRetriesADroppedChunkAndStopsOnARefusal() async {
   check(refused.0 == nil && refused.1 != nil, "a refused chunk (400): the create fails")
   check(ApiClient.shared.count("upload-chunk 0") == 1, "a refused chunk is not sent again, got \(ApiClient.shared.calls)")
   check(ApiClient.shared.count("upload-complete") == 0, "a refused chunk: nothing is completed, got \(ApiClient.shared.calls)")
+
+  for status in [408, 425] {
+    reset()
+    ApiClient.shared.chunkFailures = [ApiError.statusCode(status)]
+    let retriedStatus = await createItemFromFilesApp("Retry-\(status).mov", bytes: 1024)
+    check(retriedStatus.0 != nil && retriedStatus.1 == nil, "HTTP \(status) retries the chunk")
+    check(ApiClient.shared.count("upload-chunk 0") == 2, "HTTP \(status) sends the chunk again")
+  }
+}
+
+func uploadSessionLossRestartsWithoutDeletingTheLiveItem() async {
+  reset()
+  ApiClient.shared.chunkFailures = [ApiError.uploadSessionUnavailable]
+  let restartedChunk = await createItemFromFilesApp("Restart chunk.mov", bytes: 1024)
+  check(restartedChunk.0 != nil && restartedChunk.1 == nil, "a vanished session during a chunk starts a fresh upload")
+  check(ApiClient.shared.count("upload-init") == 2, "the vanished chunk session is initialized again")
+  check(ApiClient.shared.count("upload-chunk 0") == 2 && ApiClient.shared.count("upload-complete") == 1,
+        "the new session uploads from the beginning and completes")
+  let chunkCalls = ApiClient.shared.calls
+  check(ApiClient.shared.count("upload-abandon-for-restart") == 1
+          && chunkCalls.firstIndex(where: { $0.hasPrefix("upload-abandon-for-restart") })!
+            < chunkCalls.lastIndex(where: { $0.hasPrefix("upload-init") })!,
+        "the vanished chunk session is abandoned before re-init")
+  check(ApiClient.shared.serverFileRows.count == 1,
+        "the restarted chunk upload leaves exactly one server row")
+
+  reset()
+  ApiClient.shared.completeFailures = [ApiError.uploadSessionUnavailable]
+  let restartedComplete = await createItemFromFilesApp("Restart complete.mov", bytes: 1024)
+  check(restartedComplete.0 != nil && restartedComplete.1 == nil, "a vanished session during complete starts a fresh upload")
+  check(ApiClient.shared.count("upload-init") == 2 && ApiClient.shared.count("upload-chunk 0") == 2,
+        "completion loss restarts the whole encrypted stream")
+  check(ApiClient.shared.count("upload-complete") == 2, "completion is retried only with the fresh session")
+  let completeCalls = ApiClient.shared.calls
+  check(ApiClient.shared.count("upload-abandon-for-restart") == 1
+          && completeCalls.firstIndex(where: { $0.hasPrefix("upload-abandon-for-restart") })!
+            < completeCalls.lastIndex(where: { $0.hasPrefix("upload-init") })!,
+        "the complete-404 session is abandoned before re-init")
+  check(ApiClient.shared.serverFileRows.count == 1,
+        "a complete-404 restart leaves exactly one live server row")
+
+  reset()
+  ApiClient.shared.initFailures = [ApiError.retryableConflict]
+  let busy = await createItemFromFilesApp("Busy.mov", bytes: 1024)
+  check(busy.0 == nil && isProviderError(busy.1, .serverUnreachable),
+        "a live upload lease is retryable, not a permanent conflict")
+
+  check(isProviderError(FileProviderExtension.mapError(ApiError.uploadSessionUnavailable) as NSError, .serverUnreachable),
+        "an exhausted session restart never tells Files that its live item disappeared")
+}
+
+func idempotentUploadCompletionUsesKnownMetadata() async {
+  reset()
+  ApiClient.shared.completeAsIdempotentRetry = true
+  let created = await createItemFromFilesApp("Retried.raw", bytes: 4096)
+  check(created.1 == nil && created.0 != nil, "an id-only idempotent completion still finishes, got \(describe(created.1))")
+  check((created.0?.documentSize ?? nil)?.intValue == 4096, "known plaintext size fills the abbreviated completion response")
+  check(ApiClient.shared.count("upload-complete") == 1, "completion was sent once")
 }
 
 // ---- Files kept showing items deleted elsewhere: the background refresh was cancelled ----
@@ -1543,6 +2195,20 @@ func transientFailuresAreRetryableNotDeadEnds() async {
   check(isProviderError(FileProviderExtension.mapError(CryptoBridge.CryptoBridgeError.decodeFailed) as NSError, .cannotSynchronize),
         "an error nobody can retry past is still -2005")
 
+  for code in [408, 425, 429, 500, 503] {
+    check(isProviderError(FileProviderExtension.mapError(ApiError.statusCode(code)) as NSError, .serverUnreachable),
+          "HTTP \(code) is retryable")
+  }
+  for code in [400, 403, 409, 413, 422] {
+    let mapped = FileProviderExtension.mapError(ApiError.statusCode(code)) as NSError
+    check(isProviderError(mapped, .cannotSynchronize) && !mapped.localizedDescription.isEmpty,
+          "HTTP \(code) is a described, non-retryable refusal")
+  }
+  check(isProviderError(FileProviderExtension.mapError(ApiError.statusCode(404)) as NSError, .noSuchItem),
+        "HTTP 404 is noSuchItem so Files can rebuild a missing parent")
+  check(isProviderError(FileProviderExtension.mapError(ApiError.quotaExceeded) as NSError, .insufficientQuota),
+        "a typed server quota refusal is insufficientQuota")
+
   for (label, failure) in [("bad URL", URLError(.badURL)), ("refused TLS", URLError(.serverCertificateUntrusted))] {
     check(isProviderError(FileProviderExtension.mapError(failure) as NSError, .cannotSynchronize), "\(label) is not retried forever, -2005")
   }
@@ -1575,9 +2241,15 @@ func trashFolderIsListedAtTheTopAndIsReadOnly() async {
   let (system, systemError) = await lookup(.trashContainer)
   check(system == nil && isFeatureUnsupported(systemError), "the system trash container is still unsupported")
 
-  // Trash is not part of the working set.
+  // The synthetic folder remains in the working set so existing installs can discover it;
+  // only the folder is present, never any trash: content row.
   let ws = await list(NSFileProviderItemIdentifier.workingSet.rawValue)
-  check(ws.items.contains { $0.itemIdentifier.rawValue == trashId }, "the working set carries the Trash folder itself, so an existing install learns of it")
+  check(ws.items.contains { $0.itemIdentifier.rawValue == trashId }
+          && !ws.items.contains { $0.itemIdentifier.rawValue.hasPrefix("trash:") },
+        "the working set includes the Trash folder but no trashed contents")
+  // Let the working-set's independent, rate-limited Trash refresh finish before
+  // resetting this process-wide harness for the explicit Trash listing below.
+  _ = await waitUntil { NSFileProviderManager.signals.contains(trashId) }
 
   // Its listing: trashed items, real names, ids that cannot be mistaken for live ones.
   reset()
@@ -1585,17 +2257,19 @@ func trashFolderIsListedAtTheTopAndIsReadOnly() async {
     dtoUpdated("t1", parent: nil, name: encryptedName("t1", "old.txt"), updated: "2026-10-01T00:00:00Z"),
     dtoUpdated("t2", parent: nil, name: encryptedName("t2", "Old folder"), folder: true, updated: "2026-10-02T00:00:00Z"),
     dtoUpdated("t3", parent: "t2", name: encryptedName("t3", "inside.txt"), updated: "2026-10-02T00:00:00Z"),
+    dtoUpdated("t4", parent: "live-folder", name: encryptedName("t4", "trashed-from-live.txt"), updated: "2026-10-03T00:00:00Z"),
   ])
   let listed = await list(trashId)
   check(listed.error == nil, "Trash lists without error, got \(describe(listed.error))")
-  check(ApiClient.shared.count("list-trashed root") == 1 && ApiClient.shared.count("list root") == 0, "Trash asks the server for the trashed listing only, got \(ApiClient.shared.calls)")
+  check(!ApiClient.shared.calls.isEmpty && ApiClient.shared.calls.allSatisfy { $0 == "list-trashed root" }, "Trash asks the server for the trashed listing only, got \(ApiClient.shared.calls)")
   check(ApiClient.shared.listLimits.compactMap { $0 }.last == 500, "Trash root caps the server listing at 500 rows")
-  check(listed.items.map(\.filename).sorted() == ["Old folder", "old.txt"], "Trash lists what was trashed on its own, got \(listed.items.map(\.filename))")
+  check(listed.items.map(\.filename).sorted() == ["Old folder", "old.txt", "trashed-from-live.txt"],
+        "Trash includes a file trashed from a live folder but hides descendants of trashed folders, got \(listed.items.map(\.filename))")
   for item in listed.items {
     check(item.itemIdentifier.rawValue.hasPrefix("trash:"), "\(item.filename): Trash ids are their own namespace, got \(item.itemIdentifier.rawValue)")
     check(item.parentItemIdentifier.rawValue == trashId, "\(item.filename): its parent is Trash")
     let caps = item.capabilities ?? []
-    let expected: NSFileProviderItemCapabilities = item.contentType == .folder ? [.allowsContentEnumerating, .allowsAddingSubItems] : [.allowsReading]
+    let expected: NSFileProviderItemCapabilities = item.contentType == .folder ? [.allowsContentEnumerating, .allowsAddingSubItems] : [.allowsReading, .allowsWriting]
     check(caps == expected, "\(item.filename): read-only capabilities, got \(caps.rawValue)")
   }
   check(CacheManager.shared.item(id: "t1") == nil && CacheManager.shared.item(id: "t2") == nil, "no live row is created for a trashed item")
@@ -1654,19 +2328,29 @@ func nothingCanBeWrittenInsideTrash() async {
   for id in ["trash:t1", "trash:t2", trashId] {
     let error = await deleteReturning(id)
     check(isProviderError(error, .deletionRejected), "deleting \(id) is refused, got \(describe(error))")
+    let rejected = error?.userInfo[NSFileProviderErrorItemKey] as? NSFileProviderItem
+    check(rejected?.itemIdentifier.rawValue == id,
+          "deletionRejected for \(id) identifies the current item so Files can restore it")
   }
   check(ApiClient.shared.count("delete") == 0, "refused deletes send nothing, got \(ApiClient.shared.calls)")
 
-  let rename = await modifyReturningPending(Template("trash:t1", parent: trashId, filename: "new.txt"), [.filename])
-  check(rename.0 == nil && isProviderError(rename.2, .cannotSynchronize), "renaming in Trash is refused, got \(describe(rename.2))")
-  let moveOut = await modifyReturningPending(Template("trash:t1", parent: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "old.txt"), [.parentItemIdentifier])
-  check(moveOut.0 == nil && moveOut.2 != nil, "moving out of Trash is refused, got \(describe(moveOut.2))")
-  let moveIn = await modifyReturningPending(Template("live", parent: trashId, filename: "live.txt"), [.parentItemIdentifier])
-  check(moveIn.0 == nil && moveIn.2 != nil, "moving into Trash is refused, got \(describe(moveIn.2))")
-  let moveInFolder = await modifyReturningPending(Template("live", parent: "trash:t2", filename: "live.txt"), [.parentItemIdentifier])
-  check(moveInFolder.0 == nil && moveInFolder.2 != nil, "moving into a trashed folder is refused, got \(describe(moveInFolder.2))")
-  let content = await modifyReturningPending(Template("trash:t1", parent: trashId, filename: "old.txt"), [.contents])
-  check(content.0 == nil && content.2 != nil, "changing the contents of a trashed file is refused, got \(describe(content.2))")
+  let rename = await modifyOutcome(Template("trash:t1", parent: trashId, filename: "new.txt"), [.filename])
+  check(rename.0?.filename == "old.txt" && rename.1.isEmpty && rename.3 == nil,
+        "renaming in Trash returns current metadata and settles, got \(describe(rename.3))")
+  let moveOut = await modifyOutcome(Template("trash:t1", parent: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "old.txt"), [.parentItemIdentifier])
+  check(moveOut.0?.parentItemIdentifier.rawValue == trashId && moveOut.1.isEmpty && moveOut.3 == nil,
+        "moving out of Trash restores the current parent and settles, got \(describe(moveOut.3))")
+  let moveIn = await modifyOutcome(Template("live", parent: trashId, filename: "live.txt"), [.parentItemIdentifier])
+  check(moveIn.0?.parentItemIdentifier == .rootContainer && moveIn.1.isEmpty && moveIn.3 == nil,
+        "moving a live item into Trash restores its current parent and settles, got \(describe(moveIn.3))")
+  let moveInFolder = await modifyOutcome(Template("live", parent: "trash:t2", filename: "live.txt"), [.parentItemIdentifier])
+  check(moveInFolder.0?.parentItemIdentifier == .rootContainer && moveInFolder.1.isEmpty && moveInFolder.3 == nil,
+        "moving into a trashed folder restores the current parent and settles, got \(describe(moveInFolder.3))")
+  let content = await modifyOutcome(Template("trash:t1", parent: trashId, filename: "old.txt"), [.contents])
+  check(content.0 == nil && !content.2 && isProviderError(content.3, .cannotSynchronize),
+        "changing Trash content is parked without replacing the user's local bytes, got \(describe(content.3))")
+  check(content.3?.localizedDescription == "Trash is read-only in Files. Copy the edited file elsewhere to keep your changes.",
+        "the parked edit explains how to preserve the local copy")
   check(ApiClient.shared.count("patch") == 0 && ApiClient.shared.count("upload") == 0, "refused writes send nothing, got \(ApiClient.shared.calls)")
 
   for parent in [trashId, "trash:t2"] {
@@ -1702,7 +2386,7 @@ func trashedItemsStayOutOfEverythingElse() async {
   let ws = await list(NSFileProviderItemIdentifier.workingSet.rawValue)
   let wsNames = ws.items.map(\.filename).sorted()
   check(!wsNames.contains("old.txt") && !wsNames.contains("Old folder") && !wsNames.contains("inside.txt") && wsNames.contains("Beebeeb Trash"),
-        "the working set (Recents, search) carries the Trash folder but nothing from inside it, got \(wsNames)")
+        "the working set carries the synthetic Trash folder but none of its contents, got \(wsNames)")
   check(wsNames.contains("2026 return.pdf") && wsNames.contains("keep.txt"), "but still the live tree, got \(wsNames)")
 
   let root = await list(NSFileProviderItemIdentifier.rootContainer.rawValue)
@@ -1731,10 +2415,14 @@ final class FolderTemplate: NSObject, NSFileProviderItem {
   }
 }
 
-func createFolderFromFilesApp(_ name: String, parent: String) async -> (NSFileProviderItem?, NSError?) {
+func createFolderFromFilesApp(
+  _ name: String,
+  parent: String,
+  options: NSFileProviderCreateItemOptions = []
+) async -> (NSFileProviderItem?, NSError?) {
   let ext = FileProviderExtension(domain: BeebeebConstants.fileProviderDomain)
   return await withCheckedContinuation { continuation in
-    _ = ext.createItem(basedOn: FolderTemplate("template-folder", parent: parent, filename: name), fields: [], contents: nil, options: [],
+    _ = ext.createItem(basedOn: FolderTemplate("template-folder", parent: parent, filename: name), fields: [], contents: nil, options: options,
                        request: NSFileProviderRequest()) { item, _, _, error in
       continuation.resume(returning: (item, error as NSError?))
     }
@@ -1773,6 +2461,132 @@ func foldersCanBeCreatedFromFiles() async {
   reset()
   let (_, refused) = await createFolderFromFilesApp("Nope", parent: trashId)
   check(refused != nil && ApiClient.shared.count("create-folder") == 0, "no folder is created in Trash")
+
+  reset()
+  ApiClient.shared.folderEchoOverride = "another-folder"
+  let (wrong, mismatch) = await createFolderFromFilesApp("Wrong echo", parent: NSFileProviderItemIdentifier.rootContainer.rawValue)
+  check(wrong == nil && isProviderError(mismatch, .cannotSynchronize), "a folder response must echo the chosen id")
+  check(mismatch?.localizedDescription == UploadItemIdEcho.message, "the folder echo mismatch carries the honest message")
+}
+
+func folderCreateRetriesAreIdempotent() async {
+  reset()
+  ApiClient.shared.failCreateAfterServerWrite = true
+  ApiClient.shared.createFolderFailure = URLError(.networkConnectionLost)
+  let first = await createFolderFromFilesApp("Receipts", parent: NSFileProviderItemIdentifier.rootContainer.rawValue)
+  check(first.0 == nil && isProviderError(first.1, .serverUnreachable), "the dropped first response is retryable")
+  let second = await createFolderFromFilesApp("Receipts", parent: NSFileProviderItemIdentifier.rootContainer.rawValue)
+  check(second.0?.filename == "Receipts" && second.1 == nil, "the retry returns the folder the server already created")
+  check(ApiClient.shared.count("create-folder") == 1, "a created-but-lost response leaves exactly one server folder, calls \(ApiClient.shared.calls)")
+  check(ApiClient.shared.createdFolderIds.count == 1, "only one folder id was created")
+
+  reset()
+  ApiClient.shared.listings["root"] = .success([
+    dto("existing-folder", parent: nil, name: encryptedName("existing-folder", "Inbox"), folder: true),
+  ])
+  let existing = await createFolderFromFilesApp(
+    "Inbox",
+    parent: NSFileProviderItemIdentifier.rootContainer.rawValue,
+    options: [.mayAlreadyExist]
+  )
+  check(existing.0?.itemIdentifier.rawValue == "existing-folder" && existing.1 == nil,
+        "mayAlreadyExist returns the existing same-name folder")
+  check(ApiClient.shared.count("create-folder") == 0, "mayAlreadyExist does not create a duplicate")
+  check(ApiClient.shared.listExpectedUsers.last! == "user-1",
+        "the authoritative retry listing carries the key owner's account header")
+
+  reset()
+  CacheManager.shared.rows["stale-folder"] = row("stale-folder", name: "Archive", folder: true)
+  ApiClient.shared.listings["root"] = .success([])
+  let replacement = await createFolderFromFilesApp("Archive", parent: NSFileProviderItemIdentifier.rootContainer.rawValue)
+  check(replacement.0?.itemIdentifier.rawValue != "stale-folder" && replacement.1 == nil,
+        "a cached same-name folder absent from the server is not returned")
+  check(ApiClient.shared.count("list root") == 1 && ApiClient.shared.count("create-folder") == 1,
+        "the server listing is authoritative and a new live folder is created")
+
+  reset()
+  ApiClient.shared.createFolderFailure = ApiError.parentUnavailable("missing-parent")
+  let missingParent = await createFolderFromFilesApp("Child", parent: "missing-parent")
+  check(missingParent.0 == nil && isProviderError(missingParent.1, .noSuchItem),
+        "a missing destination parent is reported as the missing parent")
+  let missingIdentifier = missingParent.1?.userInfo[NSFileProviderErrorNonExistentItemIdentifierKey] as? NSFileProviderItemIdentifier
+  check(missingIdentifier?.rawValue == "missing-parent", "the noSuchItem error identifies the parent, got \(String(describing: missingIdentifier))")
+
+  reset()
+  ApiClient.shared.listings["missing-before-create"] = .failure(ApiError.statusCode(404))
+  let missingDuringRetryCheck = await createFolderFromFilesApp("Child", parent: "missing-before-create")
+  let retryCheckIdentifier = missingDuringRetryCheck.1?.userInfo[NSFileProviderErrorNonExistentItemIdentifierKey] as? NSFileProviderItemIdentifier
+  check(missingDuringRetryCheck.0 == nil && isProviderError(missingDuringRetryCheck.1, .noSuchItem),
+        "a parent missing during the retry listing is reported as noSuchItem")
+  check(retryCheckIdentifier?.rawValue == "missing-before-create",
+        "the retry-listing error identifies the missing parent, got \(String(describing: retryCheckIdentifier))")
+  check(ApiClient.shared.count("create-folder") == 0, "no create is attempted below a missing parent")
+}
+
+func deletingAnAlreadyMissingItemSucceeds() async {
+  reset()
+  CacheManager.shared.rows["gone"] = row("gone", name: "gone.txt")
+  ApiClient.shared.deleteFailure = ApiError.statusCode(404)
+  let error = await deleteReturning("gone")
+  check(error == nil, "a server 404 completes deleteItem successfully, got \(describe(error))")
+  check(ApiClient.shared.count("delete gone") == 1, "the delete still reaches the server once")
+  check(CacheManager.shared.item(id: "gone") == nil, "the stale local cache row is removed")
+}
+
+func everyWrittenNameUsesTheCanonicalEnvelope() async {
+  reset()
+  let folder = await createFolderFromFilesApp("Canonical folder", parent: NSFileProviderItemIdentifier.rootContainer.rawValue)
+  check(folder.1 == nil, "the canonical folder create succeeds, got \(describe(folder.1))")
+  let folderId = ApiClient.shared.createdFolderIds.first ?? ""
+  let folderName = ApiClient.shared.createdFolderNames.first
+  check(serverAcceptsNamePayload(folderName), "folder create sends the production canonical name envelope")
+  let folderDto = dto(folderId, parent: nil, name: folderName, folder: true)
+  check(SyncEngine.decryptName(dto: folderDto, masterKeyHandle: fixtureMaster, fallback: nil).name == "Canonical folder",
+        "the extension reads its canonical folder name back")
+
+  reset()
+  let uploaded = await createItemFromFilesApp("Canonical upload.txt", bytes: 32)
+  check(uploaded.1 == nil, "the canonical upload succeeds, got \(describe(uploaded.1))")
+  let uploadId = ApiClient.shared.uploadInitFileIds.first ?? ""
+  let uploadName = ApiClient.shared.uploadInitNames.first
+  check(serverAcceptsNamePayload(uploadName), "upload init sends the production canonical name envelope")
+  let uploadDto = dto(uploadId, parent: nil, name: uploadName)
+  check(SyncEngine.decryptName(dto: uploadDto, masterKeyHandle: fixtureMaster, fallback: nil).name == "Canonical upload.txt",
+        "the extension reads its canonical upload name back")
+
+  reset()
+  CacheManager.shared.rows["rename-id"] = row(
+    "rename-id", name: "before.txt", encrypted: legacyEncryptedName("rename-id", "before.txt")
+  )
+  let renamed = await modify(Template("rename-id", parent: "root", filename: "after.txt"), [.filename])
+  check(renamed.1 == nil, "the canonical rename succeeds, got \(describe(renamed.1))")
+  let renameName = ApiClient.shared.patchedNames.first ?? nil
+  check(serverAcceptsNamePayload(renameName), "rename PATCH sends the production canonical name envelope")
+  let renameDto = dto("rename-id", parent: nil, name: renameName)
+  check(SyncEngine.decryptName(dto: renameDto, masterKeyHandle: fixtureMaster, fallback: nil).name == "after.txt",
+        "the extension reads its canonical renamed name back")
+
+  reset()
+  var duplicate = row("duplicate-id", name: "report.txt", encrypted: encryptedName("duplicate-id", "report.txt"))
+  duplicate.displayName = "report (2).txt"
+  CacheManager.shared.rows["duplicate-id"] = duplicate
+  let source = AppGroupContainer.directory("display-name-upload").appendingPathComponent("content.bin")
+  try! Data(repeating: 0x42, count: 32).write(to: source)
+  let contentUpdate = await modifyOutcome(
+    Template("duplicate-id", parent: NSFileProviderItemIdentifier.rootContainer.rawValue, filename: "report (2).txt"),
+    [.contents],
+    contents: source
+  )
+  check(contentUpdate.3 == nil, "content update of a disambiguated item succeeds, got \(describe(contentUpdate.3))")
+  let contentName = ApiClient.shared.uploadInitNames.first.flatMap {
+    try? CryptoBridge.decryptFilename(masterKeyHandle: fixtureMaster, fileId: "duplicate-id", nameEncrypted: $0)
+  }
+  check(contentName == "report.txt", "an upload sends the real name, never the display-only suffix, got \(contentName ?? "nil")")
+
+  let legacy = legacyEncryptedName("legacy-id", "legacy.txt")
+  let legacyDto = dto("legacy-id", parent: nil, name: legacy)
+  check(SyncEngine.decryptName(dto: legacyDto, masterKeyHandle: fixtureMaster, fallback: nil).name == "legacy.txt",
+        "the extension still reads the legacy base64 name envelope")
 }
 
 
@@ -1875,6 +2689,8 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("no-key-known-names", noKeyStillRefreshesKnownNames),
   ("no-key-mixed", noKeyRefusesAMixedFolder),
   ("undecryptable-label", undecryptableNameGetsUniqueLabelWithoutRename),
+  ("duplicate-display-names", duplicateSiblingNamesGetStableDisplayAliases),
+  ("app-write-aliases", appWritesCannotLeaveStaleOrCollidingAliases),
   ("placeholder-rename", renameOfUndecryptedItemNeverReachesTheServer),
   ("metadata-modify", metadataOnlyModifyKeepsTheItem),
   ("trash", trashIsUnsupportedNotTheRoot),
@@ -1887,8 +2703,17 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("stream-abort", midStreamStopsDeleteThePartialFile),
   ("materialized-set", { await materializedSetFollowsTheSystem(); workingSetScenariosFinish() }),
   ("materialized-refresh", { await staleMaterializedFoldersAreRefreshed(); workingSetScenariosFinish() }),
+  ("trash-refresh", staleTrashIsRefreshedOutsideTheWorkingSet),
+  ("trash-signal-race", newerTrashRefreshWinsAfterTheAppSignal),
+  ("trash-signal-burst", idleTrashBurstDeliversEveryNewRow),
+  ("trash-change-publication", supersededTrashChangeStillPublishesBeforeReplying),
+  ("trash-change-bounded", repeatedSupersessionStopsAfterTheRetryLimit),
+  ("trash-delete-signal-race", permanentDeleteSignalQueuesANewerTrashRefresh),
+  ("first-listing-race", firstSuccessfulListingSurvivesANewerFailure),
   ("create-lowercase-id", createMintsALowercaseFileIdUsedForDerivation),
   ("chunk-retry", createRetriesADroppedChunkAndStopsOnARefusal),
+  ("upload-session-restart", uploadSessionLossRestartsWithoutDeletingTheLiveItem),
+  ("completion-retry-shape", idempotentUploadCompletionUsesKnownMetadata),
   ("create-echo-mismatch", createAbortsOnAnotherItemsEcho),
   ("refresh-survives-invalidate", backgroundRefreshSurvivesInvalidate),
   ("refresh-coalesced", backgroundRefreshesAreCoalescedPerContainer),
@@ -1901,6 +2726,9 @@ let scenarioTable: [(String, () async -> Void)] = [
   ("files-trash-writes", nothingCanBeWrittenInsideTrash),
   ("files-trash-excluded", trashedItemsStayOutOfEverythingElse),
   ("files-create-folder", foldersCanBeCreatedFromFiles),
+  ("files-create-folder-retry", folderCreateRetriesAreIdempotent),
+  ("files-delete-missing", deletingAnAlreadyMissingItemSucceeds),
+  ("files-canonical-names", everyWrittenNameUsesTheCanonicalEnvelope),
   ("files-trash-stable", trashedRowsKeepOneStableParent),
   ("manifest-hidden", backupManifestIsNotEnumerated),
 ]
@@ -2017,6 +2845,14 @@ describe('task 1722 (d): listings never vend placeholder names', () => {
     expectScenario('undecryptable-label', 12);
   }, 300_000);
 
+  nativeSwiftHarnessTest('duplicate server sibling names get stable display-only aliases in normal folders and Trash', () => {
+    expectScenario('duplicate-display-names', 9);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('app rename, move and duplicate writes cannot leave stale or colliding File Provider aliases', () => {
+    expectScenario('app-write-aliases', 11);
+  }, 300_000);
+
   nativeSwiftHarnessTest('renaming an undecrypted item sends 0 server writes; a move keeps its ciphertext name; only unstored fields stay pending', () => {
     expectScenario('placeholder-rename', 16);
   }, 300_000);
@@ -2052,6 +2888,18 @@ describe('task 1722 round 4: folders Files already listed get their changes thro
 
   nativeSwiftHarnessTest('a stale materialized folder is listed again from the working set, gets its real names, once', () => {
     expectScenario('materialized-refresh', 11);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('the rate-limited refresh also prunes an emptied Trash and signals only its enumerator', () => {
+    expectScenario('trash-refresh', 7);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('a signal-triggered Trash refresh cannot be overwritten by an older response', () => {
+    expectScenario('trash-signal-race', 8);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('a newer failed refresh cannot discard the first successful listing of a folder', () => {
+    expectScenario('first-listing-race', 4);
   }, 300_000);
 });
 
@@ -2136,7 +2984,15 @@ describe('SF-0001 round 2: a Files-app create whose init names another item', ()
 
 describe('a Files-app upload survives a dropped chunk request', () => {
   nativeSwiftHarnessTest('a timed-out chunk is sent again without restarting the upload; a refused one fails at once', () => {
-    expectScenario('chunk-retry', 15);
+    expectScenario('chunk-retry', 19);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('an expired upload session restarts from init and a live lease remains retryable', () => {
+    expectScenario('upload-session-restart', 12);
+  }, 300_000);
+
+  nativeSwiftHarnessTest('an idempotent completion retry may return only its id and still uses the known upload metadata', () => {
+    expectScenario('completion-retry-shape', 3);
   }, 300_000);
 
   // Task 260 (P2-3) — runs anywhere: the harness substitutes its own ApiClient, so
@@ -2182,6 +3038,27 @@ describe('the background refresh outlives the enumerator', () => {
   }, 300_000);
 });
 
+describe('an app permanent-delete signal is newer than any Trash refresh already in flight', () => {
+  nativeSwiftHarnessTest('queues one post-delete server listing and prunes the namespaced cache row', () => {
+    expectScenario('trash-delete-signal-race', 5);
+  }, 300_000);
+});
+
+describe('an idle Trash enumerator receives a burst of app signals', () => {
+  nativeSwiftHarnessTest('publishes and delivers every newly trashed row while keeping one queued pass', () => {
+    expectScenario('trash-signal-burst', 10);
+  }, 300_000);
+});
+
+describe('a Trash change observer is not satisfied by a discarded refresh generation', () => {
+  nativeSwiftHarnessTest('retries until its server listing publishes even when a newer direct refresh fails', () => {
+    expectScenario('trash-change-publication', 5);
+  }, 300_000);
+  nativeSwiftHarnessTest('stops after three repeatedly superseded passes and returns a retryable error', () => {
+    expectScenario('trash-change-bounded', 10);
+  }, 300_000);
+});
+
 describe('the root Backups folder is protected in the Files app', () => {
   nativeSwiftHarnessTest('no delete, rename or move capability; those calls are refused; items inside are unaffected', () => {
     expectScenario('backups-protected', 17);
@@ -2196,19 +3073,28 @@ describe('Files app: recover from Authentication Required, no stale error badge,
     expectScenario('files-working-set-auth', 6);
   }, 300_000);
   nativeSwiftHarnessTest('transient network errors are retryable and cancellations are not sync errors', () => {
-    expectScenario('files-retryable', 10);
+    expectScenario('files-retryable', 22);
   }, 300_000);
   nativeSwiftHarnessTest('Trash is a read-only folder at the top that lists trashed items', () => {
-    expectScenario('files-trash-folder', 35);
+    expectScenario('files-trash-folder', 38);
   }, 300_000);
   nativeSwiftHarnessTest('nothing can be created, renamed, moved, changed or deleted inside Trash', () => {
-    expectScenario('files-trash-writes', 15);
+    expectScenario('files-trash-writes', 19);
   }, 300_000);
-  nativeSwiftHarnessTest('trashed items are excluded from normal folders, Recents, search and the working set', () => {
+  nativeSwiftHarnessTest('the working set includes the synthetic Trash folder but excludes every trashed content row', () => {
     expectScenario('files-trash-excluded', 9);
   }, 300_000);
   nativeSwiftHarnessTest('a folder made in Files is created on the server (no permanent noSuchItem error)', () => {
-    expectScenario('files-create-folder', 10);
+    expectScenario('files-create-folder', 12);
+  }, 300_000);
+  nativeSwiftHarnessTest('a created-but-lost response and mayAlreadyExist both return the existing folder without a duplicate', () => {
+    expectScenario('files-create-folder-retry', 14);
+  }, 300_000);
+  nativeSwiftHarnessTest('deleting an item already gone from the server completes successfully and drops its stale cache row', () => {
+    expectScenario('files-delete-missing', 3);
+  }, 300_000);
+  nativeSwiftHarnessTest('folder create, upload init and rename write canonical names while both read formats remain supported', () => {
+    expectScenario('files-canonical-names', 12);
   }, 300_000);
   nativeSwiftHarnessTest('a trashed row keeps one stable parent, with or without parent_id in the server listing', () => {
     expectScenario('files-trash-stable', 7);

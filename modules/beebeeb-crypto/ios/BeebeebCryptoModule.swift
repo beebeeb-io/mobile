@@ -15,6 +15,7 @@ import Vision
 
 private let fileProviderDomainIdentifier = NSFileProviderDomainIdentifier("io.beebeeb.files")
 private let fileProviderDisplayName = "Beebeeb"
+private let fileProviderTrashIdentifier = NSFileProviderItemIdentifier("io.beebeeb.trash")
 private let fileProviderDomainSchemaKey = "io.beebeeb.fileProviderDomainSchema"
 private let fileProviderDomainSchemaVersion = "replicated-v6-cache-bootstrap"
 private let appGroupIdentifier = "group.io.beebeeb.shared"
@@ -1294,6 +1295,14 @@ private func signalBeebeebFileProviderEnumerators() async {
 }
 
 @available(iOS 16.0, *)
+private func signalBeebeebFileProviderTrashEnumerator() async -> Bool {
+  let domain = beebeebFileProviderDomain()
+  let domains = (try? await getFileProviderDomains()) ?? []
+  guard domains.contains(where: { $0.identifier == domain.identifier }) else { return false }
+  return await signalFileProviderEnumerator(domain: domain, itemIdentifier: fileProviderTrashIdentifier) == nil
+}
+
+@available(iOS 16.0, *)
 private func fileProviderDomainStatus(
   domain: NSFileProviderDomain,
   registered: Bool,
@@ -1567,6 +1576,9 @@ private let fileProviderCacheSchemaStatements = [
     parent_id TEXT,
     name_encrypted TEXT,
     name_decrypted TEXT,
+    display_name TEXT,
+    display_name_source_name TEXT,
+    display_name_source_parent TEXT,
     mime_type TEXT,
     size_bytes INTEGER NOT NULL DEFAULT 0,
     is_folder INTEGER NOT NULL DEFAULT 0,
@@ -1669,9 +1681,34 @@ private func ensureFileProviderCacheDatabase() -> Bool {
   PlaintextStorageProtection.protectSQLiteSidecars(url)
 
   for statement in fileProviderCacheSchemaStatements {
-    sqlite3_exec(db, statement, nil, nil, nil)
+    guard sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK else { return false }
+  }
+  guard ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name", definition: "TEXT"),
+        ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name_source_name", definition: "TEXT"),
+        ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name_source_parent", definition: "TEXT") else {
+    return false
   }
   return true
+}
+
+private func ensureFileProviderCacheColumn(
+  _ db: OpaquePointer,
+  table: String,
+  column: String,
+  definition: String
+) -> Bool {
+  func containsColumn() -> Bool {
+    var statement: OpaquePointer?
+    defer { sqlite3_finalize(statement) }
+    guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table))", -1, &statement, nil) == SQLITE_OK else { return false }
+    while sqlite3_step(statement) == SQLITE_ROW {
+      if let value = sqlite3_column_text(statement, 1), String(cString: value) == column { return true }
+    }
+    return false
+  }
+  if containsColumn() { return true }
+  _ = sqlite3_exec(db, "ALTER TABLE \(table) ADD COLUMN \(column) \(definition)", nil, nil, nil)
+  return containsColumn()
 }
 
 private func fileProviderCacheDatabaseExists() -> Bool {
@@ -2364,12 +2401,26 @@ private func resumeFileProviderAuthenticationIfReady(
       break
     }
   }
-  // -1000 is what a missing/locked key reports now; -2005 is what builds
-  // before task 1722 reported for the same failure, and Files never retries
-  // those items on its own. Lift both throttles, independently.
-  for error in [NSFileProviderError(.notAuthenticated), NSFileProviderError(.cannotSynchronize)] {
+  // A key/session failure can recur after every lock, so lift its throttle on
+  // every verified unlock.
+  do {
+    try await manager.signalErrorResolved(NSFileProviderError(.notAuthenticated))
+    RuntimeTrace.event("fileprovider.authentication_retry.resumed")
+  } catch {
+    RuntimeTrace.event("fileprovider.authentication_retry.failed")
+  }
+
+  // v1 recovered folder-response decode failures. v2 also wakes Trash edit
+  // jobs older builds parked as cannotSynchronize; the extension now returns
+  // current metadata so those edits can settle.
+  // Mark success only after the system accepts the request, so a failed call is
+  // attempted again on the next unlock. Reimporting or removing the domain is
+  // unnecessary and could endanger unuploaded local files.
+  let cannotSynchronizeRecoveryKey = "files.cannotSynchronizeRecovery.v2"
+  if defaults?.bool(forKey: cannotSynchronizeRecoveryKey) != true {
     do {
-      try await manager.signalErrorResolved(error)
+      try await manager.signalErrorResolved(NSFileProviderError(.cannotSynchronize))
+      defaults?.set(true, forKey: cannotSynchronizeRecoveryKey)
       RuntimeTrace.event("fileprovider.authentication_retry.resumed")
     } catch {
       RuntimeTrace.event("fileprovider.authentication_retry.failed")
@@ -4037,6 +4088,7 @@ public class BeebeebCryptoModule: Module {
         return 0
       }
       defer { sqlite3_close(db) }
+      sqlite3_busy_timeout(db, 2000)
       // Task 1593 round 7 (C2) — same reasoning as `ensureFileProviderCache
       // Database`: `SQLITE_OPEN_CREATE` above can be creating this file for
       // the first time (this JS call runs independently of that native
@@ -4062,7 +4114,15 @@ public class BeebeebCryptoModule: Module {
       // before the first mount failed on `DELETE FROM sync_state` ("no such
       // table") and the domain add was refused.
       for statement in fileProviderCacheSchemaStatements {
-        sqlite3_exec(db, statement, nil, nil, nil)
+        guard sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK else { return 0 }
+      }
+      // The idempotent schema loop does not add columns to an existing cache. This writer uses
+      // alias provenance in its conflict clause, so migrate before preparing that statement even
+      // when the extension has not launched yet after an app update.
+      guard ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name", definition: "TEXT"),
+            ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name_source_name", definition: "TEXT"),
+            ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name_source_parent", definition: "TEXT") else {
+        return 0
       }
 
       let upsertSql = """
@@ -4074,6 +4134,18 @@ public class BeebeebCryptoModule: Module {
         parent_id = excluded.parent_id,
         name_encrypted = excluded.name_encrypted,
         name_decrypted = COALESCE(excluded.name_decrypted, file_cache.name_decrypted),
+        display_name = CASE
+          WHEN file_cache.parent_id IS NOT excluded.parent_id
+            OR (excluded.name_decrypted IS NOT NULL AND file_cache.name_decrypted IS NOT excluded.name_decrypted)
+          THEN NULL ELSE file_cache.display_name END,
+        display_name_source_name = CASE
+          WHEN file_cache.parent_id IS NOT excluded.parent_id
+            OR (excluded.name_decrypted IS NOT NULL AND file_cache.name_decrypted IS NOT excluded.name_decrypted)
+          THEN NULL ELSE file_cache.display_name_source_name END,
+        display_name_source_parent = CASE
+          WHEN file_cache.parent_id IS NOT excluded.parent_id
+            OR (excluded.name_decrypted IS NOT NULL AND file_cache.name_decrypted IS NOT excluded.name_decrypted)
+          THEN NULL ELSE file_cache.display_name_source_parent END,
         mime_type = excluded.mime_type,
         size_bytes = excluded.size_bytes,
         is_folder = excluded.is_folder,
@@ -4341,6 +4413,13 @@ public class BeebeebCryptoModule: Module {
       if #available(iOS 16.0, *) {
         await signalBeebeebFileProviderEnumerators()
         return true
+      }
+      return false
+    }
+
+    AsyncFunction("signalFileProviderTrashEnumerator") { () async -> Bool in
+      if #available(iOS 16.0, *) {
+        return await signalBeebeebFileProviderTrashEnumerator()
       }
       return false
     }

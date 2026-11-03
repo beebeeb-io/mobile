@@ -13,6 +13,7 @@
  * Imports no app module (fs + child_process only), so it needs no `mock.module` calls.
  */
 import { describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -100,9 +101,65 @@ describe('task 1722 (f): one File Provider cache schema for every writer', () =>
   });
 
   test('the extension CacheManager migrations are the same statements, in the same order', () => {
-    const migrations = bracedBody(CACHE_MANAGER_SWIFT, 'private func runMigrations() {');
+    const migrations = bracedBody(CACHE_MANAGER_SWIFT, 'private func runMigrations() -> Bool {');
     const declaration = migrations.slice(migrations.indexOf('let statements = ['));
     expect(sqlStatements(declaration)).toEqual(sqlStatements(schemaDeclaration()));
+  });
+
+  test('the display-only filename alias is shared and migrated on existing databases', () => {
+    const statements = sqlStatements(schemaDeclaration());
+    const fileCache = statements.find((sql) => sql.startsWith('CREATE TABLE IF NOT EXISTS file_cache (')) ?? '';
+    expect(fileCache).toContain('display_name TEXT');
+    expect(fileCache).toContain('display_name_source_name TEXT');
+    expect(fileCache).toContain('display_name_source_parent TEXT');
+    expect(CACHE_MANAGER_SWIFT).toContain('ensureColumn(table: displayNameColumn.table');
+    expect(CACHE_MANAGER_SWIFT).toContain('ensureColumn(table: displayNameSourceNameColumn.table');
+    expect(CACHE_MANAGER_SWIFT).toContain('ensureColumn(table: displayNameSourceParentColumn.table');
+    expect(MODULE_SWIFT).toContain('ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name"');
+    expect(MODULE_SWIFT).toContain('ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name_source_name"');
+    expect(MODULE_SWIFT).toContain('ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name_source_parent"');
+    const extensionMigration = bracedBody(CACHE_MANAGER_SWIFT, 'private func ensureColumn(table: String, column: String, definition: String) -> Bool {');
+    expect(extensionMigration).toContain('return hasColumn(table: table, column: column)');
+    const appMigration = bracedBody(MODULE_SWIFT, 'private func ensureFileProviderCacheColumn(');
+    expect(appMigration).toContain('-> Bool');
+    expect(appMigration).toContain('return containsColumn()');
+    expect(syncBody).toMatch(/guard ensureFileProviderCacheColumn[\s\S]*?else \{\s*return 0/);
+  });
+
+  test('the app write-through invalidates an alias when either its real name or parent changes', () => {
+    expect(syncBody).toContain('file_cache.parent_id IS NOT excluded.parent_id');
+    expect(syncBody).toContain('file_cache.name_decrypted IS NOT excluded.name_decrypted');
+    expect(syncBody).toMatch(/display_name\s*=\s*CASE[\s\S]*?THEN NULL ELSE file_cache\.display_name END/);
+    expect(syncBody).toMatch(/display_name_source_name\s*=\s*CASE[\s\S]*?THEN NULL ELSE file_cache\.display_name_source_name END/);
+    expect(syncBody).toMatch(/display_name_source_parent\s*=\s*CASE[\s\S]*?THEN NULL ELSE file_cache\.display_name_source_parent END/);
+  });
+
+  test('the production app upsert SQL clears rename/move provenance and preserves unchanged provenance', () => {
+    const schema = sqlStatements(schemaDeclaration()).find((sql) => sql.startsWith('CREATE TABLE IF NOT EXISTS file_cache ('))!;
+    const upsert = syncBody.match(/let upsertSql = """([\s\S]*?)"""/)?.[1];
+    expect(upsert).toBeTruthy();
+    const db = new Database(':memory:');
+    db.run(schema);
+    db.run(`INSERT INTO file_cache
+      (id, parent_id, name_decrypted, display_name, display_name_source_name, display_name_source_parent)
+      VALUES ('x', 'A', 'a.txt', 'a.txt', 'a.txt', 'A')`);
+    const write = db.prepare(upsert!);
+    const values = (parent: string, name: string) => ['x', parent, 'cipher', name, 'text/plain', 1, 0, 'created', 'updated', 2];
+
+    write.run(...values('A', 'a.txt'));
+    expect(db.query(`SELECT display_name, display_name_source_name, display_name_source_parent FROM file_cache WHERE id = 'x'`).get()).toEqual({
+      display_name: 'a.txt', display_name_source_name: 'a.txt', display_name_source_parent: 'A',
+    });
+    write.run(...values('A', 'b.txt'));
+    expect(db.query(`SELECT display_name, display_name_source_name, display_name_source_parent FROM file_cache WHERE id = 'x'`).get()).toEqual({
+      display_name: null, display_name_source_name: null, display_name_source_parent: null,
+    });
+    db.run(`UPDATE file_cache SET display_name = 'b.txt', display_name_source_name = 'b.txt', display_name_source_parent = 'A' WHERE id = 'x'`);
+    write.run(...values('B', 'b.txt'));
+    expect(db.query(`SELECT display_name, display_name_source_name, display_name_source_parent FROM file_cache WHERE id = 'x'`).get()).toEqual({
+      display_name: null, display_name_source_name: null, display_name_source_parent: null,
+    });
+    db.close();
   });
 
   test('the reset creates missing tables inside its transaction, before the first DELETE', () => {
