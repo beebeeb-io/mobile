@@ -12,6 +12,11 @@
  * moves it into core's playability table, splitting `PreviewPlatform::Mobile`
  * into iOS and Android; that table replaces this module.
  *
+ * Open spec-vs-code contradiction until then: core's `media.rs` says MKV plays on
+ * `Mobile`; this gate says it does not on iOS. The recorded resolution is plan task
+ * 1.1 of workspace PR #554 ("core, playability per player": the `Ios` column is the
+ * `Mobile` column minus mkv, webm and wmv, the three listed here).
+ *
  * The refused list is measured, not assumed: AVFoundation on macOS 26.6.2 (the
  * task 2335 research lane, `mimes.out` and `avprobe.out`) refused 3 of the 13
  * `STREAMABLE_VIDEO_EXTENSIONS` — mkv (video/x-matroska), webm (video/webm),

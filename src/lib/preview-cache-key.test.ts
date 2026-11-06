@@ -25,6 +25,15 @@ describe('previewDecryptExtension — the preview cache key', () => {
     expect(previewDecryptExtension('application/pdf', 'contract.pdf')).toBe('pdf');
   });
 
+  test('task 2335: an MKV keeps .mkv (it was .mp4, so the stream served Matroska as video/mp4)', () => {
+    expect(extensionForMime('video/x-matroska', 'video')).toBe('.mkv');
+    expect(extensionForMime('video/matroska', 'video')).toBe('.mkv');
+    expect(previewDecryptExtension('video/x-matroska', 'movie.mkv')).toBe('mkv');
+    // Other videos keep their keys.
+    expect(previewDecryptExtension('video/mp4', 'clip.mp4')).toBe('mp4');
+    expect(previewDecryptExtension('video/quicktime', 'clip.mov')).toBe('mov');
+  });
+
   test('equals the preview formula `extensionForMime(...) || cacheFileName`, dot stripped', () => {
     const cases: Array<[string | undefined, string]> = [
       ['text/markdown', 'notes.md'],
