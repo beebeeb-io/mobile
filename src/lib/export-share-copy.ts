@@ -32,6 +32,8 @@ export interface ExportShareFs {
   cacheDirectory: string | null;
   makeDirectoryAsync: (uri: string, options?: { intermediates?: boolean }) => Promise<void>;
   copyAsync: (options: { from: string; to: string }) => Promise<void>;
+  /** Needed only for `moveSource` (an export-owned decrypt). */
+  moveAsync?: (options: { from: string; to: string }) => Promise<void>;
   deleteAsync: (uri: string, options?: { idempotent?: boolean }) => Promise<void>;
   /** Lists the export root for the stale-copy sweep (absent ⇒ no sweep). */
   readDirectoryAsync?: (uri: string) => Promise<string[]>;
@@ -88,6 +90,12 @@ export interface PrepareExportShareCopyInput {
   displayName: string | null | undefined;
   /** Today's id-based name, used only when no display name is available. */
   idBasedName: string;
+  /**
+   * Task 2335 review — the source belongs to this export alone (decrypted under its own key, not
+   * a preview's copy): move it into the folder instead of copying it, so a 17 GB export is one
+   * plaintext on disk, not two.
+   */
+  moveSource?: boolean;
   random?: () => number;
   fs?: ExportShareFs;
   now?: () => number;
@@ -100,6 +108,7 @@ export async function prepareExportShareCopy({
   random,
   fs = FileSystem,
   now = Date.now,
+  moveSource = false,
 }: PrepareExportShareCopyInput): Promise<ExportShareCopy> {
   const root = exportShareRoot(fs);
   await sweepStaleExportFolders(fs, root, now());
@@ -115,9 +124,11 @@ export async function prepareExportShareCopy({
   try {
     await fs.makeDirectoryAsync(folderUri, { intermediates: true });
     // Task 1593 — plaintext writer, gated by the sign-out purge.
-    await gatedPlaintextWrite('preview export copy', uri, fs, () =>
-      fs.copyAsync({ from: sourceUri, to: uri }),
-    );
+    await gatedPlaintextWrite('preview export copy', uri, fs, () => {
+      if (!moveSource) return fs.copyAsync({ from: sourceUri, to: uri });
+      if (!fs.moveAsync) throw new Error('This file system cannot move the export copy');
+      return fs.moveAsync({ from: sourceUri, to: uri });
+    });
   } catch (error) {
     // Never leave a plaintext folder behind for a failed export.
     await cleanup();

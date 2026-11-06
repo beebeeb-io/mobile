@@ -40,20 +40,29 @@ describe('2335 fix 1 — a container the player cannot open never reaches it', (
   });
 
   test('Save to Files is the existing Save path (share sheet with the real file name)', () => {
-    // The single-file stage's card and the pager page's prop.
-    expect(count(screen, 'onSaveToFiles={handleDownload}')).toBe(2);
+    // The single-file stage's card, and the pager through one stable callback over the same Save.
+    expect(count(screen, 'onSaveToFiles={handleDownload}')).toBe(1);
+    expect(screen).toMatch(/const handleDownloadRef = useRef\(handleDownload\);\n\s+handleDownloadRef\.current = handleDownload;\n[\s\S]{0,400}const saveCurrentPageToFiles = useCallback\(\(\) => \{\n\s+void handleDownloadRef\.current\(\);\n\s+\}, \[\]\);/);
+    expect(screen).toContain('onSaveToFiles={saveCurrentPageToFiles}');
+  });
+
+  test('review: the pager keeps PhotoPage memo intact (no Save handler in renderPhotoPage deps; busy only on the current page)', () => {
+    const start = screen.indexOf('const renderPhotoPage = useCallback(');
+    const deps = screen.slice(screen.indexOf('    [', start), screen.indexOf('    ],', start));
+    expect(deps).not.toContain('handleDownload');
+    expect(deps).toContain('saveCurrentPageToFiles');
+    expect(screen).toContain('saveToFilesBusy={index === currentPhotoIndex && downloading}');
   });
 
   test('Save to Files is disabled while a save runs, on both paths (one export at a time)', () => {
     expect(screen).toMatch(/onPress=\{onSaveToFiles\}\n\s+disabled=\{saving\}/);
     expect(screen).toContain('saving={downloading}');
-    expect(screen).toContain('saveToFilesBusy={downloading}');
     expect(screen).toContain('saving={saveToFilesBusy}');
   });
 
   test('the export decrypts a whole file, never a stream the share sheet cannot take', () => {
-    expect(screen).toContain('fetchAndDecrypt: () => fetchAndDecrypt({ signal, onExportProgress, streamVideo: false })');
-    expect(screen).toMatch(/streamVideo: options\.streamVideo,/);
+    expect(screen).toContain('const uri = await fetchAndDecrypt({ signal, onExportProgress, exportExtension });');
+    expect(screen).toContain('streamVideo: forExport ? false : undefined,');
   });
 });
 

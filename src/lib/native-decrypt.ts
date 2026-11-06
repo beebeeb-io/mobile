@@ -93,6 +93,19 @@ export interface PreviewDecryptOptions {
 
 export type PreviewDecryptSource = 'cache' | 'joined' | 'decrypted';
 
+/**
+ * Task 2335 review — the cache key an EXPORT decrypts under (`export-<8 hex>.<ext>`): its own, so
+ * it never joins a preview or stream job for the same file (that handed the share sheet a loopback
+ * URI it cannot take), never hits a preview copy and always takes the whole-file path (no video
+ * extension matches it). The export moves the file into its export folder and releases the key
+ * with `releasePreviewCopy(fileId, key)` when the share sheet closes, which deletes what is left:
+ * the plaintext never outlives the export.
+ */
+export function exportDecryptExtension(extension: string, random: () => number = Math.random): string {
+  const token = Math.floor(random() * 0xffffffff).toString(16).padStart(8, '0');
+  return `export-${token}.${extension.replace(/^\./, '')}`;
+}
+
 /** `Library/Caches/preview/<fileId>.<ext>` — the preview cache key. */
 export function previewCachePath(fileId: string, extension: string): string {
   return `${PREVIEW_CACHE_DIR}${fileId}.${extension.replace(/^\./, '')}`;
@@ -464,8 +477,19 @@ async function closeActivePreviewStream(entry: ActivePreviewStream, deleteOutput
 
 async function cancelActivePreviewStream(entry: ActivePreviewStream, deleteOutput: boolean): Promise<void> {
   if (entry.closed) return;
-  await entry.native.cancel?.().catch(() => {});
-  await closeActivePreviewStream(entry, deleteOutput);
+  // Task 2335 review — a stream being torn down is never joined. Native cancel drains its
+  // queues first (seconds with 128 MiB chunks), and the close then deletes the output: an open in
+  // that window used to join the dying stream (a dead loopback URI, its file deleted under it).
+  // Marked cancelled now, the next open of this path waits for this teardown
+  // (`ensureFailedActivePreviewStreamEvicted`) and starts fresh. Concurrent cancels share it.
+  if (entry.cleanupPromise) return entry.cleanupPromise;
+  entry.terminal = true;
+  entry.terminalState = 'cancelled';
+  entry.cleanupPromise = (async () => {
+    await entry.native.cancel?.().catch(() => {});
+    await closeActivePreviewStream(entry, deleteOutput);
+  })();
+  return entry.cleanupPromise;
 }
 
 async function cancelActivePreviewStreamForPath(path: string, deleteOutput: boolean): Promise<boolean> {

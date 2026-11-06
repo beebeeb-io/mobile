@@ -14,6 +14,9 @@ const deleteBlocks = new Map<string, Promise<void>>();
 const streamCalls: Array<{ outputPath: string; signal?: AbortSignal; finish: () => void; fail: () => void; cancel: () => Promise<void> }> = [];
 const traces: Array<{ marker: string; payload?: Record<string, unknown> }> = [];
 let cancelCalls = 0;
+const wholeFileCalls: string[] = [];
+/** Task 2335 review: a native cancel for this file id waits on its gate (a slow queue drain). */
+const cancelGates = new Map<string, Promise<void>>();
 
 mock.module('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///cache/',
@@ -34,13 +37,26 @@ mock.module('expo-file-system/legacy', () => ({
   },
   writeAsStringAsync: async () => {},
   readAsStringAsync: async () => '',
+  // Task 2335 review: the export copy is moved into its export folder.
+  moveAsync: async ({ from, to }) => {
+    if (!files.has(from)) throw new Error(`no such file: ${from}`);
+    files.set(to, files.get(from));
+    files.delete(from);
+  },
+  copyAsync: async ({ from, to }) => { files.set(to, files.get(from) ?? 0); },
   EncodingType: { Base64: 'base64', UTF8: 'utf8' },
 }));
 
 mock.module('../../modules/beebeeb-crypto', () => ({
   isNativeAvailable: true,
   decryptLocalFileNative: async () => { throw new Error('not exercised'); },
-  downloadAndDecryptFileNative: async () => { throw new Error('whole-file path must not run'); },
+  // Task 2335 review: only an export copy (its own `.export-` key) may take the whole-file path.
+  downloadAndDecryptFileNative: async (_h, _api, _tok, _fileId, outputPath) => {
+    if (!String(outputPath).includes('.export-')) throw new Error('whole-file path must not run');
+    wholeFileCalls.push(outputPath);
+    files.set(outputPath, 5000);
+    return { outputUri: outputPath, plaintextSize: 5000 };
+  },
   streamVideoNative: async (_h, _api, _tok, fileId, outputPath, _size, _chunks, opts) => {
     if (fileId === 'vfail') throw new Error('Chunk 0 response is missing X-Chunk-Count');
     files.set(outputPath, 100);
@@ -64,6 +80,8 @@ mock.module('../../modules/beebeeb-crypto', () => ({
       },
       cancel: async () => {
         cancelCalls += 1;
+        const gate = cancelGates.get(fileId);
+        if (gate) await gate;
         finishTerminalStatus({ stage: 'cancelled' });
         finishTerminal();
       },
@@ -114,6 +132,7 @@ mock.module('./offline-manager', () => ({
 mock.module('@react-native-community/netinfo', () => ({ default: { fetch: async () => ({ isConnected: true }) } }));
 
 const nd = await import('./native-decrypt');
+const { prepareExportShareCopy } = await import('./export-share-copy');
 const { plaintextGate } = await import('./plaintext-gate');
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -133,10 +152,95 @@ beforeEach(() => {
   traces.length = 0;
   streamCalls.length = 0;
   cancelCalls = 0;
+  cancelGates.clear();
+  wholeFileCalls.length = 0;
   plaintextGate.open();
 });
 
 describe('1724 streaming preview lifetime', () => {
+  for (const outcome of ['saved', 'cancelled'] as const) {
+    test(`task 2335 review: once the share sheet closes (${outcome}) no plaintext of the export is left, leased or on disk`, async () => {
+      // handleDownload's shape: decrypt the export's own copy, move it into the export folder,
+      // share, and release in `finally` whatever the sheet's outcome.
+      const exportExtension = nd.exportDecryptExtension('mkv', () => 0.5);
+      let copy: string | null = null;
+      let cleanup: (() => Promise<void>) | null = null;
+      try {
+        copy = await nd.decryptToTempFile('vexported', null, exportExtension, 5000, 4, 7, { streamVideo: false });
+        const prepared = await prepareExportShareCopy({ sourceUri: copy, displayName: 'Holiday.mkv', idBasedName: 'vexported.mkv', moveSource: true });
+        cleanup = prepared.cleanup;
+        expect(files.has(copy)).toBe(false); // moved, not copied: one plaintext
+        expect(files.has(prepared.uri)).toBe(true);
+        await Promise.resolve(outcome); // Sharing.shareAsync resolves whether the user saved or cancelled
+      } finally {
+        await cleanup?.();
+        await nd.releasePreviewCopy('vexported', exportExtension);
+      }
+      expect(nd.isPreviewPathLeased(copy!)).toBe(false);
+      expect([...files.keys()].filter((key) => key.includes('vexported') || key.includes('beebeeb-export/'))).toEqual([]);
+    });
+  }
+
+  test('task 2335 review: an export during a live stream decrypts its own whole file, and its release leaves no plaintext', async () => {
+    const streamUri = await nd.decryptToTempFile('vsave', null, 'mp4', 5000, 4, 7);
+    expect(streamUri).toBe('http://127.0.0.1:41234/s/vsave/v.mp4');
+    const exportExtension = nd.exportDecryptExtension('mp4', () => 0.25);
+    expect(exportExtension).toBe('export-3fffffff.mp4');
+    try {
+      const exportCopy = await nd.decryptToTempFile('vsave', null, exportExtension, 5000, 4, 7, { streamVideo: false });
+      // Never the stream's loopback URI (the share sheet cannot take it), never a second stream.
+      expect(exportCopy).toBe('file:///cache/preview/vsave.export-3fffffff.mp4');
+      expect(streamCalls.length).toBe(1);
+      expect(wholeFileCalls).toEqual([exportCopy]);
+      expect(traces.some((trace) => trace.marker === 'preview.decrypt.stream.join_active')).toBe(false);
+      expect(nd.isPreviewPathLeased(exportCopy)).toBe(true);
+
+      // The share sheet closed (saved or cancelled): no leased plaintext and no file is left.
+      expect(await nd.releasePreviewCopy('vsave', exportExtension)).toBe(true);
+      expect(nd.isPreviewPathLeased(exportCopy)).toBe(false);
+      expect(files.has(exportCopy)).toBe(false);
+      // The stream itself is untouched.
+      expect(cancelCalls).toBe(0);
+    } finally {
+      await plaintextGate.purge(() => nd.clearPreviewCache());
+    }
+  });
+
+  test('task 2335 review: an open while the last release is still cancelling waits, then starts fresh (never joins the dying stream)', async () => {
+    // A player error releases the stream fire-and-forget; native cancel drains its queues first
+    // (seconds with 128 MiB chunks). A Try again in that window used to join the dying stream,
+    // whose close then deleted the output under the new player.
+    const outputPath = 'file:///cache/preview/vrace.mp4';
+    await nd.decryptToTempFile('vrace', null, 'mp4', 5000, 4, 7);
+    let finishCancel!: () => void;
+    cancelGates.set('vrace', new Promise<void>((resolve) => { finishCancel = resolve; }));
+    const releasing = nd.releasePreviewCopy('vrace', 'mp4');
+    let retry: Promise<string> | null = null;
+    try {
+      await tick();
+      expect(cancelCalls).toBe(1);
+
+      let retryUri: string | null = null;
+      retry = nd.decryptToTempFile('vrace', null, 'mp4', 5000, 4, 7).then((uri) => { retryUri = uri; return uri; });
+      for (let i = 0; i < 5; i += 1) await tick();
+      expect(retryUri).toBe(null); // it waits for the teardown instead of joining
+      expect(traces.some((trace) => trace.marker === 'preview.decrypt.stream.join_active')).toBe(false);
+
+      finishCancel();
+      expect(await releasing).toBe(true);
+      await retry;
+      expect(streamCalls.length).toBe(2); // a fresh native stream
+      expect(retryUri).toBe('http://127.0.0.1:41234/s/vrace/v.mp4');
+      expect(files.has(outputPath)).toBe(true); // the old close did not delete the new stream's output
+    } finally {
+      // Leave no stream or lease behind for the next test, pass or fail.
+      finishCancel();
+      await releasing.catch(() => {});
+      await retry?.catch(() => {});
+      await plaintextGate.purge(() => nd.clearPreviewCache());
+    }
+  });
+
   test('a playable stream keeps a plaintext gate lease until the native pump is terminal', async () => {
     const uri = await nd.decryptToTempFile('vlease', null, 'mp4', 5000, 4, 7);
     expect(uri).toBe('http://127.0.0.1:41234/s/vlease/v.mp4');

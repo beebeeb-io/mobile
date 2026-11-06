@@ -14,6 +14,7 @@ mock.module('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///cache/',
   makeDirectoryAsync: async (...args: unknown[]) => { calls.push({ op: 'mkdir', args }); },
   copyAsync: async (...args: unknown[]) => { calls.push({ op: 'copy', args }); },
+  moveAsync: async (...args: unknown[]) => { calls.push({ op: 'move', args }); },
   deleteAsync: async (...args: unknown[]) => { calls.push({ op: 'delete', args }); },
 }));
 mock.module('./plaintext-gate', () => ({
@@ -40,6 +41,20 @@ beforeEach(() => {
 });
 
 describe('prepareExportShareCopy', () => {
+  test('task 2335 review: an export-owned decrypt is MOVED into the folder, never copied (one plaintext, not two)', async () => {
+    const copy = await prepareExportShareCopy({
+      sourceUri: 'file:///cache/preview/640d4f1e.export-0a1b2c3d.mkv',
+      displayName: 'Holiday.mkv',
+      idBasedName: '640d4f1e.mkv',
+      random: () => 0.4,
+      moveSource: true,
+    });
+    expect(calls.map((c) => c.op)).toEqual(['mkdir', 'move']);
+    expect(calls[1].args[0]).toEqual({ from: 'file:///cache/preview/640d4f1e.export-0a1b2c3d.mkv', to: copy.uri });
+    expect(gateLabels).toHaveLength(1);
+    expect(gateLabels[0].endsWith(`@${copy.uri}`)).toBe(true);
+  });
+
   test('hands the sheet <dir>/<random>/IMG_0042.DNG for a file named IMG_0042.DNG (not the id)', async () => {
     const copy = await prepareExportShareCopy({
       sourceUri: 'file:///cache/preview/640d4f1e.dng',

@@ -69,7 +69,7 @@ import {
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } from '../lib/text-file-save';
-import { decryptToTempFile, invalidatePreviewCache, materializeVideoPreviewForExport, previewCachePath, releasePreviewCopy, retainPreviewCopy } from '../lib/native-decrypt';
+import { decryptToTempFile, exportDecryptExtension, invalidatePreviewCache, materializeVideoPreviewForExport, previewCachePath, releasePreviewCopy, retainPreviewCopy } from '../lib/native-decrypt';
 import { isLoopbackStreamUri, startupBufferingText, streamBufferPctFromEvent } from '../lib/video-stream';
 import {
   inAppVideoPlayability,
@@ -243,7 +243,16 @@ type PreviewOptionAction = {
   run: () => void;
 };
 
-type ExportUriResult = { uri: string; reusedPreview: boolean; release?: () => Promise<void> | void };
+type ExportUriResult = {
+  uri: string;
+  reusedPreview: boolean;
+  release?: () => Promise<void> | void;
+  /** Task 2335 review — the file belongs to this export alone: move it, never copy it. */
+  exportOwned?: boolean;
+};
+
+/** Task 2335 review — a whole-file decrypt that belongs to one export, and the release that deletes it. */
+type ExportDecryptCopy = { uri: string; release: () => Promise<void> };
 
 type StreamExportMaterializer = (fileId: string, extension: string) => Promise<string>;
 
@@ -264,7 +273,7 @@ export interface PreviewExportUriResolverInput {
   videoExtension: string;
   isPdf: boolean;
   pdfUri: string | null;
-  fetchAndDecrypt: () => Promise<string>;
+  decryptExportCopy: () => Promise<ExportDecryptCopy>;
   materializeStreamVideoForExport: StreamExportMaterializer;
   signal?: AbortSignal;
 }
@@ -286,7 +295,7 @@ export async function resolvePreviewExportUri({
   videoExtension,
   isPdf,
   pdfUri,
-  fetchAndDecrypt,
+  decryptExportCopy,
   materializeStreamVideoForExport,
   signal,
 }: PreviewExportUriResolverInput): Promise<ExportUriResult> {
@@ -312,7 +321,12 @@ export async function resolvePreviewExportUri({
     }
   }
   if (isPdf && pdfUri) return { uri: pdfUri, reusedPreview: true };
-  return { uri: await fetchAndDecrypt(), reusedPreview: false };
+  // Task 2335 review — no reusable preview (an unplayable video never loads one; Save can come
+  // while a stream still buffers): a copy of this export's own, moved into the export folder and
+  // deleted by `release` when the share sheet closes. It used to be the preview cache's copy,
+  // leased for the rest of the session (a 17.48 GB plaintext pinned past every prune).
+  const copy = await decryptExportCopy();
+  return { uri: copy.uri, reusedPreview: false, release: copy.release, exportOwned: true };
 }
 
 
@@ -3668,7 +3682,11 @@ export default function PreviewScreen() {
     signal?: AbortSignal;
     onStreamProgress?: (pct: number) => void;
     onExportProgress?: (event: PreviewLoadProgressEvent) => void;
-    streamVideo?: boolean;
+    /**
+     * Task 2335 review — decrypt a whole-file copy for one export under this key
+     * (`exportDecryptExtension`), not the preview's: no stream, no join, no preview side effects.
+     */
+    exportExtension?: string;
   } = {}): Promise<string> => {
     throwIfPreviewAborted(options.signal);
     // Task 1539 (finding 1, P0): every single-file decrypt path funnels
@@ -3725,9 +3743,10 @@ export default function PreviewScreen() {
 
     if (isUnlocked) {
       // Task 1593 — the shared preview cache key ("Prove it" uses the same).
-      const decryptExt = previewDecryptExtension(currentMimeType, currentFileName);
+      const decryptExt = options.exportExtension ?? previewDecryptExtension(currentMimeType, currentFileName);
+      const forExport = options.exportExtension != null;
       let decryptedUri: string;
-      const previewJob = category === 'image' && !requestFileFields && !sharedFileKeyIsLoaded(currentFileId)
+      const previewJob = !forExport && category === 'image' && !requestFileFields && !sharedFileKeyIsLoaded(currentFileId)
         ? prepareGenerateFromOpenedOriginal({
             id: currentFileId,
             mime_type: currentMimeType,
@@ -3751,7 +3770,8 @@ export default function PreviewScreen() {
             handleId,
             {
               useProvidedFileKey: !!requestFileFields && currentFileId === fileId,
-              streamVideo: options.streamVideo,
+              // An export needs a file the share sheet can take, never a loopback stream.
+              streamVideo: forExport ? false : undefined,
               onProgress: (event) => {
                 if (options.onExportProgress) options.onExportProgress(event);
                 else applyNativeProgress(event, setLoadProgress);
@@ -3777,7 +3797,7 @@ export default function PreviewScreen() {
         });
         throw error;
       }
-      holdOpenedOriginalForPreview(currentFileId, decryptExt, decryptedUri, previewJob);
+      if (!forExport) holdOpenedOriginalForPreview(currentFileId, decryptExt, decryptedUri, previewJob);
       throwIfPreviewAborted(options.signal);
       setDownloadProgress(1);
       setLoadProgress(emptyPreviewProgress(null));
@@ -3792,7 +3812,9 @@ export default function PreviewScreen() {
       // open). Gated entirely inside the helper; we only feed it owner context.
       // hasThumbnail describes the *opened* file only — for swiped photos
       // (currentFileId !== fileId) we pass undefined so the helper skips.
-      maybeSelfRepairThumbnailFromLocalFile({
+      // Task 2335 review: not from an export copy, which moves away and is deleted when the
+      // share sheet closes.
+      if (!forExport) maybeSelfRepairThumbnailFromLocalFile({
         fileId: currentFileId,
         localPlaintextUri: decryptedUri,
         mimeType:
@@ -3889,12 +3911,22 @@ export default function PreviewScreen() {
       videoExtension: previewDecryptExtension(currentMimeType, currentFileName),
       isPdf,
       pdfUri,
-      // Task 2335 — the share sheet takes a file, never a loopback stream: an export that starts
-      // the decrypt itself (an unplayable video never loads one) decrypts the whole file. A
-      // stream already running for this file is still joined (native-decrypt `join_active`
-      // returns its loopback URI): the single-file stage materializes that above; the pager's
-      // Save does not yet (pre-existing, a follow-up in the PR).
-      fetchAndDecrypt: () => fetchAndDecrypt({ signal, onExportProgress, streamVideo: false }),
+      // Task 2335 review — the export's own whole-file copy, under its own key: never a preview's
+      // copy (kept leased for the session) and never joined to a running stream (a loopback URI
+      // the share sheet cannot take). Deleted when the sheet closes, or here on any failure.
+      decryptExportCopy: async () => {
+        const exportExtension = exportDecryptExtension(previewDecryptExtension(currentMimeType, currentFileName));
+        const release = () => releasePreviewCopy(currentFileId, exportExtension).then(() => {});
+        try {
+          const uri = await fetchAndDecrypt({ signal, onExportProgress, exportExtension });
+          return { uri, release };
+        } catch (error) {
+          // A cancel right after the decrypt finished leaves the copy leased: give it back. The
+          // key is this export's alone, so a release after decryptToTempFile's own is harmless.
+          await release().catch(() => {});
+          throw error;
+        }
+      },
       materializeStreamVideoForExport: materializeVideoPreviewForExport,
       signal,
     });
@@ -3907,6 +3939,7 @@ export default function PreviewScreen() {
         sourceUri: resolved.uri,
         displayName: exportName ?? null,
         idBasedName,
+        moveSource: resolved.exportOwned === true,
       });
       return {
         uri: prepared.uri,
@@ -4773,6 +4806,15 @@ export default function PreviewScreen() {
     }
   }, [category, currentFileId, currentMimeType, getExportUri, previewFileName, resolveExportDisplayName]);
 
+  // Task 2335 review — the pager's Save to Files: one stable callback over the current Save.
+  // handleDownload changes with every export dependency (videoUri, fetchAndDecrypt, …); passed to
+  // the pages directly, each change defeated PhotoPage's memo on every mounted page.
+  const handleDownloadRef = useRef(handleDownload);
+  handleDownloadRef.current = handleDownload;
+  const saveCurrentPageToFiles = useCallback(() => {
+    void handleDownloadRef.current();
+  }, []);
+
   const handleViewOriginal = useCallback(async () => {
     if (!isImage) return;
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -5170,12 +5212,12 @@ export default function PreviewScreen() {
         onDisplayedKind={handlePhotoPageDisplayedKind}
         videoControlsBottomInset={previewVideoControlsBottomInset}
         stageInsets={pagerStageInsets}
-        onSaveToFiles={handleDownload}
-        saveToFilesBusy={downloading}
+        onSaveToFiles={saveCurrentPageToFiles}
+        saveToFilesBusy={index === currentPhotoIndex && downloading}
       />
     ),
     [
-      handleDownload,
+      saveCurrentPageToFiles,
       downloading,
       pagerStageInsets,
       activePhotoPageIndexes,
