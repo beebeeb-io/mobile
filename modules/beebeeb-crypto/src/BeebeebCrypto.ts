@@ -1242,6 +1242,24 @@ export interface DownloadAndDecryptFileNativeResult {
   chunksDecrypted: number
 }
 
+/**
+ * What makes a polled progress snapshot new for the UI: every field the progress row renders.
+ * Task 2335 — the old key (`stage` + `chunksCompleted ?? bytesDownloaded`) dropped a stream's
+ * startup events that change only `bytesTotal` or `buffering` ("Buffering 0 B of N" never
+ * showed, and the "of N" went stale when the tail's length arrived).
+ */
+function previewProgressKey(ev: PreviewLoadProgressEvent): string {
+  return [
+    ev.stage,
+    ev.chunksCompleted ?? '',
+    ev.chunksTotal ?? '',
+    ev.bytesDownloaded ?? '',
+    ev.bytesTotal ?? '',
+    ev.streaming === true ? 'streaming' : '',
+    ev.buffering === true ? 'buffering' : '',
+  ].join(':')
+}
+
 export interface PreviewLoadProgressEvent {
   requestId: string
   fileId: string
@@ -1324,7 +1342,7 @@ export async function downloadAndDecryptFileNative(
     poll = setInterval(() => {
       const ev = BeebeebCryptoModule.getPreviewLoadProgress(requestId)
       if (ev && ev.requestId === requestId) {
-        const k = ev.stage + ':' + (ev.chunksCompleted ?? ev.bytesDownloaded ?? '')
+        const k = previewProgressKey(ev as PreviewLoadProgressEvent)
         if (k !== lastKey) {
           lastKey = k
           options.onProgress?.(ev as PreviewLoadProgressEvent)
@@ -1513,7 +1531,7 @@ export async function streamVideoNative(
     finishTerminal(undefined, { stage: 'cancelled', event: lastTerminalEvent })
   }
   const forward = (ev: PreviewLoadProgressEvent) => {
-    const k = ev.stage + ':' + (ev.chunksCompleted ?? ev.bytesDownloaded ?? '')
+    const k = previewProgressKey(ev)
     if (k !== lastKey) {
       lastKey = k
       options.onProgress?.(ev)
