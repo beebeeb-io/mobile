@@ -51,6 +51,10 @@ const ledger = {
   rawDecrypts: new Map<string, number>(), // decryptToTempFile calls (a real decrypt of the RAW source)
   largeRequests: new Map<string, number>(), // large-preview upgrade requests (getCachedThumbnail(id, 'large'))
   videoViews: new Map<string, any>(), // latest props of each rendered VideoView, keyed by source uri
+  // Task 2335: statusChange listeners of each live fake player, keyed by source uri, and the
+  // video loads (cache reads of a decrypted original) per file.
+  statusListeners: new Map<string, (payload: any) => void>(),
+  videoLoads: new Map<string, number>(),
 };
 const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
 const sum = (m: Map<string, number>) => [...m.values()].reduce((a, b) => a + b, 0);
@@ -111,7 +115,15 @@ defineMock('expo-video', () => ({
     const key = JSON.stringify(source ?? null);
     const player = React.useMemo(() => {
       ledger.playersCreated += 1; // `new NativeVideoModule.VideoPlayer(...)` — happens for a null source too
-      const p = { source, loop: true };
+      const p = {
+        source,
+        loop: true,
+        status: 'idle',
+        addListener: (event: string, listener: (payload: any) => void) => {
+          if (event === 'statusChange') ledger.statusListeners.set(String(source), listener);
+          return { remove: () => { ledger.statusListeners.delete(String(source)); } };
+        },
+      };
       setup?.(p);
       return p;
     }, [key]);
@@ -140,7 +152,10 @@ const cryptoValue = {
 defineMock('../lib/crypto-context', () => ({ useCrypto: () => cryptoValue }));
 defineMock('../lib/photo-cache', () => ({
   // Video path: a cache hit returns the on-disk decrypted original immediately.
-  getCachedPhotoWithExtension: async (id: string) => (id.includes('stream') ? null : `file:///cache/${id}.mp4`),
+  getCachedPhotoWithExtension: async (id: string) => {
+    bump(ledger.videoLoads, id);
+    return id.includes('stream') ? null : `file:///cache/${id}.mp4`;
+  },
   getCachedPhoto: async (id: string) => `file:///cache/${id}.jpg`,
   cachePhoto: async (_id: string, uri: string) => uri,
   cachePhotoWithExtension: async (_id: string, uri: string) => uri,
@@ -166,6 +181,8 @@ defineMock('../lib/device-performance', () => ({
   resolvePreviewProfile: () => 'smooth',
 }));
 defineMock('../lib/runtime-trace', () => ({ recordRuntimeTrace: () => null }));
+// Task 2335 — the harness models iOS (react-native's Platform.OS stub), so the device noun is iPhone.
+defineMock('../lib/device-copy', () => ({ deviceNoun: () => 'iPhone' }));
 defineMock('@react-native-community/netinfo', () => ({ default: { fetch: async () => ({ isConnected: true }) } }));
 // ZoomableImage just renders its children so the full-res <Image> mounts.
 defineMock('../lib/preview-cache-key', () => ({ extensionForMime: (m?: string) => (m && m.startsWith('video/') ? 'mp4' : 'jpg'), previewCacheName: (id: string) => id, previewDecryptExtension: () => 'jpg', previewDisplayName: (n: string) => n }));
@@ -204,7 +221,7 @@ defineMock('../components/preview/ZoomableImage', () => ({ ZoomableImage: (p: an
 
 // ── generated stubs for EVERY import in PreviewScreen.tsx, then overrides ───
 // `PhotoPageVideo`, `../theme`, `../lib/preview-temp-file` and `../lib/photo-viewer-window` are deliberately real (pure).
-const realModules = new Set(['react', '../components/preview/PhotoPageVideo', '../theme', '../lib/preview-temp-file', '../lib/photo-viewer-window']);
+const realModules = new Set(['react', '../components/preview/PhotoPageVideo', '../theme', '../lib/preview-temp-file', '../lib/photo-viewer-window', '../lib/video-playability']);
 const source = readFileSync(SCREEN, 'utf8');
 const importRe = /^import\s+(?!type\b)([\s\S]*?)\s+from\s+'([^']+)';?$/gm;
 const wanted = new Map<string, { named: Set<string>; hasDefault: boolean }>();
@@ -239,11 +256,17 @@ const { PhotoPage } = await import('./PreviewScreen');
 
 // ── harness ─────────────────────────────────────────────────────────────────
 const noopFn = () => {};
-type PageKind = 'video' | 'streamVideo' | 'image' | 'raw';
+type PageKind = 'video' | 'streamVideo' | 'image' | 'raw' | 'mkv';
 
 function entryFor(i: number, kind: PageKind) {
   const isVideo = kind === 'video' || kind === 'streamVideo';
   const id = kind === 'streamVideo' ? `file-stream-${i}` : `file-${i}`;
+  if (kind === 'mkv') {
+    return {
+      id, name_encrypted: `n${i}`, display_name: `movie-${i}.mkv`, mime_type: 'video/x-matroska',
+      size_bytes: 1000, chunk_count: 1, thumbnail_uri: null, local_asset_id: null,
+    };
+  }
   return {
     id,
     name_encrypted: `n${i}`,
@@ -255,7 +278,7 @@ function entryFor(i: number, kind: PageKind) {
     local_asset_id: null,
   };
 }
-function Pager({ total, current, kinds }: { total: number; current: number; kinds: PageKind[] }) {
+function Pager({ total, current, kinds, onSaveToFiles }: { total: number; current: number; kinds: PageKind[]; onSaveToFiles?: () => void }) {
   // Every page stays mounted (worst case for the pager's window). Which pages may load their full
   // resource is decided EXACTLY as PreviewScreen does: activePhotoPageIndices(current, total,
   // PHOTO_PAGE_LOAD_RADIUS) (a source test below pins that call site).
@@ -275,6 +298,7 @@ function Pager({ total, current, kinds }: { total: number; current: number; kind
         locked: false,
         unlocking: false,
         onRequestUnlock: noopFn,
+        onSaveToFiles,
       }),
     ),
   );
@@ -287,7 +311,12 @@ beforeEach(() => {
   ledger.playersCreated = 0; ledger.playersReleased = 0; ledger.liveImages.clear(); ledger.imageMounts = 0; ledger.rawTempCreated.clear(); ledger.rawTempDeleted.clear();
   ledger.imageLoads.clear(); ledger.rawDecrypts.clear(); ledger.largeRequests.clear(); ledger.videoViews.clear();
   ledger.previewReleases.length = 0;
+  ledger.statusListeners.clear(); ledger.videoLoads.clear();
 });
+
+const textOf = (node: any): string =>
+  (Array.isArray(node.children) ? node.children : []).map((c: any) => (typeof c === 'string' ? c : textOf(c))).join('');
+const byTestId = (r: TestRenderer.ReactTestRenderer, id: string) => r.root.findAll((n) => n.props?.testID === id && typeof n.type === 'string');
 afterEach(() => { mock.restore?.(); });
 
 describe('PhotoPage native-resource bound (real component)', () => {
@@ -548,6 +577,53 @@ describe('PhotoPage native-resource bound (real component)', () => {
       expect(ledger.playersReleased).toBe(1);
       expect(livePlayers()).toBe(1);
       await act(async () => { r.unmount(); });
+    });
+  });
+
+  describe('task 2335 — a video the iPhone cannot play, and a player that fails', () => {
+    test('an MKV page (iOS) is never loaded and owns 0 players; it names the format and offers Save to Files', async () => {
+      let saves = 0;
+      let r: TestRenderer.ReactTestRenderer;
+      await act(async () => {
+        r = TestRenderer.create(React.createElement(Pager, { total: 3, current: 1, kinds: ['video', 'mkv', 'video'], onSaveToFiles: () => { saves += 1; } }));
+      });
+      await settle();
+      expect(ledger.playersCreated).toBe(0);
+      expect(ledger.videoLoads.get('file-1') ?? 0).toBe(0);
+      const cards = byTestId(r!, 'preview-video-unsupported');
+      expect(cards.length).toBe(1);
+      const text = textOf(cards[0]);
+      expect(text).toContain('movie-1.mkv');
+      expect(text).toContain("This format can't play on iPhone.");
+      expect(text).toContain('Save it to Files to open it in an app that plays MKV.');
+      const save = byTestId(r!, 'preview-video-save-to-files');
+      expect(save.length).toBe(1);
+      await act(async () => { save[0].props.onPress(); });
+      expect(saves).toBe(1);
+      await act(async () => { r!.unmount(); });
+    });
+
+    test('a player error on a streamed page shows "Couldn\u2019t play video" with Try again, and releases the stream', async () => {
+      let r: TestRenderer.ReactTestRenderer;
+      await act(async () => { r = TestRenderer.create(React.createElement(Pager, { total: 1, current: 0, kinds: ['streamVideo'] })); });
+      await settle();
+      expect(livePlayers()).toBe(1);
+      const streamUri = 'http://127.0.0.1:49640/stream/file-stream-0';
+      const listener = ledger.statusListeners.get(streamUri);
+      expect(typeof listener).toBe('function');
+      await act(async () => { listener!({ status: 'error', error: { message: 'Failed to load the player item: Cannot Open' } }); });
+      await settle();
+      expect(livePlayers()).toBe(0); // the failed player is gone
+      expect(ledger.previewReleases.some((x) => x.id === 'file-stream-0')).toBe(true); // the pump is stopped
+      const page = r!.root.findAll((n) => n.type === 'Text').map(textOf).join('|');
+      expect(page).toContain("Couldn't play video");
+      expect(page).toContain("The video player couldn't open this file (Cannot Open).");
+      const retry = byTestId(r!, 'preview-page-video-retry');
+      expect(retry.length).toBe(1);
+      await act(async () => { retry[0].props.onPress(); });
+      await settle();
+      expect(livePlayers()).toBe(1); // Try again loads the page again
+      await act(async () => { r!.unmount(); });
     });
   });
 

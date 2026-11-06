@@ -203,9 +203,16 @@ defineMock('../components/preview/InfoSheet', () => ({
   },
 }));
 
+// Task 2335 — the screen subscribes to its player's statusChange: a fake player with that API
+// (the generated noop stub returned null, which the real hook never does).
+defineMock('expo-video', () => ({
+  useVideoPlayer: () => React.useMemo(() => ({ status: 'idle', addListener: () => ({ remove() {} }) }), []),
+  VideoView: host('VideoView'),
+}));
+
 // ── generated stubs for EVERY import in PreviewScreen.tsx, then overrides ───
 const realModules = new Set([
-  'react', '../components/preview/PhotoPageVideo', '../theme', '../lib/preview-temp-file', '../lib/photo-viewer-window',
+  'react', '../components/preview/PhotoPageVideo', '../theme', '../lib/preview-temp-file', '../lib/photo-viewer-window', '../lib/video-playability',
   '../lib/preview-info', '../lib/preview-chrome', '../lib/format', '../lib/audio-format', '../lib/code-text-preview', '../lib/saved-file-meta', '../lib/preview-content-inset', '../lib/lock-copy', '../lib/move-picker-folders',
 ]);
 const source = readFileSync(SCREEN, 'utf8');
