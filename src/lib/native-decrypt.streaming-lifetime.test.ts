@@ -15,6 +15,8 @@ const streamCalls: Array<{ outputPath: string; signal?: AbortSignal; finish: () 
 const traces: Array<{ marker: string; payload?: Record<string, unknown> }> = [];
 let cancelCalls = 0;
 const wholeFileCalls: string[] = [];
+/** Task 2335 delta review: deletes of these URIs throw. */
+const failDeletes = new Set<string>();
 /** Task 2335 review: a native cancel for this file id waits on its gate (a slow queue drain). */
 const cancelGates = new Map<string, Promise<void>>();
 
@@ -28,6 +30,7 @@ mock.module('expo-file-system/legacy', () => ({
   readDirectoryAsync: async (dir) => [...files.keys()].filter((k) => k.startsWith(dir)).map((k) => k.slice(dir.length)),
   deleteAsync: async (uri) => {
     deletes.push(uri);
+    if (failDeletes.has(uri)) throw new Error('EPERM');
     const block = deleteBlocks.get(uri);
     if (block) {
       deleteBlocks.delete(uri);
@@ -154,10 +157,25 @@ beforeEach(() => {
   cancelCalls = 0;
   cancelGates.clear();
   wholeFileCalls.length = 0;
+  failDeletes.clear();
   plaintextGate.open();
 });
 
 describe('1724 streaming preview lifetime', () => {
+  test('task 2335 delta review: a failed delete on the last release is traced with a label only', async () => {
+    const exportExtension = nd.exportDecryptExtension('pdf', () => 0.75);
+    const copy = await nd.decryptToTempFile('vdelfail', null, exportExtension, 5000, 4, 7, { streamVideo: false });
+    failDeletes.add(copy);
+    try {
+      expect(await nd.releasePreviewCopy('vdelfail', exportExtension)).toBe(true);
+      const failed = traces.filter((trace) => trace.marker === 'preview.release.delete_failed');
+      expect(failed).toEqual([{ marker: 'preview.release.delete_failed', payload: { label: 'preview copy' } }]);
+    } finally {
+      failDeletes.clear();
+      await plaintextGate.purge(() => nd.clearPreviewCache());
+    }
+  });
+
   for (const outcome of ['saved', 'cancelled'] as const) {
     test(`task 2335 review: once the share sheet closes (${outcome}) no plaintext of the export is left, leased or on disk`, async () => {
       // handleDownload's shape: decrypt the export's own copy, move it into the export folder,

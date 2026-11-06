@@ -9,13 +9,25 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
 const calls: Array<{ op: string; args: unknown }> = [];
 const gateLabels: string[] = [];
+const traces: Array<{ marker: string; payload: Record<string, unknown> }> = [];
+/** Task 2335 delta review: make the next move or delete throw. */
+const failNext = { move: false, delete: false };
 
 mock.module('expo-file-system/legacy', () => ({
   cacheDirectory: 'file:///cache/',
   makeDirectoryAsync: async (...args: unknown[]) => { calls.push({ op: 'mkdir', args }); },
   copyAsync: async (...args: unknown[]) => { calls.push({ op: 'copy', args }); },
-  moveAsync: async (...args: unknown[]) => { calls.push({ op: 'move', args }); },
-  deleteAsync: async (...args: unknown[]) => { calls.push({ op: 'delete', args }); },
+  moveAsync: async (...args: unknown[]) => {
+    calls.push({ op: 'move', args });
+    if (failNext.move) { failNext.move = false; throw new Error('EXDEV: cross-device link not permitted'); }
+  },
+  deleteAsync: async (...args: unknown[]) => {
+    calls.push({ op: 'delete', args });
+    if (failNext.delete) { failNext.delete = false; throw new Error('EPERM'); }
+  },
+}));
+mock.module('./runtime-trace', () => ({
+  recordRuntimeTrace: (marker: string, payload: Record<string, unknown>) => { traces.push({ marker, payload }); },
 }));
 mock.module('./plaintext-gate', () => ({
   gatedPlaintextWrite: async (label: string, uri: string, _fs: unknown, write: () => Promise<unknown>) => {
@@ -25,7 +37,8 @@ mock.module('./plaintext-gate', () => ({
 }));
 
 const { cachesEntryFor, isCachesPlaintextName } = await import('./caches-plaintext-registry');
-const { PREVIEW_EXPORT_ROOT, prepareExportShareCopy, assertExportTargetInsideFolder } = await import('./export-share-copy');
+const { PREVIEW_EXPORT_ROOT, prepareExportShareCopy, assertExportTargetInsideFolder, stageExportForShare } = await import('./export-share-copy');
+const FileSystem = await import('expo-file-system/legacy');
 const { exportFileName } = await import('./export-file-name');
 
 // The path a file-system layer opens for a `file://` URI: like NSURL /
@@ -38,6 +51,45 @@ const ID_NAME = '640d4f1e-c0cd-4b1e-9e54-1a2b3c4d5e6f.dng';
 beforeEach(() => {
   calls.length = 0;
   gateLabels.length = 0;
+  traces.length = 0;
+  failNext.move = false;
+  failNext.delete = false;
+});
+
+describe('task 2335 delta review — an export copy that fails to stage leaves no plaintext', () => {
+  test('a throwing move deletes BOTH the export folder and the decrypted copy, and rethrows', async () => {
+    const source = 'file:///cache/preview/640d4f1e.export-0a1b2c3d.mkv';
+    failNext.move = true;
+    await expect(stageExportForShare(
+      // The export's own copy; its release deletes it (native-decrypt's releasePreviewCopy).
+      { uri: source, exportOwned: true, release: () => FileSystem.deleteAsync(source, { idempotent: true }) },
+      { displayName: 'Holiday.mkv', idBasedName: '640d4f1e.mkv', random: () => 0.4 },
+    )).rejects.toThrow('EXDEV');
+    const deleted = calls.filter((c) => c.op === 'delete').map((c) => c.args[0]);
+    expect(calls.map((c) => c.op)).toEqual(['mkdir', 'move', 'delete', 'delete']);
+    expect(deleted[0]).toMatch(/^file:\/\/\/cache\/beebeeb-export\/[0-9a-z]+-[0-9a-f]{8}\/$/); // the export folder
+    expect(deleted[1]).toBe(source); // the decrypted copy
+  });
+
+  test('a staged export releases the folder and then the copy when the sheet closes', async () => {
+    const source = 'file:///cache/preview/640d4f1e.export-0a1b2c3d.mkv';
+    const staged = await stageExportForShare(
+      { uri: source, exportOwned: true, release: () => FileSystem.deleteAsync(source, { idempotent: true }) },
+      { displayName: 'Holiday.mkv', idBasedName: '640d4f1e.mkv', random: () => 0.4 },
+    );
+    await staged.release();
+    expect(calls.map((c) => c.op)).toEqual(['mkdir', 'move', 'delete', 'delete']);
+    expect(calls[3].args[0]).toBe(source);
+  });
+
+  test('a failed folder delete is traced with the writer label only (no path, no name)', async () => {
+    const copy = await prepareExportShareCopy({ sourceUri: 'file:///cache/preview/a.pdf', displayName: 'Tax return 2026.pdf', idBasedName: 'a.pdf' });
+    failNext.delete = true;
+    await copy.cleanup();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(traces).toEqual([{ marker: 'export-share-copy.cleanup_delete_failed', payload: { label: 'preview export copy' } }]);
+    expect(JSON.stringify(traces)).not.toContain('Tax return');
+  });
 });
 
 describe('prepareExportShareCopy', () => {

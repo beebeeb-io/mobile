@@ -79,7 +79,7 @@ import {
   videoPlayerErrorMessage,
 } from '../lib/video-playability';
 import { isExportableDisplayName, parseExportDisplayName } from '../lib/export-file-name';
-import { prepareExportShareCopy } from '../lib/export-share-copy';
+import { stageExportForShare } from '../lib/export-share-copy';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
@@ -3934,25 +3934,10 @@ export default function PreviewScreen() {
     // in a fresh per-export folder instead of the id-named preview cache file.
     const decryptExtension = previewDecryptExtension(currentMimeType, currentFileName);
     const idBasedName = decryptExtension ? `${currentFileId}.${decryptExtension}` : currentFileId;
-    try {
-      const prepared = await prepareExportShareCopy({
-        sourceUri: resolved.uri,
-        displayName: exportName ?? null,
-        idBasedName,
-        moveSource: resolved.exportOwned === true,
-      });
-      return {
-        uri: prepared.uri,
-        reusedPreview: resolved.reusedPreview,
-        release: async () => {
-          await prepared.cleanup();
-          await resolved.release?.();
-        },
-      };
-    } catch (error) {
-      await resolved.release?.();
-      throw error;
-    }
+    // Moves an export-owned copy (copies a preview's); on a failed move or copy it releases the
+    // copy itself, so nothing of the export is left (stageExportForShare, tested with a throwing move).
+    const staged = await stageExportForShare(resolved, { displayName: exportName ?? null, idBasedName });
+    return { uri: staged.uri, reusedPreview: resolved.reusedPreview, release: staged.release };
   }, [
     currentFileId,
     currentFileName,

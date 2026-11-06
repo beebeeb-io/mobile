@@ -262,7 +262,7 @@ describe('PreviewScreen stream export resolver', () => {
     expect(body).toContain('const release = () => releasePreviewCopy(currentFileId, exportExtension).then(() => {});');
     // Released on any failure too, so a cancel right after the decrypt leaves nothing leased.
     expect(body).toMatch(/\} catch \(error\) \{[\s\S]{0,300}await release\(\)\.catch\(\(\) => \{\}\);\n\s+throw error;/);
-    expect(body).toContain('moveSource: resolved.exportOwned === true,');
+    expect(body).toContain('const staged = await stageExportForShare(resolved, { displayName: exportName ?? null, idBasedName });');
   });
 
   test('real download handler releases an export lease from finally after share returns', () => {

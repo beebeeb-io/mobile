@@ -118,7 +118,9 @@ export async function prepareExportShareCopy({
   assertExportTargetInsideFolder(uri, folderUri, name);
 
   const cleanup = async (): Promise<void> => {
-    await fs.deleteAsync(folderUri, { idempotent: true }).catch(() => {});
+    await fs.deleteAsync(folderUri, { idempotent: true }).catch(() => {
+      void traceExportDeleteFailed('preview export copy');
+    });
   };
 
   try {
@@ -136,6 +138,55 @@ export async function prepareExportShareCopy({
   }
 
   return { uri, folderUri, cleanup };
+}
+
+/**
+ * Task 2335 delta review (P2-2) — a failed delete of export plaintext is not silent. The trace
+ * carries the writer's label only, never the path: the export folder holds the file under its
+ * decrypted name. Lazy import, as `plaintext-gate.ts` does (runtime-trace pulls in the native
+ * module).
+ */
+async function traceExportDeleteFailed(label: string): Promise<void> {
+  try {
+    const { recordRuntimeTrace } = await import('./runtime-trace');
+    recordRuntimeTrace('export-share-copy.cleanup_delete_failed', { label });
+  } catch {
+    // best-effort tracing only
+  }
+}
+
+/** What an export resolved to: a file to hand over, and what gives it back. */
+export interface ExportShareSource {
+  uri: string;
+  /** Deletes or un-leases the source (the export's own copy: deletes it). */
+  release?: () => Promise<unknown> | unknown;
+  /** The source belongs to this export alone: move it, never copy it. */
+  exportOwned?: boolean;
+}
+
+/**
+ * Task 2335 delta review (P2-3) — stage a resolved export for the share sheet: the per-export
+ * folder under the real name (moved for an export-owned copy, copied otherwise). `release` removes
+ * the folder and then releases the source. If staging fails (a throwing move or copy) the folder
+ * is already gone and the source is released here, so no plaintext of the export is left.
+ */
+export async function stageExportForShare(
+  source: ExportShareSource,
+  input: Omit<PrepareExportShareCopyInput, 'sourceUri' | 'moveSource'>,
+): Promise<{ uri: string; release: () => Promise<void> }> {
+  try {
+    const prepared = await prepareExportShareCopy({ ...input, sourceUri: source.uri, moveSource: source.exportOwned === true });
+    return {
+      uri: prepared.uri,
+      release: async () => {
+        await prepared.cleanup();
+        await source.release?.();
+      },
+    };
+  } catch (error) {
+    await source.release?.();
+    throw error;
+  }
 }
 
 /** The path a `file://` URI names, decoded as the file-system layer decodes it. */

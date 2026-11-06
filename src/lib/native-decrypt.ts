@@ -544,7 +544,10 @@ export async function releasePreviewCopy(fileId: string, extension: string): Pro
   const path = previewCachePath(fileId, extension);
   if (dropLease(path) > 0) return false;
   if (await cancelActivePreviewStreamForPath(path, true)) return true;
-  await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
+  await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {
+    // Task 2335 delta review (P2-2): not silent; the label only (no path, no id, no name).
+    recordRuntimeTrace('preview.release.delete_failed', { label: 'preview copy' });
+  });
   return true;
 }
 
