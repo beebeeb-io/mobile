@@ -1304,3 +1304,11 @@ Task 2245 (2026-10-27, Guus report + lead review): the Settings root rows that c
 ## Task 2237c C3 (2026-10-28)
 
 The reviewed mobile plan adds a folder-link panel where neither `design/hifi/` nor `design/ios26-canvas/` has a folder panel. It uses the existing routed BottomSheet, theme colours and chip patterns, with the contract's owner/member/link copy. The flag-off snapshot bundle block is preserved byte for byte from `10393e3`. Light/dark iOS and Android keyboard screenshots remain open: COMMON.md forbids simulator/device/Maestro execution in this lane; the lead's release rung owns that evidence. C1 native constructors and C2 tree/resolver interfaces are marked mocks in unit tests until merged; no JS cryptography substitutes for them.
+
+## Task 2335 — a video the iPhone can't play says so (2026-11-06)
+
+**Design:** neither `design/hifi/hifi-ios-app.jsx` nor `design/ios26-canvas/` draws a video that cannot play, a failed player, or a stream's startup wait. The three states reuse the preview's existing failed-load card (task 1592 item 3: title, one line, one bordered action, forced-white on the media stage) and its progress row ("Downloading X of Y" with the bar).
+
+**Ruling (Guus, 2026-11-06):** asked "May an agent fix the mobile side now: an honest 'can't play this format on iPhone' with Save to Files, an error message instead of silence, buffering progress, and no double copy?", he answered "Yes, start it now."
+
+**What shipped:** on iOS an MKV, WebM or WMV video (the containers AVFoundation refused, measured on macOS 26.6.2) shows its name, "This format can't play on iPhone." and "Save it to Files to open it in an app that plays MKV." with a Save to Files button (the existing Save path); it is never fetched for playback. A player error shows "Couldn't play video" with the reason and Try again. A stream's startup wait reads "Buffering X of Y", Y being chunk 0 plus the tail chunk. Android keeps its player for every container. No new colour or component.

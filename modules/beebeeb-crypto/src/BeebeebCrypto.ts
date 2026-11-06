@@ -1253,6 +1253,12 @@ export interface PreviewLoadProgressEvent {
   error?: string
   /** Task 1683j — the event belongs to a streaming session (buffered-% UI). */
   streaming?: boolean
+  /**
+   * Task 2335 — a stream's startup download (chunk 0 and the tail, before the
+   * player has a URL): `bytesTotal` is the bytes it needs before playback, not
+   * the whole file.
+   */
+  buffering?: boolean
 }
 
 /**

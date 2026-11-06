@@ -101,6 +101,22 @@ describe('iOS NativeVideoStreamer source contract', () => {
     expect(STREAMER_SWIFT).toContain('Content-Range: bytes */');
   });
 
+  test('task 2335: no whole-file ciphertext copy; each chunk is decrypted from its own file, then dropped', () => {
+    expect(STREAMER_SWIFT).not.toContain('appendingPathComponent("encrypted.bin")');
+    const decryptBody = bracedBody(STREAMER_SWIFT, 'private func decryptChunkFromDisk(index: Int) throws -> Bool {');
+    expect(decryptBody).toContain('readBytes(url: ciphertextFile, offset: 0, count: Int(encryptedSize))');
+    expect(decryptBody.indexOf('try? FileManager.default.removeItem(at: ciphertextFile)'))
+      .toBeLessThan(decryptBody.indexOf('key.decryptChunk(nonce: nonce, ciphertext: ciphertext)'));
+  });
+
+  test('task 2335: startup reports bytes done of bytes needed while a chunk is arriving', () => {
+    const fetchBody = bracedBody(STREAMER_SWIFT, 'private func fetchChunkToDisk(index: Int, expectedLength: Int64?) throws -> NativeVideoChunkFetchResult {');
+    expect(fetchBody).toMatch(/while semaphore\.wait\(timeout: \.now\(\) \+ 0\.05\) == \.timedOut \{[\s\S]*?emitStartupBuffering\(inFlightIndex: index, task: task\)/);
+    const emitBody = bracedBody(STREAMER_SWIFT, 'private func emitStartupBuffering(inFlightIndex: Int?, task: URLSessionTask?) {');
+    expect(emitBody).toContain('if mutedDownloadProgress {');
+    expect(emitBody).toContain('extra: ["buffering": true]');
+  });
+
   test('read-ahead and progress accounting stay bounded for large chunk counts', () => {
     expect(STREAMER_SWIFT).not.toContain('for index in 0..<chunkCount {\n      total += NativeVideoChunkMath.encryptedSize');
     expect(STREAMER_SWIFT).toContain('for index in 0..<(count - 1)');

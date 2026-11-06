@@ -10,6 +10,7 @@
  * proper 206/Range semantics. JS routes video previews to it and renders the
  * buffered percent while the pump keeps filling in the background.
  */
+import { formatBytes } from './format';
 
 /**
  * The plaintext extensions that route to `streamVideoNative`. The server
@@ -89,4 +90,29 @@ export function streamBufferPctFromEvent(
   if (total <= 0) return undefined;
   const completed = event.chunksCompleted ?? 0;
   return Math.min(100, Math.round((completed * 100) / total));
+}
+
+/**
+ * Task 2335 — the progress row while a stream starts. Before the player gets
+ * a URL the native engine fetches chunk 0 and the tail chunk whole (every
+ * reader holds a whole chunk; with the CLI's 128 MiB chunks that is about
+ * 166 MB). Its `downloading` events then carry `buffering: true`, and
+ * `bytesTotal` is the bytes it needs before playback, not the whole file.
+ *
+ * Null for anything else: the whole-file path keeps its own
+ * "Downloading X of Y" (its events carry no buffering flag).
+ */
+export function startupBufferingText(
+  progress: {
+    stage: string | null;
+    buffering?: boolean;
+    bytesDownloaded?: number;
+    bytesTotal?: number;
+  } | null | undefined,
+): string | null {
+  if (!progress || progress.stage !== 'downloading' || progress.buffering !== true) return null;
+  const needed = progress.bytesTotal ?? 0;
+  if (needed <= 0) return null;
+  const done = Math.min(needed, Math.max(0, progress.bytesDownloaded ?? 0));
+  return `Buffering ${formatBytes(done)} of ${formatBytes(needed)}`;
 }
