@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import type { StyleProp, ViewStyle } from 'react-native';
-import { useVideoPlayer, VideoView } from 'expo-video';
+import { useVideoPlayer, VideoView, type StatusChangeEventPayload } from 'expo-video';
 
 /**
  * Task 1669 Issue 1 — the ONE place a swipe-pager page owns a native
@@ -25,6 +25,7 @@ export function PhotoPageVideo({
   style,
   onPictureInPictureStart,
   onPictureInPictureStop,
+  onStatusChange,
 }: {
   uri: string;
   style: StyleProp<ViewStyle>;
@@ -36,10 +37,33 @@ export function PhotoPageVideo({
    */
   onPictureInPictureStart?: () => void;
   onPictureInPictureStop?: () => void;
+  /**
+   * Task 2335 — this player's first `readyToPlay` and every `error` (expo-video `statusChange`;
+   * it returns to readyToPlay after each rebuffer and seek, which is not reported). A failed play
+   * used to show a player that never started; the page shows "Couldn't play video" from `error`.
+   */
+  onStatusChange?: (payload: Pick<StatusChangeEventPayload, 'status' | 'error'>) => void;
 }) {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = false;
   });
+  const onStatusChangeRef = useRef(onStatusChange);
+  onStatusChangeRef.current = onStatusChange;
+  useEffect(() => {
+    let readyReported = false;
+    const subscription = player.addListener('statusChange', (payload) => {
+      if (payload.status === 'readyToPlay') {
+        if (readyReported) return;
+        readyReported = true;
+      } else if (payload.status !== 'error') {
+        return;
+      }
+      onStatusChangeRef.current?.(payload);
+    });
+    // A failure that landed before this listener was attached would otherwise go unseen.
+    if (player.status === 'error') onStatusChangeRef.current?.({ status: 'error' });
+    return () => subscription.remove();
+  }, [player]);
   return (
     <VideoView
       player={player}

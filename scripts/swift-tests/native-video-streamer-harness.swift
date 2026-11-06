@@ -27,6 +27,7 @@ private final class FakeMasterKey: MasterKeyHandle, @unchecked Sendable {
 private final class ChunkServer {
   private let chunks: [Data]
   private let blockIndex: Int?
+  private let slowBodyIndexes: Set<Int>
   private let blockSemaphore = DispatchSemaphore(value: 0)
   private let ready = DispatchSemaphore(value: 0)
   private let queue = DispatchQueue(label: "native-video-streamer-harness.chunks")
@@ -34,9 +35,10 @@ private final class ChunkServer {
   private(set) var requests: [Int] = []
   private(set) var baseUrl: String = ""
 
-  init(chunks: [Data], blockIndex: Int? = nil) throws {
+  init(chunks: [Data], blockIndex: Int? = nil, slowBodyIndexes: Set<Int> = []) throws {
     self.chunks = chunks
     self.blockIndex = blockIndex
+    self.slowBodyIndexes = slowBodyIndexes
     let parameters = NWParameters.tcp
     parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(IPv4Address("127.0.0.1")!), port: .any)
     let listener = try NWListener(using: parameters, on: .any)
@@ -93,6 +95,16 @@ private final class ChunkServer {
         "",
       ].joined(separator: "\r\n")
       var response = Data(headers.utf8)
+      if self.slowBodyIndexes.contains(index) {
+        // Headers and the first half now, the rest after a pause: the client sees
+        // a chunk that is partly received, as a 128 MiB chunk is for many seconds.
+        let half = body.count / 2
+        response.append(body.prefix(half))
+        let rest = Data(body.suffix(from: half))
+        conn.send(content: response, completion: .contentProcessed { _ in })
+        self.queue.asyncAfter(deadline: .now() + 0.4) { self.send(conn, rest) }
+        return
+      }
       response.append(body)
       body.removeAll(keepingCapacity: false)
       self.send(conn, response)
@@ -105,7 +117,10 @@ private final class ChunkServer {
 }
 
 private func frame(_ plaintext: String, goodTag: Bool = true) -> Data {
-  let plain = Data(plaintext.utf8)
+  frame(data: Data(plaintext.utf8), goodTag: goodTag)
+}
+
+private func frame(data plain: Data, goodTag: Bool = true) -> Data {
   var nonceBytes = Array(repeating: UInt8(0x11), count: 12)
   nonceBytes[11] = UInt8(plain.count & 0xff)
   let nonce = try! AES.GCM.Nonce(data: Data(nonceBytes))
@@ -378,6 +393,140 @@ private func runStaleDeclaredChunkCount() throws {
   assert(rejected, "a declared size that matches nothing is still rejected")
 }
 
+
+private func streamTempDirectories(fileId: String) -> [URL] {
+  let names = (try? FileManager.default.contentsOfDirectory(atPath: harnessTempDirectory.path)) ?? []
+  return names.filter { $0.hasPrefix(".beebeeb-stream-\(fileId)-") }.map { harnessTempDirectory.appendingPathComponent($0) }
+}
+
+// Task 2335 fix 4: the stream used to copy every chunk's ciphertext into one
+// `encrypted.bin` the size of the whole file, next to the whole plaintext, and
+// removed it only at the end (17.48 GB twice for the CLI-pushed .mkv). A chunk's
+// ciphertext now lives on disk only until that chunk is decrypted.
+private func runNoSecondWholeFileCopy() throws {
+  let server = try ChunkServer(chunks: [frame("HEAD"), frame("MID!"), frame("TL")], blockIndex: 1)
+  defer { server.stop() }
+  let output = makeOutputURL()
+  let progress = NativeVideoStreamProgress(requestId: "req-nocopy", fileId: "nocopy") { _ in }
+  let started = try NativeVideoStreamer.start(
+    requestId: "req-nocopy",
+    master: FakeMasterKey(noHandle: .init()),
+    apiUrl: server.baseUrl,
+    token: "token",
+    fileId: "nocopy",
+    outputUri: output.absoluteString,
+    declaredSizeBytes: 10,
+    declaredChunkCount: 3,
+    progress: progress,
+    onTerminal: {}
+  )
+  let dirs = streamTempDirectories(fileId: "nocopy")
+  assert(dirs.count == 1, "one working directory for the live stream (found \(dirs.count))")
+  let contents = ((try? FileManager.default.contentsOfDirectory(atPath: dirs.first?.path ?? "")) ?? []).sorted()
+  assert(contents == ["decrypted.streaming"], "while chunk 1 is in flight, only the plaintext is on disk: no whole-file ciphertext, no decrypted chunk's ciphertext (found \(contents))")
+  server.unblock()
+  assert(waitUntil(timeout: 4) { FileManager.default.fileExists(atPath: output.path) }, "the stream completes and promotes")
+  assert(streamTempDirectories(fileId: "nocopy").isEmpty, "a finished stream leaves no ciphertext behind")
+  let body = try fetch(started.streamUri, range: "bytes=0-9")
+  assert(body.0 == 206 && String(data: body.1, encoding: .utf8) == "HEADMID!TL", "the plaintext is intact without the ciphertext copy")
+  NativeVideoStreamer.cancelAll()
+}
+
+// Task 2335 fix 3: before the player gets a URL the stream fetches chunk 0 and
+// the tail whole. That wait reported nothing until a chunk finished. It now
+// reports bytes done of the bytes it needs, while a chunk is still arriving.
+private func runStartupBufferingProgress() throws {
+  // 512 KiB chunks: CFNetwork holds back a small partial body (an 8 KiB first half was
+  // never reported), so the arriving half must be big enough to surface, as 128 MiB is.
+  let full = 524_288
+  let chunks = [
+    frame(data: Data(repeating: 0x41, count: full)),
+    frame(data: Data(repeating: 0x42, count: full)),
+    frame(data: Data(repeating: 0x43, count: 10)),
+  ]
+  let need = Int64(chunks[0].count + chunks[2].count)
+  let server = try ChunkServer(chunks: chunks, slowBodyIndexes: [0])
+  defer { server.stop() }
+  let output = makeOutputURL()
+  var events: [[String: Any]] = []
+  let eventLock = NSLock()
+  let progress = NativeVideoStreamProgress(requestId: "req-buffering", fileId: "buffering") { event in
+    eventLock.lock()
+    events.append(event)
+    eventLock.unlock()
+  }
+  _ = try NativeVideoStreamer.start(
+    requestId: "req-buffering",
+    master: FakeMasterKey(noHandle: .init()),
+    apiUrl: server.baseUrl,
+    token: "token",
+    fileId: "buffering",
+    outputUri: output.absoluteString,
+    declaredSizeBytes: Int64(full * 2 + 10),
+    declaredChunkCount: 3,
+    progress: progress,
+    onTerminal: {}
+  )
+  eventLock.lock()
+  let startup = events
+  eventLock.unlock()
+  let buffering = startup.filter { ($0["stage"] as? String) == "downloading" && ($0["buffering"] as? Bool) == true }
+  func bytes(_ event: [String: Any], _ key: String) -> Int64 { (event[key] as? Int64) ?? Int64((event[key] as? Int) ?? -1) }
+  assert(!buffering.isEmpty, "startup emits buffering progress (events: \(startup))")
+  assert(buffering.allSatisfy { bytes($0, "bytesTotal") == need }, "every buffering event's total is chunk 0 plus the tail: \(need) (events: \(buffering))")
+  assert(buffering.contains { bytes($0, "bytesDownloaded") > 0 && bytes($0, "bytesDownloaded") < Int64(chunks[0].count) }, "progress moves while chunk 0 is still arriving (events: \(buffering))")
+  assert(bytes(buffering.last ?? [:], "bytesDownloaded") == need, "the last buffering event is all bytes needed (events: \(buffering))")
+  let wholeFileTotals = startup.filter { ($0["stage"] as? String) == "downloading" && bytes($0, "bytesTotal") > need }
+  assert(wholeFileTotals.isEmpty, "startup never shows the whole file as the amount it waits for (events: \(wholeFileTotals))")
+  NativeVideoStreamer.cancelAll()
+}
+
+// Review of PR (task 2335): with no declared size the tail's length is unknown until its own
+// response starts. Counting chunk 0 alone made the bar reach 100% and then drop when the tail
+// began. The need is now an upper bound (the tail is at most one full chunk) until the tail's
+// length is known, so the fraction done never goes down, and it ends exact.
+private func runStartupBufferingWithoutDeclaredSize() throws {
+  let full = 524_288
+  let chunks = [
+    frame(data: Data(repeating: 0x41, count: full)),
+    frame(data: Data(repeating: 0x42, count: full)),
+    // A tail big enough to be seen arriving: the drop showed while it was in flight.
+    frame(data: Data(repeating: 0x43, count: 400_000)),
+  ]
+  let need = Int64(chunks[0].count + chunks[2].count)
+  let server = try ChunkServer(chunks: chunks, slowBodyIndexes: [0, 2])
+  defer { server.stop() }
+  let output = makeOutputURL()
+  var events: [[String: Any]] = []
+  let eventLock = NSLock()
+  let progress = NativeVideoStreamProgress(requestId: "req-buffering-nil", fileId: "buffering-nil") { event in
+    eventLock.lock()
+    events.append(event)
+    eventLock.unlock()
+  }
+  _ = try NativeVideoStreamer.start(
+    requestId: "req-buffering-nil",
+    master: FakeMasterKey(noHandle: .init()),
+    apiUrl: server.baseUrl,
+    token: "token",
+    fileId: "buffering-nil",
+    outputUri: output.absoluteString,
+    declaredSizeBytes: nil,
+    declaredChunkCount: 3,
+    progress: progress,
+    onTerminal: {}
+  )
+  eventLock.lock()
+  let buffering = events.filter { ($0["stage"] as? String) == "downloading" && ($0["buffering"] as? Bool) == true }
+  eventLock.unlock()
+  func bytes(_ event: [String: Any], _ key: String) -> Int64 { (event[key] as? Int64) ?? Int64((event[key] as? Int) ?? -1) }
+  let fractions = buffering.map { Double(bytes($0, "bytesDownloaded")) / Double(max(1, bytes($0, "bytesTotal"))) }
+  assert(buffering.count >= 2, "startup with no declared size still reports buffering (events: \(buffering))")
+  assert(zip(fractions, fractions.dropFirst()).allSatisfy { $0 <= $1 }, "the fraction done never goes down (fractions: \(fractions))")
+  assert(bytes(buffering.last ?? [:], "bytesTotal") == need && bytes(buffering.last ?? [:], "bytesDownloaded") == need, "it ends at the exact need, \(need) (events: \(buffering))")
+  NativeVideoStreamer.cancelAll()
+}
+
 private enum HarnessMain {
   static func main() throws {
     defer { cleanupHarnessTempDirectory() }
@@ -386,6 +535,9 @@ private enum HarnessMain {
     try runCancelAtPromotion()
     try runCancelDrain()
     try runStaleDeclaredChunkCount()
+    try runNoSecondWholeFileCopy()
+    try runStartupBufferingProgress()
+    try runStartupBufferingWithoutDeclaredSize()
     print("native-video-streamer-harness: \(assertionCount) assertions, 0 failed")
   }
 }

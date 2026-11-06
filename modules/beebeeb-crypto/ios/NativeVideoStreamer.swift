@@ -37,10 +37,6 @@ final class NativeVideoStreamProgress: @unchecked Sendable {
     return value
   }
 
-  func emitDownload(bytesWritten: Int64, bytesExpected: Int64) {
-    emitProgress(stage: "downloading", bytesDownloaded: max(0, bytesWritten), bytesTotal: bytesExpected > 0 ? bytesExpected : 0)
-  }
-
   func emitProgress(
     stage: String,
     bytesDownloaded: Int64? = nil,
@@ -193,16 +189,39 @@ private enum NativeVideoChunkMath {
     Int64(index) * plaintextChunkSize
   }
 
-  static func encryptedOffset(index: Int, chunkCount: Int, plaintextChunkSize: Int64, originalSize: Int64) -> Int64 {
-    guard chunkCount > 1 else { return 0 }
-    let fullWireSize = plaintextChunkSize + Int64(overheadBytes)
-    let offset = fullWireSize.multipliedReportingOverflow(by: Int64(index))
-    return offset.overflow ? Int64.max : offset.partialValue
-  }
-
   static func chunkIndex(for position: Int64, chunkCount: Int, plaintextChunkSize: Int64) -> Int {
     if chunkCount <= 1 || plaintextChunkSize <= 0 { return 0 }
     return min(chunkCount - 1, max(0, Int(position / plaintextChunkSize)))
+  }
+
+  /// Task 2335: the wire bytes a stream needs before the player gets a URL, chunk 0 and the
+  /// tail chunk, whole. The tail's size is its own response's length once that is known; before
+  /// it, the tail is derived from the declared size in the two shapes `declaredSizeMatches`
+  /// accepts (plaintext, or the ciphertext total). With no usable declared size the tail counts
+  /// as one full chunk, its largest possible size: the need can then only shrink once the tail's
+  /// length arrives, so the fraction done never goes down. Nil while chunk 0's length or the
+  /// chunk count is unknown.
+  static func startupWireBytes(headWire: Int64, chunkCount: Int, tailWire: Int64, declaredSize: Int64?) -> Int64? {
+    guard headWire > Int64(overheadBytes), chunkCount > 0 else { return nil }
+    if chunkCount == 1 { return headWire }
+    let knownTail = tailWire > 0 ? tailWire : tailWireFromDeclared(headWire: headWire, chunkCount: chunkCount, declaredSize: declaredSize)
+    let total = headWire.addingReportingOverflow(knownTail ?? headWire)
+    return total.overflow ? nil : total.partialValue
+  }
+
+  private static func tailWireFromDeclared(headWire: Int64, chunkCount: Int, declaredSize: Int64?) -> Int64? {
+    guard let declaredSize else { return nil }
+    let plaintextChunkSize = headWire - Int64(overheadBytes)
+    let fullChunksBefore = plaintextChunkSize.multipliedReportingOverflow(by: Int64(chunkCount - 1))
+    let overheadTotal = Int64(overheadBytes).multipliedReportingOverflow(by: Int64(chunkCount))
+    guard !fullChunksBefore.overflow, !overheadTotal.overflow else { return nil }
+    for plaintextTotal in [declaredSize, declaredSize - overheadTotal.partialValue] {
+      let tailPlain = plaintextTotal - fullChunksBefore.partialValue
+      if tailPlain > 0, tailPlain <= plaintextChunkSize {
+        return tailPlain + Int64(overheadBytes)
+      }
+    }
+    return nil
   }
 }
 
@@ -282,7 +301,6 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
   private let progress: NativeVideoStreamProgress
   private let onTerminal: () -> Void
   private let tempDir: URL
-  private let encryptedUrl: URL
   private let partialPlainUrl: URL
   private let state = NSCondition()
   private let writerLock = NSLock()
@@ -290,6 +308,10 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
   private let decryptQueue = OperationQueue()
   private var inFlight: [Int: ChunkFuture] = [:]
   private var downloaded = Set<Int>()
+  /// Task 2335: each fetched chunk's ciphertext, in its own file in `tempDir`, removed as soon as
+  /// that chunk is read for decryption. There is no whole-file ciphertext copy: the old
+  /// `encrypted.bin` held every chunk next to the whole plaintext until the stream finished.
+  private var ciphertextFiles: [Int: URL] = [:]
   private var decrypted = Set<Int>()
   private var cancelled = false
   private var terminal = false
@@ -303,6 +325,11 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
   private var originalSize: Int64 = 0
   private var downloadedBytes: Int64 = 0
   private var mutedDownloadProgress = false
+  /// Task 2335: the startup chunks' wire lengths once fetched (0 = not yet), and the last
+  /// buffering numbers sent, so a poll with nothing new sends nothing.
+  private var startupHeadWireBytes: Int64 = 0
+  private var startupTailWireBytes: Int64 = 0
+  private var lastStartupBuffering: (done: Int64, need: Int64)?
   private var activeConnections: [NWConnection] = []
   private var activeTasks: [URLSessionTask] = []
 
@@ -332,7 +359,6 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     self.onTerminal = onTerminal
     self.tempDir = outputUrl.deletingLastPathComponent()
       .appendingPathComponent(".beebeeb-stream-\(fileId)-\(UUID().uuidString)", isDirectory: true)
-    self.encryptedUrl = tempDir.appendingPathComponent("encrypted.bin")
     self.partialPlainUrl = tempDir.appendingPathComponent("decrypted.streaming")
     fetchQueue.name = "beebeeb.stream.fetch.\(fileId.prefix(8))"
     fetchQueue.maxConcurrentOperationCount = 4
@@ -346,7 +372,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
 
   func start() throws -> NativeVideoStreamStart {
     progress.emitProgress(stage: "downloading", bytesDownloaded: 0, bytesTotal: 0)
-    let head = try fetchChunkToDisk(index: 0, encryptedOffset: 0, expectedLength: nil)
+    let head = try fetchChunkToDisk(index: 0, expectedLength: nil)
     let resolvedChunkCount = head.chunkCount
     // The file list can carry a stale chunk count (a long video reported as one chunk while the
     // server holds hundreds). The chunk endpoint's count is the authority, every chunk is
@@ -356,9 +382,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     if resolvedChunkCount == 1 {
       tail = head
     } else {
-      let tailOffset = head.bytesWritten.multipliedReportingOverflow(by: Int64(resolvedChunkCount - 1))
-      guard !tailOffset.overflow else { throw streamError("Streaming encrypted offset overflowed") }
-      tail = try fetchChunkToDisk(index: resolvedChunkCount - 1, encryptedOffset: tailOffset.partialValue, expectedLength: nil)
+      tail = try fetchChunkToDisk(index: resolvedChunkCount - 1, expectedLength: nil)
     }
     let resolvedOriginalSize = try NativeVideoChunkMath.originalSize(
       chunkCount: resolvedChunkCount,
@@ -375,13 +399,14 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     originalSize = resolvedOriginalSize
     state.unlock()
     fetchQueue.maxConcurrentOperationCount = resolvedChunkSize > (32 * 1024 * 1024) ? 1 : 4
-    progress.emitDownload(bytesWritten: downloadedBytes, bytesExpected: encryptedTotalBytes())
     try preallocatePartialPlaintext(size: resolvedOriginalSize)
     _ = try decryptChunkFromDisk(index: 0)
     if resolvedChunkCount > 1 {
       _ = try decryptChunkFromDisk(index: resolvedChunkCount - 1)
     }
+    state.lock()
     mutedDownloadProgress = true
+    state.unlock()
     startPump()
     guard awaitChunk(resolvedChunkCount - 1) else { throw fatal ?? streamError("Stream failed before it became playable") }
     guard !stopRequested() else { throw fatal ?? streamError("Stream cancelled before it became playable") }
@@ -484,7 +509,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
       self.fetchQueue.waitUntilAllOperationsAreFinished()
       self.decryptQueue.waitUntilAllOperationsAreFinished()
       if let errorMessage { self.progress.onError(errorMessage) }
-      self.teardown(deletePartial: true, unregister: true, removePromotedOutput: !wasTerminalAtCancel)
+      self.teardown(unregister: true, removePromotedOutput: !wasTerminalAtCancel)
     }
     if waitForQueues {
       finish()
@@ -521,8 +546,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
       }
       do {
         let expected = NativeVideoChunkMath.encryptedSize(index: index, chunkCount: count, plaintextChunkSize: chunkSize, originalSize: size)
-        let offset = NativeVideoChunkMath.encryptedOffset(index: index, chunkCount: count, plaintextChunkSize: chunkSize, originalSize: size)
-        _ = try self.fetchChunkToDisk(index: index, encryptedOffset: offset, expectedLength: expected)
+        _ = try self.fetchChunkToDisk(index: index, expectedLength: expected)
         self.decryptQueue.addOperation { [weak self] in
           guard let self else {
             future.complete(false)
@@ -559,7 +583,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     future.complete(value)
   }
 
-  private func fetchChunkToDisk(index: Int, encryptedOffset: Int64, expectedLength: Int64?) throws -> NativeVideoChunkFetchResult {
+  private func fetchChunkToDisk(index: Int, expectedLength: Int64?) throws -> NativeVideoChunkFetchResult {
     let url = URL(string: "\(apiUrl)/api/v1/files/\(fileId)/chunks/\(index)")!
     var request = URLRequest(url: url)
     ProvenanceHeaders.apply(to: &request)
@@ -606,6 +630,13 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
         state.unlock()
         throw streamError("Preview stream cancelled")
       }
+      emitStartupBuffering(inFlightIndex: index, task: task)
+    }
+    // The downloaded body is this chunk's ciphertext file from here on. Any failure below
+    // removes it; success hands it to `ciphertextFiles` for the decrypt step.
+    var keepCiphertextFile = false
+    defer {
+      if !keepCiphertextFile { try? FileManager.default.removeItem(at: stableDownloadUrl) }
     }
     state.lock()
     activeTasks.removeAll { $0 === task }
@@ -644,37 +675,26 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     if stopRequested() {
       throw streamError("Preview stream cancelled")
     }
-    if !FileManager.default.fileExists(atPath: encryptedUrl.path) {
-      FileManager.default.createFile(atPath: encryptedUrl.path, contents: nil)
-    }
-    let handle = try FileHandle(forWritingTo: encryptedUrl)
-    defer { try? handle.close() }
-    try handle.seek(toOffset: UInt64(encryptedOffset))
-    let input = try FileHandle(forReadingFrom: resultUrl)
-    defer {
-      try? input.close()
-      try? FileManager.default.removeItem(at: stableDownloadUrl)
-    }
-    while true {
-      if stopRequested() {
-        throw streamError("Preview stream cancelled")
-      }
-      let data = input.readData(ofLength: 256 * 1024)
-      if data.isEmpty { break }
-      try handle.write(contentsOf: data)
-    }
 
     state.lock()
     if downloaded.insert(index).inserted {
       downloadedBytes += bodySize
     }
-    let bytes = downloadedBytes
-    let expected = encryptedTotalBytesLocked()
+    if let replaced = ciphertextFiles[index], replaced != resultUrl {
+      try? FileManager.default.removeItem(at: replaced)
+    }
+    ciphertextFiles[index] = resultUrl
+    keepCiphertextFile = true
+    if !mutedDownloadProgress {
+      if index == 0 {
+        startupHeadWireBytes = bodySize
+      } else {
+        startupTailWireBytes = bodySize
+      }
+    }
     state.broadcast()
     state.unlock()
-    if !mutedDownloadProgress {
-      progress.emitDownload(bytesWritten: bytes, bytesExpected: expected)
-    }
+    emitStartupBuffering(inFlightIndex: nil, task: nil)
     return NativeVideoChunkFetchResult(bytesWritten: bodySize, chunkCount: responseChunkCount)
   }
 
@@ -710,7 +730,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     let count = chunkCount
     let chunkSize = plaintextChunkSize
     let size = originalSize
-    guard downloaded.contains(index) else {
+    guard downloaded.contains(index), let ciphertextFile = ciphertextFiles[index] else {
       state.unlock()
       throw streamError("Chunk \(index) was not downloaded")
     }
@@ -718,8 +738,12 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
 
     let key = try fileKeyHandle()
     let encryptedSize = NativeVideoChunkMath.encryptedSize(index: index, chunkCount: count, plaintextChunkSize: chunkSize, originalSize: size)
-    let encryptedOffset = NativeVideoChunkMath.encryptedOffset(index: index, chunkCount: count, plaintextChunkSize: chunkSize, originalSize: size)
-    let encrypted = try readBytes(url: encryptedUrl, offset: encryptedOffset, count: Int(encryptedSize))
+    let encrypted = try readBytes(url: ciphertextFile, offset: 0, count: Int(encryptedSize))
+    // The ciphertext is in memory now; it does not stay on disk next to its plaintext.
+    state.lock()
+    if ciphertextFiles[index] == ciphertextFile { ciphertextFiles.removeValue(forKey: index) }
+    state.unlock()
+    try? FileManager.default.removeItem(at: ciphertextFile)
     let nonce = encrypted.subdata(in: 0..<NativeVideoChunkMath.nonceBytes)
     let ciphertext = encrypted.subdata(in: NativeVideoChunkMath.nonceBytes..<encrypted.count)
     let plaintext = try key.decryptChunk(nonce: nonce, ciphertext: ciphertext)
@@ -793,14 +817,16 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
       throw error
     }
     progress.onComplete()
-    try? FileManager.default.removeItem(at: encryptedUrl)
     // The plaintext now lives at outputUrl; the working directory has nothing left in it.
     try? FileManager.default.removeItem(at: tempDir)
     clearFileKey()
     notifyTerminalOnce()
   }
 
-  private func teardown(deletePartial: Bool, unregister: Bool, removePromotedOutput: Bool = false) {
+  /// Every teardown removes the partial plaintext and the whole working directory (the chunks'
+  /// ciphertext files with it); `removePromotedOutput` also removes a promoted output this
+  /// session owns.
+  private func teardown(unregister: Bool, removePromotedOutput: Bool = false) {
     state.lock()
     if didTeardown {
       state.unlock()
@@ -813,14 +839,10 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     decryptQueue.cancelAllOperations()
     clearFileKey()
     writerLock.lock()
-    if deletePartial {
-      try? FileManager.default.removeItem(at: partialPlainUrl)
-      try? FileManager.default.removeItem(at: tempDir)
-      if shouldRemoveOutput {
-        try? FileManager.default.removeItem(at: outputUrl)
-      }
-    } else {
-      try? FileManager.default.removeItem(at: encryptedUrl)
+    try? FileManager.default.removeItem(at: partialPlainUrl)
+    try? FileManager.default.removeItem(at: tempDir)
+    if shouldRemoveOutput {
+      try? FileManager.default.removeItem(at: outputUrl)
     }
     writerLock.unlock()
     if unregister {
@@ -848,19 +870,52 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     try handle.truncate(atOffset: UInt64(size))
   }
 
-  private func encryptedTotalBytes() -> Int64 {
+  /// Task 2335: while the stream starts (chunk 0 and the tail, before the player has a URL),
+  /// report bytes done of the bytes it needs, including the part of a chunk still arriving: with
+  /// 128 MiB chunks a `downloadTask` reports nothing else for many seconds. `bytesTotal` is the
+  /// startup need, never the whole file; the event carries `buffering: true` for the UI.
+  private func emitStartupBuffering(inFlightIndex: Int?, task: URLSessionTask?) {
     state.lock()
-    let total = encryptedTotalBytesLocked()
+    if mutedDownloadProgress {
+      state.unlock()
+      return
+    }
+    var count = chunkCount
+    var headWire = startupHeadWireBytes
+    var tailWire = startupTailWireBytes
+    let completedBytes = downloadedBytes
     state.unlock()
-    return total
-  }
 
-  private func encryptedTotalBytesLocked() -> Int64 {
-    guard chunkCount > 0, originalSize > 0 else { return 0 }
-    let overhead = Int64(NativeVideoChunkMath.overheadBytes).multipliedReportingOverflow(by: Int64(chunkCount))
-    guard !overhead.overflow else { return 0 }
-    let total = originalSize.addingReportingOverflow(overhead.partialValue)
-    return total.overflow ? 0 : total.partialValue
+    var arrivingBytes: Int64 = 0
+    if let inFlightIndex, let task {
+      arrivingBytes = max(0, task.countOfBytesReceived)
+      let length = task.countOfBytesExpectedToReceive
+      if inFlightIndex == 0 {
+        if length > 0 { headWire = length }
+        if count == 0,
+           let http = task.response as? HTTPURLResponse,
+           let header = http.value(forHTTPHeaderField: "X-Chunk-Count"),
+           let parsed = Int(header), parsed > 0 {
+          count = parsed
+        }
+      } else if length > 0 {
+        tailWire = length
+      }
+    }
+    guard let need = NativeVideoChunkMath.startupWireBytes(
+      headWire: headWire,
+      chunkCount: count,
+      tailWire: tailWire,
+      declaredSize: declaredSizeBytes
+    ) else { return }
+    let done = min(need, completedBytes + arrivingBytes)
+
+    state.lock()
+    let unchanged = lastStartupBuffering.map { $0.done == done && $0.need == need } ?? false
+    if !unchanged { lastStartupBuffering = (done, need) }
+    state.unlock()
+    if unchanged { return }
+    progress.emitProgress(stage: "downloading", bytesDownloaded: done, bytesTotal: need, extra: ["buffering": true])
   }
 
   private func decryptedCount() -> Int {

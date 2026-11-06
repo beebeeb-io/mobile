@@ -36,6 +36,9 @@ export function extensionForMime(mimeType?: string, category?: Category, fileNam
   if (mime === 'video/quicktime') return '.mov';
   if (mime === 'video/x-m4v') return '.m4v';
   if (mime === 'video/webm') return '.webm';
+  // Task 2335 — before this, Matroska fell through to the category default (.mp4): the stream
+  // served an MKV as `v.mp4` / video/mp4 and the cache named it .mp4.
+  if (mime === 'video/x-matroska' || mime === 'video/matroska') return '.mkv';
   if (mime === 'application/pdf') return '.pdf';
   if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return '.docx';
   if (mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return '.xlsx';

@@ -12,6 +12,7 @@ import {
   STREAMABLE_VIDEO_EXTENSIONS,
   isLoopbackStreamUri,
   isStreamableVideoExtension,
+  startupBufferingText,
   streamBufferPctFromEvent,
 } from './video-stream';
 
@@ -97,5 +98,32 @@ describe('1683j streamBufferPctFromEvent — the "Streaming · N% buffered" mapp
     expect(streamBufferPctFromEvent({ stage: 'decrypting', streaming: true, chunksCompleted: 0, chunksTotal: 0 })).toBe(
       undefined,
     );
+  });
+});
+
+describe('2335 startupBufferingText — bytes done of bytes needed before the player starts', () => {
+  // The CLI's 128 MiB chunks: the stream needs chunk 0 and the tail chunk whole
+  // (about 166 MB) before the player gets a URL. That wait used to show
+  // "Downloading video..." with no number.
+  test('a startup buffering event reads "Buffering <done> of <needed>"', () => {
+    expect(startupBufferingText({ stage: 'downloading', buffering: true, bytesDownloaded: 52_400_000, bytesTotal: 165_913_144 }))
+      .toBe('Buffering 52 MB of 166 MB');
+    expect(startupBufferingText({ stage: 'downloading', buffering: true, bytesDownloaded: 0, bytesTotal: 165_913_144 }))
+      .toBe('Buffering 0 B of 166 MB');
+  });
+
+  test('done never shows more than needed', () => {
+    expect(startupBufferingText({ stage: 'downloading', buffering: true, bytesDownloaded: 200_000_000, bytesTotal: 165_913_144 }))
+      .toBe('Buffering 166 MB of 166 MB');
+  });
+
+  test('no total yet, or not a startup buffering event: no buffering text (null)', () => {
+    expect(startupBufferingText({ stage: 'downloading', buffering: true, bytesDownloaded: 10, bytesTotal: 0 })).toBe(null);
+    // The whole-file path's download events carry no buffering flag: they keep
+    // their own "Downloading X of Y" text.
+    expect(startupBufferingText({ stage: 'downloading', bytesDownloaded: 10, bytesTotal: 100 })).toBe(null);
+    expect(startupBufferingText({ stage: 'downloading', buffering: false, bytesDownloaded: 10, bytesTotal: 100 })).toBe(null);
+    expect(startupBufferingText({ stage: 'decrypting', buffering: true, bytesDownloaded: 10, bytesTotal: 100 })).toBe(null);
+    expect(startupBufferingText(null)).toBe(null);
   });
 });

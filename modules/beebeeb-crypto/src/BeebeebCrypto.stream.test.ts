@@ -202,6 +202,47 @@ describe('streamVideoNative JS wrapper cancellation contract', () => {
   });
 });
 
+describe('task 2335 — startup buffering events reach the UI', () => {
+  test('an event that changes only bytesTotal or the buffering flag is forwarded, not deduped away', async () => {
+    // The native startup reports "bytes done of bytes needed". Its first event has the same
+    // bytesDownloaded (0) as the opening {downloading, 0, 0}, and the need shrinks from an upper
+    // bound to the exact size while bytesDownloaded stands still. The old key
+    // (stage + chunksCompleted ?? bytesDownloaded) dropped both.
+    const snapshots = [
+      { stage: 'downloading', bytesDownloaded: 0, bytesTotal: 0 },
+      { stage: 'downloading', bytesDownloaded: 0, bytesTotal: 268_000_000, buffering: true },
+      { stage: 'downloading', bytesDownloaded: 134_000_000, bytesTotal: 268_000_000, buffering: true },
+      { stage: 'downloading', bytesDownloaded: 134_000_000, bytesTotal: 166_000_000, buffering: true },
+    ];
+    let current = 0;
+    let releaseStart!: () => void;
+    const startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    nativeModule.getPreviewLoadProgress = (requestId) => ({ requestId, fileId: 'video', ...snapshots[current] });
+    const baseStart = nativeModule.streamVideoNative;
+    nativeModule.streamVideoNative = async (params) => { await startGate; return baseStart(params); };
+    const seen: Array<{ bytesDownloaded?: number; bytesTotal?: number; buffering?: boolean }> = [];
+    const startPromise = crypto.streamVideoNative(7, 'https://api.test', 'tok', 'video', 'file:///cache/preview/video.mp4', 5000, 4, {
+      onProgress: (ev) => { seen.push({ bytesDownloaded: ev.bytesDownloaded, bytesTotal: ev.bytesTotal, buffering: ev.buffering }); },
+    });
+    for (let i = 0; i < snapshots.length; i += 1) {
+      current = i;
+      await new Promise((resolve) => setTimeout(resolve, 260)); // longer than the 200 ms poll
+    }
+    // What the 200 ms poll forwarded (the wrapper's `finally` re-forwards the last snapshot once
+    // the native start settles, by design, so the check stops before that).
+    const forwardedByPoll = [...seen];
+    releaseStart();
+    const started = await startPromise;
+    await started.cancel();
+    expect(forwardedByPoll).toEqual([
+      { bytesDownloaded: 0, bytesTotal: 0, buffering: undefined },
+      { bytesDownloaded: 0, bytesTotal: 268_000_000, buffering: true },
+      { bytesDownloaded: 134_000_000, bytesTotal: 268_000_000, buffering: true },
+      { bytesDownloaded: 134_000_000, bytesTotal: 166_000_000, buffering: true },
+    ]);
+  });
+});
+
 describe('native manual upload progress', () => {
   test('a transfer that finishes before the first poll still emits its final chunk progress', async () => {
     nativeModule.uploadChunksNative = async () => ({

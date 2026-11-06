@@ -1,5 +1,5 @@
 import React, { forwardRef, useImperativeHandle, useRef, useState } from 'react';
-import { View, Text, ActivityIndicator, StyleSheet, useWindowDimensions } from 'react-native';
+import { View, Text, ActivityIndicator, Pressable, StyleSheet, useWindowDimensions } from 'react-native';
 import type { PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
 import { useTheme } from '../lib/theme-context';
 import { radii, spacing } from '../theme';
@@ -60,7 +60,7 @@ const THROTTLE_MS = 250;
 const BUCKET = 0.05;
 
 function ExportProgressBannerImpl(
-  { name }: { name: string },
+  { name, onCancel }: { name: string; onCancel?: () => void },
   ref: React.Ref<ExportProgressBannerHandle>,
 ) {
   const { colors: c } = useTheme();
@@ -153,6 +153,18 @@ function ExportProgressBannerImpl(
           {detail}
         </Text>
       </View>
+      {onCancel ? (
+        <Pressable
+          onPress={onCancel}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Cancel exporting ${name}`}
+          testID="export-progress-cancel"
+          style={styles.cancel}
+        >
+          <Text style={[styles.cancelText, { color: c.ink2 }]}>Cancel</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -178,6 +190,8 @@ const styles = StyleSheet.create({
   textCol: { flex: 1 },
   name: { fontSize: 13, fontWeight: '500' },
   detail: { fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums'], marginTop: 1 },
+  cancel: { paddingHorizontal: 4, paddingVertical: 4 },
+  cancelText: { fontSize: 13, fontWeight: '600' },
 });
 
 /**

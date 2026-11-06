@@ -25,6 +25,15 @@ describe('previewDecryptExtension — the preview cache key', () => {
     expect(previewDecryptExtension('application/pdf', 'contract.pdf')).toBe('pdf');
   });
 
+  test('task 2335: an MKV keeps .mkv (it was .mp4, so the stream served Matroska as video/mp4)', () => {
+    expect(extensionForMime('video/x-matroska', 'video')).toBe('.mkv');
+    expect(extensionForMime('video/matroska', 'video')).toBe('.mkv');
+    expect(previewDecryptExtension('video/x-matroska', 'movie.mkv')).toBe('mkv');
+    // Other videos keep their keys.
+    expect(previewDecryptExtension('video/mp4', 'clip.mp4')).toBe('mp4');
+    expect(previewDecryptExtension('video/quicktime', 'clip.mov')).toBe('mov');
+  });
+
   test('equals the preview formula `extensionForMime(...) || cacheFileName`, dot stripped', () => {
     const cases: Array<[string | undefined, string]> = [
       ['text/markdown', 'notes.md'],
@@ -44,7 +53,9 @@ describe('previewDecryptExtension — the preview cache key', () => {
 
 describe('both callers use the one key', () => {
   test('PreviewScreen decrypts the original under previewDecryptExtension and has no private copy of the helpers', () => {
-    expect(previewSource).toMatch(/const decryptExt = previewDecryptExtension\(currentMimeType, currentFileName\);/);
+    // Task 2335 review: an export decrypts under its own key (exportDecryptExtension); every
+    // preview open still uses the one preview key.
+    expect(previewSource).toMatch(/const decryptExt = options\.exportExtension \?\? previewDecryptExtension\(currentMimeType, currentFileName\);/);
     expect(previewSource).not.toMatch(/function extensionForMime\(/);
     expect(previewSource).not.toMatch(/function previewCacheName\(/);
     expect(previewSource).not.toMatch(/ext \|\| cacheFileName/);

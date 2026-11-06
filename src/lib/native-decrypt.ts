@@ -20,6 +20,7 @@ export { SharedKeyUpdateRequiredError, SharedKeyCannotOpenError } from './previe
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
+import { sweepExportShareLeftovers } from './export-share-copy';
 import {
   decryptLocalFileNative,
   downloadAndDecryptFileNative,
@@ -92,6 +93,49 @@ export interface PreviewDecryptOptions {
 }
 
 export type PreviewDecryptSource = 'cache' | 'joined' | 'decrypted';
+
+/**
+ * Task 2335 review — the cache key an EXPORT decrypts under (`export-<8 hex>.<ext>`): its own, so
+ * it never joins a preview or stream job for the same file (that handed the share sheet a loopback
+ * URI it cannot take), never hits a preview copy and always takes the whole-file path (no video
+ * extension matches it). The export moves the file into its export folder and releases the key
+ * with `releasePreviewCopy(fileId, key)` when the share sheet closes, which deletes what is left:
+ * the plaintext never outlives the export.
+ */
+export function exportDecryptExtension(extension: string, random: () => number = Math.random): string {
+  const token = Math.floor(random() * 0xffffffff).toString(16).padStart(8, '0');
+  return `export-${token}.${extension.replace(/^\./, '')}`;
+}
+
+/** An export copy (`<id>.export-<8 hex>.<ext>`) and the native writer's hidden temp of one. */
+const EXPORT_COPY_NAME = /^[^/.][^/]*\.export-[0-9a-f]{8}\.[A-Za-z0-9]+$/;
+const EXPORT_TEMP_NAME = /^\.([^/]+\.export-[0-9a-f]{8}\.[A-Za-z0-9]+)\.[0-9A-Fa-f-]{36}\.tmp$/;
+
+/**
+ * Task 2335 delta review (P2-1) — after launch or unlock, delete what a killed export left: its
+ * decrypted copy and the native writer's hidden temp in `preview/` (`*.export-<8 hex>.*` only),
+ * and its per-export folders in `beebeeb-export/`. Never a preview's or stream's own files (no
+ * other name matches), and never an export still running in this process (its copy is leased; an
+ * open share sheet's folder is live). Returns how many entries it removed.
+ */
+export async function sweepExportLeftovers(): Promise<number> {
+  let removed = 0;
+  let names: string[] = [];
+  try {
+    names = await FileSystem.readDirectoryAsync(PREVIEW_CACHE_DIR);
+  } catch {
+    names = []; // no preview dir yet
+  }
+  for (const name of names) {
+    const copyName = EXPORT_COPY_NAME.test(name) ? name : EXPORT_TEMP_NAME.exec(name)?.[1];
+    if (!copyName || isPreviewPathLeased(`${PREVIEW_CACHE_DIR}${copyName}`)) continue;
+    await FileSystem.deleteAsync(`${PREVIEW_CACHE_DIR}${name}`, { idempotent: true }).then(
+      () => { removed += 1; },
+      () => { recordRuntimeTrace('preview.export_sweep.delete_failed', { label: 'export leftover sweep' }); },
+    );
+  }
+  return removed + await sweepExportShareLeftovers();
+}
 
 /** `Library/Caches/preview/<fileId>.<ext>` — the preview cache key. */
 export function previewCachePath(fileId: string, extension: string): string {
@@ -464,8 +508,19 @@ async function closeActivePreviewStream(entry: ActivePreviewStream, deleteOutput
 
 async function cancelActivePreviewStream(entry: ActivePreviewStream, deleteOutput: boolean): Promise<void> {
   if (entry.closed) return;
-  await entry.native.cancel?.().catch(() => {});
-  await closeActivePreviewStream(entry, deleteOutput);
+  // Task 2335 review — a stream being torn down is never joined. Native cancel drains its
+  // queues first (seconds with 128 MiB chunks), and the close then deletes the output: an open in
+  // that window used to join the dying stream (a dead loopback URI, its file deleted under it).
+  // Marked cancelled now, the next open of this path waits for this teardown
+  // (`ensureFailedActivePreviewStreamEvicted`) and starts fresh. Concurrent cancels share it.
+  if (entry.cleanupPromise) return entry.cleanupPromise;
+  entry.terminal = true;
+  entry.terminalState = 'cancelled';
+  entry.cleanupPromise = (async () => {
+    await entry.native.cancel?.().catch(() => {});
+    await closeActivePreviewStream(entry, deleteOutput);
+  })();
+  return entry.cleanupPromise;
 }
 
 async function cancelActivePreviewStreamForPath(path: string, deleteOutput: boolean): Promise<boolean> {
@@ -520,7 +575,10 @@ export async function releasePreviewCopy(fileId: string, extension: string): Pro
   const path = previewCachePath(fileId, extension);
   if (dropLease(path) > 0) return false;
   if (await cancelActivePreviewStreamForPath(path, true)) return true;
-  await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
+  await FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {
+    // Task 2335 delta review (P2-2): not silent; the label only (no path, no id, no name).
+    recordRuntimeTrace('preview.release.delete_failed', { label: 'preview copy' });
+  });
   return true;
 }
 

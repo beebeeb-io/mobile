@@ -39,7 +39,7 @@ import {
 } from 'react-native-gesture-handler';
 import { WebView } from 'react-native-webview';
 import { isolatePreviewHtml, staticPreviewWebViewProps } from '../lib/preview-html-policy';
-import { useVideoPlayer, VideoView } from 'expo-video';
+import { useVideoPlayer, VideoView, type StatusChangeEventPayload } from 'expo-video';
 import NetInfo from '@react-native-community/netinfo';
 import { Ionicons } from '@expo/vector-icons';
 import type { RootStackParamList } from '../App';
@@ -69,10 +69,17 @@ import {
   saveFailedAfterUploadStarted,
   saveTextFileVersion,
 } from '../lib/text-file-save';
-import { decryptToTempFile, invalidatePreviewCache, materializeVideoPreviewForExport, previewCachePath, releasePreviewCopy, retainPreviewCopy } from '../lib/native-decrypt';
-import { isLoopbackStreamUri, streamBufferPctFromEvent } from '../lib/video-stream';
+import { decryptToTempFile, exportDecryptExtension, invalidatePreviewCache, materializeVideoPreviewForExport, previewCachePath, releasePreviewCopy, retainPreviewCopy } from '../lib/native-decrypt';
+import { isLoopbackStreamUri, startupBufferingText, streamBufferPctFromEvent } from '../lib/video-stream';
+import {
+  inAppVideoPlayability,
+  type InAppVideoPlayability,
+  unplayableVideoActionHint,
+  unplayableVideoMessage,
+  videoPlayerErrorMessage,
+} from '../lib/video-playability';
 import { isExportableDisplayName, parseExportDisplayName } from '../lib/export-file-name';
-import { prepareExportShareCopy } from '../lib/export-share-copy';
+import { stageExportForShare } from '../lib/export-share-copy';
 import { offlineManager } from '../lib/offline-manager';
 import { maybeSelfRepairThumbnailFromLocalFile } from '../lib/thumbnail-self-repair';
 import { BeebeebThumbnails, type PreviewLoadProgressEvent } from '../../modules/beebeeb-crypto';
@@ -236,7 +243,16 @@ type PreviewOptionAction = {
   run: () => void;
 };
 
-type ExportUriResult = { uri: string; reusedPreview: boolean; release?: () => Promise<void> | void };
+type ExportUriResult = {
+  uri: string;
+  reusedPreview: boolean;
+  release?: () => Promise<void> | void;
+  /** Task 2335 review — the file belongs to this export alone: move it, never copy it. */
+  exportOwned?: boolean;
+};
+
+/** Task 2335 review — a whole-file decrypt that belongs to one export, and the release that deletes it. */
+type ExportDecryptCopy = { uri: string; release: () => Promise<void> };
 
 type StreamExportMaterializer = (fileId: string, extension: string) => Promise<string>;
 
@@ -257,7 +273,7 @@ export interface PreviewExportUriResolverInput {
   videoExtension: string;
   isPdf: boolean;
   pdfUri: string | null;
-  fetchAndDecrypt: () => Promise<string>;
+  decryptExportCopy: () => Promise<ExportDecryptCopy>;
   materializeStreamVideoForExport: StreamExportMaterializer;
   signal?: AbortSignal;
 }
@@ -279,7 +295,7 @@ export async function resolvePreviewExportUri({
   videoExtension,
   isPdf,
   pdfUri,
-  fetchAndDecrypt,
+  decryptExportCopy,
   materializeStreamVideoForExport,
   signal,
 }: PreviewExportUriResolverInput): Promise<ExportUriResult> {
@@ -305,7 +321,12 @@ export async function resolvePreviewExportUri({
     }
   }
   if (isPdf && pdfUri) return { uri: pdfUri, reusedPreview: true };
-  return { uri: await fetchAndDecrypt(), reusedPreview: false };
+  // Task 2335 review — no reusable preview (an unplayable video never loads one; Save can come
+  // while a stream still buffers): a copy of this export's own, moved into the export folder and
+  // deleted by `release` when the share sheet closes. It used to be the preview cache's copy,
+  // leased for the rest of the session (a 17.48 GB plaintext pinned past every prune).
+  const copy = await decryptExportCopy();
+  return { uri: copy.uri, reusedPreview: false, release: copy.release, exportOwned: true };
 }
 
 
@@ -606,6 +627,8 @@ interface PreviewProgressState {
   chunksCompleted: number;
   chunksTotal: number;
   streaming: boolean;
+  /** Task 2335 — a stream's startup download: `bytesTotal` is what it needs before playback. */
+  buffering: boolean;
 }
 
 function emptyPreviewProgress(stage: PhotoLoadStage | null = null): PreviewProgressState {
@@ -616,6 +639,7 @@ function emptyPreviewProgress(stage: PhotoLoadStage | null = null): PreviewProgr
     chunksCompleted: 0,
     chunksTotal: 0,
     streaming: false,
+    buffering: false,
   };
 }
 
@@ -706,6 +730,52 @@ function PreviewProgressStatus({
   );
 }
 
+/**
+ * Task 2335 — the honest state for a video the in-app player cannot open (iOS: MKV, WebM, WMV;
+ * video-playability.ts), for the single-file stage and the pager page alike. The failed-load
+ * card's shape (title, line, one bordered action) on the media's forced-dark ground; the action
+ * is the screen's existing Save (the share sheet with the real file name: Save to Files).
+ */
+function UnplayableVideoCard({
+  name,
+  formatLabel,
+  layout,
+  saving,
+  onSaveToFiles,
+}: {
+  name: string;
+  formatLabel: string;
+  layout: 'stage' | 'page';
+  saving: boolean;
+  /** Absent on a pager page that is not the current one (Save acts on the current file). */
+  onSaveToFiles?: () => void;
+}) {
+  const page = layout === 'page';
+  const lineStyle = page ? styles.photoPageStatusSub : styles.imageStatusSub;
+  return (
+    <View style={page ? styles.photoPageStatus : styles.imageStatus} testID="preview-video-unsupported">
+      <Text style={page ? styles.photoPageStatusTitle : [styles.imageStatusTitle, { color: colors.white }]} numberOfLines={3}>
+        {name}
+      </Text>
+      <Text style={lineStyle}>{unplayableVideoMessage(deviceNoun())}</Text>
+      <Text style={lineStyle}>{unplayableVideoActionHint(formatLabel)}</Text>
+      {onSaveToFiles ? (
+        <TouchableOpacity
+          onPress={onSaveToFiles}
+          disabled={saving}
+          style={[styles.loadRetryButton, { borderColor: 'rgba(255,255,255,0.35)' }, saving && styles.saveToFilesBusy]}
+          accessibilityRole="button"
+          accessibilityLabel="Save to Files"
+          accessibilityState={{ disabled: saving }}
+          testID="preview-video-save-to-files"
+        >
+          <Text style={[styles.loadRetryText, { color: colors.white }]}>Save to Files</Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+}
+
 function StreamingBufferBadge({ pct, bottomInset = 24 }: { pct: number; bottomInset?: number }) {
   return (
     <View style={[styles.streamBadgeLayer, { bottom: bottomInset }]} pointerEvents="none">
@@ -725,6 +795,8 @@ function progressStageText(
 ): string {
   if (!isUnlocked) return isVideo ? 'Unlock your vault to play this video.' : 'Unlock your vault to view this file.';
   if (progress.stage === 'checking') return 'Checking local copy...';
+  const bufferingText = startupBufferingText(progress);
+  if (bufferingText) return bufferingText;
   if (progress.streaming) {
     const buffered = progress.chunksTotal > 0
       ? Math.round((progress.chunksCompleted / progress.chunksTotal) * 100)
@@ -769,6 +841,8 @@ function applyNativeProgress(event: PreviewLoadProgressEvent, setProgress: React
     chunksCompleted: event.chunksCompleted ?? prev.chunksCompleted,
     chunksTotal: event.chunksTotal ?? prev.chunksTotal,
     streaming: event.streaming ?? prev.streaming,
+    // Per event, never sticky: a whole-file fallback's downloads are not stream buffering.
+    buffering: event.buffering === true,
   }));
 }
 
@@ -1482,6 +1556,8 @@ export const PhotoPage = React.memo(function PhotoPage({
   onDisplayedKind,
   videoControlsBottomInset,
   stageInsets,
+  onSaveToFiles,
+  saveToFilesBusy = false,
 }: {
   entry: PhotoPageEntry;
   shouldLoadFull: boolean;
@@ -1528,6 +1604,10 @@ export const PhotoPage = React.memo(function PhotoPage({
    * pill above the bottom bar.
    */
   stageInsets?: { top: number; bottom: number };
+  /** Task 2335 — Save to Files for a video this device cannot play (the parent's Save). */
+  onSaveToFiles?: () => void;
+  /** Task 2335 — true while that Save runs (one export at a time). */
+  saveToFilesBusy?: boolean;
 }) {
   const { colors: c } = useTheme();
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
@@ -1540,6 +1620,10 @@ export const PhotoPage = React.memo(function PhotoPage({
   // name (same fallback `currentFileName` uses below for the CURRENT entry).
   const entryFileName = entry.display_name ?? entry.name_encrypted;
   const isRawEntry = fileCategory(entry.mime_type ?? undefined, entryFileName) === 'raw';
+  // Task 2335 — the same format gate as the single-file stage (video-playability.ts).
+  const videoPlayability: InAppVideoPlayability = isVideoEntry
+    ? inAppVideoPlayability(Platform.OS, entry.mime_type, entryFileName)
+    : { playable: true };
   const [uri, setUri] = useState<string | null>(null);
   const [uriKind, setUriKind] = useState<ImagePreviewKind | null>(null);
   useEffect(() => {
@@ -1553,6 +1637,10 @@ export const PhotoPage = React.memo(function PhotoPage({
   const [streamBufferPct, setStreamBufferPct] = useState<number | null>(null);
   const [performanceProfile, setPerformanceProfile] = useState<DevicePerformanceProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Task 2335 — this page's player failed (status `error`) after its video loaded. */
+  const [playerError, setPlayerError] = useState<string | null>(null);
+  /** Task 2335 — bumped by Try again on a video page, so the load effect runs again. */
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const fullImageOpacity = useRef(new Animated.Value(0)).current;
   const largePreviewAttemptRef = useRef<string | null>(null);
   // Task 0799: progressive de-blur transition for "View Original".
@@ -1623,7 +1711,7 @@ export const PhotoPage = React.memo(function PhotoPage({
   //     only (at most 1 live player).
   // `keepFull` additionally holds a video that is in Picture in Picture after its page stopped
   // being current; it is released when PiP ends.
-  const loadFull = isVideoEntry ? shouldLoadFull && isCurrent : shouldLoadFull;
+  const loadFull = isVideoEntry ? shouldLoadFull && isCurrent && videoPlayability.playable : shouldLoadFull;
   const keepFull = loadFull || (isVideoEntry && pipActive);
   // Task 1669 Issue 1: NO `useVideoPlayer` here. expo-video builds a native
   // AVPlayer even for a null source, so calling it on every mounted page (image
@@ -1660,6 +1748,7 @@ export const PhotoPage = React.memo(function PhotoPage({
     setUri(null);
     setUriKind(null);
     setError(null);
+    setPlayerError(null);
     setLoading(false);
     setStage(null);
     setProgress(emptyPreviewProgress(null));
@@ -1715,6 +1804,7 @@ export const PhotoPage = React.memo(function PhotoPage({
     setStage('checking');
     setProgress(emptyPreviewProgress('checking'));
     setError(null);
+    setPlayerError(null);
     void getDevicePerformanceProfile().then((profile) => {
       if (!cancelled) setPerformanceProfile(profile);
     });
@@ -1813,7 +1903,32 @@ export const PhotoPage = React.memo(function PhotoPage({
       cancelled = true;
       controller.abort();
     };
-  }, [loadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, isRawEntry, previewProfile, locked]);
+  }, [loadFull, uri, entry, isUnlocked, getFileKeyBytes, getMasterKeyHandleId, isVideoEntry, isRawEntry, previewProfile, locked, loadAttempt]);
+
+  // Task 2335 — this page's player said `error`: trace it, stop the stream's pump (it would go on
+  // pulling the whole file for a player that stopped) and show "Couldn't play video" with Try
+  // again. `uri` stays set until the retry so the load effect does not start over by itself.
+  const handleVideoPlayerStatus = useCallback(({ status, error: playerFailure }: Pick<StatusChangeEventPayload, 'status' | 'error'>) => {
+    if (status !== 'readyToPlay' && status !== 'error') return;
+    recordRuntimeTrace('preview.video.player_status', {
+      fileId: entry.id,
+      status,
+      stream: isLoopbackStreamUri(uri),
+      reason: playerFailure?.message ?? null,
+      pager: true,
+    });
+    if (status !== 'error') return;
+    releasePreviewCopyLease();
+    setPlayerError(videoPlayerErrorMessage(playerFailure));
+  }, [entry.id, uri, releasePreviewCopyLease]);
+
+  const retryVideoPage = useCallback(() => {
+    setError(null);
+    setPlayerError(null);
+    setUri(null);
+    setUriKind(null);
+    setLoadAttempt((n) => n + 1);
+  }, []);
 
   // Task 1669 Issue 1 — release this page's fully-loaded resource (the
   // decrypted `uri`: a full-resolution decoded <Image>, a mounted
@@ -2138,21 +2253,41 @@ export const PhotoPage = React.memo(function PhotoPage({
         }
         return (
           <>
-            {thumbnailUri && !uri && !error ? (
+            {thumbnailUri && !uri && !error && videoPlayability.playable ? (
               <Image
                 source={{ uri: thumbnailUri }}
                 style={styles.photoPageThumbnail}
                 resizeMode="contain"
             />
           ) : null}
-          {error ? (
+          {!videoPlayability.playable ? (
+            // Task 2335 — a video this device cannot play: never loaded, never handed to a player.
+            <UnplayableVideoCard
+              name={previewDisplayName(entryFileName, 'video')}
+              formatLabel={videoPlayability.formatLabel}
+              layout="page"
+              saving={saveToFilesBusy}
+              onSaveToFiles={isCurrent ? onSaveToFiles : undefined}
+            />
+          ) : error || playerError ? (
             <View style={styles.photoPageStatus}>
               <Text style={styles.photoPageStatusTitle}>
-                {isVideoEntry ? "Couldn't load video" : isRawEntry ? "Couldn't load RAW file" : "Couldn't load image"}
+                {playerError ? "Couldn't play video" : isVideoEntry ? "Couldn't load video" : isRawEntry ? "Couldn't load RAW file" : "Couldn't load image"}
               </Text>
               <Text style={styles.photoPageStatusSub}>
-                {error}
+                {playerError ?? error}
               </Text>
+              {isVideoEntry && isCurrent ? (
+                <TouchableOpacity
+                  onPress={retryVideoPage}
+                  style={[styles.loadRetryButton, { borderColor: 'rgba(255,255,255,0.35)' }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Try again"
+                  testID="preview-page-video-retry"
+                >
+                  <Text style={[styles.loadRetryText, { color: colors.white }]}>Try again</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
           ) : uri && isVideoEntry ? (
             <View style={[styles.mediaVideoStageWrap, stageInsets && { height: undefined, top: stageInsets.top, bottom: stageInsets.bottom, position: 'absolute' }]}>
@@ -2161,6 +2296,7 @@ export const PhotoPage = React.memo(function PhotoPage({
                 style={[styles.videoControlsSurface, { bottom: videoControlsBottomInset }]}
                 onPictureInPictureStart={() => setPipActive(true)}
                 onPictureInPictureStop={() => setPipActive(false)}
+                onStatusChange={handleVideoPlayerStatus}
               />
               {isLoopbackStreamUri(uri) && streamBufferPct != null && streamBufferPct < 100 ? (
                 <StreamingBufferBadge pct={streamBufferPct} />
@@ -2517,6 +2653,13 @@ export default function PreviewScreen() {
   ));
   const [preparingExport, setPreparingExport] = useState(false);
   const exportProgressRef = useRef<ExportProgressBannerHandle>(null);
+  // Task 2335 delta review (P2-1) — the running Save's controller: the banner's Cancel and
+  // leaving the screen abort it, so a long decrypt never runs (and writes plaintext) unseen.
+  const exportControllerRef = useRef<AbortController | null>(null);
+  const cancelExport = useCallback(() => exportControllerRef.current?.abort(), []);
+  useEffect(() => () => {
+    exportControllerRef.current?.abort();
+  }, []);
   const [optionsVisible, setOptionsVisible] = useState(false);
   const [originalPhotoRequest, setOriginalPhotoRequest] = useState<{ fileId: string; nonce: number } | null>(null);
 
@@ -2610,6 +2753,8 @@ export default function PreviewScreen() {
   const [videoUri, setVideoUri] = useState<string | null>(null);
   const [videoLoading, setVideoLoading] = useState(false);
   const [videoError, setVideoError] = useState<string | null>(null);
+  /** Task 2335 — the player itself failed (status `error`), after the load succeeded. */
+  const [videoPlayerError, setVideoPlayerError] = useState<string | null>(null);
   const [streamBufferPct, setStreamBufferPct] = useState<number | null>(null);
   const tempVideoUriRef = useRef<string | null>(null);
 
@@ -2737,6 +2882,11 @@ export default function PreviewScreen() {
   // header/background, same class of decision as PDF/DOCX/etc.
   const isAudio = category === 'audio';
   const isMediaPreview = isImage || isVideo || isRaw;
+  // Task 2335 — the format gate (src/lib/video-playability.ts): on iOS a container AVPlayer
+  // cannot open is never handed to it; the stage names the format and offers Save to Files.
+  const videoPlayability: InAppVideoPlayability = isVideo
+    ? inAppVideoPlayability(Platform.OS, currentMimeType, currentFileName)
+    : { playable: true };
   // "Canon RAW" / "Sony RAW" / … — the manufacturer-specific override for
   // CATEGORY_LABELS['raw'] wherever the title pill / Info sheet shows the
   // file's kind, same override pattern as isText's codeLanguageLabel.
@@ -3539,6 +3689,11 @@ export default function PreviewScreen() {
     signal?: AbortSignal;
     onStreamProgress?: (pct: number) => void;
     onExportProgress?: (event: PreviewLoadProgressEvent) => void;
+    /**
+     * Task 2335 review — decrypt a whole-file copy for one export under this key
+     * (`exportDecryptExtension`), not the preview's: no stream, no join, no preview side effects.
+     */
+    exportExtension?: string;
   } = {}): Promise<string> => {
     throwIfPreviewAborted(options.signal);
     // Task 1539 (finding 1, P0): every single-file decrypt path funnels
@@ -3595,9 +3750,10 @@ export default function PreviewScreen() {
 
     if (isUnlocked) {
       // Task 1593 — the shared preview cache key ("Prove it" uses the same).
-      const decryptExt = previewDecryptExtension(currentMimeType, currentFileName);
+      const decryptExt = options.exportExtension ?? previewDecryptExtension(currentMimeType, currentFileName);
+      const forExport = options.exportExtension != null;
       let decryptedUri: string;
-      const previewJob = category === 'image' && !requestFileFields && !sharedFileKeyIsLoaded(currentFileId)
+      const previewJob = !forExport && category === 'image' && !requestFileFields && !sharedFileKeyIsLoaded(currentFileId)
         ? prepareGenerateFromOpenedOriginal({
             id: currentFileId,
             mime_type: currentMimeType,
@@ -3621,6 +3777,8 @@ export default function PreviewScreen() {
             handleId,
             {
               useProvidedFileKey: !!requestFileFields && currentFileId === fileId,
+              // An export needs a file the share sheet can take, never a loopback stream.
+              streamVideo: forExport ? false : undefined,
               onProgress: (event) => {
                 if (options.onExportProgress) options.onExportProgress(event);
                 else applyNativeProgress(event, setLoadProgress);
@@ -3646,7 +3804,7 @@ export default function PreviewScreen() {
         });
         throw error;
       }
-      holdOpenedOriginalForPreview(currentFileId, decryptExt, decryptedUri, previewJob);
+      if (!forExport) holdOpenedOriginalForPreview(currentFileId, decryptExt, decryptedUri, previewJob);
       throwIfPreviewAborted(options.signal);
       setDownloadProgress(1);
       setLoadProgress(emptyPreviewProgress(null));
@@ -3661,7 +3819,9 @@ export default function PreviewScreen() {
       // open). Gated entirely inside the helper; we only feed it owner context.
       // hasThumbnail describes the *opened* file only — for swiped photos
       // (currentFileId !== fileId) we pass undefined so the helper skips.
-      maybeSelfRepairThumbnailFromLocalFile({
+      // Task 2335 review: not from an export copy, which moves away and is deleted when the
+      // share sheet closes.
+      if (!forExport) maybeSelfRepairThumbnailFromLocalFile({
         fileId: currentFileId,
         localPlaintextUri: decryptedUri,
         mimeType:
@@ -3758,7 +3918,22 @@ export default function PreviewScreen() {
       videoExtension: previewDecryptExtension(currentMimeType, currentFileName),
       isPdf,
       pdfUri,
-      fetchAndDecrypt: () => fetchAndDecrypt({ signal, onExportProgress }),
+      // Task 2335 review — the export's own whole-file copy, under its own key: never a preview's
+      // copy (kept leased for the session) and never joined to a running stream (a loopback URI
+      // the share sheet cannot take). Deleted when the sheet closes, or here on any failure.
+      decryptExportCopy: async () => {
+        const exportExtension = exportDecryptExtension(previewDecryptExtension(currentMimeType, currentFileName));
+        const release = () => releasePreviewCopy(currentFileId, exportExtension).then(() => {});
+        try {
+          const uri = await fetchAndDecrypt({ signal, onExportProgress, exportExtension });
+          return { uri, release };
+        } catch (error) {
+          // A cancel right after the decrypt finished leaves the copy leased: give it back. The
+          // key is this export's alone, so a release after decryptToTempFile's own is harmless.
+          await release().catch(() => {});
+          throw error;
+        }
+      },
       materializeStreamVideoForExport: materializeVideoPreviewForExport,
       signal,
     });
@@ -3766,24 +3941,10 @@ export default function PreviewScreen() {
     // in a fresh per-export folder instead of the id-named preview cache file.
     const decryptExtension = previewDecryptExtension(currentMimeType, currentFileName);
     const idBasedName = decryptExtension ? `${currentFileId}.${decryptExtension}` : currentFileId;
-    try {
-      const prepared = await prepareExportShareCopy({
-        sourceUri: resolved.uri,
-        displayName: exportName ?? null,
-        idBasedName,
-      });
-      return {
-        uri: prepared.uri,
-        reusedPreview: resolved.reusedPreview,
-        release: async () => {
-          await prepared.cleanup();
-          await resolved.release?.();
-        },
-      };
-    } catch (error) {
-      await resolved.release?.();
-      throw error;
-    }
+    // Moves an export-owned copy (copies a preview's); on a failed move or copy it releases the
+    // copy itself, so nothing of the export is left (stageExportForShare, tested with a throwing move).
+    const staged = await stageExportForShare(resolved, { displayName: exportName ?? null, idBasedName });
+    return { uri: staged.uri, reusedPreview: resolved.reusedPreview, release: staged.release };
   }, [
     currentFileId,
     currentFileName,
@@ -4109,10 +4270,13 @@ export default function PreviewScreen() {
     if (!isVideo) return;
     if (hasSwipe) return;
     if (Platform.OS === 'web') return;
+    // Task 2335 — never fetch a video the player cannot open (the stage offers Save to Files).
+    if (!videoPlayability.playable) return;
     const controller = new AbortController();
     let cancelled = false;
     setVideoLoading(true);
     setVideoError(null);
+    setVideoPlayerError(null);
     setStreamBufferPct(null);
     fetchAndDecrypt({ signal: controller.signal, onStreamProgress: setStreamBufferPct })
       .then((uri) => {
@@ -4141,7 +4305,7 @@ export default function PreviewScreen() {
       cancelled = true;
       controller.abort();
     };
-  }, [hasSwipe, isVideo, fetchAndDecrypt, fileId, mimeType, fileName]);
+  }, [hasSwipe, isVideo, fetchAndDecrypt, fileId, mimeType, fileName, videoPlayability.playable]);
 
   // Delete the temp video file when the screen unmounts.
   useEffect(() => {
@@ -4162,6 +4326,41 @@ export default function PreviewScreen() {
   const player = useVideoPlayer(videoUri, (p) => {
     p.loop = false;
   });
+
+  // Task 2335 — a player that cannot open its video says so. Before, PreviewScreen had no status
+  // listener: AVPlayer failed ("Cannot Open" for an MKV) and the stage showed a player that never
+  // started. The stage now shows "Couldn't play video" with Try again (retryLoad reloads).
+  useEffect(() => {
+    // expo-video returns to readyToPlay after every rebuffer and seek: trace the first one only.
+    let readyTraced = false;
+    const onStatus = ({ status, error }: Pick<StatusChangeEventPayload, 'status' | 'error'>) => {
+      if (status !== 'readyToPlay' && status !== 'error') return;
+      if (status === 'readyToPlay') {
+        if (readyTraced) return;
+        readyTraced = true;
+      }
+      const uri = tempVideoUriRef.current;
+      recordRuntimeTrace('preview.video.player_status', {
+        fileId: currentFileId,
+        status,
+        stream: isLoopbackStreamUri(uri),
+        reason: error?.message ?? null,
+      });
+      if (status !== 'error') return;
+      // A stream's pump would go on pulling the whole file for a player that stopped: release
+      // its lease (the last one cancels the stream and removes its partial plaintext).
+      if (uri && isLoopbackStreamUri(uri)) {
+        tempVideoUriRef.current = null;
+        void releasePreviewCopy(fileId, previewDecryptExtension(mimeType, fileName)).catch(() => {});
+      }
+      // A fresh player on retry: the same source would keep this failed one.
+      setVideoUri(null);
+      setVideoPlayerError(videoPlayerErrorMessage(error));
+    };
+    const subscription = player.addListener('statusChange', onStatus);
+    if (player.status === 'error') onStatus({ status: 'error' });
+    return () => subscription.remove();
+  }, [player, currentFileId, fileId, mimeType, fileName]);
 
   // Task 1568 — auto-load audio on mount; same shape as video's loader
   // above (fetchAndDecrypt → track the on-disk temp URI → delete it once the
@@ -4543,6 +4742,7 @@ export default function PreviewScreen() {
     recordRuntimeTrace('preview.download_original.press', { fileId: currentFileId, category });
 
     const exportController = new AbortController();
+    exportControllerRef.current = exportController;
     let releaseExportCopy: ExportUriResult['release'] | null = null;
 
     setDownloading(true);
@@ -4573,6 +4773,7 @@ export default function PreviewScreen() {
         await resolveExportDisplayName(),
       );
       releaseExportCopy = release ?? null;
+      if (exportController.signal.aborted) return;
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
@@ -4585,10 +4786,15 @@ export default function PreviewScreen() {
         dialogTitle: previewFileName,
       });
     } catch (err) {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Download failed', friendlyError(err));
+      if (exportController.signal.aborted || isAbortError(err)) {
+        recordRuntimeTrace('preview.download_original.cancelled', { fileId: currentFileId, category });
+      } else {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert('Download failed', friendlyError(err));
+      }
     } finally {
       exportController.abort();
+      if (exportControllerRef.current === exportController) exportControllerRef.current = null;
       if (releaseExportCopy) {
         await Promise.resolve(releaseExportCopy()).catch(() => {});
         releaseExportCopy = null;
@@ -4598,6 +4804,15 @@ export default function PreviewScreen() {
       setPreparingExport(false);
     }
   }, [category, currentFileId, currentMimeType, getExportUri, previewFileName, resolveExportDisplayName]);
+
+  // Task 2335 review — the pager's Save to Files: one stable callback over the current Save.
+  // handleDownload changes with every export dependency (videoUri, fetchAndDecrypt, …); passed to
+  // the pages directly, each change defeated PhotoPage's memo on every mounted page.
+  const handleDownloadRef = useRef(handleDownload);
+  handleDownloadRef.current = handleDownload;
+  const saveCurrentPageToFiles = useCallback(() => {
+    void handleDownloadRef.current();
+  }, []);
 
   const handleViewOriginal = useCallback(async () => {
     if (!isImage) return;
@@ -4996,9 +5211,13 @@ export default function PreviewScreen() {
         onDisplayedKind={handlePhotoPageDisplayedKind}
         videoControlsBottomInset={previewVideoControlsBottomInset}
         stageInsets={pagerStageInsets}
+        onSaveToFiles={saveCurrentPageToFiles}
+        saveToFilesBusy={index === currentPhotoIndex && downloading}
       />
     ),
     [
+      saveCurrentPageToFiles,
+      downloading,
       pagerStageInsets,
       activePhotoPageIndexes,
       authenticatedFileIds,
@@ -5039,6 +5258,7 @@ export default function PreviewScreen() {
     setPdfError(null);
     setTextError(null);
     setVideoError(null);
+    setVideoPlayerError(null);
     setAudioError(null);
     setRawError(null);
     setDocxError(null);
@@ -5096,8 +5316,8 @@ export default function PreviewScreen() {
   );
 
   const exportProgressOverlay = preparingExport ? (
-    <View style={[styles.exportProgressOverlay, { bottom: previewBottomInset + 76 }]} pointerEvents="none" testID="preview-export-progress">
-      <ExportProgressBanner ref={exportProgressRef} name={previewFileName} />
+    <View style={[styles.exportProgressOverlay, { bottom: previewBottomInset + 76 }]} pointerEvents="box-none" testID="preview-export-progress">
+      <ExportProgressBanner ref={exportProgressRef} name={previewFileName} onCancel={cancelExport} />
     </View>
   ) : null;
 
@@ -5371,6 +5591,16 @@ export default function PreviewScreen() {
                   {renderSharedProgress(false)}
                 </View>
               )
+            ) : !videoPlayability.playable ? (
+              <UnplayableVideoCard
+                name={previewFileName}
+                formatLabel={videoPlayability.formatLabel}
+                layout="stage"
+                saving={downloading}
+                onSaveToFiles={handleDownload}
+              />
+            ) : videoPlayerError ? (
+              renderLoadError("Couldn't play video", videoPlayerError, 'media')
             ) : videoUri ? (
               <View style={styles.mediaVideoStageWrap}>
                 <VideoView
@@ -7295,6 +7525,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   loadRetryText: { fontSize: 14, fontWeight: '600' },
+  saveToFilesBusy: { opacity: 0.5 },
   // 1346 — neither imageStatusTitle nor this base imageStatusSub bakes a
   // scheme-aware colour: this pair is shared verbatim by the always-dark
   // media branch (mediaStage error text) AND the doc branch (renderer error

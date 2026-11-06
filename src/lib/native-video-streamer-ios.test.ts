@@ -86,7 +86,13 @@ describe('iOS NativeVideoStreamer source contract', () => {
     expect(drain).toContain('decryptQueue.cancelAllOperations()');
     expect(drain).toContain('fetchQueue.waitUntilAllOperationsAreFinished()');
     expect(drain).toContain('decryptQueue.waitUntilAllOperationsAreFinished()');
-    expect(drain).toContain('teardown(deletePartial: true, unregister: true, removePromotedOutput: !wasTerminalAtCancel)');
+    expect(drain).toContain('teardown(unregister: true, removePromotedOutput: !wasTerminalAtCancel)');
+    // Task 2335 review: one teardown, always removing the partial plaintext and the working dir.
+    const teardown = bracedBody(sessionBody, 'private func teardown(unregister: Bool, removePromotedOutput: Bool = false) {');
+    expect(teardown).toContain('try? FileManager.default.removeItem(at: partialPlainUrl)');
+    expect(teardown).toContain('try? FileManager.default.removeItem(at: tempDir)');
+    expect(STREAMER_SWIFT).not.toContain('removeCiphertextFiles');
+    expect(STREAMER_SWIFT).not.toContain('deletePartial');
   });
 
   test('range handling rejects malformed or unsatisfiable ranges with 416', () => {
@@ -99,6 +105,22 @@ describe('iOS NativeVideoStreamer source contract', () => {
     expect(resolve).toContain('guard let parsedEnd = Int64(endRaw) else { return nil }');
     expect(resolve).toContain('guard start >= 0, start <= end, start < total else { return nil }');
     expect(STREAMER_SWIFT).toContain('Content-Range: bytes */');
+  });
+
+  test('task 2335: no whole-file ciphertext copy; each chunk is decrypted from its own file, then dropped', () => {
+    expect(STREAMER_SWIFT).not.toContain('appendingPathComponent("encrypted.bin")');
+    const decryptBody = bracedBody(STREAMER_SWIFT, 'private func decryptChunkFromDisk(index: Int) throws -> Bool {');
+    expect(decryptBody).toContain('readBytes(url: ciphertextFile, offset: 0, count: Int(encryptedSize))');
+    expect(decryptBody.indexOf('try? FileManager.default.removeItem(at: ciphertextFile)'))
+      .toBeLessThan(decryptBody.indexOf('key.decryptChunk(nonce: nonce, ciphertext: ciphertext)'));
+  });
+
+  test('task 2335: startup reports bytes done of bytes needed while a chunk is arriving', () => {
+    const fetchBody = bracedBody(STREAMER_SWIFT, 'private func fetchChunkToDisk(index: Int, expectedLength: Int64?) throws -> NativeVideoChunkFetchResult {');
+    expect(fetchBody).toMatch(/while semaphore\.wait\(timeout: \.now\(\) \+ 0\.05\) == \.timedOut \{[\s\S]*?emitStartupBuffering\(inFlightIndex: index, task: task\)/);
+    const emitBody = bracedBody(STREAMER_SWIFT, 'private func emitStartupBuffering(inFlightIndex: Int?, task: URLSessionTask?) {');
+    expect(emitBody).toContain('if mutedDownloadProgress {');
+    expect(emitBody).toContain('extra: ["buffering": true]');
   });
 
   test('read-ahead and progress accounting stay bounded for large chunk counts', () => {

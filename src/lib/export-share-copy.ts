@@ -32,6 +32,8 @@ export interface ExportShareFs {
   cacheDirectory: string | null;
   makeDirectoryAsync: (uri: string, options?: { intermediates?: boolean }) => Promise<void>;
   copyAsync: (options: { from: string; to: string }) => Promise<void>;
+  /** Needed only for `moveSource` (an export-owned decrypt). */
+  moveAsync?: (options: { from: string; to: string }) => Promise<void>;
   deleteAsync: (uri: string, options?: { idempotent?: boolean }) => Promise<void>;
   /** Lists the export root for the stale-copy sweep (absent ⇒ no sweep). */
   readDirectoryAsync?: (uri: string) => Promise<string[]>;
@@ -73,6 +75,34 @@ export function exportShareRoot(fs: ExportShareFs): string {
 
 export const PREVIEW_EXPORT_ROOT = exportShareRoot(FileSystem);
 
+/** Task 2335 delta review (P2-1) — per-export folders of exports still open in this process. */
+const liveExportFolders = new Set<string>();
+
+/**
+ * Task 2335 delta review (P2-1) — after launch or unlock, remove every per-export folder no
+ * export of this process still holds (a kill while the share sheet was open left it behind).
+ * Returns how many entries it removed.
+ */
+export async function sweepExportShareLeftovers(fs: ExportShareFs = FileSystem): Promise<number> {
+  if (!fs.readDirectoryAsync) return 0;
+  const root = exportShareRoot(fs);
+  let names: string[];
+  try {
+    names = await fs.readDirectoryAsync(root);
+  } catch {
+    return 0; // no export root yet
+  }
+  let removed = 0;
+  for (const name of new Set(names.map((entry) => entry.split('/')[0]).filter(Boolean))) {
+    if (liveExportFolders.has(`${root}${name}/`)) continue;
+    await fs.deleteAsync(`${root}${encodeURIComponent(name)}`, { idempotent: true }).then(
+      () => { removed += 1; },
+      () => { void traceExportDeleteFailed('export leftover sweep'); },
+    );
+  }
+  return removed;
+}
+
 export interface ExportShareCopy {
   /** The path handed to `Sharing.shareAsync` — `<folder>/<display name>`. */
   uri: string;
@@ -88,6 +118,12 @@ export interface PrepareExportShareCopyInput {
   displayName: string | null | undefined;
   /** Today's id-based name, used only when no display name is available. */
   idBasedName: string;
+  /**
+   * Task 2335 review — the source belongs to this export alone (decrypted under its own key, not
+   * a preview's copy): move it into the folder instead of copying it, so a 17 GB export is one
+   * plaintext on disk, not two.
+   */
+  moveSource?: boolean;
   random?: () => number;
   fs?: ExportShareFs;
   now?: () => number;
@@ -100,6 +136,7 @@ export async function prepareExportShareCopy({
   random,
   fs = FileSystem,
   now = Date.now,
+  moveSource = false,
 }: PrepareExportShareCopyInput): Promise<ExportShareCopy> {
   const root = exportShareRoot(fs);
   await sweepStaleExportFolders(fs, root, now());
@@ -109,15 +146,21 @@ export async function prepareExportShareCopy({
   assertExportTargetInsideFolder(uri, folderUri, name);
 
   const cleanup = async (): Promise<void> => {
-    await fs.deleteAsync(folderUri, { idempotent: true }).catch(() => {});
+    await fs.deleteAsync(folderUri, { idempotent: true }).catch(() => {
+      void traceExportDeleteFailed('preview export copy');
+    });
+    liveExportFolders.delete(folderUri);
   };
 
   try {
+    liveExportFolders.add(folderUri);
     await fs.makeDirectoryAsync(folderUri, { intermediates: true });
     // Task 1593 — plaintext writer, gated by the sign-out purge.
-    await gatedPlaintextWrite('preview export copy', uri, fs, () =>
-      fs.copyAsync({ from: sourceUri, to: uri }),
-    );
+    await gatedPlaintextWrite('preview export copy', uri, fs, () => {
+      if (!moveSource) return fs.copyAsync({ from: sourceUri, to: uri });
+      if (!fs.moveAsync) throw new Error('This file system cannot move the export copy');
+      return fs.moveAsync({ from: sourceUri, to: uri });
+    });
   } catch (error) {
     // Never leave a plaintext folder behind for a failed export.
     await cleanup();
@@ -125,6 +168,55 @@ export async function prepareExportShareCopy({
   }
 
   return { uri, folderUri, cleanup };
+}
+
+/**
+ * Task 2335 delta review (P2-2) — a failed delete of export plaintext is not silent. The trace
+ * carries the writer's label only, never the path: the export folder holds the file under its
+ * decrypted name. Lazy import, as `plaintext-gate.ts` does (runtime-trace pulls in the native
+ * module).
+ */
+async function traceExportDeleteFailed(label: string): Promise<void> {
+  try {
+    const { recordRuntimeTrace } = await import('./runtime-trace');
+    recordRuntimeTrace('export-share-copy.cleanup_delete_failed', { label });
+  } catch {
+    // best-effort tracing only
+  }
+}
+
+/** What an export resolved to: a file to hand over, and what gives it back. */
+export interface ExportShareSource {
+  uri: string;
+  /** Deletes or un-leases the source (the export's own copy: deletes it). */
+  release?: () => Promise<unknown> | unknown;
+  /** The source belongs to this export alone: move it, never copy it. */
+  exportOwned?: boolean;
+}
+
+/**
+ * Task 2335 delta review (P2-3) — stage a resolved export for the share sheet: the per-export
+ * folder under the real name (moved for an export-owned copy, copied otherwise). `release` removes
+ * the folder and then releases the source. If staging fails (a throwing move or copy) the folder
+ * is already gone and the source is released here, so no plaintext of the export is left.
+ */
+export async function stageExportForShare(
+  source: ExportShareSource,
+  input: Omit<PrepareExportShareCopyInput, 'sourceUri' | 'moveSource'>,
+): Promise<{ uri: string; release: () => Promise<void> }> {
+  try {
+    const prepared = await prepareExportShareCopy({ ...input, sourceUri: source.uri, moveSource: source.exportOwned === true });
+    return {
+      uri: prepared.uri,
+      release: async () => {
+        await prepared.cleanup();
+        await source.release?.();
+      },
+    };
+  } catch (error) {
+    await source.release?.();
+    throw error;
+  }
 }
 
 /** The path a `file://` URI names, decoded as the file-system layer decodes it. */

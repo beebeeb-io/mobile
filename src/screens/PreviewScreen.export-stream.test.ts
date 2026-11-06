@@ -135,7 +135,7 @@ describe('PreviewScreen stream export resolver', () => {
       videoExtension: 'mp4',
       isPdf: false,
       pdfUri: null,
-      fetchAndDecrypt: async () => { throw new Error('stream export must not use fallback decrypt'); },
+      decryptExportCopy: async () => { throw new Error('stream export must not use fallback decrypt'); },
       materializeStreamVideoForExport: async (fileId: string, extension: string) => {
         calls.push([fileId, extension]);
         return localPath;
@@ -163,7 +163,7 @@ describe('PreviewScreen stream export resolver', () => {
       videoExtension: 'mp4',
       isPdf: false,
       pdfUri: null,
-      fetchAndDecrypt: async () => localPath,
+      decryptExportCopy: async () => ({ uri: localPath, release: async () => {} }),
       materializeStreamVideoForExport: async () => { throw terminalError; },
     })).rejects.toThrow('Native stream failed');
 
@@ -181,7 +181,7 @@ describe('PreviewScreen stream export resolver', () => {
       videoExtension: 'mp4',
       isPdf: false,
       pdfUri: null,
-      fetchAndDecrypt: async () => localPath,
+      decryptExportCopy: async () => ({ uri: localPath, release: async () => {} }),
       materializeStreamVideoForExport: async () => loopbackCapability,
     })).rejects.toThrow('Cannot export this video yet');
 
@@ -200,7 +200,7 @@ describe('PreviewScreen stream export resolver', () => {
       videoExtension: 'mp4',
       isPdf: false,
       pdfUri: null,
-      fetchAndDecrypt: async () => localPath,
+      decryptExportCopy: async () => ({ uri: localPath, release: async () => {} }),
       signal: controller.signal,
       materializeStreamVideoForExport: async () => {
         controller.abort();
@@ -222,11 +222,47 @@ describe('PreviewScreen stream export resolver', () => {
       videoExtension: 'mp4',
       isPdf: false,
       pdfUri: null,
-      fetchAndDecrypt: async () => { throw new Error('cached video should be reused'); },
+      decryptExportCopy: async () => { throw new Error('cached video should be reused'); },
       materializeStreamVideoForExport: async () => { throw new Error('cached video should not materialize'); },
     });
 
     expect(result).toEqual({ uri: 'file:///cache/preview/local-video.mp4', reusedPreview: true });
+  });
+
+  test('task 2335 review: with no reusable preview, the export gets a copy of its own, to move and to release', async () => {
+    // An unplayable MKV (videoUri never set), or Save while a stream is still buffering: the
+    // export decrypts a copy under its own key and hands it over as export-owned, with the
+    // release that deletes it when the share sheet closes.
+    const released: string[] = [];
+    const exportCopy = 'file:///cache/preview/video.export-0a1b2c3d.mkv';
+    const result = await resolvePreviewExportUri({
+      isImage: false,
+      imageUri: null,
+      imagePreviewKind: null,
+      isVideo: true,
+      videoUri: null,
+      videoFileId: 'video',
+      videoExtension: 'mkv',
+      isPdf: false,
+      pdfUri: null,
+      decryptExportCopy: async () => ({ uri: exportCopy, release: async () => { released.push(exportCopy); } }),
+      materializeStreamVideoForExport: async () => { throw new Error('no stream to materialize'); },
+    });
+    expect(result.uri).toBe(exportCopy);
+    expect(result.exportOwned).toBe(true);
+    expect(result.reusedPreview).toBe(false);
+    await result.release?.();
+    expect(released).toEqual([exportCopy]);
+  });
+
+  test('task 2335 review: getExportUri decrypts under an export key, moves an export-owned copy, and releases it', () => {
+    const body = source.slice(source.indexOf('const getExportUri = useCallback'), source.indexOf('}, [', source.indexOf('const getExportUri = useCallback')));
+    expect(body).toContain('const exportExtension = exportDecryptExtension(previewDecryptExtension(currentMimeType, currentFileName));');
+    expect(body).toContain('const uri = await fetchAndDecrypt({ signal, onExportProgress, exportExtension });');
+    expect(body).toContain('const release = () => releasePreviewCopy(currentFileId, exportExtension).then(() => {});');
+    // Released on any failure too, so a cancel right after the decrypt leaves nothing leased.
+    expect(body).toMatch(/\} catch \(error\) \{[\s\S]{0,300}await release\(\)\.catch\(\(\) => \{\}\);\n\s+throw error;/);
+    expect(body).toContain('const staged = await stageExportForShare(resolved, { displayName: exportName ?? null, idBasedName });');
   });
 
   test('real download handler releases an export lease from finally after share returns', () => {
@@ -237,5 +273,37 @@ describe('PreviewScreen stream export resolver', () => {
       handleDownloadBody.indexOf('await Sharing.shareAsync'),
     );
     expect(handleDownloadBody).toContain('} finally {');
+  });
+
+  test('task 2335 delta review: Cancel on the export banner and leaving the screen abort the export', () => {
+    const handleDownloadIndex = source.indexOf('const handleDownload = useCallback');
+    const handleDownloadBody = source.slice(handleDownloadIndex, source.indexOf('const handleViewOriginal', handleDownloadIndex));
+    // The running export's controller is reachable from outside the handler…
+    expect(handleDownloadBody).toContain('exportControllerRef.current = exportController;');
+    // …a cancel is not a failure (no "Download failed", no error haptic) and opens no sheet…
+    expect(handleDownloadBody).toMatch(/\} catch \(err\) \{\n\s+if \(exportController\.signal\.aborted \|\| isAbortError\(err\)\) \{/);
+    expect(handleDownloadBody.indexOf('if (exportController.signal.aborted) return;')).toBeGreaterThan(handleDownloadBody.indexOf('const { uri: shareUri, release } = await getExportUri('));
+    expect(handleDownloadBody.indexOf('if (exportController.signal.aborted) return;')).toBeLessThan(handleDownloadBody.indexOf('await Sharing.shareAsync'));
+    // …and the controller is cleared only by its own export.
+    expect(handleDownloadBody).toContain('if (exportControllerRef.current === exportController) exportControllerRef.current = null;');
+    // Unmount aborts it.
+    expect(source).toMatch(/useEffect\(\(\) => \(\) => \{\n\s+exportControllerRef\.current\?\.abort\(\);\n\s+\}, \[\]\);/);
+    // The banner's Cancel is wired, and the overlay lets the touch through to it.
+    const overlay = source.slice(source.indexOf('const exportProgressOverlay = preparingExport'), source.indexOf(') : null;', source.indexOf('const exportProgressOverlay = preparingExport')));
+    expect(overlay).toContain('pointerEvents="box-none"');
+    expect(overlay).toContain('onCancel={cancelExport}');
+    expect(source).toContain('const cancelExport = useCallback(() => exportControllerRef.current?.abort(), []);');
+    const banner = readFileSync(join(SRC, 'components', 'ExportProgressBanner.tsx'), 'utf8');
+    expect(banner).toContain('testID="export-progress-cancel"');
+    expect(banner).toMatch(/onPress=\{onCancel\}[\s\S]{0,300}accessibilityRole="button"[\s\S]{0,300}>\s*Cancel\s*</);
+  });
+
+  test('task 2335 delta review: the export leftover sweep runs once after launch and after every unlock', () => {
+    const app = readFileSync(join(SRC, 'App.tsx'), 'utf8');
+    expect(app).toContain("import { sweepExportLeftovers } from './lib/native-decrypt';");
+    const guard = app.slice(app.indexOf('function BiometricGuard('), app.indexOf('async function handleUnlocked('));
+    expect(guard).toMatch(/useEffect\(\(\) => \{\n\s+if \(Platform\.OS !== 'web'\) void sweepExportLeftovers\(\)\.catch\(\(\) => 0\);\n\s+\}, \[\]\);/);
+    const unlocked = app.slice(app.indexOf('async function handleUnlocked('), app.indexOf('ok: true,', app.indexOf('async function handleUnlocked(')));
+    expect(unlocked.indexOf('void sweepExportLeftovers().catch(() => 0);')).toBeGreaterThan(unlocked.indexOf('onUnlock();'));
   });
 });
