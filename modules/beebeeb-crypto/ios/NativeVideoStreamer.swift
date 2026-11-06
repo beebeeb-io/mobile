@@ -509,7 +509,7 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
       self.fetchQueue.waitUntilAllOperationsAreFinished()
       self.decryptQueue.waitUntilAllOperationsAreFinished()
       if let errorMessage { self.progress.onError(errorMessage) }
-      self.teardown(deletePartial: true, unregister: true, removePromotedOutput: !wasTerminalAtCancel)
+      self.teardown(unregister: true, removePromotedOutput: !wasTerminalAtCancel)
     }
     if waitForQueues {
       finish()
@@ -823,7 +823,10 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     notifyTerminalOnce()
   }
 
-  private func teardown(deletePartial: Bool, unregister: Bool, removePromotedOutput: Bool = false) {
+  /// Every teardown removes the partial plaintext and the whole working directory (the chunks'
+  /// ciphertext files with it); `removePromotedOutput` also removes a promoted output this
+  /// session owns.
+  private func teardown(unregister: Bool, removePromotedOutput: Bool = false) {
     state.lock()
     if didTeardown {
       state.unlock()
@@ -836,14 +839,10 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     decryptQueue.cancelAllOperations()
     clearFileKey()
     writerLock.lock()
-    if deletePartial {
-      try? FileManager.default.removeItem(at: partialPlainUrl)
-      try? FileManager.default.removeItem(at: tempDir)
-      if shouldRemoveOutput {
-        try? FileManager.default.removeItem(at: outputUrl)
-      }
-    } else {
-      removeCiphertextFiles()
+    try? FileManager.default.removeItem(at: partialPlainUrl)
+    try? FileManager.default.removeItem(at: tempDir)
+    if shouldRemoveOutput {
+      try? FileManager.default.removeItem(at: outputUrl)
     }
     writerLock.unlock()
     if unregister {
@@ -869,14 +868,6 @@ private final class NativeVideoStreamSession: @unchecked Sendable {
     let handle = try FileHandle(forWritingTo: partialPlainUrl)
     defer { try? handle.close() }
     try handle.truncate(atOffset: UInt64(size))
-  }
-
-  private func removeCiphertextFiles() {
-    state.lock()
-    let files = Array(ciphertextFiles.values)
-    ciphertextFiles.removeAll()
-    state.unlock()
-    files.forEach { try? FileManager.default.removeItem(at: $0) }
   }
 
   /// Task 2335: while the stream starts (chunk 0 and the tail, before the player has a URL),

@@ -86,7 +86,13 @@ describe('iOS NativeVideoStreamer source contract', () => {
     expect(drain).toContain('decryptQueue.cancelAllOperations()');
     expect(drain).toContain('fetchQueue.waitUntilAllOperationsAreFinished()');
     expect(drain).toContain('decryptQueue.waitUntilAllOperationsAreFinished()');
-    expect(drain).toContain('teardown(deletePartial: true, unregister: true, removePromotedOutput: !wasTerminalAtCancel)');
+    expect(drain).toContain('teardown(unregister: true, removePromotedOutput: !wasTerminalAtCancel)');
+    // Task 2335 review: one teardown, always removing the partial plaintext and the working dir.
+    const teardown = bracedBody(sessionBody, 'private func teardown(unregister: Bool, removePromotedOutput: Bool = false) {');
+    expect(teardown).toContain('try? FileManager.default.removeItem(at: partialPlainUrl)');
+    expect(teardown).toContain('try? FileManager.default.removeItem(at: tempDir)');
+    expect(STREAMER_SWIFT).not.toContain('removeCiphertextFiles');
+    expect(STREAMER_SWIFT).not.toContain('deletePartial');
   });
 
   test('range handling rejects malformed or unsatisfiable ranges with 416', () => {
