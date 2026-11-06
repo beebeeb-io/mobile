@@ -53,7 +53,9 @@ describe('previewDecryptExtension — the preview cache key', () => {
 
 describe('both callers use the one key', () => {
   test('PreviewScreen decrypts the original under previewDecryptExtension and has no private copy of the helpers', () => {
-    expect(previewSource).toMatch(/const decryptExt = previewDecryptExtension\(currentMimeType, currentFileName\);/);
+    // Task 2335 review: an export decrypts under its own key (exportDecryptExtension); every
+    // preview open still uses the one preview key.
+    expect(previewSource).toMatch(/const decryptExt = options\.exportExtension \?\? previewDecryptExtension\(currentMimeType, currentFileName\);/);
     expect(previewSource).not.toMatch(/function extensionForMime\(/);
     expect(previewSource).not.toMatch(/function previewCacheName\(/);
     expect(previewSource).not.toMatch(/ext \|\| cacheFileName/);
