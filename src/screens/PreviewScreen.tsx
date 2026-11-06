@@ -2653,6 +2653,13 @@ export default function PreviewScreen() {
   ));
   const [preparingExport, setPreparingExport] = useState(false);
   const exportProgressRef = useRef<ExportProgressBannerHandle>(null);
+  // Task 2335 delta review (P2-1) — the running Save's controller: the banner's Cancel and
+  // leaving the screen abort it, so a long decrypt never runs (and writes plaintext) unseen.
+  const exportControllerRef = useRef<AbortController | null>(null);
+  const cancelExport = useCallback(() => exportControllerRef.current?.abort(), []);
+  useEffect(() => () => {
+    exportControllerRef.current?.abort();
+  }, []);
   const [optionsVisible, setOptionsVisible] = useState(false);
   const [originalPhotoRequest, setOriginalPhotoRequest] = useState<{ fileId: string; nonce: number } | null>(null);
 
@@ -4735,6 +4742,7 @@ export default function PreviewScreen() {
     recordRuntimeTrace('preview.download_original.press', { fileId: currentFileId, category });
 
     const exportController = new AbortController();
+    exportControllerRef.current = exportController;
     let releaseExportCopy: ExportUriResult['release'] | null = null;
 
     setDownloading(true);
@@ -4765,6 +4773,7 @@ export default function PreviewScreen() {
         await resolveExportDisplayName(),
       );
       releaseExportCopy = release ?? null;
+      if (exportController.signal.aborted) return;
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
@@ -4777,10 +4786,15 @@ export default function PreviewScreen() {
         dialogTitle: previewFileName,
       });
     } catch (err) {
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Download failed', friendlyError(err));
+      if (exportController.signal.aborted || isAbortError(err)) {
+        recordRuntimeTrace('preview.download_original.cancelled', { fileId: currentFileId, category });
+      } else {
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert('Download failed', friendlyError(err));
+      }
     } finally {
       exportController.abort();
+      if (exportControllerRef.current === exportController) exportControllerRef.current = null;
       if (releaseExportCopy) {
         await Promise.resolve(releaseExportCopy()).catch(() => {});
         releaseExportCopy = null;
@@ -5302,8 +5316,8 @@ export default function PreviewScreen() {
   );
 
   const exportProgressOverlay = preparingExport ? (
-    <View style={[styles.exportProgressOverlay, { bottom: previewBottomInset + 76 }]} pointerEvents="none" testID="preview-export-progress">
-      <ExportProgressBanner ref={exportProgressRef} name={previewFileName} />
+    <View style={[styles.exportProgressOverlay, { bottom: previewBottomInset + 76 }]} pointerEvents="box-none" testID="preview-export-progress">
+      <ExportProgressBanner ref={exportProgressRef} name={previewFileName} onCancel={cancelExport} />
     </View>
   ) : null;
 

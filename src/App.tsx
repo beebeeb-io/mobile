@@ -21,6 +21,7 @@ import { ToastProvider } from './lib/toast-context';
 import { requestDriveRefresh } from './lib/drive-freshness';
 import { setSyncTraceSink } from './lib/sync-client';
 import { recordRuntimeTrace } from './lib/runtime-trace';
+import { sweepExportLeftovers } from './lib/native-decrypt';
 import { createJsEventLoopMonitor } from './lib/js-event-loop-monitor';
 import { flushMarksBeforeSignOut } from './lib/sign-out-mark-flush';
 import { BBLogo } from './components/BBLogo';
@@ -743,6 +744,11 @@ function BiometricGuard({
   onRecoveryRequired: () => void;
 }) {
   const crypto = useCrypto();
+  // Task 2335 delta review (P2-1) — once per launch, and after every unlock below: remove the
+  // export plaintext a killed Save left in Caches. It never touches a live preview or stream.
+  useEffect(() => {
+    if (Platform.OS !== 'web') void sweepExportLeftovers().catch(() => 0);
+  }, []);
 
   // There is deliberately no silent cold-launch unlock here. A signed-in cold
   // launch always shows BiometricLockScreen, which is the SOLE driver of the
@@ -848,6 +854,7 @@ function BiometricGuard({
     // Authentication and key classification are complete. Do not keep the
     // lock-screen spinner visible while optional post-unlock housekeeping runs.
     onUnlock();
+    void sweepExportLeftovers().catch(() => 0);
     void (async () => {
       if (migrateAccessControl) {
         // Move a legacy Face-ID-only or passcode-only key to user presence.

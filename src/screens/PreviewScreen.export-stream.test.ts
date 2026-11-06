@@ -274,4 +274,36 @@ describe('PreviewScreen stream export resolver', () => {
     );
     expect(handleDownloadBody).toContain('} finally {');
   });
+
+  test('task 2335 delta review: Cancel on the export banner and leaving the screen abort the export', () => {
+    const handleDownloadIndex = source.indexOf('const handleDownload = useCallback');
+    const handleDownloadBody = source.slice(handleDownloadIndex, source.indexOf('const handleViewOriginal', handleDownloadIndex));
+    // The running export's controller is reachable from outside the handler…
+    expect(handleDownloadBody).toContain('exportControllerRef.current = exportController;');
+    // …a cancel is not a failure (no "Download failed", no error haptic) and opens no sheet…
+    expect(handleDownloadBody).toMatch(/\} catch \(err\) \{\n\s+if \(exportController\.signal\.aborted \|\| isAbortError\(err\)\) \{/);
+    expect(handleDownloadBody.indexOf('if (exportController.signal.aborted) return;')).toBeGreaterThan(handleDownloadBody.indexOf('const { uri: shareUri, release } = await getExportUri('));
+    expect(handleDownloadBody.indexOf('if (exportController.signal.aborted) return;')).toBeLessThan(handleDownloadBody.indexOf('await Sharing.shareAsync'));
+    // …and the controller is cleared only by its own export.
+    expect(handleDownloadBody).toContain('if (exportControllerRef.current === exportController) exportControllerRef.current = null;');
+    // Unmount aborts it.
+    expect(source).toMatch(/useEffect\(\(\) => \(\) => \{\n\s+exportControllerRef\.current\?\.abort\(\);\n\s+\}, \[\]\);/);
+    // The banner's Cancel is wired, and the overlay lets the touch through to it.
+    const overlay = source.slice(source.indexOf('const exportProgressOverlay = preparingExport'), source.indexOf(') : null;', source.indexOf('const exportProgressOverlay = preparingExport')));
+    expect(overlay).toContain('pointerEvents="box-none"');
+    expect(overlay).toContain('onCancel={cancelExport}');
+    expect(source).toContain('const cancelExport = useCallback(() => exportControllerRef.current?.abort(), []);');
+    const banner = readFileSync(join(SRC, 'components', 'ExportProgressBanner.tsx'), 'utf8');
+    expect(banner).toContain('testID="export-progress-cancel"');
+    expect(banner).toMatch(/onPress=\{onCancel\}[\s\S]{0,300}accessibilityRole="button"[\s\S]{0,300}>\s*Cancel\s*</);
+  });
+
+  test('task 2335 delta review: the export leftover sweep runs once after launch and after every unlock', () => {
+    const app = readFileSync(join(SRC, 'App.tsx'), 'utf8');
+    expect(app).toContain("import { sweepExportLeftovers } from './lib/native-decrypt';");
+    const guard = app.slice(app.indexOf('function BiometricGuard('), app.indexOf('async function handleUnlocked('));
+    expect(guard).toMatch(/useEffect\(\(\) => \{\n\s+if \(Platform\.OS !== 'web'\) void sweepExportLeftovers\(\)\.catch\(\(\) => 0\);\n\s+\}, \[\]\);/);
+    const unlocked = app.slice(app.indexOf('async function handleUnlocked('), app.indexOf('ok: true,', app.indexOf('async function handleUnlocked(')));
+    expect(unlocked.indexOf('void sweepExportLeftovers().catch(() => 0);')).toBeGreaterThan(unlocked.indexOf('onUnlock();'));
+  });
 });

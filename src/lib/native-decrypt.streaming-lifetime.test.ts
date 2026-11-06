@@ -36,7 +36,9 @@ mock.module('expo-file-system/legacy', () => ({
       deleteBlocks.delete(uri);
       await block;
     }
-    for (const k of [...files.keys()]) if (k === uri || (uri.endsWith('/') && k.startsWith(uri))) files.delete(k);
+    // A directory delete is recursive, with or without the trailing slash (as on device).
+    const dir = uri.endsWith('/') ? uri : `${uri}/`;
+    for (const k of [...files.keys()]) if (k === uri || k.startsWith(dir)) files.delete(k);
   },
   writeAsStringAsync: async () => {},
   readAsStringAsync: async () => '',
@@ -162,6 +164,40 @@ beforeEach(() => {
 });
 
 describe('1724 streaming preview lifetime', () => {
+  test('task 2335 delta review: the launch/unlock sweep removes export leftovers only, never a live preview, stream or running export', async () => {
+    const P = 'file:///cache/preview/';
+    const E = 'file:///cache/beebeeb-export/';
+    const UUID = '0F8FAD5B-D9CB-469F-A165-70867728950E';
+    try {
+      // Live in this process: an export decrypting (leased), a stream, and an export whose sheet is open.
+      const runningExt = nd.exportDecryptExtension('pdf', () => 0.1);
+      const running = await nd.decryptToTempFile('vrunning', null, runningExt, 5000, 4, 7, { streamVideo: false });
+      files.set(`${P}.vrunning.${runningExt}.${UUID}.tmp`, 10);
+      await nd.decryptToTempFile('vplaying', null, 'mp4', 5000, 4, 7);
+      files.set(`${P}.beebeeb-stream-vplaying-1234/decrypted.streaming`, 10);
+      const openSheet = await prepareExportShareCopy({ sourceUri: running, displayName: 'Open.pdf', idBasedName: 'x.pdf' });
+      // A preview's own files.
+      const previewFiles = [`${P}vpreview.mp4`, `${P}.vpreview.mp4.${UUID}.tmp`];
+      for (const f of previewFiles) files.set(f, 10);
+      // Left by a killed export: the decrypted copy, its hidden temp, and a staged folder.
+      const leftovers = [`${P}vold.export-0a1b2c3d.mkv`, `${P}.vold.export-0a1b2c3d.mkv.${UUID}.tmp`, `${E}m1x2-0a1b2c3d/Holiday.mkv`];
+      for (const f of leftovers) files.set(f, 10);
+
+      const removed = await nd.sweepExportLeftovers();
+
+      expect(removed).toBe(3);
+      for (const f of leftovers) expect(files.has(f)).toBe(false);
+      for (const f of previewFiles) expect(files.has(f)).toBe(true);
+      expect(files.has(`${P}vplaying.mp4`)).toBe(true);
+      expect(files.has(`${P}.beebeeb-stream-vplaying-1234/decrypted.streaming`)).toBe(true);
+      expect(files.has(`${P}.vrunning.${runningExt}.${UUID}.tmp`)).toBe(true); // a running export's temp
+      expect(files.has(openSheet.uri)).toBe(true); // an open share sheet's copy
+      await openSheet.cleanup();
+    } finally {
+      await plaintextGate.purge(() => nd.clearPreviewCache());
+    }
+  });
+
   test('task 2335 delta review: a failed delete on the last release is traced with a label only', async () => {
     const exportExtension = nd.exportDecryptExtension('pdf', () => 0.75);
     const copy = await nd.decryptToTempFile('vdelfail', null, exportExtension, 5000, 4, 7, { streamVideo: false });

@@ -75,6 +75,34 @@ export function exportShareRoot(fs: ExportShareFs): string {
 
 export const PREVIEW_EXPORT_ROOT = exportShareRoot(FileSystem);
 
+/** Task 2335 delta review (P2-1) — per-export folders of exports still open in this process. */
+const liveExportFolders = new Set<string>();
+
+/**
+ * Task 2335 delta review (P2-1) — after launch or unlock, remove every per-export folder no
+ * export of this process still holds (a kill while the share sheet was open left it behind).
+ * Returns how many entries it removed.
+ */
+export async function sweepExportShareLeftovers(fs: ExportShareFs = FileSystem): Promise<number> {
+  if (!fs.readDirectoryAsync) return 0;
+  const root = exportShareRoot(fs);
+  let names: string[];
+  try {
+    names = await fs.readDirectoryAsync(root);
+  } catch {
+    return 0; // no export root yet
+  }
+  let removed = 0;
+  for (const name of new Set(names.map((entry) => entry.split('/')[0]).filter(Boolean))) {
+    if (liveExportFolders.has(`${root}${name}/`)) continue;
+    await fs.deleteAsync(`${root}${encodeURIComponent(name)}`, { idempotent: true }).then(
+      () => { removed += 1; },
+      () => { void traceExportDeleteFailed('export leftover sweep'); },
+    );
+  }
+  return removed;
+}
+
 export interface ExportShareCopy {
   /** The path handed to `Sharing.shareAsync` — `<folder>/<display name>`. */
   uri: string;
@@ -121,9 +149,11 @@ export async function prepareExportShareCopy({
     await fs.deleteAsync(folderUri, { idempotent: true }).catch(() => {
       void traceExportDeleteFailed('preview export copy');
     });
+    liveExportFolders.delete(folderUri);
   };
 
   try {
+    liveExportFolders.add(folderUri);
     await fs.makeDirectoryAsync(folderUri, { intermediates: true });
     // Task 1593 — plaintext writer, gated by the sign-out purge.
     await gatedPlaintextWrite('preview export copy', uri, fs, () => {
