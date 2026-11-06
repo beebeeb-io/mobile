@@ -22,7 +22,13 @@
  * catches any container iOS refuses that macOS accepted.
  */
 
-export const IOS_UNPLAYABLE_VIDEO_EXTENSIONS: ReadonlySet<string> = Object.freeze(new Set(['mkv', 'webm', 'wmv']));
+const FORMAT_LABEL_BY_EXTENSION: Readonly<Record<string, string>> = Object.freeze({
+  mkv: 'MKV',
+  webm: 'WebM',
+  wmv: 'WMV',
+});
+
+export const IOS_UNPLAYABLE_VIDEO_EXTENSIONS: ReadonlySet<string> = Object.freeze(new Set(Object.keys(FORMAT_LABEL_BY_EXTENSION)));
 
 /** MIME type → the container's name as people know it. */
 const IOS_UNPLAYABLE_VIDEO_MIME_TYPES: Readonly<Record<string, string>> = Object.freeze({
@@ -31,12 +37,6 @@ const IOS_UNPLAYABLE_VIDEO_MIME_TYPES: Readonly<Record<string, string>> = Object
   'video/matroska': 'MKV',
   'video/webm': 'WebM',
   'video/x-ms-wmv': 'WMV',
-});
-
-const FORMAT_LABEL_BY_EXTENSION: Readonly<Record<string, string>> = Object.freeze({
-  mkv: 'MKV',
-  webm: 'WebM',
-  wmv: 'WMV',
 });
 
 export type InAppVideoPlayability = { playable: true } | { playable: false; formatLabel: string };

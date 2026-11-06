@@ -37,10 +37,6 @@ final class NativeVideoStreamProgress: @unchecked Sendable {
     return value
   }
 
-  func emitDownload(bytesWritten: Int64, bytesExpected: Int64) {
-    emitProgress(stage: "downloading", bytesDownloaded: max(0, bytesWritten), bytesTotal: bytesExpected > 0 ? bytesExpected : 0)
-  }
-
   func emitProgress(
     stage: String,
     bytesDownloaded: Int64? = nil,
@@ -201,28 +197,31 @@ private enum NativeVideoChunkMath {
   /// Task 2335: the wire bytes a stream needs before the player gets a URL, chunk 0 and the
   /// tail chunk, whole. The tail's size is its own response's length once that is known; before
   /// it, the tail is derived from the declared size in the two shapes `declaredSizeMatches`
-  /// accepts (plaintext, or the ciphertext total). With no usable declared size the tail is not
-  /// guessed: only chunk 0 counts until the tail's response arrives. Nil while chunk 0's length or
-  /// the chunk count is unknown.
+  /// accepts (plaintext, or the ciphertext total). With no usable declared size the tail counts
+  /// as one full chunk, its largest possible size: the need can then only shrink once the tail's
+  /// length arrives, so the fraction done never goes down. Nil while chunk 0's length or the
+  /// chunk count is unknown.
   static func startupWireBytes(headWire: Int64, chunkCount: Int, tailWire: Int64, declaredSize: Int64?) -> Int64? {
     guard headWire > Int64(overheadBytes), chunkCount > 0 else { return nil }
     if chunkCount == 1 { return headWire }
-    if tailWire > 0 {
-      let total = headWire.addingReportingOverflow(tailWire)
-      return total.overflow ? nil : total.partialValue
-    }
-    guard let declaredSize else { return headWire }
+    let knownTail = tailWire > 0 ? tailWire : tailWireFromDeclared(headWire: headWire, chunkCount: chunkCount, declaredSize: declaredSize)
+    let total = headWire.addingReportingOverflow(knownTail ?? headWire)
+    return total.overflow ? nil : total.partialValue
+  }
+
+  private static func tailWireFromDeclared(headWire: Int64, chunkCount: Int, declaredSize: Int64?) -> Int64? {
+    guard let declaredSize else { return nil }
     let plaintextChunkSize = headWire - Int64(overheadBytes)
     let fullChunksBefore = plaintextChunkSize.multipliedReportingOverflow(by: Int64(chunkCount - 1))
     let overheadTotal = Int64(overheadBytes).multipliedReportingOverflow(by: Int64(chunkCount))
-    guard !fullChunksBefore.overflow, !overheadTotal.overflow else { return headWire }
+    guard !fullChunksBefore.overflow, !overheadTotal.overflow else { return nil }
     for plaintextTotal in [declaredSize, declaredSize - overheadTotal.partialValue] {
       let tailPlain = plaintextTotal - fullChunksBefore.partialValue
       if tailPlain > 0, tailPlain <= plaintextChunkSize {
-        return headWire + tailPlain + Int64(overheadBytes)
+        return tailPlain + Int64(overheadBytes)
       }
     }
-    return headWire
+    return nil
   }
 }
 

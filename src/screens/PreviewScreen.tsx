@@ -716,6 +716,52 @@ function PreviewProgressStatus({
   );
 }
 
+/**
+ * Task 2335 — the honest state for a video the in-app player cannot open (iOS: MKV, WebM, WMV;
+ * video-playability.ts), for the single-file stage and the pager page alike. The failed-load
+ * card's shape (title, line, one bordered action) on the media's forced-dark ground; the action
+ * is the screen's existing Save (the share sheet with the real file name: Save to Files).
+ */
+function UnplayableVideoCard({
+  name,
+  formatLabel,
+  layout,
+  saving,
+  onSaveToFiles,
+}: {
+  name: string;
+  formatLabel: string;
+  layout: 'stage' | 'page';
+  saving: boolean;
+  /** Absent on a pager page that is not the current one (Save acts on the current file). */
+  onSaveToFiles?: () => void;
+}) {
+  const page = layout === 'page';
+  const lineStyle = page ? styles.photoPageStatusSub : styles.imageStatusSub;
+  return (
+    <View style={page ? styles.photoPageStatus : styles.imageStatus} testID="preview-video-unsupported">
+      <Text style={page ? styles.photoPageStatusTitle : [styles.imageStatusTitle, { color: colors.white }]} numberOfLines={3}>
+        {name}
+      </Text>
+      <Text style={lineStyle}>{unplayableVideoMessage(deviceNoun())}</Text>
+      <Text style={lineStyle}>{unplayableVideoActionHint(formatLabel)}</Text>
+      {onSaveToFiles ? (
+        <TouchableOpacity
+          onPress={onSaveToFiles}
+          disabled={saving}
+          style={[styles.loadRetryButton, { borderColor: 'rgba(255,255,255,0.35)' }, saving && styles.saveToFilesBusy]}
+          accessibilityRole="button"
+          accessibilityLabel="Save to Files"
+          accessibilityState={{ disabled: saving }}
+          testID="preview-video-save-to-files"
+        >
+          <Text style={[styles.loadRetryText, { color: colors.white }]}>Save to Files</Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+}
+
 function StreamingBufferBadge({ pct, bottomInset = 24 }: { pct: number; bottomInset?: number }) {
   return (
     <View style={[styles.streamBadgeLayer, { bottom: bottomInset }]} pointerEvents="none">
@@ -1497,6 +1543,7 @@ export const PhotoPage = React.memo(function PhotoPage({
   videoControlsBottomInset,
   stageInsets,
   onSaveToFiles,
+  saveToFilesBusy = false,
 }: {
   entry: PhotoPageEntry;
   shouldLoadFull: boolean;
@@ -1545,6 +1592,8 @@ export const PhotoPage = React.memo(function PhotoPage({
   stageInsets?: { top: number; bottom: number };
   /** Task 2335 — Save to Files for a video this device cannot play (the parent's Save). */
   onSaveToFiles?: () => void;
+  /** Task 2335 — true while that Save runs (one export at a time). */
+  saveToFilesBusy?: boolean;
 }) {
   const { colors: c } = useTheme();
   const { isUnlocked, getFileKeyBytes, getMasterKeyHandleId } = useCrypto();
@@ -2199,24 +2248,13 @@ export const PhotoPage = React.memo(function PhotoPage({
           ) : null}
           {!videoPlayability.playable ? (
             // Task 2335 — a video this device cannot play: never loaded, never handed to a player.
-            <View style={styles.photoPageStatus} testID="preview-video-unsupported">
-              <Text style={styles.photoPageStatusTitle} numberOfLines={3}>
-                {previewDisplayName(entryFileName, 'video')}
-              </Text>
-              <Text style={styles.photoPageStatusSub}>{unplayableVideoMessage(deviceNoun())}</Text>
-              <Text style={styles.photoPageStatusSub}>{unplayableVideoActionHint(videoPlayability.formatLabel)}</Text>
-              {isCurrent && onSaveToFiles ? (
-                <TouchableOpacity
-                  onPress={onSaveToFiles}
-                  style={[styles.loadRetryButton, { borderColor: 'rgba(255,255,255,0.35)' }]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Save to Files"
-                  testID="preview-video-save-to-files"
-                >
-                  <Text style={[styles.loadRetryText, { color: colors.white }]}>Save to Files</Text>
-                </TouchableOpacity>
-              ) : null}
-            </View>
+            <UnplayableVideoCard
+              name={previewDisplayName(entryFileName, 'video')}
+              formatLabel={videoPlayability.formatLabel}
+              layout="page"
+              saving={saveToFilesBusy}
+              onSaveToFiles={isCurrent ? onSaveToFiles : undefined}
+            />
           ) : error || playerError ? (
             <View style={styles.photoPageStatus}>
               <Text style={styles.photoPageStatusTitle}>
@@ -3851,8 +3889,11 @@ export default function PreviewScreen() {
       videoExtension: previewDecryptExtension(currentMimeType, currentFileName),
       isPdf,
       pdfUri,
-      // Task 2335 — the share sheet takes a file, never a loopback stream: an export that
-      // starts the decrypt (an unplayable video never loaded one) decrypts the whole file.
+      // Task 2335 — the share sheet takes a file, never a loopback stream: an export that starts
+      // the decrypt itself (an unplayable video never loads one) decrypts the whole file. A
+      // stream already running for this file is still joined (native-decrypt `join_active`
+      // returns its loopback URI): the single-file stage materializes that above; the pager's
+      // Save does not yet (pre-existing, a follow-up in the PR).
       fetchAndDecrypt: () => fetchAndDecrypt({ signal, onExportProgress, streamVideo: false }),
       materializeStreamVideoForExport: materializeVideoPreviewForExport,
       signal,
@@ -4265,8 +4306,14 @@ export default function PreviewScreen() {
   // listener: AVPlayer failed ("Cannot Open" for an MKV) and the stage showed a player that never
   // started. The stage now shows "Couldn't play video" with Try again (retryLoad reloads).
   useEffect(() => {
+    // expo-video returns to readyToPlay after every rebuffer and seek: trace the first one only.
+    let readyTraced = false;
     const onStatus = ({ status, error }: Pick<StatusChangeEventPayload, 'status' | 'error'>) => {
       if (status !== 'readyToPlay' && status !== 'error') return;
+      if (status === 'readyToPlay') {
+        if (readyTraced) return;
+        readyTraced = true;
+      }
       const uri = tempVideoUriRef.current;
       recordRuntimeTrace('preview.video.player_status', {
         fileId: currentFileId,
@@ -5124,10 +5171,12 @@ export default function PreviewScreen() {
         videoControlsBottomInset={previewVideoControlsBottomInset}
         stageInsets={pagerStageInsets}
         onSaveToFiles={handleDownload}
+        saveToFilesBusy={downloading}
       />
     ),
     [
       handleDownload,
+      downloading,
       pagerStageInsets,
       activePhotoPageIndexes,
       authenticatedFileIds,
@@ -5211,30 +5260,6 @@ export default function PreviewScreen() {
       </View>
     );
   };
-
-  // Task 2335 — the honest state for a video the in-app player cannot open (iOS: MKV, WebM, WMV;
-  // video-playability.ts). The failed-load card's shape (title, line, one action); the action is
-  // the existing Save (the share sheet with the real file name: Save to Files).
-  const renderUnplayableVideo = (formatLabel: string) => (
-    <View style={styles.imageStatus} testID="preview-video-unsupported">
-      <Text style={[styles.imageStatusTitle, { color: colors.white }]} numberOfLines={3}>
-        {previewFileName}
-      </Text>
-      <Text style={styles.imageStatusSub}>{unplayableVideoMessage(deviceNoun())}</Text>
-      <Text style={styles.imageStatusSub}>{unplayableVideoActionHint(formatLabel)}</Text>
-      <TouchableOpacity
-        onPress={handleDownload}
-        disabled={downloading}
-        style={[styles.loadRetryButton, { borderColor: 'rgba(255,255,255,0.35)' }, downloading && styles.saveToFilesBusy]}
-        accessibilityRole="button"
-        accessibilityLabel="Save to Files"
-        accessibilityState={{ disabled: downloading }}
-        testID="preview-video-save-to-files"
-      >
-        <Text style={[styles.loadRetryText, { color: colors.white }]}>Save to Files</Text>
-      </TouchableOpacity>
-    </View>
-  );
 
   const renderSharedProgress = (isVideoProgress = false) => (
     <PreviewProgressStatus
@@ -5526,7 +5551,13 @@ export default function PreviewScreen() {
                 </View>
               )
             ) : !videoPlayability.playable ? (
-              renderUnplayableVideo(videoPlayability.formatLabel)
+              <UnplayableVideoCard
+                name={previewFileName}
+                formatLabel={videoPlayability.formatLabel}
+                layout="stage"
+                saving={downloading}
+                onSaveToFiles={handleDownload}
+              />
             ) : videoPlayerError ? (
               renderLoadError("Couldn't play video", videoPlayerError, 'media')
             ) : videoUri ? (

@@ -30,17 +30,25 @@ describe('2335 fix 1 — a container the player cannot open never reaches it', (
     expect(screen).toMatch(/const loadFull = isVideoEntry \? shouldLoadFull && isCurrent && videoPlayability\.playable : shouldLoadFull;/);
   });
 
-  test('the unsupported state shows the name, the honest line and Save to Files (both paths)', () => {
-    expect(count(screen, 'testID="preview-video-unsupported"')).toBe(2);
-    expect(count(screen, 'unplayableVideoMessage(deviceNoun())')).toBe(2);
-    expect(count(screen, 'unplayableVideoActionHint(')).toBe(2);
-    expect(count(screen, 'testID="preview-video-save-to-files"')).toBe(2);
-    expect(count(screen, '>Save to Files</Text>')).toBe(2);
+  test('one card shows the name, the honest line and Save to Files, on both paths', () => {
+    expect(count(screen, 'function UnplayableVideoCard(')).toBe(1);
+    expect(count(screen, '<UnplayableVideoCard')).toBe(2);
+    expect(count(screen, 'testID="preview-video-unsupported"')).toBe(1);
+    expect(count(screen, 'unplayableVideoMessage(deviceNoun())')).toBe(1);
+    expect(count(screen, 'unplayableVideoActionHint(formatLabel)')).toBe(1);
+    expect(count(screen, '>Save to Files</Text>')).toBe(1);
   });
 
   test('Save to Files is the existing Save path (share sheet with the real file name)', () => {
-    expect(screen).toMatch(/onPress=\{handleDownload\}[\s\S]{0,400}testID="preview-video-save-to-files"/);
-    expect(screen).toContain('onSaveToFiles={handleDownload}');
+    // The single-file stage's card and the pager page's prop.
+    expect(count(screen, 'onSaveToFiles={handleDownload}')).toBe(2);
+  });
+
+  test('Save to Files is disabled while a save runs, on both paths (one export at a time)', () => {
+    expect(screen).toMatch(/onPress=\{onSaveToFiles\}\n\s+disabled=\{saving\}/);
+    expect(screen).toContain('saving={downloading}');
+    expect(screen).toContain('saveToFilesBusy={downloading}');
+    expect(screen).toContain('saving={saveToFilesBusy}');
   });
 
   test('the export decrypts a whole file, never a stream the share sheet cannot take', () => {
@@ -53,6 +61,11 @@ describe('2335 fix 2 — a player error is never silent', () => {
   test('both players listen for statusChange', () => {
     expect(screen).toContain("player.addListener('statusChange'");
     expect(pageVideo).toContain("player.addListener('statusChange'");
+  });
+
+  test('readyToPlay is traced once per player, not after every rebuffer or seek', () => {
+    expect(screen).toMatch(/let readyTraced = false;[\s\S]{0,300}if \(readyTraced\) return;\n\s+readyTraced = true;/);
+    expect(pageVideo).toMatch(/let readyReported = false;[\s\S]{0,300}if \(readyReported\) return;\n\s+readyReported = true;/);
   });
 
   test('an error status is traced and shown with the honest message', () => {

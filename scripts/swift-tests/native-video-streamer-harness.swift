@@ -27,7 +27,7 @@ private final class FakeMasterKey: MasterKeyHandle, @unchecked Sendable {
 private final class ChunkServer {
   private let chunks: [Data]
   private let blockIndex: Int?
-  private let slowBodyIndex: Int?
+  private let slowBodyIndexes: Set<Int>
   private let blockSemaphore = DispatchSemaphore(value: 0)
   private let ready = DispatchSemaphore(value: 0)
   private let queue = DispatchQueue(label: "native-video-streamer-harness.chunks")
@@ -35,10 +35,10 @@ private final class ChunkServer {
   private(set) var requests: [Int] = []
   private(set) var baseUrl: String = ""
 
-  init(chunks: [Data], blockIndex: Int? = nil, slowBodyIndex: Int? = nil) throws {
+  init(chunks: [Data], blockIndex: Int? = nil, slowBodyIndexes: Set<Int> = []) throws {
     self.chunks = chunks
     self.blockIndex = blockIndex
-    self.slowBodyIndex = slowBodyIndex
+    self.slowBodyIndexes = slowBodyIndexes
     let parameters = NWParameters.tcp
     parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(IPv4Address("127.0.0.1")!), port: .any)
     let listener = try NWListener(using: parameters, on: .any)
@@ -95,7 +95,7 @@ private final class ChunkServer {
         "",
       ].joined(separator: "\r\n")
       var response = Data(headers.utf8)
-      if index == self.slowBodyIndex {
+      if self.slowBodyIndexes.contains(index) {
         // Headers and the first half now, the rest after a pause: the client sees
         // a chunk that is partly received, as a 128 MiB chunk is for many seconds.
         let half = body.count / 2
@@ -445,7 +445,7 @@ private func runStartupBufferingProgress() throws {
     frame(data: Data(repeating: 0x43, count: 10)),
   ]
   let need = Int64(chunks[0].count + chunks[2].count)
-  let server = try ChunkServer(chunks: chunks, slowBodyIndex: 0)
+  let server = try ChunkServer(chunks: chunks, slowBodyIndexes: [0])
   defer { server.stop() }
   let output = makeOutputURL()
   var events: [[String: Any]] = []
@@ -481,6 +481,52 @@ private func runStartupBufferingProgress() throws {
   NativeVideoStreamer.cancelAll()
 }
 
+// Review of PR (task 2335): with no declared size the tail's length is unknown until its own
+// response starts. Counting chunk 0 alone made the bar reach 100% and then drop when the tail
+// began. The need is now an upper bound (the tail is at most one full chunk) until the tail's
+// length is known, so the fraction done never goes down, and it ends exact.
+private func runStartupBufferingWithoutDeclaredSize() throws {
+  let full = 524_288
+  let chunks = [
+    frame(data: Data(repeating: 0x41, count: full)),
+    frame(data: Data(repeating: 0x42, count: full)),
+    // A tail big enough to be seen arriving: the drop showed while it was in flight.
+    frame(data: Data(repeating: 0x43, count: 400_000)),
+  ]
+  let need = Int64(chunks[0].count + chunks[2].count)
+  let server = try ChunkServer(chunks: chunks, slowBodyIndexes: [0, 2])
+  defer { server.stop() }
+  let output = makeOutputURL()
+  var events: [[String: Any]] = []
+  let eventLock = NSLock()
+  let progress = NativeVideoStreamProgress(requestId: "req-buffering-nil", fileId: "buffering-nil") { event in
+    eventLock.lock()
+    events.append(event)
+    eventLock.unlock()
+  }
+  _ = try NativeVideoStreamer.start(
+    requestId: "req-buffering-nil",
+    master: FakeMasterKey(noHandle: .init()),
+    apiUrl: server.baseUrl,
+    token: "token",
+    fileId: "buffering-nil",
+    outputUri: output.absoluteString,
+    declaredSizeBytes: nil,
+    declaredChunkCount: 3,
+    progress: progress,
+    onTerminal: {}
+  )
+  eventLock.lock()
+  let buffering = events.filter { ($0["stage"] as? String) == "downloading" && ($0["buffering"] as? Bool) == true }
+  eventLock.unlock()
+  func bytes(_ event: [String: Any], _ key: String) -> Int64 { (event[key] as? Int64) ?? Int64((event[key] as? Int) ?? -1) }
+  let fractions = buffering.map { Double(bytes($0, "bytesDownloaded")) / Double(max(1, bytes($0, "bytesTotal"))) }
+  assert(buffering.count >= 2, "startup with no declared size still reports buffering (events: \(buffering))")
+  assert(zip(fractions, fractions.dropFirst()).allSatisfy { $0 <= $1 }, "the fraction done never goes down (fractions: \(fractions))")
+  assert(bytes(buffering.last ?? [:], "bytesTotal") == need && bytes(buffering.last ?? [:], "bytesDownloaded") == need, "it ends at the exact need, \(need) (events: \(buffering))")
+  NativeVideoStreamer.cancelAll()
+}
+
 private enum HarnessMain {
   static func main() throws {
     defer { cleanupHarnessTempDirectory() }
@@ -491,6 +537,7 @@ private enum HarnessMain {
     try runStaleDeclaredChunkCount()
     try runNoSecondWholeFileCopy()
     try runStartupBufferingProgress()
+    try runStartupBufferingWithoutDeclaredSize()
     print("native-video-streamer-harness: \(assertionCount) assertions, 0 failed")
   }
 }
