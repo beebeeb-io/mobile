@@ -1,0 +1,439 @@
+import Foundation
+import SQLite3
+
+// Task LD-0002 round 2 (TestFlight 258, `RUNNINGBOARD 0xdead10cc`): the File
+// Provider cache database under the background execution gate, on the REAL
+// `FileProviderCacheDB`, `FileProviderCacheSync.apply` and
+// `PlaintextStorageProtection.resetSQLiteInPlace` (compiled with
+// BackupExecutionGate.swift and linked against the same vanilla SQLite object
+// the app gets through the Rust core, see scripts/swift-ci/run-swift-tests.sh).
+//
+//   c1  a closed gate refuses a connection: `enter()` is nil, nothing opens;
+//       the gate opens again on foreground
+//   c2  THE CRASH: a long `syncFileProviderCache` write is in its transaction,
+//       the background expiry fires; when the quiesce returns no section is in
+//       flight, no write transaction is open (no hot journal, a second writer
+//       gets the lock at once), and the call answered "not now" with NOTHING
+//       written (one transaction: all or none)
+//   c3  a gate that closed and reopened since `enter()` stays closed for that
+//       section (an aborted statement may be behind it)
+//   c4  a write that is never refused while the gate is open is unchanged by
+//       the gate: every row lands, the prune pass deletes what it should
+//   c5  the sign-out reset (`resetSQLiteInPlace`, one DELETE over many rows
+//       then VACUUM) is refused when the gate is closed, is rolled back and
+//       leaves no lock when an expiry lands mid-statement, and still resets
+//       the file with the gate open
+//   c6  a user of the gate that can run before its lifecycle owner exists asks
+//       for one once, and never again
+//   c7  the typed answer the JS bridge receives
+//   c8  a gate that closes BETWEEN the reset's statements (an interrupt is a
+//       no-op there): at every checkpoint the reset is all or nothing
+
+var failures: [String] = []
+var total = 0
+
+func expect(_ condition: Bool, _ label: String) {
+  total += 1
+  if !condition { failures.append(label) }
+}
+
+let fm = FileManager.default
+let root = fm.temporaryDirectory.appendingPathComponent("bb-ld0002-fpcache-\(UUID().uuidString)", isDirectory: true)
+try! fm.createDirectory(at: root, withIntermediateDirectories: true)
+defer { try? fm.removeItem(at: root) }
+
+func freshDatabase(_ name: String) -> URL {
+  let dir = root.appendingPathComponent(name, isDirectory: true)
+  try! fm.createDirectory(at: dir, withIntermediateDirectories: true)
+  return dir.appendingPathComponent("file-provider-cache.sqlite")
+}
+
+let schema = [
+  """
+  CREATE TABLE IF NOT EXISTS file_cache (
+    id TEXT PRIMARY KEY, parent_id TEXT, name_encrypted TEXT, name_decrypted TEXT,
+    display_name TEXT, display_name_source_name TEXT, display_name_source_parent TEXT,
+    mime_type TEXT, size_bytes INTEGER NOT NULL DEFAULT 0, is_folder INTEGER NOT NULL DEFAULT 0,
+    is_pinned INTEGER NOT NULL DEFAULT 0, has_thumbnail INTEGER NOT NULL DEFAULT 0,
+    thumbnail_data BLOB, thumbnail_nonce BLOB, created_at TEXT, updated_at TEXT,
+    sync_anchor INTEGER NOT NULL DEFAULT 0, is_materialized INTEGER NOT NULL DEFAULT 0
+  );
+  """,
+  "CREATE INDEX IF NOT EXISTS idx_file_cache_parent ON file_cache(parent_id);",
+  "CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value TEXT);",
+]
+
+func exec(_ db: OpaquePointer, _ sql: String) {
+  var err: UnsafeMutablePointer<CChar>?
+  if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+    let msg = err.map { String(cString: $0) } ?? "?"
+    sqlite3_free(err)
+    fatalError("SQL failed: \(msg)\n\(sql)")
+  }
+}
+
+/// The test's OWN connection (never the cache's).
+func withConnection<T>(_ url: URL, busyMs: Int32 = 0, _ body: (OpaquePointer) -> T) -> T {
+  var db: OpaquePointer?
+  precondition(sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK)
+  sqlite3_busy_timeout(db, busyMs)
+  defer { sqlite3_close(db) }
+  return body(db!)
+}
+
+func createSchema(_ url: URL) {
+  withConnection(url) { db in for sql in schema { exec(db, sql) } }
+}
+
+/// -1 when the database is locked (a write transaction is open elsewhere).
+func rowCount(_ url: URL) -> Int {
+  withConnection(url) { db in
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "SELECT count(*) FROM file_cache", -1, &stmt, nil) == SQLITE_OK else { return -1 }
+    defer { sqlite3_finalize(stmt) }
+    guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+    return Int(sqlite3_column_int64(stmt, 0))
+  }
+}
+
+/// True when a second writer gets the database's write lock at once (busy
+/// timeout 0): no write transaction is open on any other connection.
+func writeLockIsFree(_ url: URL) -> Bool {
+  withConnection(url, busyMs: 0) { db in
+    guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return false }
+    sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    return true
+  }
+}
+
+func journalExists(_ url: URL) -> Bool {
+  fm.fileExists(atPath: url.path + "-journal")
+}
+
+func makeEntries(_ n: Int, parents: Int = 50) -> [[String: Any]] {
+  (0..<n).map { i in
+    [
+      "id": "file-\(i)", "parent_id": "parent-\(i % parents)",
+      "name_encrypted": "ciphertext-\(i)", "name_decrypted": "decrypted name \(i).txt",
+      "mime_type": "text/plain", "size_bytes": i, "is_folder": false,
+      "created_at": "2026-11-07T00:00:00Z", "updated_at": "2026-11-07T00:00:00Z",
+    ]
+  }
+}
+
+/// What `syncFileProviderCache` does with its connection: enter the gate, open,
+/// attach, prepare, run the transaction, finish. The module's closure is pinned
+/// to this shape by src/lib/file-provider-cache-gate-wiring.test.ts.
+func runSync(
+  _ cache: FileProviderCacheDB, _ url: URL, entries: [[String: Any]],
+  prune: Bool = false, pruneParents: [Any]? = nil
+) -> FileProviderCacheOutcome<FileProviderCacheSyncResult> {
+  guard let section = cache.enter() else { return .notNow }
+  var db: OpaquePointer?
+  guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let db else {
+    section.finish(closing: db)
+    return .notNow
+  }
+  defer { section.finish(closing: db) }
+  section.attach(db)
+  sqlite3_busy_timeout(db, 2000)
+  sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
+  for sql in schema { sqlite3_exec(db, sql, nil, nil, nil) }
+  return FileProviderCacheSync.apply(db: db, section: section, entries: entries, prune: prune, pruneParents: pruneParents)
+}
+
+func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+  let deadline = Date().addingTimeInterval(timeout)
+  while Date() < deadline {
+    if condition() { return true }
+    usleep(2_000)
+  }
+  return condition()
+}
+
+func backgroundGate() -> BackupExecutionGate {
+  // The app is in the background with its grace task live: the gate is open
+  // until the grace task's expiry closes it.
+  let gate = BackupExecutionGate(foreground: false)
+  _ = gate.beginAssertion(.backgroundGrace)
+  gate.claimLifecycleOwnership()
+  return gate
+}
+
+// ── c1 ───────────────────────────────────────────────────────────────────
+do {
+  let url = freshDatabase("c1")
+  createSchema(url)
+  let gate = BackupExecutionGate(foreground: false) // background, no assertion: closed
+  gate.claimLifecycleOwnership()
+  let cache = FileProviderCacheDB(gate: gate)
+
+  expect(cache.enter() == nil, "c1: a closed gate refuses a connection (enter() is nil)")
+  let refused = runSync(cache, url, entries: makeEntries(10))
+  if case .notNow = refused { expect(true, "c1: a sync with the gate closed answers not-now") }
+  else { expect(false, "c1: a sync with the gate closed answers not-now") }
+  expect(rowCount(url) == 0, "c1: and writes nothing")
+  expect(cache.sectionsInFlight == 0, "c1: and opens no connection")
+
+  gate.setForeground(true)
+  let reopened = runSync(cache, url, entries: makeEntries(10))
+  if case .done(let result) = reopened { expect(result.count == 10, "c1: foreground opens the gate again: all 10 rows written") }
+  else { expect(false, "c1: foreground opens the gate again: all 10 rows written") }
+  expect(rowCount(url) == 10, "c1: and they are on disk")
+}
+
+// ── c2 ───────────────────────────────────────────────────────────────────
+do {
+  let url = freshDatabase("c2")
+  createSchema(url)
+  let gate = backgroundGate()
+  let cache = FileProviderCacheDB(gate: gate)
+
+  let finished = DispatchSemaphore(value: 0)
+  var outcome: FileProviderCacheOutcome<FileProviderCacheSyncResult>?
+  Thread.detachNewThread {
+    // A 40k-vault-sized push: one transaction of hundreds of thousands of
+    // upserts, far longer than the expiry's two seconds.
+    outcome = runSync(cache, url, entries: makeEntries(400_000, parents: 200), prune: true, pruneParents: ["parent-0"])
+    finished.signal()
+  }
+
+  let inTransaction = waitUntil(10) { cache.sectionsInFlight == 1 && journalExists(url) }
+  expect(inTransaction, "c2: precondition: the write is in its transaction (a hot journal exists)")
+  expect(!writeLockIsFree(url), "c2: precondition: the write lock is held while the sync runs")
+
+  let started = Date()
+  let quiesced = BackupSQLiteQuiesce.run(
+    gate: gate,
+    interrupt: { cache.interruptInFlightStatements() },
+    waitForQuiet: { cache.waitForQuiet(timeout: $0) }
+  )
+  let elapsed = Date().timeIntervalSince(started)
+
+  expect(quiesced == .quiet, "c2: the quiesce returns quiet, not timed out (got \(quiesced.rawValue))")
+  expect(elapsed < 0.75, "c2: well inside the 2 s bound (\(String(format: "%.2f", elapsed)) s)")
+  expect(cache.sectionsInFlight == 0, "c2: no connection is in flight when the handler returns")
+  expect(!journalExists(url), "c2: no hot journal: no write transaction is open")
+  expect(writeLockIsFree(url), "c2: a second writer gets the write lock at once")
+  expect(rowCount(url) == 0, "c2: nothing was written (the transaction rolled back)")
+
+  _ = finished.wait(timeout: .now() + 10)
+  if case .notNow? = outcome { expect(true, "c2: the call answered not-now") } else { expect(false, "c2: the call answered not-now") }
+
+  // After the quiesce the gate refuses everything until foreground.
+  expect(cache.enter() == nil, "c2: a call arriving after the expiry is refused")
+  gate.setForeground(true)
+  let retried = runSync(cache, url, entries: makeEntries(100))
+  if case .done(let r) = retried { expect(r.count == 100, "c2: the retry on foreground writes all rows") }
+  else { expect(false, "c2: the retry on foreground writes all rows") }
+}
+
+// ── c3 ───────────────────────────────────────────────────────────────────
+do {
+  let gate = backgroundGate()
+  let cache = FileProviderCacheDB(gate: gate)
+  let section = cache.enter()!
+  expect(section.admits, "c3: a fresh section is admitted")
+  gate.expire()
+  gate.setForeground(true) // an app switch: the gate is open again
+  expect(gate.canStartSQLiteWork, "c3: precondition: the gate itself is open again")
+  expect(!section.admits, "c3: the section that entered before the closure stays refused")
+  section.finish(closing: nil)
+  expect(cache.sectionsInFlight == 0, "c3: and leaves cleanly")
+  expect(cache.enter() != nil, "c3: a new section is admitted")
+}
+
+// ── c4 ───────────────────────────────────────────────────────────────────
+do {
+  let url = freshDatabase("c4")
+  createSchema(url)
+  let gate = BackupExecutionGate(foreground: true)
+  gate.claimLifecycleOwnership()
+  let cache = FileProviderCacheDB(gate: gate)
+
+  _ = runSync(cache, url, entries: makeEntries(300, parents: 3))
+  expect(rowCount(url) == 300, "c4: 300 rows written with the gate open")
+  // Complete listing of parent-0 with only 10 children: the other 90 go.
+  let keep = makeEntries(300, parents: 3).filter { ($0["parent_id"] as? String) == "parent-0" }.prefix(10)
+  let pruned = runSync(cache, url, entries: Array(keep), prune: true)
+  if case .done(let r) = pruned {
+    expect(r.count == 10 && r.didPrune && r.touchedParentIdentifiers == ["parent-0"] && !r.touchesRoot,
+           "c4: prune result: 10 upserted, prune ran, only parent-0 touched")
+  } else { expect(false, "c4: prune result") }
+  expect(rowCount(url) == 210, "c4: 90 stale rows under parent-0 pruned, the 200 sibling rows untouched (got \(rowCount(url)))")
+  expect(cache.sectionsInFlight == 0, "c4: no connection left behind")
+}
+
+// ── c5 ───────────────────────────────────────────────────────────────────
+do {
+  // Closed gate: refused, rows untouched.
+  let url = freshDatabase("c5-closed")
+  createSchema(url)
+  withConnection(url) { db in
+    exec(db, "BEGIN")
+    for i in 0..<1_000 { exec(db, "INSERT INTO file_cache(id, parent_id, name_decrypted) VALUES('f\(i)', 'p', 'n\(i)')") }
+    exec(db, "COMMIT")
+  }
+  let closed = BackupExecutionGate(foreground: false)
+  closed.claimLifecycleOwnership()
+  let closedCache = FileProviderCacheDB(gate: closed)
+  let refused = PlaintextStorageProtection.resetSQLiteInPlace(url, scope: closedCache)
+  expect(!refused.ok && !refused.bumpCommitted, "c5: a reset with the gate closed is refused (fails closed)")
+  expect(rowCount(url) == 1_000, "c5: and touches no row")
+  expect(closedCache.sectionsInFlight == 0, "c5: and leaves no connection")
+
+  // Expiry mid-statement: ONE DELETE over a large table (secure_delete zeroes
+  // every page), then VACUUM. No statement boundary for a loop check to use;
+  // the interrupt (and the progress handler) has to stop it.
+  let big = freshDatabase("c5-big")
+  createSchema(big)
+  withConnection(big) { db in
+    // A trigger makes `DELETE FROM file_cache` row-by-row work (no truncate
+    // shortcut): one statement that runs for seconds.
+    exec(db, "CREATE TABLE deleted_log (id TEXT, name TEXT)")
+    exec(db, "CREATE TRIGGER log_delete AFTER DELETE ON file_cache BEGIN INSERT INTO deleted_log VALUES (old.id, old.name_decrypted); END")
+    exec(db, "BEGIN")
+    exec(db, """
+    WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000000)
+    INSERT INTO file_cache(id, parent_id, name_decrypted, mime_type)
+    SELECT 'f' || i, 'p' || (i % 100), 'decrypted name number ' || i || ' padding padding padding padding', 'text/plain' FROM n
+    """)
+    exec(db, "COMMIT")
+  }
+  let gate = backgroundGate()
+  let cache = FileProviderCacheDB(gate: gate)
+  let done = DispatchSemaphore(value: 0)
+  var result: (ok: Bool, bumpCommitted: Bool)?
+  Thread.detachNewThread {
+    result = PlaintextStorageProtection.resetSQLiteInPlace(big, scope: cache)
+    done.signal()
+  }
+  let inReset = waitUntil(10) { cache.sectionsInFlight == 1 && journalExists(big) }
+  expect(inReset, "c5: precondition: the reset is in its transaction (a hot journal exists)")
+  let started = Date()
+  let quiesced = BackupSQLiteQuiesce.run(
+    gate: gate,
+    interrupt: { cache.interruptInFlightStatements() },
+    waitForQuiet: { cache.waitForQuiet(timeout: $0) }
+  )
+  let elapsed = Date().timeIntervalSince(started)
+  expect(quiesced == .quiet, "c5: the quiesce returns quiet, not timed out (got \(quiesced.rawValue))")
+  expect(elapsed < 0.75, "c5: well inside the 2 s bound (\(String(format: "%.2f", elapsed)) s)")
+  expect(cache.sectionsInFlight == 0, "c5: no connection is in flight when the handler returns")
+  expect(!journalExists(big), "c5: no hot journal: no write transaction is open")
+  expect(writeLockIsFree(big), "c5: a second writer gets the write lock at once")
+  _ = done.wait(timeout: .now() + 10)
+  expect(result?.ok == false && result?.bumpCommitted == false, "c5: the reset reports a failure, no bump committed")
+  expect(rowCount(big) == 1_000_000, "c5: the rollback left every row (the reset is all or nothing)")
+
+  // Gate open (foreground): the same file resets.
+  gate.setForeground(true)
+  let reset = PlaintextStorageProtection.resetSQLiteInPlace(big, scope: cache)
+  expect(reset.ok && reset.bumpCommitted, "c5: with the gate open the reset succeeds")
+  expect(rowCount(big) == 0, "c5: and empties the table")
+}
+
+// ── c8 ───────────────────────────────────────────────────────────────────
+// A gate that closes BETWEEN two statements of the reset (an interrupt is a
+// no-op there). Sweep the closure over every checkpoint the reset asks: at no
+// point may it commit a half-reset, or report a success it did not make.
+final class FlippingScope: SQLiteResetScope, SQLiteResetSection {
+  var asked = 0
+  let admitsFirst: Int
+  init(admitsFirst: Int) { self.admitsFirst = admitsFirst }
+  func begin() -> SQLiteResetSection? { self }
+  var admits: Bool { asked += 1; return asked <= admitsFirst }
+  func attach(_ db: OpaquePointer) {}
+  func finish(closing db: OpaquePointer?) { if let db { sqlite3_close(db) } }
+}
+
+func seedForSweep(_ url: URL) {
+  createSchema(url)
+  withConnection(url) { db in
+    exec(db, "CREATE TABLE extra (v TEXT)")
+    exec(db, "INSERT INTO file_cache(id, parent_id, name_decrypted) VALUES('a','p','x'), ('b','p','y'), ('c','p','z')")
+    exec(db, "INSERT INTO extra VALUES ('1'), ('2')")
+    exec(db, "PRAGMA user_version = 5")
+  }
+}
+
+func scalar(_ url: URL, _ sql: String) -> Int {
+  withConnection(url) { db -> Int in
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return -1 }
+    defer { sqlite3_finalize(stmt) }
+    guard sqlite3_step(stmt) == SQLITE_ROW else { return -1 }
+    return Int(sqlite3_column_int64(stmt, 0))
+  }
+}
+
+do {
+  // How many times does a full reset ask the gate? Once after the open, once
+  // after the table listing, then after each statement: secure_delete, BEGIN,
+  // each of the 3 DELETEs, the user_version bump (that one is the COMMIT's
+  // check), and once more before VACUUM = 9.
+  let probeURL = freshDatabase("c8-probe")
+  seedForSweep(probeURL)
+  let probe = FlippingScope(admitsFirst: 1_000)
+  let full = PlaintextStorageProtection.resetSQLiteInPlace(probeURL, scope: probe)
+  expect(full.ok && full.bumpCommitted, "c8: precondition: with the gate open throughout, the reset completes")
+  expect(probe.asked == 9, "c8: a full reset asks the gate at 9 checkpoints (asked \(probe.asked))")
+  let commitCheckpoint = probe.asked - 1 // the check after the user_version bump gates the COMMIT; VACUUM's is the last
+
+  var wrongOutcomes: [String] = []
+  var locked: [Int] = []
+  for k in 0...probe.asked {
+    let url = freshDatabase("c8-\(k)")
+    seedForSweep(url)
+    let result = PlaintextStorageProtection.resetSQLiteInPlace(url, scope: FlippingScope(admitsFirst: k))
+    let rows = rowCount(url)
+    let extraRows = scalar(url, "SELECT count(*) FROM extra")
+    let version = scalar(url, "PRAGMA user_version")
+    if !writeLockIsFree(url) { locked.append(k) }
+    if k < commitCheckpoint {
+      // closed before the COMMIT was allowed: nothing committed, nothing changed
+      if result.ok || result.bumpCommitted || rows != 3 || extraRows != 2 || version != 5 {
+        wrongOutcomes.append("k=\(k): closed before COMMIT but ok=\(result.ok) bump=\(result.bumpCommitted) rows=\(rows) extra=\(extraRows) v=\(version)")
+      }
+    } else {
+      // the COMMIT was allowed: both tables empty and the epoch bumped; ok only if VACUUM was too
+      if !result.bumpCommitted || rows != 0 || extraRows != 0 || version != 6 || (result.ok != (k > commitCheckpoint)) {
+        wrongOutcomes.append("k=\(k): committed state wrong: ok=\(result.ok) bump=\(result.bumpCommitted) rows=\(rows) extra=\(extraRows) v=\(version)")
+      }
+    }
+  }
+  expect(wrongOutcomes.isEmpty, "c8: at every checkpoint the reset is all or nothing and reports what it did: \(wrongOutcomes)")
+  expect(locked.isEmpty, "c8: no write transaction is left open at any checkpoint (locked at k=\(locked))")
+}
+
+// ── c6 ───────────────────────────────────────────────────────────────────
+do {
+  var asked = 0
+  let gate = BackupExecutionGate(foreground: true)
+  let cache = FileProviderCacheDB(gate: gate, ensureLifecycleOwner: {
+    asked += 1
+    gate.claimLifecycleOwnership() // what constructing NativeBackupEngine.shared does
+  })
+  let first = cache.enter()
+  first?.finish(closing: nil)
+  let second = cache.enter()
+  second?.finish(closing: nil)
+  expect(asked == 1, "c6: the lifecycle owner is asked for once, not on every call (asked \(asked))")
+  expect(gate.hasLifecycleOwner, "c6: and the gate has an owner afterwards")
+}
+
+// ── c7 ───────────────────────────────────────────────────────────────────
+do {
+  let ok = FileProviderCacheOutcome<Int>.done(7).bridged
+  let notNow = FileProviderCacheOutcome<Int>.notNow.bridged
+  expect(ok["status"] as? String == "ok" && ok["count"] as? Int == 7, "c7: done(7) bridges as {status: ok, count: 7}")
+  expect(notNow["status"] as? String == "not_now" && notNow["count"] == nil, "c7: notNow bridges as {status: not_now}")
+}
+
+if failures.isEmpty {
+  print("file-provider-cache-quiesce-test: \(total) assertions, 0 failed")
+} else {
+  print("file-provider-cache-quiesce-test: \(failures.count) of \(total) assertions FAILED")
+  for f in failures { print("  FAILED: \(f)") }
+  exit(1)
+}

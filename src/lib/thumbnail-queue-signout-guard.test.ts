@@ -110,7 +110,7 @@ describe('the app-process purge resets the thumbnail queue and keeps its files (
     // let the sweep unlink a database under a live connection (7d closes and
     // unlinks them itself).
     expect(body).toMatch(
-      /PlaintextStorageProtection\.purgeAll\(pendingNonce: pendingNonce, preserving: manifest\.kept\.union\(ThumbnailQueueDB\.storagePurgePaths\(\)\)\)/,
+      /PlaintextStorageProtection\.purgeAll\(pendingNonce: pendingNonce, preserving: manifest\.kept\.union\(ThumbnailQueueDB\.storagePurgePaths\(\)\), resetScope: FileProviderCacheDB\.shared\)/,
     );
   });
 

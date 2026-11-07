@@ -46,9 +46,28 @@ public final class BackupExecutionGate {
   private var expired = false
   private var nextToken: UInt64 = 0
   private var _closures: UInt64 = 0
+  private var lifecycleOwned = false
 
   public init(foreground: Bool) {
     self.foreground = foreground
+  }
+
+  /// LD-0002 round 2: the gate is only as true as the code that feeds it the
+  /// app's foreground/background transitions (`NativeBackupEngine` observes
+  /// them and closes the gate in `didEnterBackground`). Until an owner has
+  /// claimed that job the gate still holds its initial `foreground: true`, so
+  /// a user of the gate that can run before the owner exists
+  /// (`FileProviderCacheDB`) asks `hasLifecycleOwner` and makes one exist.
+  public func claimLifecycleOwnership() {
+    lock.lock()
+    lifecycleOwned = true
+    lock.unlock()
+  }
+
+  public var hasLifecycleOwner: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return lifecycleOwned
   }
 
   private var isOpenLocked: Bool {

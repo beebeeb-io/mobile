@@ -68,6 +68,29 @@ function nativeSwiftHarnessTest(name: string, fn: () => void, timeout?: number):
   test.skip(`${name} [macOS Swift harness; required in CI swift-gate]`, fn, timeout);
 }
 
+
+/**
+ * LD-0002 round 2: `resetFileProviderCacheDatabase` asks the background-time gate
+ * (`FileProviderCacheDB.shared.enter()`). These harnesses compile the extracted
+ * function on its own, so the gate is an always-open stand-in here; the real gate,
+ * and what happens when it closes, are exercised by
+ * scripts/swift-tests/file-provider-cache-quiesce-test.swift.
+ */
+const OPEN_GATE_STAND_IN = `
+final class OpenSection {
+  var admits: Bool { true }
+  func attach(_ db: OpaquePointer) {}
+  func finish(closing db: OpaquePointer?) { if let db { sqlite3_close(db) } }
+}
+final class FileProviderCacheDB {
+  static let shared = FileProviderCacheDB()
+  func enter() -> OpenSection? { OpenSection() }
+}
+`;
+
+/** LD-0002 round 2: the standalone file with the upsert transaction and the size normaliser the closure used to hold. */
+const CACHE_DB_SWIFT = readFileSync(join(__dirname, '..', '..', 'modules', 'beebeeb-crypto', 'ios', 'FileProviderCacheDB.swift'), 'utf8');
+
 function runSwiftc(args: string[]): void {
   execFileSync('xcrun', ['swiftc', ...args], { stdio: 'pipe' });
 }
@@ -111,7 +134,7 @@ function bracedBody(source: string, signature: string): string {
 
 describe('P1-1: resetSQLiteInPlace (PlaintextStorageProtection.swift) does not leave decrypted names on the freelist', () => {
   const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const body = functionBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
+  const body = functionBody(swift, 'static func resetSQLiteInPlace(_ url: URL, scope: SQLiteResetScope? = nil) -> (ok: Bool, bumpCommitted: Bool) {');
 
   test('secure_delete is turned ON (an actual executed pragma, not just a comment) before the deleting transaction begins', () => {
     // Must match the real call, not merely the word `secure_delete` — a
@@ -178,7 +201,7 @@ describe('P1-1 (same finding, second location): resetFileProviderCacheDatabase (
 
 describe('P1-2: resetSQLiteInPlace surfaces real failures instead of always returning true', () => {
   const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const body = functionBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
+  const body = functionBody(swift, 'static func resetSQLiteInPlace(_ url: URL, scope: SQLiteResetScope? = nil) -> (ok: Bool, bumpCommitted: Bool) {');
 
   test('sets a busy timeout before touching the database', () => {
     expect(body).toMatch(/sqlite3_busy_timeout\(db,\s*\d+\)/);
@@ -217,7 +240,7 @@ describe('P1-2: resetSQLiteInPlace surfaces real failures instead of always retu
     // to accidentally re-include this exact VACUUM literal after it moved,
     // which is precisely the kind of accidental pass this task's own review
     // exists to catch).
-    const preciseBody = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
+    const preciseBody = bracedBody(swift, 'static func resetSQLiteInPlace(_ url: URL, scope: SQLiteResetScope? = nil) -> (ok: Bool, bumpCommitted: Bool) {');
     // `(?:[^"\\]|\\.)*` (not a plain `[^"]+`) so the interpolated
     // `"DELETE FROM \"\(table)\""` literal — whose escaped inner quotes a
     // simple no-quotes class would stop at — still counts as one call.
@@ -488,7 +511,7 @@ describe('R2 (round 8, P2): both DB-reset functions bump PRAGMA user_version ins
 
   test('resetSQLiteInPlace (PlaintextStorageProtection.swift) reads, increments, and writes user_version between BEGIN and COMMIT', () => {
     const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-    const body = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
+    const body = bracedBody(swift, 'static func resetSQLiteInPlace(_ url: URL, scope: SQLiteResetScope? = nil) -> (ok: Bool, bumpCommitted: Bool) {');
     const beginIdx = body.indexOf('"BEGIN"');
     const bumpIdx = body.indexOf('PRAGMA user_version = \\(nextVersion)');
     const commitIdx = body.indexOf('"COMMIT"');
@@ -596,7 +619,7 @@ describe('C2 (round 7, P1): the File Provider cache DB is protected at the momen
   test('syncFileProviderCache protects the file right after opening, before any table/DELETE/INSERT', () => {
     const body = bracedBody(
       moduleSwift,
-      'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in',
+      'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> [String: Any] in',
     );
     const openIdx = body.indexOf('sqlite3_open_v2');
     const protectIdx = body.indexOf('PlaintextStorageProtection.protect(URL(fileURLWithPath: dbPath))');
@@ -642,7 +665,7 @@ describe('C3 (round 7, P2, verify only): a getDomains failure is still not treat
 
 describe('F1 (round 7, P2): removeFileProviderEntries sets secure_delete before its DELETEs', () => {
   const swift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
-  const body = bracedBody(swift, 'AsyncFunction("removeFileProviderEntries") { (ids: [String]) -> Int in');
+  const body = bracedBody(swift, 'AsyncFunction("removeFileProviderEntries") { (ids: [String]) -> [String: Any] in');
 
   test('secure_delete is set right after opening, before the loop that DELETEs rows', () => {
     const openIdx = body.indexOf('sqlite3_open_v2');
@@ -736,15 +759,18 @@ describe('new-3 (round 6, P2): secure_delete is set on EVERY connection that WRI
   test('syncFileProviderCache sets secure_delete = ON right after opening, before any DELETE', () => {
     const body = bracedBody(
       moduleSwift,
-      'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in',
+      'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> [String: Any] in',
     );
     const openIdx = body.indexOf('sqlite3_open_v2');
     const secureDeleteIdx = body.search(/sqlite3_exec\(db, "PRAGMA secure_delete/);
-    const deleteIdx = body.indexOf('DELETE FROM file_cache');
+    // LD-0002 round 2: the prune DELETE moved into FileProviderCacheSync.apply, which the closure calls only
+    // after this PRAGMA; the DELETE itself is checked below, in apply's own body.
+    const applyIdx = body.indexOf('FileProviderCacheSync.apply(');
     expect(openIdx).toBeGreaterThan(-1);
     expect(secureDeleteIdx).toBeGreaterThan(openIdx);
-    expect(deleteIdx).toBeGreaterThan(-1);
-    expect(secureDeleteIdx).toBeLessThan(deleteIdx);
+    expect(applyIdx).toBeGreaterThan(-1);
+    expect(secureDeleteIdx).toBeLessThan(applyIdx);
+    expect(bracedBody(CACHE_DB_SWIFT, 'public static func apply(')).toContain('DELETE FROM file_cache WHERE');
   });
 
   test('the File Provider extension\'s CacheManager sets secure_delete = ON right after opening, before migrations run', () => {
@@ -759,7 +785,7 @@ describe('new-3 (round 6, P2): secure_delete is set on EVERY connection that WRI
 
   test('resetSQLiteInPlace (PlaintextStorageProtection.swift) retries VACUUM once on SQLITE_BUSY instead of failing immediately', () => {
     const swift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-    const resetBody = bracedBody(swift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
+    const resetBody = bracedBody(swift, 'static func resetSQLiteInPlace(_ url: URL, scope: SQLiteResetScope? = nil) -> (ok: Bool, bumpCommitted: Bool) {');
     expect(resetBody).toMatch(/vacuumRetryingOnceOnBusy\(db\)/);
     // The bare, unretried call must be gone from the call site, not just
     // supplemented — otherwise a mutation that reverted the retry helper's
@@ -1209,7 +1235,7 @@ describe('round 10 (Codex thread PRRT_kwDOSLX6T86mhUiZ, P2): the File Provider c
   test('syncFileProviderCache hardens the sidecars right after protecting the main file', () => {
     const body = bracedBody(
       moduleSwift,
-      'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in',
+      'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> [String: Any] in',
     );
     const protectIdx = body.indexOf('PlaintextStorageProtection.protect(URL(fileURLWithPath: dbPath))');
     const sidecarIdx = body.indexOf('PlaintextStorageProtection.protectSQLiteSidecars(URL(fileURLWithPath: dbPath))');
@@ -1629,7 +1655,7 @@ describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoV, P2): the File Provider c
   });
 
   test('purgeAll() skips containerOnly entries before ever checking existence or calling removeItem', () => {
-    const purgeBody = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = []) -> (removed: Int, failed: Int) {');
+    const purgeBody = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = [], resetScope: SQLiteResetScope? = nil) -> (removed: Int, failed: Int) {');
     const forIdx = purgeBody.indexOf('for entry in registry() {');
     const skipIdx = purgeBody.indexOf('if entry.containerOnly {');
     const existsIdx = purgeBody.indexOf('FileManager.default.fileExists(atPath: entry.url.path)');
@@ -1720,11 +1746,11 @@ describe('round 11 (Codex thread PRRT_kwDOSLX6T86miVoV, P2): the File Provider c
   });
 
   test('syncFileProviderCache and removeFileProviderEntries no longer build the db path inline — both route through fileProviderCacheDatabaseUrl()', () => {
-    const syncBody = bracedBody(moduleSwift, 'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in');
+    const syncBody = bracedBody(moduleSwift, 'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> [String: Any] in');
     expect(syncBody).not.toMatch(/containerURL\(forSecurityApplicationGroupIdentifier: appGroupIdentifier\s*\)\s*else/);
     expect(syncBody).toMatch(/fileProviderCacheDatabaseUrl\(\)/);
 
-    const removeBody = bracedBody(moduleSwift, 'AsyncFunction("removeFileProviderEntries") { (ids: [String]) -> Int in');
+    const removeBody = bracedBody(moduleSwift, 'AsyncFunction("removeFileProviderEntries") { (ids: [String]) -> [String: Any] in');
     expect(removeBody).not.toMatch(/containerURL\(forSecurityApplicationGroupIdentifier: appGroupIdentifier\s*\)\s*else/);
     expect(removeBody).toMatch(/fileProviderCacheDatabaseUrl\(\)/);
   });
@@ -1799,7 +1825,7 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mi6px, P2): a failed legacy-cac
   });
 
   test('purgeAll() sweeps the legacy top-level cache path on every call, in addition to registry()', () => {
-    const body = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = []) -> (removed: Int, failed: Int) {');
+    const body = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = [], resetScope: SQLiteResetScope? = nil) -> (removed: Int, failed: Int) {');
     const sweepCallIdx = body.indexOf('sweepLegacyFileProviderCache()');
     expect(sweepCallIdx).toBeGreaterThan(-1);
     // Must actually fold the sweep's counts into the SAME (removed, failed)
@@ -1895,7 +1921,7 @@ describe('round 12 (Codex thread PRRT_kwDOSLX6T86mjO56, P1): a failed early epoc
 
   test('purgeAll() resweeps pinned/temp unconditionally, strictly after registry(), the legacy sweep, and folds its counts in', () => {
     // Task 1593 f2 — signature gained `pendingNonce: Data? = nil`.
-    const purgeAllBody = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = []) -> (removed: Int, failed: Int) {');
+    const purgeAllBody = bracedBody(registrySwift, 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = [], resetScope: SQLiteResetScope? = nil) -> (removed: Int, failed: Int) {');
     const legacyIdx = purgeAllBody.indexOf('sweepLegacyFileProviderCache()');
     const resweepCallIdx = purgeAllBody.indexOf('resweepFileProviderContentDirectories()');
     const returnIdx = purgeAllBody.lastIndexOf('return (removed, failed)');
@@ -2372,7 +2398,7 @@ describe('f3 (item 2): clearFileProviderCacheState surfaces whether the database
 // stop" invariant rather than two narrower failure-only ones.
 describe('f2 (item 2) / f4 (item 1b): resetSQLiteInPlace never calls markPurgePending or clearPurgePending in ANY branch — the marker moved to purgeAll', () => {
   const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const body = bracedBody(registrySwift, 'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {');
+  const body = bracedBody(registrySwift, 'static func resetSQLiteInPlace(_ url: URL, scope: SQLiteResetScope? = nil) -> (ok: Bool, bumpCommitted: Bool) {');
 
   test('no call to markPurgePending or clearPurgePending anywhere in this function\'s body (all branches, not just the two failure ones)', () => {
     // A bare name check would also match this function's own doc comment
@@ -2387,7 +2413,8 @@ describe('f2 (item 2) / f4 (item 1b): resetSQLiteInPlace never calls markPurgePe
 
   test('the open-failure fallback (unlink branch) still returns its own unlink-loop `ok`, paired with bumpCommitted: false', () => {
     const openGuardIdx = body.indexOf('guard sqlite3_open_v2(');
-    const deferIdx = body.indexOf('defer { sqlite3_close(db) }');
+    // LD-0002 round 2: the close goes through the gate's section when a scope is given.
+    const deferIdx = body.indexOf('defer { finish(db) }');
     expect(openGuardIdx).toBeGreaterThan(-1);
     expect(deferIdx).toBeGreaterThan(openGuardIdx);
     const openFailureBranch = body.slice(openGuardIdx, deferIdx);
@@ -2412,7 +2439,7 @@ describe('f2 (item 2) / f4 (item 1b): resetSQLiteInPlace never calls markPurgePe
     const docStart = registrySwift.indexOf('/// Task 1593 f4 (item 1b, Codex thread PRRT_kwDOSLX6T86mknXP) — this used');
     expect(docStart).toBeGreaterThan(-1);
     const signatureIdx = registrySwift.indexOf(
-      'private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {', docStart,
+      'static func resetSQLiteInPlace(_ url: URL, scope: SQLiteResetScope? = nil) -> (ok: Bool, bumpCommitted: Bool) {', docStart,
     );
     expect(signatureIdx).toBeGreaterThan(docStart);
     const docSlice = registrySwift.slice(docStart, signatureIdx);
@@ -2439,11 +2466,11 @@ describe('f2 (item 2) / f4 (item 1b): resetSQLiteInPlace never calls markPurgePe
 // already gone even though the purge itself was not yet fully done.
 describe('f4 (item 1b) / f5 (reviewer follow-up 2): purgeAll clears the pending marker itself, only AFTER the legacy sweep and resweep, and only on a durably-committed reset bump with zero legacy/resweep failures', () => {
   const registrySwift = readFileSync(REGISTRY_SWIFT_PATH, 'utf8');
-  const PURGE_ALL_SIGNATURE = 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = []) -> (removed: Int, failed: Int) {';
+  const PURGE_ALL_SIGNATURE = 'public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = [], resetScope: SQLiteResetScope? = nil) -> (removed: Int, failed: Int) {';
   const body = bracedBody(registrySwift, PURGE_ALL_SIGNATURE);
 
   test('resetSQLiteInPlace is called with no pendingNonce argument — it no longer takes one', () => {
-    expect(body).toMatch(/let result = resetSQLiteInPlace\(entry\.url\)/);
+    expect(body).toMatch(/let result = resetSQLiteInPlace\(entry\.url, scope: resetScope\)/);
     expect(body).not.toMatch(/resetSQLiteInPlace\([^)]*pendingNonce/);
   });
 
@@ -2648,7 +2675,7 @@ describe('f2 (marker-first): purgePlaintextStorage marks pending as its VERY FIR
     // Task 1962 round 4 (Bug 7b) — `preserving:` now also carries the thumbnail
     // queue's three files (`manifest.kept.union(...)`); the nonce threading and
     // the manifest's own kept set are still pinned.
-    expect(purgeBody).toMatch(/PlaintextStorageProtection\.purgeAll\(pendingNonce: pendingNonce, preserving: manifest\.kept\.union\(ThumbnailQueueDB\.storagePurgePaths\(\)\)\)/);
+    expect(purgeBody).toMatch(/PlaintextStorageProtection\.purgeAll\(pendingNonce: pendingNonce, preserving: manifest\.kept\.union\(ThumbnailQueueDB\.storagePurgePaths\(\)\), resetScope: FileProviderCacheDB\.shared\)/);
   });
 });
 
@@ -3150,6 +3177,8 @@ if RuntimeTrace.events != [
 import Foundation
 import SQLite3
 
+${OPEN_GATE_STAND_IN}
+
 enum RuntimeTrace {
   static var events: [String] = []
   static func event(_ name: String, _ payload: [String: Any]) {
@@ -3311,20 +3340,20 @@ describe('task 1722: File Provider cache preserves JS-bridged file sizes', () =>
   const moduleSwift = readFileSync(MODULE_SWIFT_PATH, 'utf8');
 
   test('syncFileProviderCache normalizes size_bytes from JS bridge numbers before binding SQLite', () => {
-    const body = bracedBody(moduleSwift, 'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in');
+    const body = bracedBody(CACHE_DB_SWIFT, 'public static func apply(');
     expect(body).not.toContain('Int64(entry["size_bytes"] as? Int ?? 0)');
     expect(body).toContain('sqlite3_bind_int64(stmt, 6, fileProviderCacheSizeBytes(entry["size_bytes"]))');
   });
 
   nativeSwiftHarnessTest('fileProviderCacheSizeBytes accepts native integer and integral floating bridge numbers, but rejects unsafe values', () => {
-    const helper = bracedBody(moduleSwift, 'private func fileProviderCacheSizeBytes(');
+    const helper = bracedBody(CACHE_DB_SWIFT, 'func fileProviderCacheSizeBytes(');
     expect(helper).toMatch(/case let value as Int:/);
     expect(helper).toMatch(/case let value as Int64:/);
     expect(helper).toMatch(/case let value as Double:/);
     expect(helper).toMatch(/case let value as NSNumber:/);
     expect(helper).not.toMatch(/case let value as String:/);
 
-    const floatingHelper = bracedBody(moduleSwift, 'private func fileProviderCacheFloatingSizeBytes(');
+    const floatingHelper = bracedBody(CACHE_DB_SWIFT, 'func fileProviderCacheFloatingSizeBytes(');
     expect(floatingHelper).toContain('value < Double(Int64.max)');
     expect(floatingHelper).toContain('value.rounded(.towardZero) == value');
 

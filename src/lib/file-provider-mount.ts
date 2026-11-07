@@ -1,5 +1,7 @@
 import { sharedFileKeyIsLoaded } from './shared-folder-keys';
 import { Platform } from 'react-native';
+// Namespace import on purpose: a test that mocks `react-native` with `Platform` alone must still load this file.
+import * as ReactNative from 'react-native';
 import * as BeebeebCrypto from '../../modules/beebeeb-crypto';
 import type { FileProviderDomainRegistrationResult } from '../../modules/beebeeb-crypto/src/BeebeebCrypto.types';
 import type { BatchNameItem, BatchNameResult, FileProviderCacheEntry } from '../../modules/beebeeb-crypto/src/BeebeebCrypto';
@@ -11,6 +13,28 @@ import { wasRecentlyUnlocked } from './lock-state';
 import { mapInBatches } from './async-batch';
 import { decryptNamesInBackground } from './background-name-decrypt';
 import { isPlaintextGateClosed, plaintextGate, withPlaintextLease } from './plaintext-gate';
+import { cacheWriteCount, createDeferredCacheWrites } from './file-provider-cache-write';
+
+/**
+ * Writes the native side refused because the app's background time had ended
+ * (LD-0002 round 2, `file-provider-cache-write.ts`): run again, in order, the
+ * next time the app is foreground. `AppState` is read lazily and defensively so
+ * a test that mocks `react-native` with `Platform` only still loads this file.
+ */
+export const deferredFileProviderCacheWrites = createDeferredCacheWrites({
+  subscribeToForeground: (onForeground) => {
+    ReactNative.AppState?.addEventListener?.('change', (state: string) => {
+      if (state === 'active') onForeground();
+    });
+  },
+  onOverflow: () => {
+    console.warn('[file-provider] deferred cache writes over the cap: the oldest was dropped; the next full listing reconciles');
+  },
+  onReplayError: (error) => {
+    // A sign-out closed the plaintext gate (the purge emptied the cache; the queued names must not come back), or the native call failed outright.
+    if (!isPlaintextGateClosed(error)) console.warn('[file-provider] a deferred cache write failed and was dropped');
+  },
+});
 
 type MountTrustedFileProviderOptions = {
   vaultUnlocked?: boolean;
@@ -171,11 +195,34 @@ export async function syncDecryptedEntriesToFileProvider(
     ? options.pruneParents ?? [parentId ?? null]
     : null;
 
-  try {
-    const synced = await withPlaintextLease('file provider cache push', async (lease) => {
+  // A fresh lease per attempt: a deferred attempt that runs after a sign-out
+  // finds the plaintext gate closed and is dropped, never written.
+  const push = () =>
+    withPlaintextLease('file provider cache push', async (lease) => {
       lease.assertValid();
-      return BeebeebCrypto.syncFileProviderCache(entries, prune, pruneParents);
+      return cacheWriteCount(await BeebeebCrypto.syncFileProviderCache(entries, prune, pruneParents));
     });
+
+  try {
+    const synced = await push();
+    if (synced === 'not_now') {
+      // LD-0002 round 2: no background time left, nothing was written. Queue the
+      // same push for the next foreground; a later complete listing of the same
+      // parent replaces it.
+      deferredFileProviderCacheWrites.defer({
+        key: prune && pruneParents && pruneParents.length === 1 ? `sync:prune:${String(pruneParents[0])}` : undefined,
+        run: async () => {
+          const retried = await push();
+          if (retried === 'not_now') return false;
+          if (options.trashChanged) await signalFileProviderTrashChanged();
+          return true;
+        },
+      });
+      if (options.trashChanged) {
+        await signalFileProviderTrashChanged();
+      }
+      return 0;
+    }
     if (options.trashChanged) {
       await signalFileProviderTrashChanged();
     }
@@ -195,7 +242,14 @@ export async function removeFromFileProviderCache(ids: string[]): Promise<void> 
   if (Platform.OS !== 'ios') return;
   if (ids.length === 0) return;
   try {
-    await BeebeebCrypto.removeFileProviderEntries(ids);
+    const removed = cacheWriteCount(await BeebeebCrypto.removeFileProviderEntries(ids));
+    if (removed === 'not_now') {
+      // LD-0002 round 2: no background time left, nothing was removed. Run it
+      // again on the next foreground rather than leaving the row in Files.
+      deferredFileProviderCacheWrites.defer({
+        run: async () => cacheWriteCount(await BeebeebCrypto.removeFileProviderEntries(ids)) !== 'not_now',
+      });
+    }
   } catch {
     // best-effort — next folder enumeration will reconcile
   }
@@ -209,7 +263,14 @@ export async function removeFromFileProviderCache(ids: string[]): Promise<void> 
 export async function setFileProviderProtectedBackupsRoot(id: string | null): Promise<void> {
   if (Platform.OS !== 'ios') return;
   try {
-    await BeebeebCrypto.setFileProviderProtectedFolder(id);
+    const published = cacheWriteCount(await BeebeebCrypto.setFileProviderProtectedFolder(id));
+    if (published === 'not_now') {
+      // LD-0002 round 2: only the latest id matters, so one queued entry.
+      deferredFileProviderCacheWrites.defer({
+        key: 'protected-backups-root',
+        run: async () => cacheWriteCount(await BeebeebCrypto.setFileProviderProtectedFolder(id)) !== 'not_now',
+      });
+    }
   } catch {
     // best-effort — the next backup folder resolve publishes it again
   }

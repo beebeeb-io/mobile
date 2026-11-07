@@ -19,6 +19,18 @@ private let fileProviderTrashIdentifier = NSFileProviderItemIdentifier("io.beebe
 private let fileProviderDomainSchemaKey = "io.beebeeb.fileProviderDomainSchema"
 private let fileProviderDomainSchemaVersion = "replicated-v6-cache-bootstrap"
 private let appGroupIdentifier = "group.io.beebeeb.shared"
+
+extension FileProviderCacheDB {
+  /// LD-0002 round 2: the one gate every main-app connection to the File
+  /// Provider cache database goes through (see `FileProviderCacheDB`).
+  /// `NativeBackupEngine` observes the app's foreground/background
+  /// transitions and drives the gate; constructing it here makes sure that owner
+  /// exists before the first connection asks.
+  static let shared = FileProviderCacheDB(
+    gate: .shared,
+    ensureLifecycleOwner: { _ = NativeBackupEngine.shared }
+  )
+}
 private let simulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProviderMasterKey"
 // Task 1671: alias the canonical `BeebeebKeychainCore` constants rather than
 // re-typing the literals — the Share Extension reader was drifted onto
@@ -1492,19 +1504,24 @@ private func bumpFileProviderCacheVersion(
     return true
   }
 
+  // LD-0002 round 2: a closed gate means "not bumped" (the registration that
+  // asked treats that as a failure and does not mount).
+  guard let section = FileProviderCacheDB.shared.enter() else { return false }
   var db: OpaquePointer?
   guard sqlite3_open_v2(
     url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil
   ) == SQLITE_OK, let db else {
-    sqlite3_close(db)
+    section.finish(closing: db)
     return false
   }
-  defer { sqlite3_close(db) }
+  defer { section.finish(closing: db) }
+  section.attach(db)
   // The extension's own `CacheManager` connection may hold a brief lock
   // (its own `BEGIN IMMEDIATE` in `replaceChildren`/`upsert`/`delete`);
   // worth a short wait rather than failing this purge step outright.
   sqlite3_busy_timeout(db, 2000)
 
+  guard section.admits else { return false }
   guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else {
     return false
   }
@@ -1515,7 +1532,17 @@ private func bumpFileProviderCacheVersion(
     current = sqlite3_column_int(stmt, 0)
   }
   sqlite3_finalize(stmt)
+  guard section.admits else {
+    sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    return false
+  }
   guard sqlite3_exec(db, "PRAGMA user_version = \(current &+ 1)", nil, nil, nil) == SQLITE_OK else {
+    sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+    return false
+  }
+  // LD-0002 round 2: the gate is asked again right before the COMMIT; closed,
+  // the transaction is rolled back (nothing is written, nothing stays open).
+  guard section.admits else {
     sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
     return false
   }
@@ -1652,6 +1679,8 @@ private func ensureFileProviderCacheDatabase() -> Bool {
     return false
   }
 
+  // LD-0002 round 2: a closed gate means "not ready" (the caller retries).
+  guard let section = FileProviderCacheDB.shared.enter() else { return false }
   var db: OpaquePointer?
   guard sqlite3_open_v2(
     url.path,
@@ -1659,12 +1688,13 @@ private func ensureFileProviderCacheDatabase() -> Bool {
     SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
     nil
   ) == SQLITE_OK, let db else {
-    sqlite3_close(db)
+    section.finish(closing: db)
     return false
   }
   defer {
-    sqlite3_close(db)
+    section.finish(closing: db)
   }
+  section.attach(db)
   // Task 1593 round 7 (C2) — `SQLITE_OPEN_CREATE` above means the file may
   // have just been created by this very call (a fresh install, or after
   // `clearFileProviderCacheState` unlinked it). Protecting it here, before
@@ -1681,8 +1711,10 @@ private func ensureFileProviderCacheDatabase() -> Bool {
   PlaintextStorageProtection.protectSQLiteSidecars(url)
 
   for statement in fileProviderCacheSchemaStatements {
+    guard section.admits else { return false }
     guard sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK else { return false }
   }
+  guard section.admits else { return false }
   guard ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name", definition: "TEXT"),
         ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name_source_name", definition: "TEXT"),
         ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name_source_parent", definition: "TEXT") else {
@@ -1724,6 +1756,9 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
     return false
   }
 
+  // LD-0002 round 2: a closed gate means "not reset" (the purge fails closed
+  // and retries; `retryFileProviderCacheReset`).
+  guard let section = FileProviderCacheDB.shared.enter() else { return false }
   var db: OpaquePointer?
   guard sqlite3_open_v2(
     url.path,
@@ -1731,13 +1766,14 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
     SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
     nil
   ) == SQLITE_OK, let db else {
-    sqlite3_close(db)
+    section.finish(closing: db)
     try? fileManager.removeItem(at: url)
     return true
   }
   defer {
-    sqlite3_close(db)
+    section.finish(closing: db)
   }
+  section.attach(db)
 
   // Keep the SQLite file inode stable. The File Provider extension may already
   // have this database open; unlinking it can leave the app writing to one DB
@@ -1771,8 +1807,13 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
   }
   sqlite3_finalize(versionStmt)
 
+  // LD-0002 round 2: after every statement `ok` also asks the gate, so the next
+  // one never starts once background time has ended; a closed gate takes the
+  // ROLLBACK branch below and no write transaction survives.
   var ok = sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK
+  ok = ok && section.admits
   ok = ok && sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK
+  ok = ok && section.admits
   // Task 1722 (f): a database another writer created with only some of the
   // tables (older `syncFileProviderCache` builds created `file_cache` alone)
   // must still reset. Create anything missing inside this same transaction,
@@ -1780,11 +1821,16 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
   // `registerMountedFileProviderDomainLocked` only refuses a real failure.
   for statement in fileProviderCacheSchemaStatements {
     ok = ok && sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK
+    ok = ok && section.admits
   }
   ok = ok && sqlite3_exec(db, "DELETE FROM file_cache", nil, nil, nil) == SQLITE_OK
+  ok = ok && section.admits
   ok = ok && sqlite3_exec(db, "DELETE FROM sync_state", nil, nil, nil) == SQLITE_OK
+  ok = ok && section.admits
   ok = ok && sqlite3_exec(db, "DELETE FROM upload_queue", nil, nil, nil) == SQLITE_OK
+  ok = ok && section.admits
   ok = ok && sqlite3_exec(db, "PRAGMA user_version = \(nextVersion)", nil, nil, nil) == SQLITE_OK
+  ok = ok && section.admits
   if ok {
     ok = sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
   } else {
@@ -1795,6 +1841,7 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
   // extension's own live connection to this exact file can hold it just
   // long enough to turn one VACUUM into a single SQLITE_BUSY, which is
   // worth one short retry rather than counting as a hard purge failure.
+  ok = ok && section.admits
   ok = ok && vacuumRetryingOnceOnBusy(db)
   return ok
 }
@@ -1809,38 +1856,6 @@ private func vacuumRetryingOnceOnBusy(_ db: OpaquePointer?) -> Bool {
   }
   usleep(50_000) // 50ms
   return sqlite3_exec(db, "VACUUM", nil, nil, nil) == SQLITE_OK
-}
-
-private func fileProviderCacheSizeBytes(_ raw: Any?) -> Int64 {
-  func nonNegative(_ value: Int64) -> Int64 { value < 0 ? 0 : value }
-  if let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() {
-    return 0
-  }
-
-  switch raw {
-  case is Bool:
-    return 0
-  case let value as Int:
-    return nonNegative(Int64(value))
-  case let value as Int64:
-    return nonNegative(value)
-  case let value as Double:
-    return fileProviderCacheFloatingSizeBytes(value)
-  case let value as Float:
-    return fileProviderCacheFloatingSizeBytes(Double(value))
-  case let value as NSNumber:
-    return fileProviderCacheFloatingSizeBytes(value.doubleValue)
-  default:
-    return 0
-  }
-}
-
-private func fileProviderCacheFloatingSizeBytes(_ value: Double) -> Int64 {
-  guard value.isFinite,
-        value >= 0,
-        value < Double(Int64.max),
-        value.rounded(.towardZero) == value else { return 0 }
-  return Int64(value)
 }
 
 /// A Files mount can race the extension's live SQLite connection. Give a
@@ -2761,7 +2776,7 @@ public class BeebeebCryptoModule: Module {
       failed += ThumbnailQueueDB.prepareForStoragePurge()
       // Task 1593 round 7 (C1) — moved LAST (was first). See the block
       // comment above this AsyncFunction for why.
-      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept.union(ThumbnailQueueDB.storagePurgePaths()))
+      let result = PlaintextStorageProtection.purgeAll(pendingNonce: pendingNonce, preserving: manifest.kept.union(ThumbnailQueueDB.storagePurgePaths()), resetScope: FileProviderCacheDB.shared)
       failed += result.failed
       return [
         "removed": result.removed,
@@ -4065,7 +4080,7 @@ public class BeebeebCryptoModule: Module {
     // refresh) MUST pass `prune == false`, otherwise siblings the caller did
     // not include would be wrongly deleted. When `prune` is omitted the
     // default is `false`, preserving the legacy upsert-only behaviour.
-    AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in
+    AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> [String: Any] in
       let shouldPrune = prune ?? false
       // Task 1593 round 11 — routed through the shared resolver (was an
       // inline `containerUrl.appendingPathComponent("file-provider-cache
@@ -4074,9 +4089,17 @@ public class BeebeebCryptoModule: Module {
       // for free, instead of drifting from `ensureFileProviderCacheDatabase`
       // /`fileProviderCacheDatabaseUrl()`'s own path resolution.
       guard let dbUrl = fileProviderCacheDatabaseUrl() else {
-        return 0
+        return FileProviderCacheOutcome<Int>.done(0).bridged
       }
       let dbPath = dbUrl.path
+      // LD-0002 round 2 (TestFlight 258, `0xdead10cc` in this closure's
+      // `sqlite3_step`): the connection lives inside the background-time gate.
+      // A call that arrives with the gate closed writes nothing and answers
+      // "not_now"; JS retries when the app is foreground again
+      // (`file-provider-mount.ts`).
+      guard let section = FileProviderCacheDB.shared.enter() else {
+        return FileProviderCacheOutcome<Int>.notNow.bridged
+      }
       var db: OpaquePointer?
       guard sqlite3_open_v2(
         dbPath,
@@ -4084,10 +4107,11 @@ public class BeebeebCryptoModule: Module {
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
         nil
       ) == SQLITE_OK, let db else {
-        sqlite3_close(db)
-        return 0
+        section.finish(closing: db)
+        return FileProviderCacheOutcome<Int>.done(0).bridged
       }
-      defer { sqlite3_close(db) }
+      defer { section.finish(closing: db) }
+      section.attach(db)
       sqlite3_busy_timeout(db, 2000)
       // Task 1593 round 7 (C2) — same reasoning as `ensureFileProviderCache
       // Database`: `SQLITE_OPEN_CREATE` above can be creating this file for
@@ -4114,192 +4138,75 @@ public class BeebeebCryptoModule: Module {
       // before the first mount failed on `DELETE FROM sync_state` ("no such
       // table") and the domain add was refused.
       for statement in fileProviderCacheSchemaStatements {
-        guard sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK else { return 0 }
+        guard section.admits else { return FileProviderCacheOutcome<Int>.notNow.bridged }
+        guard sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK else {
+          return FileProviderCacheOutcome<Int>.done(0).bridged
+        }
       }
       // The idempotent schema loop does not add columns to an existing cache. This writer uses
       // alias provenance in its conflict clause, so migrate before preparing that statement even
       // when the extension has not launched yet after an app update.
+      guard section.admits else { return FileProviderCacheOutcome<Int>.notNow.bridged }
       guard ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name", definition: "TEXT"),
             ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name_source_name", definition: "TEXT"),
             ensureFileProviderCacheColumn(db, table: "file_cache", column: "display_name_source_parent", definition: "TEXT") else {
-        return 0
+        return section.admits
+          ? FileProviderCacheOutcome<Int>.done(0).bridged
+          : FileProviderCacheOutcome<Int>.notNow.bridged
       }
 
-      let upsertSql = """
-      INSERT INTO file_cache(
-        id, parent_id, name_encrypted, name_decrypted, mime_type, size_bytes,
-        is_folder, is_pinned, has_thumbnail, created_at, updated_at, sync_anchor, is_materialized
-      ) VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 0)
-      ON CONFLICT(id) DO UPDATE SET
-        parent_id = excluded.parent_id,
-        name_encrypted = excluded.name_encrypted,
-        name_decrypted = COALESCE(excluded.name_decrypted, file_cache.name_decrypted),
-        display_name = CASE
-          WHEN file_cache.parent_id IS NOT excluded.parent_id
-            OR (excluded.name_decrypted IS NOT NULL AND file_cache.name_decrypted IS NOT excluded.name_decrypted)
-          THEN NULL ELSE file_cache.display_name END,
-        display_name_source_name = CASE
-          WHEN file_cache.parent_id IS NOT excluded.parent_id
-            OR (excluded.name_decrypted IS NOT NULL AND file_cache.name_decrypted IS NOT excluded.name_decrypted)
-          THEN NULL ELSE file_cache.display_name_source_name END,
-        display_name_source_parent = CASE
-          WHEN file_cache.parent_id IS NOT excluded.parent_id
-            OR (excluded.name_decrypted IS NOT NULL AND file_cache.name_decrypted IS NOT excluded.name_decrypted)
-          THEN NULL ELSE file_cache.display_name_source_parent END,
-        mime_type = excluded.mime_type,
-        size_bytes = excluded.size_bytes,
-        is_folder = excluded.is_folder,
-        created_at = excluded.created_at,
-        updated_at = excluded.updated_at,
-        sync_anchor = excluded.sync_anchor;
-      """
-
-      sqlite3_exec(db, "BEGIN", nil, nil, nil)
-      var count = 0
-      let now = Int64(Date().timeIntervalSince1970 * 1000)
-      let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-      var touchedParentIdentifiers = Set<String>()
-      // Per-parent COMPLETE child-id sets, keyed by the SQLite parent_id value
-      // (the real parent string, or nil → the root sentinel below). Only used
-      // when `shouldPrune` is true. Mirrors CacheManager._deleteChildren's
-      // (parent, keepingIds) contract: we keep exactly the ids the caller sent
-      // for that parent and delete every other row under it.
-      let rootParentSentinel = "\u{0}__bb_root__"
-      var childIdsByParent: [String: Set<String>] = [:]
-
-      // Seed prune targets that may contribute NO entries. The JS write-through
-      // passes `pruneParents` for every affected parent — including folders that
-      // became EMPTY (last live child trashed/deleted remotely) and remotely
-      // trashed FOLDERs whose descendant rows must be cleared. Those parents
-      // would never appear in the per-entry derivation below (no rows to upsert),
-      // so without seeding their prune DELETE never runs and Files.app keeps the
-      // vanished rows. Seeding an empty keep-set here means the prune pass deletes
-      // EVERY surviving row under them and re-enumerates. A `nil`/NSNull element
-      // is the root container (matching the per-entry null-parent handling). Only
-      // honoured when pruning — a partial push never names pruneParents.
-      if shouldPrune, let pruneParents {
-        for raw in pruneParents {
-          if let parentId = raw as? String {
-            if childIdsByParent[parentId] == nil { childIdsByParent[parentId] = [] }
-            touchedParentIdentifiers.insert(parentId)
-          } else {
-            // nil / NSNull → root container.
-            if childIdsByParent[rootParentSentinel] == nil { childIdsByParent[rootParentSentinel] = [] }
-            touchedParentIdentifiers.insert(NSFileProviderItemIdentifier.rootContainer.rawValue)
-          }
-        }
+      // The transaction (upserts, then the prune pass) is `FileProviderCacheSync
+      // .apply`, a standalone file so the Swift harness runs the shipped code.
+      let applied = FileProviderCacheSync.apply(
+        db: db,
+        section: section,
+        entries: entries,
+        prune: shouldPrune,
+        pruneParents: pruneParents
+      )
+      guard case .done(let result) = applied else {
+        return FileProviderCacheOutcome<Int>.notNow.bridged
       }
-
-      for entry in entries {
-        guard let id = entry["id"] as? String else { continue }
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, upsertSql, -1, &stmt, nil) == SQLITE_OK else { continue }
-        defer { sqlite3_finalize(stmt) }
-
-        sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, transient)
-        if let parentId = entry["parent_id"] as? String {
-          sqlite3_bind_text(stmt, 2, (parentId as NSString).utf8String, -1, transient)
-          touchedParentIdentifiers.insert(parentId)
-          childIdsByParent[parentId, default: []].insert(id)
-        } else { sqlite3_bind_null(stmt, 2) }
-        if entry["parent_id"] == nil || entry["parent_id"] is NSNull {
-          touchedParentIdentifiers.insert(NSFileProviderItemIdentifier.rootContainer.rawValue)
-          childIdsByParent[rootParentSentinel, default: []].insert(id)
-        }
-        if let nameEnc = entry["name_encrypted"] as? String {
-          sqlite3_bind_text(stmt, 3, (nameEnc as NSString).utf8String, -1, transient)
-        } else { sqlite3_bind_null(stmt, 3) }
-        if let nameDec = entry["name_decrypted"] as? String, !nameDec.isEmpty {
-          sqlite3_bind_text(stmt, 4, (nameDec as NSString).utf8String, -1, transient)
-        } else { sqlite3_bind_null(stmt, 4) }
-        if let mime = entry["mime_type"] as? String {
-          sqlite3_bind_text(stmt, 5, (mime as NSString).utf8String, -1, transient)
-        } else { sqlite3_bind_null(stmt, 5) }
-        sqlite3_bind_int64(stmt, 6, fileProviderCacheSizeBytes(entry["size_bytes"]))
-        sqlite3_bind_int(stmt, 7, (entry["is_folder"] as? Bool ?? false) ? 1 : 0)
-        if let createdAt = entry["created_at"] as? String {
-          sqlite3_bind_text(stmt, 8, (createdAt as NSString).utf8String, -1, transient)
-        } else { sqlite3_bind_null(stmt, 8) }
-        if let updatedAt = entry["updated_at"] as? String {
-          sqlite3_bind_text(stmt, 9, (updatedAt as NSString).utf8String, -1, transient)
-        } else { sqlite3_bind_null(stmt, 9) }
-        sqlite3_bind_int64(stmt, 10, now)
-
-        if sqlite3_step(stmt) == SQLITE_DONE { count += 1 }
-      }
-
-      // Prune stale rows. For each parent the caller supplied a COMPLETE child
-      // set for, delete file_cache rows under that parent whose id is NOT in
-      // the incoming set — mirroring CacheManager._deleteChildren(parent:
-      // keepingIds:). This is what makes a remote trash/delete disappear from
-      // Files.app without the user re-opening the folder. Guarded by
-      // `shouldPrune` so partial single-folder pushes never delete siblings.
-      if shouldPrune {
-        for (parentKey, keepIds) in childIdsByParent {
-          let isRoot = parentKey == rootParentSentinel
-          var deleteSql: String
-          if isRoot {
-            deleteSql = "DELETE FROM file_cache WHERE parent_id IS NULL"
-          } else {
-            deleteSql = "DELETE FROM file_cache WHERE parent_id = ?"
-          }
-          if !keepIds.isEmpty {
-            let placeholders = Array(repeating: "?", count: keepIds.count).joined(separator: ",")
-            deleteSql += " AND id NOT IN (\(placeholders))"
-          }
-
-          var delStmt: OpaquePointer?
-          guard sqlite3_prepare_v2(db, deleteSql, -1, &delStmt, nil) == SQLITE_OK else { continue }
-          defer { sqlite3_finalize(delStmt) }
-
-          var index: Int32 = 1
-          if !isRoot {
-            sqlite3_bind_text(delStmt, index, (parentKey as NSString).utf8String, -1, transient)
-            index += 1
-          }
-          // Sorted for deterministic binding order (matches CacheManager).
-          for keepId in keepIds.sorted() {
-            sqlite3_bind_text(delStmt, index, (keepId as NSString).utf8String, -1, transient)
-            index += 1
-          }
-          sqlite3_step(delStmt)
-        }
-      }
-
-      sqlite3_exec(db, "COMMIT", nil, nil, nil)
+      let count = result.count
 
       // Signal the File Provider to re-enumerate so it picks up fresh names.
       // Fire whenever a row was upserted (count > 0) OR a prune pass ran over a
       // touched parent — a folder that was emptied by pruning has count == 0 but
       // still needs Files.app to re-enumerate and drop the vanished rows.
-      let didPrune = shouldPrune && !touchedParentIdentifiers.isEmpty
-      if #available(iOS 16.0, *), count > 0 || didPrune {
+      if #available(iOS 16.0, *), count > 0 || result.didPrune {
         let domain = beebeebFileProviderDomain()
-        for rawIdentifier in touchedParentIdentifiers {
-          let itemIdentifier: NSFileProviderItemIdentifier = rawIdentifier == NSFileProviderItemIdentifier.rootContainer.rawValue
-            ? .rootContainer
-            : NSFileProviderItemIdentifier(rawIdentifier)
-          NSFileProviderManager(for: domain)?.signalEnumerator(for: itemIdentifier) { _ in }
+        for rawIdentifier in result.touchedParentIdentifiers {
+          NSFileProviderManager(for: domain)?.signalEnumerator(for: NSFileProviderItemIdentifier(rawIdentifier)) { _ in }
+        }
+        if result.touchesRoot {
+          NSFileProviderManager(for: domain)?.signalEnumerator(for: .rootContainer) { _ in }
         }
         NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet) { _ in }
       }
 
-      return count
+      return FileProviderCacheOutcome<Int>.done(count).bridged
     }
+
 
     // Remove specific entries from the shared File Provider cache (local
     // trash/delete write-through). Resolves each id's parent_id first so we can
     // re-enumerate the affected folders, then deletes the rows and signals the
     // File Provider — so a file trashed/deleted from inside the app disappears
     // from Files.app immediately instead of lingering until the next listing.
-    AsyncFunction("removeFileProviderEntries") { (ids: [String]) -> Int in
-      guard !ids.isEmpty else { return 0 }
+    AsyncFunction("removeFileProviderEntries") { (ids: [String]) -> [String: Any] in
+      guard !ids.isEmpty else { return FileProviderCacheOutcome<Int>.done(0).bridged }
       // Task 1593 round 11 — same resolver routing as `syncFileProviderCache`
       // above.
       guard let dbUrl = fileProviderCacheDatabaseUrl() else {
-        return 0
+        return FileProviderCacheOutcome<Int>.done(0).bridged
       }
       let dbPath = dbUrl.path
+      // LD-0002 round 2: inside the background-time gate, like
+      // `syncFileProviderCache` above. A closed gate writes nothing and
+      // answers "not_now" (JS retries on foreground).
+      guard let section = FileProviderCacheDB.shared.enter() else {
+        return FileProviderCacheOutcome<Int>.notNow.bridged
+      }
       var db: OpaquePointer?
       guard sqlite3_open_v2(
         dbPath,
@@ -4307,10 +4214,11 @@ public class BeebeebCryptoModule: Module {
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
         nil
       ) == SQLITE_OK, let db else {
-        sqlite3_close(db)
-        return 0
+        section.finish(closing: db)
+        return FileProviderCacheOutcome<Int>.done(0).bridged
       }
-      defer { sqlite3_close(db) }
+      defer { section.finish(closing: db) }
+      section.attach(db)
       // Task 1593 round 7 (F1) — this connection issues DELETEs (below)
       // without ever setting `secure_delete`; a freed b-tree page keeps the
       // deleted row's decrypted `name_decrypted` bytes readable on disk
@@ -4326,9 +4234,16 @@ public class BeebeebCryptoModule: Module {
       // upsert path above.
       var touchedParentIdentifiers = Set<String>()
 
+      guard section.admits else { return FileProviderCacheOutcome<Int>.notNow.bridged }
       sqlite3_exec(db, "BEGIN", nil, nil, nil)
       var removed = 0
       for id in ids {
+        // LD-0002 round 2: a long id list is a loop of short statements; an
+        // interrupt does not stop it between statements, the gate does.
+        guard section.admits else {
+          sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+          return FileProviderCacheOutcome<Int>.notNow.bridged
+        }
         // Look up the parent before deleting so we know which folder to signal.
         var selStmt: OpaquePointer?
         if sqlite3_prepare_v2(db, "SELECT parent_id FROM file_cache WHERE id = ?", -1, &selStmt, nil) == SQLITE_OK {
@@ -4344,11 +4259,21 @@ public class BeebeebCryptoModule: Module {
         sqlite3_finalize(selStmt)
 
         var delStmt: OpaquePointer?
+        var deleteResult = SQLITE_OK
         if sqlite3_prepare_v2(db, "DELETE FROM file_cache WHERE id = ?", -1, &delStmt, nil) == SQLITE_OK {
           sqlite3_bind_text(delStmt, 1, (id as NSString).utf8String, -1, transient)
-          if sqlite3_step(delStmt) == SQLITE_DONE { removed += 1 }
+          deleteResult = sqlite3_step(delStmt)
+          if deleteResult == SQLITE_DONE { removed += 1 }
         }
         sqlite3_finalize(delStmt)
+        if deleteResult == SQLITE_INTERRUPT {
+          sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+          return FileProviderCacheOutcome<Int>.notNow.bridged
+        }
+      }
+      guard section.admits else {
+        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        return FileProviderCacheOutcome<Int>.notNow.bridged
       }
       sqlite3_exec(db, "COMMIT", nil, nil, nil)
 
@@ -4363,19 +4288,23 @@ public class BeebeebCryptoModule: Module {
         NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet) { _ in }
       }
 
-      return removed
+      return FileProviderCacheOutcome<Int>.done(removed).bridged
     }
 
     // When the extension last told Files "Authentication Required" (Unix seconds), or nil.
     AsyncFunction("getFileProviderAuthRequiredAt") { () -> Double? in
       guard let dbUrl = fileProviderCacheDatabaseUrl(),
             FileManager.default.fileExists(atPath: dbUrl.path) else { return nil }
+      // LD-0002 round 2: a read loses nothing, so a closed gate is "nothing
+      // recorded"; the post-unlock check asks again at the next unlock.
+      guard let section = FileProviderCacheDB.shared.enter() else { return nil }
       var db: OpaquePointer?
       guard sqlite3_open_v2(dbUrl.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let db else {
-        sqlite3_close(db)
+        section.finish(closing: db)
         return nil
       }
-      defer { sqlite3_close(db) }
+      defer { section.finish(closing: db) }
+      section.attach(db)
       sqlite3_busy_timeout(db, 2000)
       let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
       var stmt: OpaquePointer?
@@ -4390,16 +4319,22 @@ public class BeebeebCryptoModule: Module {
     AsyncFunction("clearFileProviderAuthRequired") { () -> Bool in
       guard let dbUrl = fileProviderCacheDatabaseUrl(),
             FileManager.default.fileExists(atPath: dbUrl.path) else { return true }
+      // LD-0002 round 2: a closed gate is "not cleared" (false), which this
+      // post-unlock bookkeeping already means; the next unlock clears it.
+      guard let section = FileProviderCacheDB.shared.enter() else { return false }
       var db: OpaquePointer?
       guard sqlite3_open_v2(dbUrl.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let db else {
-        sqlite3_close(db)
+        section.finish(closing: db)
         return false
       }
-      defer { sqlite3_close(db) }
+      defer { section.finish(closing: db) }
+      section.attach(db)
       sqlite3_busy_timeout(db, 2000)
       for statement in fileProviderCacheSchemaStatements {
+        guard section.admits else { return false }
         sqlite3_exec(db, statement, nil, nil, nil)
       }
+      guard section.admits else { return false }
       let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
       var stmt: OpaquePointer?
       guard sqlite3_prepare_v2(db, "DELETE FROM sync_state WHERE key = ?", -1, &stmt, nil) == SQLITE_OK else { return false }
@@ -4426,17 +4361,26 @@ public class BeebeebCryptoModule: Module {
 
     // Publish (or clear, with nil) the id of the protected root Backups folder to the extension, then
     // signal the root and working set so Files re-reads the folder's capabilities.
-    AsyncFunction("setFileProviderProtectedFolder") { (id: String?) -> Bool in
-      guard let dbUrl = fileProviderCacheDatabaseUrl() else { return false }
+    AsyncFunction("setFileProviderProtectedFolder") { (id: String?) -> [String: Any] in
+      // `count` 1 = published (or already current), 0 = could not be. LD-0002
+      // round 2: a closed gate answers "not_now" and JS publishes it again
+      // when the app is foreground (`file-provider-mount.ts`).
+      guard let dbUrl = fileProviderCacheDatabaseUrl() else { return FileProviderCacheOutcome<Int>.done(0).bridged }
+      guard let section = FileProviderCacheDB.shared.enter() else {
+        return FileProviderCacheOutcome<Int>.notNow.bridged
+      }
       var db: OpaquePointer?
       guard sqlite3_open_v2(dbUrl.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK, let db else {
-        sqlite3_close(db)
-        return false
+        section.finish(closing: db)
+        return FileProviderCacheOutcome<Int>.done(0).bridged
       }
-      defer { sqlite3_close(db) }
+      defer { section.finish(closing: db) }
+      section.attach(db)
       for statement in fileProviderCacheSchemaStatements {
+        guard section.admits else { return FileProviderCacheOutcome<Int>.notNow.bridged }
         sqlite3_exec(db, statement, nil, nil, nil)
       }
+      guard section.admits else { return FileProviderCacheOutcome<Int>.notNow.bridged }
       let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
       var current: String?
       var readStmt: OpaquePointer?
@@ -4448,24 +4392,27 @@ public class BeebeebCryptoModule: Module {
       }
       sqlite3_finalize(readStmt)
       let next = (id?.isEmpty ?? true) ? nil : id
-      if current == next { return true }
+      if current == next { return FileProviderCacheOutcome<Int>.done(1).bridged }
 
       var stmt: OpaquePointer?
       let sql = next == nil
         ? "DELETE FROM sync_state WHERE key = ?"
         : "INSERT INTO sync_state(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+      guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return FileProviderCacheOutcome<Int>.done(0).bridged }
       defer { sqlite3_finalize(stmt) }
       sqlite3_bind_text(stmt, 1, (fileProviderProtectedBackupsRootKey as NSString).utf8String, -1, transient)
       if let next { sqlite3_bind_text(stmt, 2, (next as NSString).utf8String, -1, transient) }
-      guard sqlite3_step(stmt) == SQLITE_DONE else { return false }
+      guard section.admits else { return FileProviderCacheOutcome<Int>.notNow.bridged }
+      let written = sqlite3_step(stmt)
+      if written == SQLITE_INTERRUPT { return FileProviderCacheOutcome<Int>.notNow.bridged }
+      guard written == SQLITE_DONE else { return FileProviderCacheOutcome<Int>.done(0).bridged }
 
       if #available(iOS 16.0, *) {
         let manager = NSFileProviderManager(for: beebeebFileProviderDomain())
         manager?.signalEnumerator(for: .rootContainer) { _ in }
         manager?.signalEnumerator(for: .workingSet) { _ in }
       }
-      return true
+      return FileProviderCacheOutcome<Int>.done(1).bridged
     }
 
     // ── Backup management ──────────────────────────────────────────────
