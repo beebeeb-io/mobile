@@ -3,25 +3,6 @@ import Foundation
 import SQLite3
 import Security
 
-/// Task 0300 / pre-mortem item 12 — the single source of truth for every
-/// on-disk location this app writes that iOS would otherwise include in an
-/// iCloud or Finder backup.
-///
-/// iOS backs up `Documents/`, `Library/Application Support/`, and App Group
-/// containers by default; it excludes `Library/Caches/`. Before this type
-/// existed, `grep -rn 'isExcludedFromBackup'` over the whole mobile repo
-/// returned zero matches, so decrypted thumbnails (`ThumbnailService.swift`),
-/// decrypted PhotoKit renders (`PhotoKitResolver.swift`), the decrypted-name
-/// cache (`src/lib/name-cache.ts`), pre-encryption share staging
-/// (`PendingSharesAccess.swift`), and the File Provider extension's decrypted
-/// `pinned`/`temp` App Group directories (`targets/file-provider/Constants.swift`
-/// — a SEPARATE compiled `.appex` target this same file is also added to,
-/// see Task 2) all shipped inside user backups.
-///
-/// Protection class is `.completeUntilFirstUserAuthentication`, NOT `.complete`:
-/// `NativeBackupEngine` uploads from a background URLSession and
-/// `NativeBackupEngine` runs on PHKit callbacks, both of which must read these
-/// paths while the device is locked.
 /// LD-0002 round 2 (`0xdead10cc` on the File Provider cache, TestFlight 258):
 /// how the MAIN APP keeps a purge's reset of an app-group SQLite file inside
 /// the background-time gate (`FileProviderCacheDB`). This file also compiles
@@ -45,6 +26,25 @@ public protocol SQLiteResetSection: AnyObject {
   func finish(closing db: OpaquePointer?)
 }
 
+/// Task 0300 / pre-mortem item 12 — the single source of truth for every
+/// on-disk location this app writes that iOS would otherwise include in an
+/// iCloud or Finder backup.
+///
+/// iOS backs up `Documents/`, `Library/Application Support/`, and App Group
+/// containers by default; it excludes `Library/Caches/`. Before this type
+/// existed, `grep -rn 'isExcludedFromBackup'` over the whole mobile repo
+/// returned zero matches, so decrypted thumbnails (`ThumbnailService.swift`),
+/// decrypted PhotoKit renders (`PhotoKitResolver.swift`), the decrypted-name
+/// cache (`src/lib/name-cache.ts`), pre-encryption share staging
+/// (`PendingSharesAccess.swift`), and the File Provider extension's decrypted
+/// `pinned`/`temp` App Group directories (`targets/file-provider/Constants.swift`
+/// — a SEPARATE compiled `.appex` target this same file is also added to,
+/// see Task 2) all shipped inside user backups.
+///
+/// Protection class is `.completeUntilFirstUserAuthentication`, NOT `.complete`:
+/// `NativeBackupEngine` uploads from a background URLSession and
+/// `NativeBackupEngine` runs on PHKit callbacks, both of which must read these
+/// paths while the device is locked.
 public enum PlaintextStorageProtection {
   public enum Kind: Sendable {
     case directory

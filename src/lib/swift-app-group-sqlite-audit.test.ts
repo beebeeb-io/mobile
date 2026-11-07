@@ -102,14 +102,19 @@ describe('app-group SQLite audit: every main-app open of the File Provider cache
 
 describe('the gate is wired: the app feeds it, the quiesce reaches the cache, the sign-out reset is inside it', () => {
   test('the engine claims the lifecycle and its quiesce interrupts and waits for the cache connections', () => {
-    expect(ENGINE).toContain('BackupExecutionGate.shared.claimLifecycleOwnership()');
+    // The claim comes AFTER the gate is seeded from the real application state: a gate claimed first would read "foreground" in a process started in the background.
+    const seed = ENGINE.indexOf('self?.executionGate.setForeground(state != .background)');
+    const claim = ENGINE.indexOf('self?.executionGate.claimLifecycleOwnership()');
+    expect(seed).toBeGreaterThan(-1);
+    expect(claim).toBeGreaterThan(seed);
+    expect(ENGINE).not.toContain('BackupExecutionGate.shared.claimLifecycleOwnership()');
     expect(ENGINE).toContain('FileProviderCacheDB.shared.interruptInFlightStatements()');
     expect(ENGINE).toMatch(/let cacheQuiet = FileProviderCacheDB\.shared\.waitForQuiet\(timeout: deadline\.timeIntervalSinceNow\)/);
     expect(ENGINE).toMatch(/return manifestQuiet && thumbnailQuiet && cacheQuiet/);
   });
 
   test('FileProviderCacheDB.shared makes sure a lifecycle owner exists, and is the same gate as the backup engine', () => {
-    expect(MODULE).toMatch(/extension FileProviderCacheDB \{[\s\S]*?static let shared = FileProviderCacheDB\(\s*gate: \.shared,\s*ensureLifecycleOwner: \{ _ = NativeBackupEngine\.shared \}/);
+    expect(MODULE).toMatch(/extension FileProviderCacheDB \{[\s\S]*?static let shared = FileProviderCacheDB\(\s*gate: \.shared,\s*ensureLifecycleOwner: \{\s*_ = NativeBackupEngine\.shared[\s\S]*?hasLifecycleOwner/);
     expect(MODULE).not.toMatch(/FileProviderCacheDB\(gate: BackupExecutionGate\(/);
   });
 

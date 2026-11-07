@@ -14,6 +14,7 @@ import { mapInBatches } from './async-batch';
 import { decryptNamesInBackground } from './background-name-decrypt';
 import { isPlaintextGateClosed, plaintextGate, withPlaintextLease } from './plaintext-gate';
 import { cacheWriteCount, createDeferredCacheWrites } from './file-provider-cache-write';
+import { accountEpoch, isCurrentAccountEpoch, onAccountEpochAdvance } from './account-epoch';
 
 /**
  * Writes the native side refused because the app's background time had ended
@@ -30,11 +31,14 @@ export const deferredFileProviderCacheWrites = createDeferredCacheWrites({
   onOverflow: () => {
     console.warn('[file-provider] deferred cache writes over the cap: the oldest was dropped; the next full listing reconciles');
   },
+  isForeground: () => ReactNative.AppState?.currentState === 'active',
   onReplayError: (error) => {
     // A sign-out closed the plaintext gate (the purge emptied the cache; the queued names must not come back), or the native call failed outright.
     if (!isPlaintextGateClosed(error)) console.warn('[file-provider] a deferred cache write failed and was dropped');
   },
 });
+// A sign-in or sign-out is an account boundary: names queued under the old account must never reach the new account's cache.
+onAccountEpochAdvance(() => deferredFileProviderCacheWrites.clear());
 
 type MountTrustedFileProviderOptions = {
   vaultUnlocked?: boolean;
@@ -196,7 +200,10 @@ export async function syncDecryptedEntriesToFileProvider(
     : null;
 
   // A fresh lease per attempt: a deferred attempt that runs after a sign-out
-  // finds the plaintext gate closed and is dropped, never written.
+  // finds the plaintext gate closed and is dropped, never written. The account
+  // epoch is captured too: a sign-in as someone else reopens that gate.
+  const epoch = accountEpoch();
+  const queueKey = prune && pruneParents && pruneParents.length === 1 ? `sync:prune:${String(pruneParents[0])}` : undefined;
   const push = () =>
     withPlaintextLease('file provider cache push', async (lease) => {
       lease.assertValid();
@@ -210,8 +217,9 @@ export async function syncDecryptedEntriesToFileProvider(
       // same push for the next foreground; a later complete listing of the same
       // parent replaces it.
       deferredFileProviderCacheWrites.defer({
-        key: prune && pruneParents && pruneParents.length === 1 ? `sync:prune:${String(pruneParents[0])}` : undefined,
+        key: queueKey,
         run: async () => {
+          if (!isCurrentAccountEpoch(epoch)) return true;
           const retried = await push();
           if (retried === 'not_now') return false;
           if (options.trashChanged) await signalFileProviderTrashChanged();
@@ -223,6 +231,9 @@ export async function syncDecryptedEntriesToFileProvider(
       }
       return 0;
     }
+    // A complete listing that just landed supersedes a queued older one for the same parent: replaying
+    // that one later would prune with its stale keep-set.
+    if (queueKey) deferredFileProviderCacheWrites.cancel(queueKey);
     if (options.trashChanged) {
       await signalFileProviderTrashChanged();
     }
@@ -241,13 +252,14 @@ export async function syncDecryptedEntriesToFileProvider(
 export async function removeFromFileProviderCache(ids: string[]): Promise<void> {
   if (Platform.OS !== 'ios') return;
   if (ids.length === 0) return;
+  const epoch = accountEpoch();
   try {
     const removed = cacheWriteCount(await BeebeebCrypto.removeFileProviderEntries(ids));
     if (removed === 'not_now') {
       // LD-0002 round 2: no background time left, nothing was removed. Run it
       // again on the next foreground rather than leaving the row in Files.
       deferredFileProviderCacheWrites.defer({
-        run: async () => cacheWriteCount(await BeebeebCrypto.removeFileProviderEntries(ids)) !== 'not_now',
+        run: async () => !isCurrentAccountEpoch(epoch) || cacheWriteCount(await BeebeebCrypto.removeFileProviderEntries(ids)) !== 'not_now',
       });
     }
   } catch {
@@ -262,13 +274,14 @@ export async function removeFromFileProviderCache(ids: string[]): Promise<void> 
  */
 export async function setFileProviderProtectedBackupsRoot(id: string | null): Promise<void> {
   if (Platform.OS !== 'ios') return;
+  const epoch = accountEpoch();
   try {
     const published = cacheWriteCount(await BeebeebCrypto.setFileProviderProtectedFolder(id));
     if (published === 'not_now') {
       // LD-0002 round 2: only the latest id matters, so one queued entry.
       deferredFileProviderCacheWrites.defer({
         key: 'protected-backups-root',
-        run: async () => cacheWriteCount(await BeebeebCrypto.setFileProviderProtectedFolder(id)) !== 'not_now',
+        run: async () => !isCurrentAccountEpoch(epoch) || cacheWriteCount(await BeebeebCrypto.setFileProviderProtectedFolder(id)) !== 'not_now',
       });
     }
   } catch {

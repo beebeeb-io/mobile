@@ -95,4 +95,42 @@ describe('createDeferredCacheWrites', () => {
     await Promise.all([first, second]);
     expect(ran).toEqual(['slow', 'late']);
   });
+
+  test('cancel(key) removes the queued write for that key and nothing else', async () => {
+    const { deferred } = queue();
+    const ran: string[] = [];
+    deferred.defer({ key: 'a', run: async () => { ran.push('a'); return true; } });
+    deferred.defer({ key: 'b', run: async () => { ran.push('b'); return true; } });
+    deferred.cancel('a');
+    deferred.cancel('missing');
+    await deferred.replay();
+    expect(ran).toEqual(['b']);
+  });
+
+  test('clear() empties the queue', async () => {
+    const { deferred } = queue();
+    deferred.defer({ run: async () => true });
+    deferred.defer({ run: async () => true });
+    deferred.clear();
+    expect(deferred.size).toBe(0);
+  });
+
+  test('a write deferred while the app is ALREADY foreground schedules its own replay (no later "active" event is coming)', async () => {
+    const scheduled: Array<() => void> = [];
+    const { deferred } = queue({ isForeground: () => true, scheduleReplay: (run) => scheduled.push(run) });
+    let ran = 0;
+    deferred.defer({ run: async () => { ran += 1; return true; } });
+    expect(scheduled.length).toBe(1);
+    scheduled[0]();
+    await deferred.replay();
+    expect(ran).toBe(1);
+    expect(deferred.size).toBe(0);
+  });
+
+  test('in the background no replay is scheduled: only the foreground event runs the queue', () => {
+    const scheduled: Array<() => void> = [];
+    const { deferred } = queue({ isForeground: () => false, scheduleReplay: (run) => scheduled.push(run) });
+    deferred.defer({ run: async () => true });
+    expect(scheduled.length).toBe(0);
+  });
 });

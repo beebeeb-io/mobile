@@ -66,6 +66,7 @@ const {
   deferredFileProviderCacheWrites,
 } = await import('./file-provider-mount');
 const { plaintextGate } = await import('./plaintext-gate');
+const { advanceAccountEpoch } = await import('./account-epoch');
 
 const NOT_NOW = { status: 'not_now' };
 const ok = (count: number) => ({ status: 'ok', count });
@@ -208,5 +209,37 @@ describe('a refused File Provider cache write waits for the foreground (LD-0002 
     await foreground();
 
     expect(nativeCalls.map((c) => c.fn)).toEqual(['syncFileProviderCache', 'signalFileProviderTrashEnumerator']);
+  });
+
+  test('j10: a complete listing that lands directly replaces the queued older one: its stale keep-set never runs', async () => {
+    answers.syncFileProviderCache = [NOT_NOW, ok(1)];
+    await syncDecryptedEntriesToFileProvider([file('old')], {}, 'p', { prune: true, pruneParents: ['p'] });
+    expect(deferredFileProviderCacheWrites.size).toBe(1);
+    nativeCalls.length = 0;
+
+    await syncDecryptedEntriesToFileProvider([file('new')], {}, 'p', { prune: true, pruneParents: ['p'] });
+    expect(deferredFileProviderCacheWrites.size).toBe(0);
+    await foreground();
+
+    expect(nativeCalls.length).toBe(1);
+    expect(nativeCalls[0].args[0].map((e) => e.id)).toEqual(['new']);
+  });
+
+  test('j11: a sign-in or sign-out (an account boundary) empties the queue: nothing queued for the old account is written', async () => {
+    answers.syncFileProviderCache = [NOT_NOW];
+    answers.removeFileProviderEntries = [NOT_NOW];
+    answers.setFileProviderProtectedFolder = [NOT_NOW];
+    await syncDecryptedEntriesToFileProvider([file('a1')], { a1: 'account-a-secret.txt' }, null);
+    await removeFromFileProviderCache(['a2']);
+    await setFileProviderProtectedBackupsRoot('a-root');
+    expect(deferredFileProviderCacheWrites.size).toBe(3);
+    nativeCalls.length = 0;
+
+    advanceAccountEpoch();
+    expect(deferredFileProviderCacheWrites.size).toBe(0); // dropped at the boundary itself, not only when replayed
+    await foreground();
+
+    expect(nativeCalls.map((c) => c.fn).filter((f) => f !== 'signalFileProviderTrashEnumerator')).toEqual([]);
+    expect(deferredFileProviderCacheWrites.size).toBe(0);
   });
 });

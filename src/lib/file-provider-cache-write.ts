@@ -37,6 +37,10 @@ export interface DeferredCacheWrites {
   defer(write: DeferredCacheWrite): void;
   /** Runs the queue in order; stops at the first write the native side refuses again. */
   replay(): Promise<void>;
+  /** A newer write for `key` has just been applied directly: the queued one is stale and must not run. */
+  cancel(key: string): void;
+  /** An account boundary (sign-in or sign-out): nothing queued under the old account may run. */
+  clear(): void;
   readonly size: number;
 }
 
@@ -48,6 +52,9 @@ export function createDeferredCacheWrites(deps: {
   /** Called with the write that fell off the front of a full queue. */
   onOverflow?: (dropped: DeferredCacheWrite) => void;
   onReplayError?: (error: unknown) => void;
+  /** True while the app is already foreground. A write refused then (it was in flight across an app switch) gets no later 'active' event, so a replay is scheduled instead. */
+  isForeground?: () => boolean;
+  scheduleReplay?: (run: () => void) => void;
   max?: number;
 }): DeferredCacheWrites {
   const pending: DeferredCacheWrite[] = [];
@@ -98,8 +105,18 @@ export function createDeferredCacheWrites(deps: {
           void replay();
         });
       }
+      if (deps.isForeground?.()) {
+        (deps.scheduleReplay ?? ((run) => void setTimeout(run, 1000)))(() => void replay());
+      }
     },
     replay,
+    cancel(key) {
+      const index = pending.findIndex((queued) => queued.key === key);
+      if (index >= 0) pending.splice(index, 1);
+    },
+    clear() {
+      pending.length = 0;
+    },
     get size() {
       return pending.length;
     },

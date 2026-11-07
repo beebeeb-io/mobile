@@ -420,6 +420,12 @@ do {
   second?.finish(closing: nil)
   expect(asked == 1, "c6: the lifecycle owner is asked for once, not on every call (asked \(asked))")
   expect(gate.hasLifecycleOwner, "c6: and the gate has an owner afterwards")
+
+  // A gate nobody drives would read "foreground" for ever: unknown is refused.
+  let undriven = BackupExecutionGate(foreground: true)
+  let cacheWithoutOwner = FileProviderCacheDB(gate: undriven, ensureLifecycleOwner: {})
+  expect(cacheWithoutOwner.enter() == nil, "c6: a gate still unclaimed after the owner was asked for refuses (enter() is nil)")
+  expect(cacheWithoutOwner.sectionsInFlight == 0, "c6: and opens nothing")
 }
 
 // ── c7 ───────────────────────────────────────────────────────────────────

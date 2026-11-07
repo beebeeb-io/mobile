@@ -28,7 +28,15 @@ extension FileProviderCacheDB {
   /// exists before the first connection asks.
   static let shared = FileProviderCacheDB(
     gate: .shared,
-    ensureLifecycleOwner: { _ = NativeBackupEngine.shared }
+    ensureLifecycleOwner: {
+      _ = NativeBackupEngine.shared
+      // The engine seeds the gate from the real application state on the main
+      // queue and only then claims it. Wait for that here (bounded), unless this
+      // IS the main queue: then `enter()` finds the gate unclaimed and refuses.
+      guard !Thread.isMainThread else { return }
+      let deadline = Date().addingTimeInterval(1.0)
+      while !BackupExecutionGate.shared.hasLifecycleOwner && Date() < deadline { usleep(5_000) }
+    }
   )
 }
 private let simulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProviderMasterKey"
@@ -4275,7 +4283,11 @@ public class BeebeebCryptoModule: Module {
         sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
         return FileProviderCacheOutcome<Int>.notNow.bridged
       }
-      sqlite3_exec(db, "COMMIT", nil, nil, nil)
+      // A COMMIT that does not land is not a removal: roll back and say so.
+      guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+        sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+        return FileProviderCacheOutcome<Int>.notNow.bridged
+      }
 
       if #available(iOS 16.0, *), removed > 0 {
         let domain = beebeebFileProviderDomain()
