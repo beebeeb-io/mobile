@@ -1294,8 +1294,9 @@ final class NativeBackupEngine: NSObject {
     // foreground/background transitions (the observers below). The File
     // Provider cache's connections ask the gate too, so they ask for this
     // owner to exist (`FileProviderCacheDB.enter`) rather than trusting a
-    // gate nobody drives.
-    BackupExecutionGate.shared.claimLifecycleOwnership()
+    // gate nobody drives. The claim comes AFTER the seed below (a gate claimed
+    // before it would read "foreground" for a process started in the
+    // background).
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(handleAppDidEnterBackground),
@@ -1331,6 +1332,7 @@ final class NativeBackupEngine: NSObject {
       // LD-0002: a background launch (BGProcessingTask, background URLSession
       // events) starts with the gate closed until an assertion opens it.
       self?.executionGate.setForeground(state != .background)
+      self?.executionGate.claimLifecycleOwnership()
     }
   }
 

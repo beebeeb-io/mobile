@@ -100,8 +100,10 @@ public final class FileProviderCacheDB: SQLiteResetScope {
 
   /// `ensureLifecycleOwner` makes sure something feeds the gate the app's
   /// foreground/background transitions (production: constructs
-  /// `NativeBackupEngine.shared`, which observes them). Without an owner the
-  /// gate keeps its initial "foreground" for ever.
+  /// `NativeBackupEngine.shared`, which seeds the gate from the real application
+  /// state and then claims it, and waits for that). Without an owner the gate
+  /// keeps its initial "foreground" for ever, so a gate still unclaimed after
+  /// this refuses (`enter()` is nil).
   public init(gate: BackupExecutionGate, ensureLifecycleOwner: @escaping () -> Void = {}) {
     self.gate = gate
     self.statements = SQLiteStatementGate(gate: gate)
@@ -111,7 +113,11 @@ public final class FileProviderCacheDB: SQLiteResetScope {
   /// Asks the gate for a connection's worth of SQLite work. nil = "not now":
   /// open nothing, run nothing.
   public func enter() -> Section? {
-    if !gate.hasLifecycleOwner { ensureLifecycleOwner() }
+    if !gate.hasLifecycleOwner {
+      ensureLifecycleOwner()
+      // Nothing feeds the gate the app's state: unknown is not foreground.
+      guard gate.hasLifecycleOwner else { return nil }
+    }
     // The gate is asked INSIDE the lock `waitForQuiet` takes. A quiesce closes
     // the gate first and then takes this lock; so an `enter` is either before
     // that wait (its section is registered and awaited) or after it (the gate
@@ -358,7 +364,10 @@ public enum FileProviderCacheSync {
     }
 
     guard section.admits else { return abandon() }
-    sqlite3_exec(db, "COMMIT", nil, nil, nil)
+    // A COMMIT that does not land (busy past the timeout, an interrupt) is not a
+    // write: roll back and say so, instead of answering a count that was never
+    // stored.
+    guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else { return abandon() }
 
     let didPrune = shouldPrune && (!touchedParentIdentifiers.isEmpty || touchesRoot)
     return .done(FileProviderCacheSyncResult(
