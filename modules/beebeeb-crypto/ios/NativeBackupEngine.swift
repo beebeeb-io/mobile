@@ -1290,6 +1290,12 @@ final class NativeBackupEngine: NSObject {
     // whose `dbQueue.sync { guard let db ... }` wins the race silently no-ops
     // on `db == nil`.
     dbQueue.async { [weak self] in self?.openDatabase() }
+    // LD-0002 round 2: this engine feeds the execution gate the app's
+    // foreground/background transitions (the observers below). The File
+    // Provider cache's connections ask the gate too, so they ask for this
+    // owner to exist (`FileProviderCacheDB.enter`) rather than trusting a
+    // gate nobody drives.
+    BackupExecutionGate.shared.claimLifecycleOwnership()
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(handleAppDidEnterBackground),
@@ -3583,12 +3589,17 @@ final class NativeBackupEngine: NSObject {
       interrupt: {
         NativeBackupEngine.manifestInterrupt.interrupt()
         ThumbnailQueueDB.shared.interruptInFlightStatement()
+        // LD-0002 round 2: the File Provider cache DB is in the app-group
+        // container; its connections (`syncFileProviderCache` and the other
+        // JS-called writers) are in this quiesce too.
+        FileProviderCacheDB.shared.interruptInFlightStatements()
       },
       waitForQuiet: { timeout in
         let deadline = Date().addingTimeInterval(timeout)
         let manifestQuiet = BackupSQLiteQuiesce.waitForSerialQueue(self.dbQueue, timeout: timeout)
         let thumbnailQuiet = ThumbnailQueueDB.shared.waitForQuiet(timeout: deadline.timeIntervalSinceNow)
-        return manifestQuiet && thumbnailQuiet
+        let cacheQuiet = FileProviderCacheDB.shared.waitForQuiet(timeout: deadline.timeIntervalSinceNow)
+        return manifestQuiet && thumbnailQuiet && cacheQuiet
       }
     )
     // LD-0002 (#262 review 1): the drain stops at its next checkpoint instead

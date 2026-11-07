@@ -50,6 +50,7 @@ MANIFEST=(
   "backup-execution-gate-test.swift|modules/beebeeb-crypto/ios/BackupExecutionGate.swift"
   "manifest-background-quiesce-test.swift|modules/beebeeb-crypto/ios/BackupExecutionGate.swift modules/beebeeb-crypto/ios/BackupManifestHandle.swift modules/beebeeb-crypto/ios/BackupManifestStore.swift modules/beebeeb-crypto/ios/ManifestRebuildGate.swift modules/beebeeb-crypto/ios/ManifestWriteFence.swift"
   "thumbnail-queue-quiesce-test.swift|modules/beebeeb-crypto/ios/ThumbnailQueueDB.swift modules/beebeeb-crypto/ios/ThumbnailErrorCategory.swift modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift modules/beebeeb-crypto/ios/RuntimeTrace.swift modules/beebeeb-crypto/ios/BackupExecutionGate.swift"
+  "file-provider-cache-quiesce-test.swift|modules/beebeeb-crypto/ios/FileProviderCacheDB.swift modules/beebeeb-crypto/ios/PlaintextStorageProtection.swift modules/beebeeb-crypto/ios/RuntimeTrace.swift modules/beebeeb-crypto/ios/BackupExecutionGate.swift"
   "photo-grid-drag-selection-test.swift|modules/beebeeb-crypto/ios/ThumbnailServiceTypes.swift"
   "backup-export-verification-test.swift|modules/beebeeb-crypto/ios/UploadSessionGone.swift"
 )
@@ -192,7 +193,7 @@ SWIFT
       fi
       extra_objs+=("$VANILLA_SQLITE_OBJ")
       ;;
-    thumbnail-queue-purge-test.swift|thumbnail-queue-quiesce-test.swift)
+    thumbnail-queue-purge-test.swift|thumbnail-queue-quiesce-test.swift|file-provider-cache-quiesce-test.swift)
       # Task 1962 round 5 (P2.2): link the same vanilla SQLite object the app
       # gets through the Rust core. Apple's system SQLite defaults
       # secure_delete to 2, which hides a dropped `PRAGMA secure_delete = ON`.

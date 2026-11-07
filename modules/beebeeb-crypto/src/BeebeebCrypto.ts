@@ -1108,8 +1108,36 @@ export interface FileProviderCacheEntry {
 }
 
 /**
+ * What a write to the shared File Provider cache answers (LD-0002 round 2,
+ * `0xdead10cc`). iOS kills an app that holds a lock on an app-group file when
+ * it suspends it, so the native side opens no connection once background time
+ * has ended: `not_now` means NOTHING was written and the caller must retry when
+ * the app is foreground again (`file-provider-cache-write.ts` queues that).
+ * `count` is the rows written or removed (for `setFileProviderProtectedFolder`
+ * 1 = published, 0 = could not be).
+ */
+export type FileProviderCacheWriteResult =
+  | { status: 'ok'; count: number }
+  | { status: 'not_now' }
+
+/** An older native build answers a bare number (or boolean): that is an `ok`. */
+export function toFileProviderCacheWriteResult(raw: unknown): FileProviderCacheWriteResult {
+  if (raw && typeof raw === 'object' && (raw as { status?: unknown }).status === 'not_now') {
+    return { status: 'not_now' }
+  }
+  if (raw && typeof raw === 'object') {
+    const count = (raw as { count?: unknown }).count
+    return { status: 'ok', count: typeof count === 'number' ? count : 0 }
+  }
+  if (typeof raw === 'number') return { status: 'ok', count: raw }
+  if (typeof raw === 'boolean') return { status: 'ok', count: raw ? 1 : 0 }
+  return { status: 'ok', count: 0 }
+}
+
+/**
  * Write pre-decrypted file entries to the shared App Group SQLite cache.
- * Returns the number of rows written. iOS only; no-op on Android.
+ * Resolves `{status: 'ok', count}` (rows written) or `{status: 'not_now'}`
+ * (see `FileProviderCacheWriteResult`). iOS only; no-op on Android.
  *
  * `prune` controls whether rows no longer present are deleted. Pass `true`
  * ONLY when `entries` is the COMPLETE child set for every parent it touches
@@ -1131,22 +1159,23 @@ export async function syncFileProviderCache(
   entries: FileProviderCacheEntry[],
   prune = false,
   pruneParents: (string | null)[] | null = null,
-): Promise<number> {
-  if (typeof BeebeebCryptoModule.syncFileProviderCache !== 'function') return 0
-  return BeebeebCryptoModule.syncFileProviderCache(entries, prune, pruneParents)
+): Promise<FileProviderCacheWriteResult> {
+  if (typeof BeebeebCryptoModule.syncFileProviderCache !== 'function') return { status: 'ok', count: 0 }
+  return toFileProviderCacheWriteResult(await BeebeebCryptoModule.syncFileProviderCache(entries, prune, pruneParents))
 }
 
 /**
  * Delete specific entries from the shared App Group SQLite cache and signal the
  * File Provider to re-enumerate their parent folders. Used for local
  * trash/delete write-through so a file removed from inside the app disappears
- * from the iOS Files app immediately. Returns the number of rows removed.
- * iOS only; no-op (returns 0) on Android or builds without the native bridge.
+ * from the iOS Files app immediately. Resolves the rows removed, or `not_now`
+ * (see `FileProviderCacheWriteResult`). iOS only; no-op (0 removed) on Android
+ * or builds without the native bridge.
  */
-export async function removeFileProviderEntries(ids: string[]): Promise<number> {
-  if (ids.length === 0) return 0
-  if (typeof BeebeebCryptoModule.removeFileProviderEntries !== 'function') return 0
-  return BeebeebCryptoModule.removeFileProviderEntries(ids)
+export async function removeFileProviderEntries(ids: string[]): Promise<FileProviderCacheWriteResult> {
+  if (ids.length === 0) return { status: 'ok', count: 0 }
+  if (typeof BeebeebCryptoModule.removeFileProviderEntries !== 'function') return { status: 'ok', count: 0 }
+  return toFileProviderCacheWriteResult(await BeebeebCryptoModule.removeFileProviderEntries(ids))
 }
 
 /**
@@ -1180,11 +1209,12 @@ export async function signalFileProviderTrashEnumerator(): Promise<boolean> {
 /**
  * Publish the id of the protected root "Backups" folder to the Files app extension (`null`
  * clears it), so the extension offers no delete, rename or move for it. iOS only; no-op
- * (returns false) on Android or builds without the native bridge.
+ * (`count` 0) on Android or builds without the native bridge. `not_now`: see
+ * `FileProviderCacheWriteResult`.
  */
-export async function setFileProviderProtectedFolder(id: string | null): Promise<boolean> {
-  if (typeof BeebeebCryptoModule.setFileProviderProtectedFolder !== 'function') return false
-  return BeebeebCryptoModule.setFileProviderProtectedFolder(id)
+export async function setFileProviderProtectedFolder(id: string | null): Promise<FileProviderCacheWriteResult> {
+  if (typeof BeebeebCryptoModule.setFileProviderProtectedFolder !== 'function') return { status: 'ok', count: 0 }
+  return toFileProviderCacheWriteResult(await BeebeebCryptoModule.setFileProviderProtectedFolder(id))
 }
 
 // ─── Run diagnostics ────────────────────────────────────────────────────────

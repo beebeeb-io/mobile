@@ -21,6 +21,26 @@ import { join } from 'node:path';
 
 const ROOT = join(import.meta.dir, '..', '..');
 const MODULE_SWIFT = readFileSync(join(ROOT, 'modules', 'beebeeb-crypto', 'ios', 'BeebeebCryptoModule.swift'), 'utf8');
+
+/**
+ * LD-0002 round 2: `resetFileProviderCacheDatabase` asks the background-time gate
+ * (`FileProviderCacheDB.shared.enter()`). These harnesses compile the extracted
+ * function on its own, so the gate is an always-open stand-in here; the real gate,
+ * and what happens when it closes, are exercised by
+ * scripts/swift-tests/file-provider-cache-quiesce-test.swift.
+ */
+const OPEN_GATE_STAND_IN = `
+final class OpenSection {
+  var admits: Bool { true }
+  func attach(_ db: OpaquePointer) {}
+  func finish(closing db: OpaquePointer?) { if let db { sqlite3_close(db) } }
+}
+final class FileProviderCacheDB {
+  static let shared = FileProviderCacheDB()
+  func enter() -> OpenSection? { OpenSection() }
+}
+`;
+
 const CACHE_MANAGER_SWIFT = readFileSync(join(ROOT, 'targets', 'file-provider', 'CacheManager.swift'), 'utf8');
 const REQUIRE_NATIVE_SWIFT_HARNESSES = process.env.BB_REQUIRE_NATIVE_SWIFT_HARNESSES === '1';
 
@@ -84,7 +104,13 @@ function sqlStatements(swiftArray: string): string[] {
 
 const syncBody = bracedBody(
   MODULE_SWIFT,
-  'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> Int in',
+  'AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> [String: Any] in',
+);
+// LD-0002 round 2: the upsert transaction (its SQL, the prune pass) moved out of the closure into a standalone
+// file, so the Swift harness runs the shipped code; the closure opens, prepares and calls it.
+const syncApplyBody = bracedBody(
+  readFileSync(join(ROOT, 'modules', 'beebeeb-crypto', 'ios', 'FileProviderCacheDB.swift'), 'utf8'),
+  'public static func apply(',
 );
 
 describe('task 1722 (f): one File Provider cache schema for every writer', () => {
@@ -123,20 +149,20 @@ describe('task 1722 (f): one File Provider cache schema for every writer', () =>
     const appMigration = bracedBody(MODULE_SWIFT, 'private func ensureFileProviderCacheColumn(');
     expect(appMigration).toContain('-> Bool');
     expect(appMigration).toContain('return containsColumn()');
-    expect(syncBody).toMatch(/guard ensureFileProviderCacheColumn[\s\S]*?else \{\s*return 0/);
+    expect(syncBody).toMatch(/guard ensureFileProviderCacheColumn[\s\S]*?else \{\s*return /);
   });
 
   test('the app write-through invalidates an alias when either its real name or parent changes', () => {
-    expect(syncBody).toContain('file_cache.parent_id IS NOT excluded.parent_id');
-    expect(syncBody).toContain('file_cache.name_decrypted IS NOT excluded.name_decrypted');
-    expect(syncBody).toMatch(/display_name\s*=\s*CASE[\s\S]*?THEN NULL ELSE file_cache\.display_name END/);
-    expect(syncBody).toMatch(/display_name_source_name\s*=\s*CASE[\s\S]*?THEN NULL ELSE file_cache\.display_name_source_name END/);
-    expect(syncBody).toMatch(/display_name_source_parent\s*=\s*CASE[\s\S]*?THEN NULL ELSE file_cache\.display_name_source_parent END/);
+    expect(syncApplyBody).toContain('file_cache.parent_id IS NOT excluded.parent_id');
+    expect(syncApplyBody).toContain('file_cache.name_decrypted IS NOT excluded.name_decrypted');
+    expect(syncApplyBody).toMatch(/display_name\s*=\s*CASE[\s\S]*?THEN NULL ELSE file_cache\.display_name END/);
+    expect(syncApplyBody).toMatch(/display_name_source_name\s*=\s*CASE[\s\S]*?THEN NULL ELSE file_cache\.display_name_source_name END/);
+    expect(syncApplyBody).toMatch(/display_name_source_parent\s*=\s*CASE[\s\S]*?THEN NULL ELSE file_cache\.display_name_source_parent END/);
   });
 
   test('the production app upsert SQL clears rename/move provenance and preserves unchanged provenance', () => {
     const schema = sqlStatements(schemaDeclaration()).find((sql) => sql.startsWith('CREATE TABLE IF NOT EXISTS file_cache ('))!;
-    const upsert = syncBody.match(/let upsertSql = """([\s\S]*?)"""/)?.[1];
+    const upsert = syncApplyBody.match(/let upsertSql = """([\s\S]*?)"""/)?.[1];
     expect(upsert).toBeTruthy();
     const db = new Database(':memory:');
     db.run(schema);
@@ -184,6 +210,8 @@ describe('task 1722 (f): the forced reset works on the database a fresh install 
     writeFileSync(source, `
 import Foundation
 import SQLite3
+
+${OPEN_GATE_STAND_IN}
 
 ${declaration}
 

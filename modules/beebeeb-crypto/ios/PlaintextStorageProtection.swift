@@ -22,6 +22,29 @@ import Security
 /// `NativeBackupEngine` uploads from a background URLSession and
 /// `NativeBackupEngine` runs on PHKit callbacks, both of which must read these
 /// paths while the device is locked.
+/// LD-0002 round 2 (`0xdead10cc` on the File Provider cache, TestFlight 258):
+/// how the MAIN APP keeps a purge's reset of an app-group SQLite file inside
+/// the background-time gate (`FileProviderCacheDB`). This file also compiles
+/// into the File Provider extension, which has no gate and never passes a
+/// scope: `purgeAll(resetScope: nil)` behaves exactly as before.
+public protocol SQLiteResetScope: AnyObject {
+  /// nil = the gate refuses (no background time left): the reset reports a
+  /// failure and the purge stays fail-closed, to be retried.
+  func begin() -> SQLiteResetSection?
+}
+
+public protocol SQLiteResetSection: AnyObject {
+  /// False once background time ended since `begin()`; checked before every
+  /// statement of the reset, and the transaction is rolled back instead of
+  /// committed when it turns false.
+  var admits: Bool { get }
+  /// Publish the open connection so an expiry can interrupt it.
+  func attach(_ db: OpaquePointer)
+  /// Withdraw the connection, close it, and leave the scope. The close lives
+  /// here so the quiesce wait ends only after the handle is gone.
+  func finish(closing db: OpaquePointer?)
+}
+
 public enum PlaintextStorageProtection {
   public enum Kind: Sendable {
     case directory
@@ -932,7 +955,7 @@ public enum PlaintextStorageProtection {
   /// `removeItem(at:preserving:)`); an entry with none is removed whole, as
   /// before.
   @discardableResult
-  public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = []) -> (removed: Int, failed: Int) {
+  public static func purgeAll(pendingNonce: Data? = nil, preserving: Set<String> = [], resetScope: SQLiteResetScope? = nil) -> (removed: Int, failed: Int) {
     var removed = 0
     var failed = 0
     var resetBumpCommitted = false
@@ -949,7 +972,7 @@ public enum PlaintextStorageProtection {
         continue
       }
       if entry.resettableInPlace {
-        let result = resetSQLiteInPlace(entry.url)
+        let result = resetSQLiteInPlace(entry.url, scope: resetScope)
         if result.ok {
           removed += 1
         } else {
@@ -1124,12 +1147,25 @@ public enum PlaintextStorageProtection {
   /// independent of whatever VACUUM (part of `ok`, not `bumpCommitted`) goes
   /// on to do afterward.
   @discardableResult
-  private static func resetSQLiteInPlace(_ url: URL) -> (ok: Bool, bumpCommitted: Bool) {
+  static func resetSQLiteInPlace(_ url: URL, scope: SQLiteResetScope? = nil) -> (ok: Bool, bumpCommitted: Bool) {
+    // LD-0002 round 2: with a scope (the main app) the whole reset, VACUUM
+    // included, runs inside the background-time gate. A closed gate refuses it
+    // (fail closed, the purge retries); an expiry interrupts it and the
+    // transaction rolls back rather than committing.
+    var section: SQLiteResetSection?
+    if let scope {
+      guard let entered = scope.begin() else { return (false, false) }
+      section = entered
+    }
+    let finish: (OpaquePointer?) -> Void = { handle in
+      if let section { section.finish(closing: handle) } else { sqlite3_close(handle) }
+    }
+    func admits() -> Bool { section?.admits ?? true }
     var db: OpaquePointer?
     guard sqlite3_open_v2(
       url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil
     ) == SQLITE_OK, let db else {
-      sqlite3_close(db)
+      finish(db)
       let fileManager = FileManager.default
       var ok = true
       // Task 1593 round 5 (P2-7) — the `-journal` sibling is the rollback
@@ -1154,7 +1190,9 @@ public enum PlaintextStorageProtection {
       // marker-first mark untouched` in file-provider-purge-hygiene.test.ts.
       return (ok, false)
     }
-    defer { sqlite3_close(db) }
+    defer { finish(db) }
+    section?.attach(db)
+    guard admits() else { return (false, false) }
 
     // A second process (the File Provider extension's `CacheManager`) may
     // hold this exact file open; without a timeout a lock held for the
@@ -1187,6 +1225,10 @@ public enum PlaintextStorageProtection {
       }
     }
     sqlite3_finalize(stmt)
+    // LD-0002 round 2: an expiry that interrupted the listing left `tables`
+    // short; emptying only some of the tables and reporting a success would
+    // be a purge that did not purge.
+    guard admits() else { return (false, false) }
 
     // Task 1593 round 5 (P1-1) — a plain `DELETE` only unlinks a row from the
     // b-tree; the page it lived on goes onto the freelist with the decrypted
@@ -1218,12 +1260,19 @@ public enum PlaintextStorageProtection {
     }
     sqlite3_finalize(versionStmt)
 
+    // LD-0002 round 2: after every statement `ok` also asks the gate, so the
+    // next one never starts once background time has ended; a closed gate takes
+    // the ROLLBACK branch below and no write transaction survives.
     var ok = sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil) == SQLITE_OK
+    ok = ok && admits()
     ok = ok && sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK
+    ok = ok && admits()
     for table in tables {
       ok = ok && sqlite3_exec(db, "DELETE FROM \"\(table)\"", nil, nil, nil) == SQLITE_OK
+      ok = ok && admits()
     }
     ok = ok && sqlite3_exec(db, "PRAGMA user_version = \(nextVersion)", nil, nil, nil) == SQLITE_OK
+    ok = ok && admits()
     if ok {
       ok = sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
     } else {
@@ -1273,6 +1322,7 @@ public enum PlaintextStorageProtection {
     // sqlite3 CLI session that proves the BEGIN IMMEDIATE refusal also runs
     // this exact BEGIN→DELETE→user_version-bump→COMMIT→VACUUM sequence and
     // reads `PRAGMA user_version` back as the bumped value afterward.
+    ok = ok && admits()
     ok = ok && vacuumRetryingOnceOnBusy(db)
     return (ok, bumpCommitted)
   }
