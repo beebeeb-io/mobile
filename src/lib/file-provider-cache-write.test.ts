@@ -391,3 +391,66 @@ describe('undo: a newer write that FAILS puts the trimmed queue back', () => {
     expect(ran.length).toBe(1);
   });
 });
+
+describe('round 4: a late or restored write never brings back stale rows', () => {
+  test('a prune refused late loses a parent that a newer NON-prune write under it landed (the replay would delete the fresh row)', () => {
+    const { deferred } = queue();
+    const a = prune([entry('x', 'P'), entry('y', 'P')], ['P']);
+    const b = sync([entry('x', 'P')]);
+    deferred.issue(a);
+    deferred.issue(b);
+    deferred.landed(b);
+    deferred.defer(a);
+    expect(deferred.size).toBe(0); // P leaves A: nothing left to replay
+  });
+
+  test('...and keeps the other parents of that listing', () => {
+    const { deferred } = queue();
+    const a = prune([entry('x', 'P'), entry('q', 'Q')], ['P', 'Q']);
+    const b = sync([entry('x', 'P')]);
+    deferred.issue(a);
+    deferred.issue(b);
+    deferred.landed(b);
+    deferred.defer(a);
+    expect(deferred.queued[0].entries.map((e) => e.id)).toEqual(['q']);
+    expect(deferred.queued[0].pruneParents).toEqual(['Q']);
+  });
+
+  test('an undo does not bring back data a later write already replaced: a deleted file does not reappear', () => {
+    const { deferred } = queue();
+    deferred.defer(sync([entry('x')])); // Q
+    const undo = deferred.issue(sync([entry('x')])); // N1 trims Q to nothing
+    expect(deferred.size).toBe(0);
+    const n2 = remove(['x']);
+    deferred.issue(n2);
+    deferred.landed(n2); // N2 removes x and lands
+    undo(); // N1 fails
+    expect(deferred.size).toBe(0); // Q is NOT put back with x
+  });
+
+  test('a replay re-checks what landed before it runs a write', async () => {
+    const ran: string[] = [];
+    const { deferred } = queue({ run: async (w) => { ran.push(w.kind === 'sync' ? w.entries.map((e) => e.id).join(',') : 'other'); return true; } });
+    const old = sync([entry('x'), entry('y')]);
+    deferred.issue(old);
+    const later = remove(['x']);
+    deferred.issue(later);
+    deferred.landed(later);
+    deferred.defer(old);
+    await deferred.replay();
+    expect(ran).toEqual(['y']);
+  });
+
+  test('issue() snapshots only what it changes: untouched queued writes keep their arrays', () => {
+    const { deferred } = queue();
+    const untouched = sync([entry('keep', 'K')]);
+    deferred.defer(untouched);
+    const entriesBefore = untouched.entries;
+    const undo = deferred.issue(sync([entry('other', 'O')]));
+    expect(untouched.entries).toBe(entriesBefore);
+    undo();
+    expect(untouched.entries).toBe(entriesBefore);
+    expect(deferred.size).toBe(1);
+  });
+});
+

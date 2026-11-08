@@ -1290,11 +1290,6 @@ final class NativeBackupEngine: NSObject {
     // whose `dbQueue.sync { guard let db ... }` wins the race silently no-ops
     // on `db == nil`.
     dbQueue.async { [weak self] in self?.openDatabase() }
-    // LD-0002 round 3: from here on this engine owns the background sequence (grace
-    // assertion, then the surface reads, then the close). `BackupGateLifecycle`, started at
-    // launch, handles the gate while the engine is NOT built and steps aside once this flag is
-    // set. It is a plain flag: nothing constructs the engine to read it.
-    BackupGateLifecycle.noteEngineBuilt()
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(handleAppDidEnterBackground),
@@ -1307,6 +1302,13 @@ final class NativeBackupEngine: NSObject {
       name: UIApplication.willEnterForegroundNotification,
       object: nil
     )
+    // LD-0002 round 4: from here on this engine owns the background sequence (grace
+    // assertion, then the surface reads, then the close). `BackupGateLifecycle`, started at
+    // launch, handles the gate while the engine is NOT built and steps aside once this flag is
+    // set, so the flag flips only AFTER the `didEnterBackground` observer above is live: in
+    // between, both would act (harmless), never neither. A plain flag: nothing constructs the
+    // engine to read it.
+    BackupGateLifecycle.noteEngineBuilt()
     // The two extra observers below feed `_cachedApplicationState` so
     // `currentApplicationState()` never has to dispatch to main.
     NotificationCenter.default.addObserver(

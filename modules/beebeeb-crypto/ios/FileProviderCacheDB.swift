@@ -34,6 +34,10 @@ public enum FileProviderCacheOutcome<Value> {
   /// ran and its transaction was rolled back). NOTHING was written. The caller
   /// must retry when the app is foreground again.
   case notNow
+  /// The write failed with the gate open (busy past the timeout, a full disk, a corrupt file).
+  /// The transaction was rolled back: NOTHING was written, and it is NOT a refusal to retry
+  /// blindly. The bridge reports it so the caller never counts the write as landed.
+  case failed
 }
 
 extension FileProviderCacheOutcome where Value == Int {
@@ -43,6 +47,7 @@ extension FileProviderCacheOutcome where Value == Int {
     switch self {
     case .done(let count): return ["status": "ok", "count": count]
     case .notNow: return ["status": "not_now"]
+    case .failed: return ["status": "failed"]
     }
   }
 }
@@ -140,6 +145,7 @@ public final class FileProviderCacheDB: SQLiteResetScope {
   private let owedStateLock = NSLock()
   private let settleLock = NSLock()
   private var owedInMemory = false
+  private var realFailures = 0
   private let owedStore: (get: () -> Bool, set: (Bool) -> Void)?
 
   /// The gate is fed the app's state by `BackupGateLifecycle` (seeded at launch, no
@@ -206,11 +212,19 @@ public final class FileProviderCacheDB: SQLiteResetScope {
   /// account's names; clears the debt only when it returned true. True = nothing
   /// owed or paid. Retries are serialized; `reset` may itself call `markResetOwed`.
   @discardableResult
-  public func settleOwedReset(_ reset: () -> Bool) -> Bool {
+  public func settleOwedReset(maxFailures: Int = 3, _ reset: () -> Bool, fallback: () -> Bool = { false }) -> Bool {
     settleLock.lock()
     defer { settleLock.unlock() }
     guard resetOwed else { return true }
-    guard reset() else { return false }
+    if !reset() {
+      // A refusal (the gate closed) is the gate's business and costs nothing. A real failure with the
+      // gate open (a full disk, a corrupt file, no container) is counted: after `maxFailures` the
+      // cache, which is derived data, is removed instead of every writer answering not-now for ever.
+      if gateRefuses { return false }
+      realFailures += 1
+      guard realFailures >= maxFailures, fallback() else { return false }
+    }
+    realFailures = 0
     owedStateLock.lock()
     owedInMemory = false
     owedStore?.set(false)
@@ -221,6 +235,13 @@ public final class FileProviderCacheDB: SQLiteResetScope {
   /// The gate refuses new connections right now (used to tell a refusal from a failure).
   public var gateRefuses: Bool {
     !gate.canStartSQLiteWork
+  }
+
+  /// How many times the gate has closed so far. A caller that wants to know whether it closed DURING
+  /// its work compares this with the value it read at the start: the current state alone misses a
+  /// closure that has already reopened.
+  public var gateClosures: UInt64 {
+    gate.closures
   }
 
   fileprivate func leave(_ section: Section) {
@@ -289,6 +310,10 @@ public enum FileProviderCacheSync {
     func abandon() -> FileProviderCacheOutcome<FileProviderCacheSyncResult> {
       sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
       return .notNow
+    }
+    func fail() -> FileProviderCacheOutcome<FileProviderCacheSyncResult> {
+      sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+      return .failed
     }
 
     let upsertSql = """
@@ -366,7 +391,7 @@ public enum FileProviderCacheSync {
       var stmt: OpaquePointer?
       guard sqlite3_prepare_v2(db, upsertSql, -1, &stmt, nil) == SQLITE_OK else {
         sqlite3_finalize(stmt)
-        continue
+        return section.admits ? fail() : abandon()
       }
       defer { sqlite3_finalize(stmt) }
 
@@ -404,6 +429,10 @@ public enum FileProviderCacheSync {
         count += 1
       } else if rc == SQLITE_INTERRUPT || !section.admits {
         return abandon()
+      } else {
+        // A step that fails with the gate open fails the transaction: skipping it would answer ok for
+        // an entry that was never written, and the caller would count it as landed.
+        return fail()
       }
     }
 
@@ -431,7 +460,7 @@ public enum FileProviderCacheSync {
         var delStmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, deleteSql, -1, &delStmt, nil) == SQLITE_OK else {
           sqlite3_finalize(delStmt)
-          continue
+          return section.admits ? fail() : abandon()
         }
         defer { sqlite3_finalize(delStmt) }
 
@@ -449,6 +478,7 @@ public enum FileProviderCacheSync {
         if rc == SQLITE_INTERRUPT || (rc != SQLITE_DONE && !section.admits) {
           return abandon()
         }
+        if rc != SQLITE_DONE { return fail() }
       }
     }
 
