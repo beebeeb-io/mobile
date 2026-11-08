@@ -135,7 +135,6 @@ public final class FileProviderCacheDB: SQLiteResetScope {
 
   private let gate: BackupExecutionGate
   private let statements: SQLiteStatementGate
-  private let ensureLifecycleOwner: () -> Void
   private let condition = NSCondition()
   private var inFlight: [ObjectIdentifier: Section] = [:]
   private let owedStateLock = NSLock()
@@ -143,35 +142,22 @@ public final class FileProviderCacheDB: SQLiteResetScope {
   private var owedInMemory = false
   private let owedStore: (get: () -> Bool, set: (Bool) -> Void)?
 
-  /// `ensureLifecycleOwner` makes sure something feeds the gate the app's
-  /// foreground/background transitions (production: constructs
-  /// `NativeBackupEngine.shared`, which seeds the gate from the real application
-  /// state and then claims it, and waits for that). Without an owner the gate
-  /// keeps its initial "foreground" for ever, so a gate still unclaimed after
-  /// this refuses (`enter()` is nil).
+  /// The gate is fed the app's state by `BackupGateLifecycle` (seeded at launch, no
+  /// engine needed) and, once built, by `NativeBackupEngine`.
   /// `owedStore` persists "a reset of the cache is still owed" across launches
   /// (production: a key in the app-group defaults); nil keeps it in memory.
   public init(
     gate: BackupExecutionGate,
-    ensureLifecycleOwner: @escaping () -> Void = {},
     owedStore: (get: () -> Bool, set: (Bool) -> Void)? = nil
   ) {
     self.gate = gate
     self.statements = SQLiteStatementGate(gate: gate)
-    self.ensureLifecycleOwner = ensureLifecycleOwner
     self.owedStore = owedStore
   }
 
   /// Asks the gate for a connection's worth of SQLite work. nil = "not now":
   /// open nothing, run nothing.
   public func enter() -> Section? {
-    if !gate.hasLifecycleOwner {
-      // Kick the owner into existence (never on this thread, never waited for)
-      // and refuse: nothing feeds the gate the app's state yet, and unknown is
-      // not foreground. The caller gets "not now" and asks again.
-      ensureLifecycleOwner()
-      guard gate.hasLifecycleOwner else { return nil }
-    }
     // The gate is asked INSIDE the lock `waitForQuiet` takes. A quiesce closes
     // the gate first and then takes this lock; so an `enter` is either before
     // that wait (its section is registered and awaited) or after it (the gate

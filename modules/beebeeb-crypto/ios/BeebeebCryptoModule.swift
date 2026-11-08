@@ -23,16 +23,11 @@ private let appGroupIdentifier = "group.io.beebeeb.shared"
 extension FileProviderCacheDB {
   /// LD-0002 round 2: the one gate every main-app connection to the File Provider
   /// cache database goes through (see `FileProviderCacheDB`).
-  /// `NativeBackupEngine` observes the app's foreground/background transitions and
-  /// drives the gate. `ensureLifecycleOwner` only KICKS that engine into existence,
-  /// on a utility queue: never on the caller's thread (a main-thread caller must not
-  /// run its full `init()`, the build-227 watchdog), never waited for. `enter()`
-  /// refuses until the engine has seeded and claimed the gate.
+  /// `BackupGateLifecycle` (started in `BeebeebAppDelegate`) seeds the gate from the real
+  /// application state at launch and follows it; `NativeBackupEngine` takes over the
+  /// background sequence once it is built. The cache path never builds the engine.
   static let shared = FileProviderCacheDB(
     gate: .shared,
-    ensureLifecycleOwner: {
-      DispatchQueue.global(qos: .utility).async { _ = NativeBackupEngine.shared }
-    },
     owedStore: (
       get: { sharedDefaults()?.bool(forKey: fileProviderCacheResetOwedKey) ?? false },
       set: { sharedDefaults()?.set($0, forKey: fileProviderCacheResetOwedKey) }

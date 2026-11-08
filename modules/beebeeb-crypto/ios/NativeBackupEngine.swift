@@ -1290,13 +1290,11 @@ final class NativeBackupEngine: NSObject {
     // whose `dbQueue.sync { guard let db ... }` wins the race silently no-ops
     // on `db == nil`.
     dbQueue.async { [weak self] in self?.openDatabase() }
-    // LD-0002 round 2: this engine feeds the execution gate the app's
-    // foreground/background transitions (the observers below). The File
-    // Provider cache's connections ask the gate too, so they ask for this
-    // owner to exist (`FileProviderCacheDB.enter`) rather than trusting a
-    // gate nobody drives. The claim comes AFTER the seed below (a gate claimed
-    // before it would read "foreground" for a process started in the
-    // background).
+    // LD-0002 round 3: from here on this engine owns the background sequence (grace
+    // assertion, then the surface reads, then the close). `BackupGateLifecycle`, started at
+    // launch, handles the gate while the engine is NOT built and steps aside once this flag is
+    // set. It is a plain flag: nothing constructs the engine to read it.
+    BackupGateLifecycle.noteEngineBuilt()
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(handleAppDidEnterBackground),
@@ -1332,7 +1330,6 @@ final class NativeBackupEngine: NSObject {
       // LD-0002: a background launch (BGProcessingTask, background URLSession
       // events) starts with the gate closed until an assertion opens it.
       self?.executionGate.setForeground(state != .background)
-      self?.executionGate.claimLifecycleOwnership()
     }
   }
 
