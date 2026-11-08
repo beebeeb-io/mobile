@@ -133,12 +133,12 @@ describe('a refused File Provider cache write waits for the foreground (LD-0002 
     answers.syncFileProviderCache = [NOT_NOW, ok(1)];
     answers.removeFileProviderEntries = [NOT_NOW, ok(1)];
     await syncDecryptedEntriesToFileProvider([file('f1')], {}, null);
-    await removeFromFileProviderCache(['f1']);
+    await removeFromFileProviderCache(['f2']);
     nativeCalls.length = 0;
 
     await foreground();
 
-    // A restored file pushed, then removed again: the removal must come second.
+    // Writes of different ids keep the order they were refused in.
     expect(nativeCalls.map((c) => c.fn)).toEqual(['syncFileProviderCache', 'removeFileProviderEntries']);
   });
 
@@ -190,10 +190,10 @@ describe('a refused File Provider cache write waits for the foreground (LD-0002 
     expect(nativeCalls).toEqual([{ fn: 'setFileProviderProtectedFolder', args: [null] }]);
   });
 
-  test('j8: an answer from an older native build (a bare number or boolean) is an ok, never queued', async () => {
-    answers.syncFileProviderCache = [3];
-    answers.removeFileProviderEntries = [1];
-    answers.setFileProviderProtectedFolder = [true];
+  test('j8: an ok answer is the rows written and is never queued', async () => {
+    answers.syncFileProviderCache = [ok(3)];
+    answers.removeFileProviderEntries = [ok(1)];
+    answers.setFileProviderProtectedFolder = [ok(1)];
     expect(await syncDecryptedEntriesToFileProvider([file('f1')], {}, null)).toBe(3);
     await removeFromFileProviderCache(['x']);
     await setFileProviderProtectedBackupsRoot('r');
@@ -241,5 +241,66 @@ describe('a refused File Provider cache write waits for the foreground (LD-0002 
 
     expect(nativeCalls.map((c) => c.fn).filter((f) => f !== 'signalFileProviderTrashEnumerator')).toEqual([]);
     expect(deferredFileProviderCacheWrites.size).toBe(0);
+  });
+
+  test('j12: a trash that was refused, then a restore that succeeds: the replay never removes the restored rows', async () => {
+    answers.removeFileProviderEntries = [NOT_NOW, ok(1)];
+    answers.syncFileProviderCache = [ok(1)];
+    await removeFromFileProviderCache(['file-1', 'file-2']);
+    expect(deferredFileProviderCacheWrites.size).toBe(1);
+
+    // Undo: file-1 comes back (a partial push of the restored row, as FilesScreen does).
+    await syncDecryptedEntriesToFileProvider([file('file-1')], {}, null);
+    nativeCalls.length = 0;
+    await foreground();
+
+    expect(nativeCalls).toEqual([{ fn: 'removeFileProviderEntries', args: [['file-2']] }]);
+    // and when the restore covers every queued id, nothing is replayed at all
+    answers.removeFileProviderEntries = [NOT_NOW, ok(1)];
+    await removeFromFileProviderCache(['file-3']);
+    await syncDecryptedEntriesToFileProvider([file('file-3')], {}, null);
+    nativeCalls.length = 0;
+    await foreground();
+    expect(nativeCalls.filter((c) => c.fn === 'removeFileProviderEntries')).toEqual([]);
+  });
+
+  test('j13: an older protected-root id never overwrites a newer one that was published directly', async () => {
+    answers.setFileProviderProtectedFolder = [NOT_NOW, ok(1)];
+    await setFileProviderProtectedBackupsRoot('old-root');
+    expect(deferredFileProviderCacheWrites.size).toBe(1);
+    await setFileProviderProtectedBackupsRoot('new-root'); // succeeds directly
+    expect(deferredFileProviderCacheWrites.size).toBe(0);
+    nativeCalls.length = 0;
+    await foreground();
+    expect(nativeCalls).toEqual([]);
+  });
+
+  test('j14: a multi-parent write-through refused in the background, then a later batch for one of its parents succeeds: only the other parents are replayed', async () => {
+    answers.syncFileProviderCache = [NOT_NOW, ok(1), ok(1)];
+    const inA = { ...file('a1'), parent_id: 'A' };
+    const inB = { ...file('b1'), parent_id: 'B' };
+    await syncDecryptedEntriesToFileProvider([inA, inB], {}, null, { prune: true, pruneParents: ['A', 'B'] });
+    expect(deferredFileProviderCacheWrites.size).toBe(1);
+
+    // an SSE batch adds f to parent A and succeeds directly
+    const added = { ...file('a2'), parent_id: 'A' };
+    await syncDecryptedEntriesToFileProvider([inA, added], {}, null, { prune: true, pruneParents: ['A'] });
+    nativeCalls.length = 0;
+
+    await foreground();
+
+    expect(nativeCalls.length).toBe(1);
+    const [entries, prune, pruneParents] = nativeCalls[0].args;
+    expect(entries.map((e) => e.id)).toEqual(['b1']);
+    expect(prune).toBe(true);
+    expect(pruneParents).toEqual(['B']); // A is NOT re-pruned with the old keep-set: a2 survives
+  });
+
+  test('j15: queued writes hold plain data: no listing and no name map are kept alive', async () => {
+    answers.syncFileProviderCache = [NOT_NOW];
+    const names = { f1: 'name-that-must-not-be-retained.txt' };
+    await syncDecryptedEntriesToFileProvider([file('f1')], names, null);
+    const [queued] = deferredFileProviderCacheWrites.queued;
+    expect(Object.keys(queued).sort()).toEqual(['entries', 'epoch', 'kind', 'prune', 'pruneParents', 'trashChanged']);
   });
 });

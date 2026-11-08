@@ -33,11 +33,13 @@ const OPEN_GATE_STAND_IN = `
 final class OpenSection {
   var admits: Bool { true }
   func attach(_ db: OpaquePointer) {}
+  func setBusyTimeout(_ db: OpaquePointer, milliseconds: Int32) { sqlite3_busy_timeout(db, milliseconds) }
   func finish(closing db: OpaquePointer?) { if let db { sqlite3_close(db) } }
 }
 final class FileProviderCacheDB {
   static let shared = FileProviderCacheDB()
   func enter() -> OpenSection? { OpenSection() }
+  func markResetOwed() {}
 }
 `;
 

@@ -84,7 +84,7 @@ describe('app-group SQLite audit: every main-app open of the File Provider cache
   });
 
   test('mutant: a connection closed by hand, not by the section -> red', () => {
-    const r = mutate('BeebeebCryptoModule.swift', 'defer { section.finish(closing: db) }\n      section.attach(db)\n      sqlite3_busy_timeout(db, 2000)\n      for statement in fileProviderCacheSchemaStatements {\n        guard section.admits else { return false }', 'defer { sqlite3_close(db) }\n      section.attach(db)\n      sqlite3_busy_timeout(db, 2000)\n      for statement in fileProviderCacheSchemaStatements {\n        guard section.admits else { return false }');
+    const r = mutate('BeebeebCryptoModule.swift', 'defer { section.finish(closing: db) }\n      section.attach(db)\n      section.setBusyTimeout(db, milliseconds: 2000)\n      for statement in fileProviderCacheSchemaStatements {\n        guard section.admits else { return false }', 'defer { sqlite3_close(db) }\n      section.attach(db)\n      section.setBusyTimeout(db, milliseconds: 2000)\n      for statement in fileProviderCacheSchemaStatements {\n        guard section.admits else { return false }');
     expect(r.violations.some((v) => v.includes('clearFileProviderAuthRequired'))).toBe(true);
   });
 
@@ -109,13 +109,71 @@ describe('the gate is wired: the app feeds it, the quiesce reaches the cache, th
     expect(claim).toBeGreaterThan(seed);
     expect(ENGINE).not.toContain('BackupExecutionGate.shared.claimLifecycleOwnership()');
     expect(ENGINE).toContain('FileProviderCacheDB.shared.interruptInFlightStatements()');
-    expect(ENGINE).toMatch(/let cacheQuiet = FileProviderCacheDB\.shared\.waitForQuiet\(timeout: deadline\.timeIntervalSinceNow\)/);
+    // The cache has its OWN bound, not what the manifest and thumbnail waits left over.
+    expect(ENGINE).toMatch(/let cacheQuiet = FileProviderCacheDB\.shared\.waitForQuiet\(timeout: timeout\)/);
+    expect(ENGINE).not.toMatch(/FileProviderCacheDB\.shared\.waitForQuiet\(timeout: deadline/);
     expect(ENGINE).toMatch(/return manifestQuiet && thumbnailQuiet && cacheQuiet/);
   });
 
-  test('FileProviderCacheDB.shared makes sure a lifecycle owner exists, and is the same gate as the backup engine', () => {
-    expect(MODULE).toMatch(/extension FileProviderCacheDB \{[\s\S]*?static let shared = FileProviderCacheDB\(\s*gate: \.shared,\s*ensureLifecycleOwner: \{\s*_ = NativeBackupEngine\.shared[\s\S]*?hasLifecycleOwner/);
+  test('FileProviderCacheDB.shared only KICKS the lifecycle owner into existence: never on the caller, never waited for', () => {
+    const ext = MODULE.slice(MODULE.indexOf('extension FileProviderCacheDB {'), MODULE.indexOf('private let fileProviderCacheResetOwedKey'));
+    expect(ext).toMatch(/static let shared = FileProviderCacheDB\(\s*gate: \.shared,\s*ensureLifecycleOwner: \{\s*DispatchQueue\.global\(qos: \.utility\)\.async \{ _ = NativeBackupEngine\.shared \}/);
+    expect(ext).not.toMatch(/usleep|Thread\.isMainThread|Thread\.sleep/);
     expect(MODULE).not.toMatch(/FileProviderCacheDB\(gate: BackupExecutionGate\(/);
+    // An unclaimed gate refuses (enter() is nil); it does not wait.
+    const db = read('FileProviderCacheDB.swift');
+    const enter = db.slice(db.indexOf('public func enter() -> Section?'), db.indexOf('// `SQLiteResetScope`'));
+    expect(enter).toMatch(/ensureLifecycleOwner\(\)\s*guard gate\.hasLifecycleOwner else \{ return nil \}/);
+    expect(enter).not.toMatch(/usleep|\.wait\(/);
+  });
+
+  test('enter() reads the gate\'s open state and closure count in ONE step', () => {
+    const db = read('FileProviderCacheDB.swift');
+    const enter = db.slice(db.indexOf('public func enter() -> Section?'), db.indexOf('// `SQLiteResetScope`'));
+    expect(enter).toContain('gate.openState()');
+    expect(enter).not.toMatch(/gate\.closures|gate\.canStartSQLiteWork/);
+    expect(read('BackupExecutionGate.swift')).toMatch(/public func openState\(\) -> \(open: Bool, closures: UInt64\) \{\s*lock\.lock\(\)\s*defer \{ lock\.unlock\(\) \}\s*return \(isOpenLocked, _closures\)/);
+  });
+
+  test('no gated connection waits on a plain busy timeout: they wait with a handler that asks the gate', () => {
+    const module = MODULE.replace(/\/\/[^\n]*/g, '');
+    expect(module).not.toMatch(/sqlite3_busy_timeout\(db, 2000\)/);
+    expect((module.match(/section\.setBusyTimeout\(db, milliseconds: 2000\)/g) ?? []).length).toBe(5);
+    expect(PSP).toContain('if let section { section.setBusyTimeout(db, milliseconds: 2000) } else { sqlite3_busy_timeout(db, 2000) }');
+    const db = read('FileProviderCacheDB.swift');
+    expect(db).toContain('sqlite3_busy_handler(db, fileProviderCacheBusy');
+    expect(db).toMatch(/guard wait\.section\.admits else \{ return 0 \}/);
+  });
+
+  test('a reset the gate refused is a debt: marked on every refusal, paid first by every writer and on each foreground', () => {
+    const db = read('FileProviderCacheDB.swift');
+    expect(db).toMatch(/guard let section = enter\(\) else \{\s*\/\/[^\n]*\n\s*markResetOwed\(\)\s*return nil/);
+    expect(MODULE).toMatch(/guard let section = FileProviderCacheDB\.shared\.enter\(\) else \{\s*FileProviderCacheDB\.shared\.markResetOwed\(\)\s*return false/);
+    for (const closure of ['syncFileProviderCache', 'removeFileProviderEntries', 'setFileProviderProtectedFolder']) {
+      const start = MODULE.indexOf(`AsyncFunction("${closure}")`);
+      const body = MODULE.slice(start, start + 2500);
+      const settle = body.indexOf('settleOwedFileProviderCacheReset()');
+      const enter = body.indexOf('FileProviderCacheDB.shared.enter()');
+      expect(settle).toBeGreaterThan(-1);
+      expect(settle).toBeLessThan(enter);
+    }
+    expect(ENGINE).toMatch(/DispatchQueue\.global\(qos: \.utility\)\.async \{ settleOwedFileProviderCacheReset\(\) \}/);
+  });
+
+  test('a registration the gate refuses is deferred, not failed: nothing is changed and JS registers again on foreground', () => {
+    const start = MODULE.indexOf('private func registerMountedFileProviderDomainLocked(');
+    const body = MODULE.slice(start, start + 30000);
+    const probe = body.indexOf('guard let gateProbe = FileProviderCacheDB.shared.enter()');
+    expect(probe).toBeGreaterThan(-1);
+    expect(probe).toBeLessThan(body.indexOf('let domain = '));
+    expect((body.match(/status\["deferred"\] = "gate_closed"/g) ?? []).length).toBe(2);
+    expect(body.indexOf('FileProviderCacheDB.shared.gateRefuses')).toBeLessThan(body.indexOf('"stage": cacheReady ? "registration_cache_version_bump"'));
+    expect(readFileSync(join(ROOT, 'src', 'App.tsx'), 'utf8')).toMatch(/result\?\.deferred === 'gate_closed'/);
+  });
+
+  test('the transaction stops at a BEGIN that fails', () => {
+    const apply = read('FileProviderCacheDB.swift');
+    expect(apply).toContain('guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { return .notNow }');
   });
 
   test('the sign-out purge resets the cache inside the gate', () => {

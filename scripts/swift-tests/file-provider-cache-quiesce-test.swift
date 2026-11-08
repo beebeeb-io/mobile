@@ -26,6 +26,15 @@ import SQLite3
 //   c6  a user of the gate that can run before its lifecycle owner exists asks
 //       for one once, and never again
 //   c7  the typed answer the JS bridge receives
+//   c9  the extension (a second connection) holds the write lock, the expiry
+//       fires while the app's connection sits in the busy wait: the quiesce
+//       returns at once, and when the extension lets go afterwards NOTHING of the
+//       app's takes the lock (a plain busy timeout would still be waiting)
+//   c10 a BEGIN that fails stops the write before any upsert
+//   c11 a reset the gate refused is owed, survives in its store, is paid on the
+//       next opening before anything else writes, and is not forgotten when the
+//       payment fails
+//   c12 the gate's open state and closure count are read in one step
 //   c8  a gate that closes BETWEEN the reset's statements (an interrupt is a
 //       no-op there): at every checkpoint the reset is all or nothing
 
@@ -136,7 +145,7 @@ func runSync(
   }
   defer { section.finish(closing: db) }
   section.attach(db)
-  sqlite3_busy_timeout(db, 2000)
+  section.setBusyTimeout(db, milliseconds: 2000)
   sqlite3_exec(db, "PRAGMA secure_delete = ON", nil, nil, nil)
   for sql in schema { sqlite3_exec(db, sql, nil, nil, nil) }
   return FileProviderCacheSync.apply(db: db, section: section, entries: entries, prune: prune, pruneParents: pruneParents)
@@ -344,6 +353,7 @@ final class FlippingScope: SQLiteResetScope, SQLiteResetSection {
   func begin() -> SQLiteResetSection? { self }
   var admits: Bool { asked += 1; return asked <= admitsFirst }
   func attach(_ db: OpaquePointer) {}
+  func setBusyTimeout(_ db: OpaquePointer, milliseconds: Int32) { sqlite3_busy_timeout(db, milliseconds) }
   func finish(closing db: OpaquePointer?) { if let db { sqlite3_close(db) } }
 }
 
@@ -404,6 +414,164 @@ do {
   }
   expect(wrongOutcomes.isEmpty, "c8: at every checkpoint the reset is all or nothing and reports what it did: \(wrongOutcomes)")
   expect(locked.isEmpty, "c8: no write transaction is left open at any checkpoint (locked at k=\(locked))")
+}
+
+// ── c9 ───────────────────────────────────────────────────────────────────
+do {
+  let url = freshDatabase("c9")
+  createSchema(url)
+  let gate = backgroundGate()
+  let cache = FileProviderCacheDB(gate: gate)
+  var ext: OpaquePointer?
+  precondition(sqlite3_open_v2(url.path, &ext, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK)
+  exec(ext!, "BEGIN IMMEDIATE") // the extension's write lock
+
+  let finished = DispatchSemaphore(value: 0)
+  var outcome: FileProviderCacheOutcome<FileProviderCacheSyncResult>?
+  Thread.detachNewThread {
+    outcome = runSync(cache, url, entries: makeEntries(50))
+    finished.signal()
+  }
+  expect(waitUntil(5) { cache.sectionsInFlight == 1 }, "c9: precondition: the app's connection is in flight")
+  usleep(200_000) // inside the busy wait for the extension's lock
+
+  let started = Date()
+  let quiesced = BackupSQLiteQuiesce.run(
+    gate: gate,
+    interrupt: { cache.interruptInFlightStatements() },
+    waitForQuiet: { cache.waitForQuiet(timeout: $0) }
+  )
+  let elapsed = Date().timeIntervalSince(started)
+  expect(quiesced == .quiet, "c9: the quiesce returns quiet while the connection waits on the extension's lock (got \(quiesced.rawValue))")
+  expect(elapsed < 0.75, "c9: and at once, not when the busy timeout runs out (\(String(format: "%.2f", elapsed)) s)")
+  expect(cache.sectionsInFlight == 0, "c9: no connection is in flight when the handler returns")
+
+  // The extension lets go AFTER the quiesce returned and the app is about to be suspended.
+  exec(ext!, "ROLLBACK")
+  sqlite3_close(ext)
+  usleep(300_000)
+  expect(!journalExists(url), "c9: the app's connection did not take the lock afterwards (no hot journal)")
+  expect(writeLockIsFree(url), "c9: no cache connection can take RESERVED once the extension lets go")
+  expect(rowCount(url) == 0, "c9: nothing was written")
+  _ = finished.wait(timeout: .now() + 5)
+  if case .notNow? = outcome { expect(true, "c9: the call answered not-now") } else { expect(false, "c9: the call answered not-now") }
+
+  // The sign-out reset waits the same way.
+  let resetURL = freshDatabase("c9-reset")
+  createSchema(resetURL)
+  let resetGate = backgroundGate()
+  let resetCache = FileProviderCacheDB(gate: resetGate)
+  var ext2: OpaquePointer?
+  precondition(sqlite3_open_v2(resetURL.path, &ext2, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK)
+  exec(ext2!, "BEGIN IMMEDIATE")
+  let resetDone = DispatchSemaphore(value: 0)
+  Thread.detachNewThread {
+    _ = PlaintextStorageProtection.resetSQLiteInPlace(resetURL, scope: resetCache)
+    resetDone.signal()
+  }
+  expect(waitUntil(5) { resetCache.sectionsInFlight == 1 }, "c9: precondition: the reset is in flight")
+  usleep(200_000)
+  let resetStarted = Date()
+  let resetQuiesced = BackupSQLiteQuiesce.run(
+    gate: resetGate,
+    interrupt: { resetCache.interruptInFlightStatements() },
+    waitForQuiet: { resetCache.waitForQuiet(timeout: $0) }
+  )
+  expect(resetQuiesced == .quiet && Date().timeIntervalSince(resetStarted) < 0.75, "c9: a reset waiting on the extension's lock stops at once too")
+  exec(ext2!, "ROLLBACK")
+  sqlite3_close(ext2)
+  _ = resetDone.wait(timeout: .now() + 5)
+}
+
+// ── c10 ──────────────────────────────────────────────────────────────────
+do {
+  let url = freshDatabase("c10")
+  createSchema(url)
+  let gate = BackupExecutionGate(foreground: true)
+  gate.claimLifecycleOwnership()
+  let cache = FileProviderCacheDB(gate: gate)
+  let section = cache.enter()!
+  var db: OpaquePointer?
+  precondition(sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK)
+  section.attach(db!)
+  exec(db!, "BEGIN") // already inside a transaction: the BEGIN inside apply fails
+  let outcome = FileProviderCacheSync.apply(db: db!, section: section, entries: makeEntries(5), prune: false, pruneParents: nil)
+  if case .notNow = outcome { expect(true, "c10: a failed BEGIN answers not-now") } else { expect(false, "c10: a failed BEGIN answers not-now") }
+  sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+  section.finish(closing: db)
+  expect(rowCount(url) == 0, "c10: and no upsert ran")
+}
+
+// ── c11 ──────────────────────────────────────────────────────────────────
+do {
+  let url = freshDatabase("c11")
+  createSchema(url)
+  withConnection(url) { db in
+    exec(db, "INSERT INTO file_cache(id, parent_id, name_decrypted) VALUES('a','p','old account name'), ('b','p','another')")
+  }
+  var stored = false
+  let store = (get: { stored }, set: { (value: Bool) in stored = value })
+  let gate = BackupExecutionGate(foreground: false) // a sign-out in the background
+  gate.claimLifecycleOwnership()
+  let cache = FileProviderCacheDB(gate: gate, owedStore: store)
+  expect(!cache.resetOwed, "c11: nothing owed at first")
+
+  let refused = PlaintextStorageProtection.resetSQLiteInPlace(url, scope: cache)
+  expect(!refused.ok, "c11: precondition: the gate refused the sign-out reset")
+  expect(cache.resetOwed && stored, "c11: a refused reset is owed, and the debt is persisted")
+  expect(rowCount(url) == 2, "c11: precondition: the old account's rows are still on disk")
+
+  var attempts = 0
+  let stillClosed = cache.settleOwedReset { attempts += 1; return PlaintextStorageProtection.resetSQLiteInPlace(url, scope: cache).ok }
+  expect(!stillClosed && cache.resetOwed && rowCount(url) == 2, "c11: a payment the closed gate refuses again leaves the debt (it is not forgotten)")
+
+  gate.setForeground(true)
+  let paid = cache.settleOwedReset { attempts += 1; return PlaintextStorageProtection.resetSQLiteInPlace(url, scope: cache).ok }
+  expect(paid && !cache.resetOwed && !stored, "c11: on the next opening the reset runs and the debt is cleared")
+  expect(rowCount(url) == 0, "c11: the old account's rows are gone")
+
+  let before = attempts
+  expect(cache.settleOwedReset { attempts += 1; return true } && attempts == before, "c11: nothing owed: the reset is not run again")
+
+  stored = true // another launch
+  let afterRestart = FileProviderCacheDB(gate: gate, owedStore: store)
+  expect(afterRestart.resetOwed, "c11: the debt survives a relaunch (read from the store)")
+}
+
+// ── c12 ──────────────────────────────────────────────────────────────────
+do {
+  let gate = BackupExecutionGate(foreground: true)
+  var state = gate.openState()
+  expect(state.open && state.closures == 0, "c12: open, never closed")
+  gate.expire() // a foreground gate: not closed
+  state = gate.openState()
+  gate.setForeground(false)
+  state = gate.openState()
+  expect(!state.open && state.closures == 1, "c12: closed once, read together")
+  gate.setForeground(true)
+  state = gate.openState()
+  expect(state.open && state.closures == 1, "c12: reopened, the closure still counted")
+
+  // A closure that lands while a section enters must never be forgotten once the gate reopens.
+  // Best effort: the window between two separate reads is nanoseconds wide; a mutant that reads the
+  // state in two steps (m15) was NOT caught in 60000 iterations. The one-step read is pinned by the
+  // API checks above and by swift-app-group-sqlite-audit.test.ts, not by this race.
+  var forgotten = 0
+  for _ in 0..<4000 {
+    let g = BackupExecutionGate(foreground: true)
+    g.claimLifecycleOwnership()
+    let c = FileProviderCacheDB(gate: g)
+    let go = DispatchSemaphore(value: 0)
+    let done = DispatchSemaphore(value: 0)
+    Thread.detachNewThread { go.wait(); g.setForeground(false); done.signal() }
+    go.signal()
+    let section = c.enter()
+    done.wait()
+    g.setForeground(true)
+    if let section, section.admits { forgotten += 1 }
+    section?.finish(closing: nil)
+  }
+  expect(forgotten == 0, "c12: a section that entered before a closure is refused after the reopen (forgotten \(forgotten) of 4000)")
 }
 
 // ── c6 ───────────────────────────────────────────────────────────────────

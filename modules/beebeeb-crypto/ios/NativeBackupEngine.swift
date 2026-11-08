@@ -1368,6 +1368,9 @@ final class NativeBackupEngine: NSObject {
     // user's Pause is kept (B6): only `!isPaused` wakes the drain.
     executionGate.setForeground(true)
     endBackgroundGrace()
+    // LD-0002 round 2: pay a File Provider cache reset the gate refused while backgrounded
+    // (a sign-out), off the main thread; every cache writer also pays it first.
+    DispatchQueue.global(qos: .utility).async { settleOwedFileProviderCacheReset() }
     UNUserNotificationCenter.current().removePendingNotificationRequests(
       withIdentifiers: [backupReminderIdentifier]
     )
@@ -3600,7 +3603,9 @@ final class NativeBackupEngine: NSObject {
         let deadline = Date().addingTimeInterval(timeout)
         let manifestQuiet = BackupSQLiteQuiesce.waitForSerialQueue(self.dbQueue, timeout: timeout)
         let thumbnailQuiet = ThumbnailQueueDB.shared.waitForQuiet(timeout: deadline.timeIntervalSinceNow)
-        let cacheQuiet = FileProviderCacheDB.shared.waitForQuiet(timeout: deadline.timeIntervalSinceNow)
+        // Its own bound, not what the other two waits left over: a cache connection is
+        // the one a background suspension kills the app for (0xdead10cc).
+        let cacheQuiet = FileProviderCacheDB.shared.waitForQuiet(timeout: timeout)
         return manifestQuiet && thumbnailQuiet && cacheQuiet
       }
     )

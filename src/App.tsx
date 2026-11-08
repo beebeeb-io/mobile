@@ -1047,6 +1047,7 @@ function FileProviderDomainRegistrar({ enabled, userId }: { enabled: boolean; us
   const crypto = useCrypto();
   const registeringRef = useRef(false);
   const attemptedRef = useRef(false);
+  const deferredRegistrationRef = useRef(false);
   const foregroundTrackerRef = useRef(createForegroundReturnTracker());
   const returnedFromBackground = useCallback((next: string) => foregroundTrackerRef.current(next), []);
   const [filesReadyVisible, setFilesReadyVisible] = useState(false);
@@ -1082,6 +1083,13 @@ function FileProviderDomainRegistrar({ enabled, userId }: { enabled: boolean; us
       if (showReady) setFilesReadyVisible(true);
       if (!captured.outcome) return;
       const { action, result } = captured.outcome;
+      // LD-0002 round 2: the native side deferred (no background time left to open the cache).
+      // Nothing failed: register again the next time the app is foreground.
+      deferredRegistrationRef.current = result?.deferred === 'gate_closed';
+      if (deferredRegistrationRef.current) {
+        attemptedRef.current = false;
+        return;
+      }
       // "registered" is not "presented in Files". userVisibleRootError != null
       // means iOS could not surface the location (the user may have removed it),
       // so don't treat it as mounted.
@@ -1119,6 +1127,11 @@ function FileProviderDomainRegistrar({ enabled, userId }: { enabled: boolean; us
       if (returnedFromBackground(next)) {
         // Re-check only after a real, long background. Bare inactive/active
         // transitions (Face ID, Control Center) keep the current attempt.
+        attemptedRef.current = false;
+        void register();
+      } else if (next === 'active' && deferredRegistrationRef.current) {
+        // LD-0002 round 2: the last registration was deferred (no background time to open the
+        // cache); the app is foreground now, so register again.
         attemptedRef.current = false;
         void register();
       }

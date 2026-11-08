@@ -103,6 +103,17 @@ public final class BackupExecutionGate {
     return _closures
   }
 
+  /// Whether the gate is open and how many times it has closed, read in ONE
+  /// locked step. Reading `canStartSQLiteWork` and `closures` separately lets a
+  /// closure land between the two: the caller would then record the post-close
+  /// count against a pre-close "open" and treat itself as never interrupted
+  /// once the gate reopens.
+  public func openState() -> (open: Bool, closures: UInt64) {
+    lock.lock()
+    defer { lock.unlock() }
+    return (isOpenLocked, _closures)
+  }
+
   /// Open now, and not closed once since `closures` was read.
   public func isOpen(since closures: UInt64) -> Bool {
     lock.lock()

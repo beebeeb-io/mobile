@@ -2,7 +2,7 @@
 import { expect, mock, test } from 'bun:test';
 let sent=[];
 mock.module('react-native',()=>({Platform:{OS:'ios'}}));
-mock.module('../../modules/beebeeb-crypto',()=>({syncFileProviderCache:async entries=>{sent=entries;return entries.length;}}));
+mock.module('../../modules/beebeeb-crypto',()=>({syncFileProviderCache:async entries=>{sent=entries;return {status:'ok',count:entries.length};}}));
 mock.module('./api',()=>({getApiUrl:()=>'',getToken:async()=>null,listAllFiles:async()=>[]}));
 mock.module('./device-owner-auth',()=>({requestDeviceOwnerAuth:async()=>true}));
 mock.module('./lock-state',()=>({wasRecentlyUnlocked:()=>true}));

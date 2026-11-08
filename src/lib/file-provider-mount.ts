@@ -13,16 +13,50 @@ import { wasRecentlyUnlocked } from './lock-state';
 import { mapInBatches } from './async-batch';
 import { decryptNamesInBackground } from './background-name-decrypt';
 import { isPlaintextGateClosed, plaintextGate, withPlaintextLease } from './plaintext-gate';
-import { cacheWriteCount, createDeferredCacheWrites } from './file-provider-cache-write';
+import { createDeferredCacheWrites, type CacheWrite } from './file-provider-cache-write';
 import { accountEpoch, isCurrentAccountEpoch, onAccountEpochAdvance } from './account-epoch';
+
+/**
+ * One write to the File Provider cache, as data. Resolves the rows written, or
+ * `'not_now'` when the native side refused (no background time left, LD-0002
+ * round 2). Reads the write's fields when it calls native, so a `supersede` that
+ * trimmed a queued write before this call is honoured.
+ */
+async function performCacheWrite(write: CacheWrite): Promise<number | 'not_now'> {
+  if (write.kind === 'sync') {
+    if (write.entries.length === 0 && !(write.prune && (write.pruneParents?.length ?? 0) > 0)) return 0;
+    // A fresh lease per attempt: an attempt that runs after a sign-out finds the plaintext gate closed.
+    return withPlaintextLease('file provider cache push', async (lease) => {
+      lease.assertValid();
+      const result = await BeebeebCrypto.syncFileProviderCache(write.entries, write.prune, write.pruneParents);
+      return result.status === 'not_now' ? 'not_now' : result.count;
+    });
+  }
+  if (write.kind === 'remove') {
+    if (write.ids.length === 0) return 0;
+    const result = await BeebeebCrypto.removeFileProviderEntries(write.ids);
+    return result.status === 'not_now' ? 'not_now' : result.count;
+  }
+  const result = await BeebeebCrypto.setFileProviderProtectedFolder(write.id);
+  return result.status === 'not_now' ? 'not_now' : result.count;
+}
 
 /**
  * Writes the native side refused because the app's background time had ended
  * (LD-0002 round 2, `file-provider-cache-write.ts`): run again, in order, the
- * next time the app is foreground. `AppState` is read lazily and defensively so
- * a test that mocks `react-native` with `Platform` only still loads this file.
+ * next time the app is foreground, or by backoff while it already is. `AppState` is
+ * read lazily and defensively so a test that mocks `react-native` with `Platform`
+ * only still loads this file.
  */
 export const deferredFileProviderCacheWrites = createDeferredCacheWrites({
+  run: async (write) => {
+    // The account it was made for must still be the signed-in one; otherwise it is obsolete.
+    if (!isCurrentAccountEpoch(write.epoch)) return true;
+    const written = await performCacheWrite(write);
+    if (written === 'not_now') return false;
+    if (write.kind === 'sync' && write.trashChanged) await signalFileProviderTrashChanged();
+    return true;
+  },
   subscribeToForeground: (onForeground) => {
     ReactNative.AppState?.addEventListener?.('change', (state: string) => {
       if (state === 'active') onForeground();
@@ -199,41 +233,30 @@ export async function syncDecryptedEntriesToFileProvider(
     ? options.pruneParents ?? [parentId ?? null]
     : null;
 
-  // A fresh lease per attempt: a deferred attempt that runs after a sign-out
-  // finds the plaintext gate closed and is dropped, never written. The account
-  // epoch is captured too: a sign-in as someone else reopens that gate.
-  const epoch = accountEpoch();
-  const queueKey = prune && pruneParents && pruneParents.length === 1 ? `sync:prune:${String(pruneParents[0])}` : undefined;
-  const push = () =>
-    withPlaintextLease('file provider cache push', async (lease) => {
-      lease.assertValid();
-      return cacheWriteCount(await BeebeebCrypto.syncFileProviderCache(entries, prune, pruneParents));
-    });
+  // The write as DATA (just its arguments and the account it is for; not `files`, not
+  // `decryptedNames`): if it has to wait, this is all that is kept. A newer write
+  // supersedes queued older ones that overlap it, at the moment it is ISSUED.
+  const write: CacheWrite = {
+    kind: 'sync',
+    entries,
+    prune,
+    pruneParents,
+    trashChanged: options.trashChanged ?? false,
+    epoch: accountEpoch(),
+  };
+  deferredFileProviderCacheWrites.supersede(write);
 
   try {
-    const synced = await push();
+    const synced = await performCacheWrite(write);
     if (synced === 'not_now') {
       // LD-0002 round 2: no background time left, nothing was written. Queue the
-      // same push for the next foreground; a later complete listing of the same
-      // parent replaces it.
-      deferredFileProviderCacheWrites.defer({
-        key: queueKey,
-        run: async () => {
-          if (!isCurrentAccountEpoch(epoch)) return true;
-          const retried = await push();
-          if (retried === 'not_now') return false;
-          if (options.trashChanged) await signalFileProviderTrashChanged();
-          return true;
-        },
-      });
+      // same write for the next foreground (or a backoff retry while foreground).
+      deferredFileProviderCacheWrites.defer(write);
       if (options.trashChanged) {
         await signalFileProviderTrashChanged();
       }
       return 0;
     }
-    // A complete listing that just landed supersedes a queued older one for the same parent: replaying
-    // that one later would prune with its stale keep-set.
-    if (queueKey) deferredFileProviderCacheWrites.cancel(queueKey);
     if (options.trashChanged) {
       await signalFileProviderTrashChanged();
     }
@@ -252,15 +275,15 @@ export async function syncDecryptedEntriesToFileProvider(
 export async function removeFromFileProviderCache(ids: string[]): Promise<void> {
   if (Platform.OS !== 'ios') return;
   if (ids.length === 0) return;
-  const epoch = accountEpoch();
+  // Issued now: queued older writes of these ids (a pending upsert of a file that was just trashed) are superseded.
+  const write: CacheWrite = { kind: 'remove', ids: [...ids], epoch: accountEpoch() };
+  deferredFileProviderCacheWrites.supersede(write);
   try {
-    const removed = cacheWriteCount(await BeebeebCrypto.removeFileProviderEntries(ids));
-    if (removed === 'not_now') {
+    if ((await performCacheWrite(write)) === 'not_now') {
       // LD-0002 round 2: no background time left, nothing was removed. Run it
-      // again on the next foreground rather than leaving the row in Files.
-      deferredFileProviderCacheWrites.defer({
-        run: async () => !isCurrentAccountEpoch(epoch) || cacheWriteCount(await BeebeebCrypto.removeFileProviderEntries(ids)) !== 'not_now',
-      });
+      // again later rather than leaving the row in Files; a restore of the same
+      // ids in the meantime trims it (supersede), so it never removes restored rows.
+      deferredFileProviderCacheWrites.defer(write);
     }
   } catch {
     // best-effort — next folder enumeration will reconcile
@@ -274,15 +297,13 @@ export async function removeFromFileProviderCache(ids: string[]): Promise<void> 
  */
 export async function setFileProviderProtectedBackupsRoot(id: string | null): Promise<void> {
   if (Platform.OS !== 'ios') return;
-  const epoch = accountEpoch();
+  // Only the latest id matters: issuing this supersedes any queued older one.
+  const write: CacheWrite = { kind: 'protected-root', id, epoch: accountEpoch() };
+  deferredFileProviderCacheWrites.supersede(write);
   try {
-    const published = cacheWriteCount(await BeebeebCrypto.setFileProviderProtectedFolder(id));
-    if (published === 'not_now') {
-      // LD-0002 round 2: only the latest id matters, so one queued entry.
-      deferredFileProviderCacheWrites.defer({
-        key: 'protected-backups-root',
-        run: async () => !isCurrentAccountEpoch(epoch) || cacheWriteCount(await BeebeebCrypto.setFileProviderProtectedFolder(id)) !== 'not_now',
-      });
+    if ((await performCacheWrite(write)) === 'not_now') {
+      // LD-0002 round 2: no background time left, nothing was published.
+      deferredFileProviderCacheWrites.defer(write);
     }
   } catch {
     // best-effort — the next backup folder resolve publishes it again

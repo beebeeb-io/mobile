@@ -80,11 +80,13 @@ const OPEN_GATE_STAND_IN = `
 final class OpenSection {
   var admits: Bool { true }
   func attach(_ db: OpaquePointer) {}
+  func setBusyTimeout(_ db: OpaquePointer, milliseconds: Int32) { sqlite3_busy_timeout(db, milliseconds) }
   func finish(closing db: OpaquePointer?) { if let db { sqlite3_close(db) } }
 }
 final class FileProviderCacheDB {
   static let shared = FileProviderCacheDB()
   func enter() -> OpenSection? { OpenSection() }
+  func markResetOwed() {}
 }
 `;
 
@@ -3071,7 +3073,7 @@ describe('f2 (item 4): registration retries once, off the cooperative pool, on a
       'private func registerMountedFileProviderDomainLocked(\n  defaults: UserDefaults?,\n  forceReset: Bool = false\n) async throws -> [String: Any] {',
     );
     const retryIdx = body.indexOf('retryFileProviderCacheReadyAndBumpOffCooperativePool(');
-    const after = body.slice(retryIdx, retryIdx + 400);
+    const after = body.slice(retryIdx, retryIdx + 1000); // LD-0002 round 2: the gate-refusal deferral sits between the retry and the trace
     expect(after).toMatch(/if !cacheReady \|\| !cacheVersionBumped \{\s*\n\s*RuntimeTrace\.event\("storage\.purge\.failed", \[/);
     expect(after).toMatch(/"stage": cacheReady \? "registration_cache_version_bump" : "registration_cache_not_ready"/);
   });

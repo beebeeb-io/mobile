@@ -21,6 +21,11 @@ public protocol SQLiteResetSection: AnyObject {
   var admits: Bool { get }
   /// Publish the open connection so an expiry can interrupt it.
   func attach(_ db: OpaquePointer)
+  /// Wait for another process's lock for at most `milliseconds`, but stop at
+  /// once when the gate closes: SQLite's own busy wait ignores an interrupt, so a
+  /// plain `sqlite3_busy_timeout` can outlive the quiesce wait and take the lock
+  /// after background time ended.
+  func setBusyTimeout(_ db: OpaquePointer, milliseconds: Int32)
   /// Withdraw the connection, close it, and leave the scope. The close lives
   /// here so the quiesce wait ends only after the handle is gone.
   func finish(closing db: OpaquePointer?)
@@ -1198,7 +1203,7 @@ public enum PlaintextStorageProtection {
     // hold this exact file open; without a timeout a lock held for the
     // couple hundred ms a concurrent read/write typically needs fails this
     // reset immediately with SQLITE_BUSY instead of waiting for it.
-    sqlite3_busy_timeout(db, 2000)
+    if let section { section.setBusyTimeout(db, milliseconds: 2000) } else { sqlite3_busy_timeout(db, 2000) }
 
     // Discover the user tables rather than hardcoding schema here: this file
     // is compiled into two SEPARATE targets (the main app pod and the

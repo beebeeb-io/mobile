@@ -53,11 +53,38 @@ private let fileProviderCacheProgress: @convention(c) (UnsafeMutableRawPointer?)
   SQLiteStatementGate.shouldAbort(context: context)
 }
 
+/// LD-0002 round 2 (review of #273): SQLite's own busy wait (`sqlite3_busy_timeout`)
+/// sleeps in a loop that never looks at `sqlite3_interrupt` or the progress handler,
+/// so a connection waiting for the extension's lock could outlive the quiesce wait,
+/// take the lock after background time ended, and be suspended holding it. This
+/// handler asks the gate on every retry and gives up (SQLITE_BUSY) the moment it has
+/// closed.
+private final class BusyWait {
+  unowned let section: FileProviderCacheDB.Section
+  let limitMilliseconds: Int32
+  var startedAt = Date()
+  init(section: FileProviderCacheDB.Section, limitMilliseconds: Int32) {
+    self.section = section
+    self.limitMilliseconds = limitMilliseconds
+  }
+}
+
+private let fileProviderCacheBusy: @convention(c) (UnsafeMutableRawPointer?, Int32) -> Int32 = { context, attempt in
+  guard let context else { return 0 }
+  let wait = Unmanaged<BusyWait>.fromOpaque(context).takeUnretainedValue()
+  if attempt == 0 { wait.startedAt = Date() }
+  guard wait.section.admits else { return 0 }
+  if Date().timeIntervalSince(wait.startedAt) * 1000 >= Double(wait.limitMilliseconds) { return 0 }
+  usleep(2_000)
+  return 1
+}
+
 public final class FileProviderCacheDB: SQLiteResetScope {
   public final class Section: SQLiteResetSection {
     private unowned let owner: FileProviderCacheDB
     private let closuresAtEnter: UInt64
     private let target = SQLiteInterruptTarget { sqlite3_interrupt($0) }
+    fileprivate var busyWait: AnyObject?
 
     fileprivate init(owner: FileProviderCacheDB, closuresAtEnter: UInt64) {
       self.owner = owner
@@ -76,6 +103,14 @@ public final class FileProviderCacheDB: SQLiteResetScope {
     public func attach(_ db: OpaquePointer) {
       sqlite3_progress_handler(db, SQLiteStatementGate.progressOps, fileProviderCacheProgress, owner.statements.progressContext)
       target.publish(db)
+    }
+
+    /// Replaces `sqlite3_busy_timeout`: waits for another process's lock for at
+    /// most `milliseconds`, and not at all once the gate has closed.
+    public func setBusyTimeout(_ db: OpaquePointer, milliseconds: Int32) {
+      let wait = BusyWait(section: self, limitMilliseconds: milliseconds)
+      busyWait = wait
+      sqlite3_busy_handler(db, fileProviderCacheBusy, Unmanaged.passUnretained(wait).toOpaque())
     }
 
     /// Withdraws the connection BEFORE closing it (an interrupt in flight
@@ -97,6 +132,10 @@ public final class FileProviderCacheDB: SQLiteResetScope {
   private let ensureLifecycleOwner: () -> Void
   private let condition = NSCondition()
   private var inFlight: [ObjectIdentifier: Section] = [:]
+  private let owedStateLock = NSLock()
+  private let settleLock = NSLock()
+  private var owedInMemory = false
+  private let owedStore: (get: () -> Bool, set: (Bool) -> Void)?
 
   /// `ensureLifecycleOwner` makes sure something feeds the gate the app's
   /// foreground/background transitions (production: constructs
@@ -104,18 +143,27 @@ public final class FileProviderCacheDB: SQLiteResetScope {
   /// state and then claims it, and waits for that). Without an owner the gate
   /// keeps its initial "foreground" for ever, so a gate still unclaimed after
   /// this refuses (`enter()` is nil).
-  public init(gate: BackupExecutionGate, ensureLifecycleOwner: @escaping () -> Void = {}) {
+  /// `owedStore` persists "a reset of the cache is still owed" across launches
+  /// (production: a key in the app-group defaults); nil keeps it in memory.
+  public init(
+    gate: BackupExecutionGate,
+    ensureLifecycleOwner: @escaping () -> Void = {},
+    owedStore: (get: () -> Bool, set: (Bool) -> Void)? = nil
+  ) {
     self.gate = gate
     self.statements = SQLiteStatementGate(gate: gate)
     self.ensureLifecycleOwner = ensureLifecycleOwner
+    self.owedStore = owedStore
   }
 
   /// Asks the gate for a connection's worth of SQLite work. nil = "not now":
   /// open nothing, run nothing.
   public func enter() -> Section? {
     if !gate.hasLifecycleOwner {
+      // Kick the owner into existence (never on this thread, never waited for)
+      // and refuse: nothing feeds the gate the app's state yet, and unknown is
+      // not foreground. The caller gets "not now" and asks again.
       ensureLifecycleOwner()
-      // Nothing feeds the gate the app's state: unknown is not foreground.
       guard gate.hasLifecycleOwner else { return nil }
     }
     // The gate is asked INSIDE the lock `waitForQuiet` takes. A quiesce closes
@@ -124,8 +172,11 @@ public final class FileProviderCacheDB: SQLiteResetScope {
     // is already closed and it is refused). Never between.
     condition.lock()
     defer { condition.unlock() }
-    guard gate.canStartSQLiteWork else { return nil }
-    let section = Section(owner: self, closuresAtEnter: gate.closures)
+    // Open and the closure count in ONE locked step: a closure landing between two
+    // reads would record the post-close count against a pre-close "open".
+    let state = gate.openState()
+    guard state.open else { return nil }
+    let section = Section(owner: self, closuresAtEnter: state.closures)
     inFlight[ObjectIdentifier(section)] = section
     return section
   }
@@ -133,7 +184,49 @@ public final class FileProviderCacheDB: SQLiteResetScope {
   // `SQLiteResetScope`: `PlaintextStorageProtection.purgeAll` resets this same
   // file in place on sign-out, inside the same gate.
   public func begin() -> SQLiteResetSection? {
-    enter()
+    guard let section = enter() else {
+      // A reset the gate refused is still owed: the old account's rows are on disk.
+      markResetOwed()
+      return nil
+    }
+    return section
+  }
+
+  // MARK: - A refused reset is a debt
+
+  /// True while a reset of the cache (sign-out) was refused and has not run since.
+  public var resetOwed: Bool {
+    owedStateLock.lock()
+    defer { owedStateLock.unlock() }
+    return owedStore?.get() ?? owedInMemory
+  }
+
+  public func markResetOwed() {
+    owedStateLock.lock()
+    owedInMemory = true
+    owedStore?.set(true)
+    owedStateLock.unlock()
+  }
+
+  /// Runs `reset` first when one is owed, BEFORE any caller writes the next
+  /// account's names; clears the debt only when it returned true. True = nothing
+  /// owed or paid. Retries are serialized; `reset` may itself call `markResetOwed`.
+  @discardableResult
+  public func settleOwedReset(_ reset: () -> Bool) -> Bool {
+    settleLock.lock()
+    defer { settleLock.unlock() }
+    guard resetOwed else { return true }
+    guard reset() else { return false }
+    owedStateLock.lock()
+    owedInMemory = false
+    owedStore?.set(false)
+    owedStateLock.unlock()
+    return true
+  }
+
+  /// The gate refuses new connections right now (used to tell a refusal from a failure).
+  public var gateRefuses: Bool {
+    !gate.canStartSQLiteWork
   }
 
   fileprivate func leave(_ section: Section) {
@@ -234,7 +327,9 @@ public enum FileProviderCacheSync {
     """
 
     guard section.admits else { return .notNow }
-    sqlite3_exec(db, "BEGIN", nil, nil, nil)
+    // A BEGIN that fails (busy, aborted) must stop the work: every statement after
+    // it would autocommit one by one and a later rollback would undo nothing.
+    guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { return .notNow }
     var count = 0
     let now = Int64(Date().timeIntervalSince1970 * 1000)
     let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
