@@ -4,6 +4,23 @@ import BackgroundTasks
 import MetricKit
 import UIKit
 
+extension BackupGateLifecycle {
+  /// What the lifecycle quiesces when the backup engine is not built: the cache and the thumbnail queue.
+  static let shared = BackupGateLifecycle(
+    gate: .shared,
+    interrupt: {
+      ThumbnailQueueDB.shared.interruptInFlightStatement()
+      FileProviderCacheDB.shared.interruptInFlightStatements()
+    },
+    waitForQuiet: { timeout in
+      BackupSQLiteQuiesce.waitForAll(timeout: timeout, [
+        { ThumbnailQueueDB.shared.waitForQuiet(timeout: $0) },
+        { FileProviderCacheDB.shared.waitForQuiet(timeout: $0) },
+      ])
+    }
+  )
+}
+
 // Registered in expo-module.config.json under apple.appDelegateSubscribers.
 // BGTaskScheduler.register must be called before applicationDidFinishLaunching returns.
 public class BeebeebAppDelegate: ExpoAppDelegateSubscriber {
@@ -29,6 +46,12 @@ public class BeebeebAppDelegate: ExpoAppDelegateSubscriber {
     // iCloud and Finder backups before any other subsystem can write to them.
     // Idempotent: repairs existing installs on their first launch of this build.
     PlaintextStorageProtection.hardenAll()
+
+    // LD-0002 round 3: seed the background execution gate from the REAL application state
+    // (a background launch starts closed) and follow it, so the File Provider cache works
+    // without the backup engine, which is not built at launch. Cheap: one flag and three
+    // observers; it touches no database and never `NativeBackupEngine.shared`.
+    BackupGateLifecycle.shared.start(isBackground: application.applicationState == .background)
 
     // NativeBackupEngine is the active backup pipeline.
     // BGTaskScheduler.register must be called before didFinishLaunching returns.

@@ -23,8 +23,9 @@ import SQLite3
 //       then VACUUM) is refused when the gate is closed, is rolled back and
 //       leaves no lock when an expiry lands mid-statement, and still resets
 //       the file with the gate open
-//   c6  a user of the gate that can run before its lifecycle owner exists asks
-//       for one once, and never again
+//   c6  a cold launch with no engine built: the lifecycle seed opens (or closes) the
+//       gate from the real state, follows foreground, and quiesces a write on
+//       didEnterBackground; with the engine built it leaves the sequence to it
 //   c7  the typed answer the JS bridge receives
 //   c9  the extension (a second connection) holds the write lock, the expiry
 //       fires while the app's connection sits in the busy wait: the quiesce
@@ -167,7 +168,6 @@ func backgroundGate() -> BackupExecutionGate {
   // until the grace task's expiry closes it.
   let gate = BackupExecutionGate(foreground: false)
   _ = gate.beginAssertion(.backgroundGrace)
-  gate.claimLifecycleOwnership()
   return gate
 }
 
@@ -176,7 +176,6 @@ do {
   let url = freshDatabase("c1")
   createSchema(url)
   let gate = BackupExecutionGate(foreground: false) // background, no assertion: closed
-  gate.claimLifecycleOwnership()
   let cache = FileProviderCacheDB(gate: gate)
 
   expect(cache.enter() == nil, "c1: a closed gate refuses a connection (enter() is nil)")
@@ -259,7 +258,6 @@ do {
   let url = freshDatabase("c4")
   createSchema(url)
   let gate = BackupExecutionGate(foreground: true)
-  gate.claimLifecycleOwnership()
   let cache = FileProviderCacheDB(gate: gate)
 
   _ = runSync(cache, url, entries: makeEntries(300, parents: 3))
@@ -286,7 +284,6 @@ do {
     exec(db, "COMMIT")
   }
   let closed = BackupExecutionGate(foreground: false)
-  closed.claimLifecycleOwnership()
   let closedCache = FileProviderCacheDB(gate: closed)
   let refused = PlaintextStorageProtection.resetSQLiteInPlace(url, scope: closedCache)
   expect(!refused.ok && !refused.bumpCommitted, "c5: a reset with the gate closed is refused (fails closed)")
@@ -491,7 +488,6 @@ do {
   let url = freshDatabase("c10")
   createSchema(url)
   let gate = BackupExecutionGate(foreground: true)
-  gate.claimLifecycleOwnership()
   let cache = FileProviderCacheDB(gate: gate)
   let section = cache.enter()!
   var db: OpaquePointer?
@@ -515,7 +511,6 @@ do {
   var stored = false
   let store = (get: { stored }, set: { (value: Bool) in stored = value })
   let gate = BackupExecutionGate(foreground: false) // a sign-out in the background
-  gate.claimLifecycleOwnership()
   let cache = FileProviderCacheDB(gate: gate, owedStore: store)
   expect(!cache.resetOwed, "c11: nothing owed at first")
 
@@ -562,7 +557,6 @@ do {
   var forgotten = 0
   for _ in 0..<4000 {
     let g = BackupExecutionGate(foreground: true)
-    g.claimLifecycleOwnership()
     let c = FileProviderCacheDB(gate: g)
     let go = DispatchSemaphore(value: 0)
     let done = DispatchSemaphore(value: 0)
@@ -602,7 +596,6 @@ do {
 // ── c14 ──────────────────────────────────────────────────────────────────
 do {
   let gate = BackupExecutionGate(foreground: true)
-  gate.claimLifecycleOwnership()
   var calls = 0
   // the app-group defaults are unavailable: the store reads false whatever is set
   let cache = FileProviderCacheDB(gate: gate, owedStore: (get: { calls += 1; return false }, set: { _ in }))
@@ -611,25 +604,78 @@ do {
 }
 
 // ── c6 ───────────────────────────────────────────────────────────────────
+// A cold launch with NO engine built anywhere in this process (this driver never builds one).
 do {
-  var asked = 0
-  let gate = BackupExecutionGate(foreground: true)
-  let cache = FileProviderCacheDB(gate: gate, ensureLifecycleOwner: {
-    asked += 1
-    gate.claimLifecycleOwnership() // what constructing NativeBackupEngine.shared does
-  })
-  let first = cache.enter()
-  first?.finish(closing: nil)
-  let second = cache.enter()
-  second?.finish(closing: nil)
-  expect(asked == 1, "c6: the lifecycle owner is asked for once, not on every call (asked \(asked))")
-  expect(gate.hasLifecycleOwner, "c6: and the gate has an owner afterwards")
+  func lifecycle(_ gate: BackupExecutionGate, _ center: NotificationCenter, cache: FileProviderCacheDB, engineBuilt: Bool = false) -> BackupGateLifecycle {
+    BackupGateLifecycle(
+      gate: gate, center: center, engineIsBuilt: { engineBuilt },
+      interrupt: { cache.interruptInFlightStatements() },
+      waitForQuiet: { cache.waitForQuiet(timeout: $0) }
+    )
+  }
 
-  // A gate nobody drives would read "foreground" for ever: unknown is refused.
-  let undriven = BackupExecutionGate(foreground: true)
-  let cacheWithoutOwner = FileProviderCacheDB(gate: undriven, ensureLifecycleOwner: {})
-  expect(cacheWithoutOwner.enter() == nil, "c6: a gate still unclaimed after the owner was asked for refuses (enter() is nil)")
-  expect(cacheWithoutOwner.sectionsInFlight == 0, "c6: and opens nothing")
+  // a cold launch in the foreground: the gate is seeded, the cache opens, nobody built an engine
+  let foregroundGate = BackupExecutionGate(foreground: true)
+  let foregroundCache = FileProviderCacheDB(gate: foregroundGate)
+  lifecycle(foregroundGate, NotificationCenter(), cache: foregroundCache).start(isBackground: false)
+  let first = foregroundCache.enter()
+  expect(first != nil, "c6: a cold launch in the foreground, with no engine built, gets the cache open")
+  first?.finish(closing: nil)
+
+  // a cold launch in the BACKGROUND (a BGProcessingTask, a background URLSession wake): closed from the first call
+  let backgroundGate = BackupExecutionGate(foreground: true) // the gate's own initial value
+  let backgroundCache = FileProviderCacheDB(gate: backgroundGate)
+  lifecycle(backgroundGate, NotificationCenter(), cache: backgroundCache).start(isBackground: true)
+  expect(backgroundCache.enter() == nil, "c6: a cold launch in the background starts with the cache closed (the seed, not the gate's default)")
+
+  // the app then comes to the foreground
+  let center = NotificationCenter()
+  let followed = BackupExecutionGate(foreground: true)
+  let followedCache = FileProviderCacheDB(gate: followed)
+  let observer = lifecycle(followed, center, cache: followedCache)
+  observer.start(isBackground: true)
+  center.post(name: BackupGateLifecycle.willEnterForeground, object: nil)
+  expect(followedCache.enter() != nil, "c6: willEnterForeground opens it")
+  observer.start(isBackground: false) // idempotent: a second start only re-seeds
+
+  // didEnterBackground with no engine built: closes the gate and quiesces a write that is in flight
+  let url = freshDatabase("c6-bg")
+  createSchema(url)
+  let gate = BackupExecutionGate(foreground: true)
+  let cache = FileProviderCacheDB(gate: gate)
+  let notifications = NotificationCenter()
+  let noEngine = lifecycle(gate, notifications, cache: cache)
+  noEngine.start(isBackground: false)
+  let finished = DispatchSemaphore(value: 0)
+  var outcome: FileProviderCacheOutcome<FileProviderCacheSyncResult>?
+  Thread.detachNewThread {
+    outcome = runSync(cache, url, entries: makeEntries(400_000, parents: 200), prune: true, pruneParents: ["parent-0"])
+    finished.signal()
+  }
+  expect(waitUntil(10) { cache.sectionsInFlight == 1 && journalExists(url) }, "c6: precondition: the write is in its transaction")
+  let started = Date()
+  notifications.post(name: BackupGateLifecycle.didEnterBackground, object: nil) // runs the handler on this thread
+  let elapsed = Date().timeIntervalSince(started)
+  expect(!gate.canStartSQLiteWork, "c6: didEnterBackground with no engine closes the gate")
+  expect(cache.sectionsInFlight == 0 && !journalExists(url) && writeLockIsFree(url) && rowCount(url) == 0,
+         "c6: and quiesces the write before it returns: no section, no hot journal, the lock free, nothing written")
+  expect(elapsed < 1.5, "c6: inside the bound (\(String(format: "%.2f", elapsed)) s)")
+  _ = finished.wait(timeout: .now() + 10)
+  if case .notNow? = outcome { expect(true, "c6: the write answered not-now") } else { expect(false, "c6: the write answered not-now") }
+
+  // with the engine built the engine owns the sequence: this observer does nothing
+  let builtGate = BackupExecutionGate(foreground: true)
+  let builtCache = FileProviderCacheDB(gate: builtGate)
+  let builtCenter = NotificationCenter()
+  let builtObserver = lifecycle(builtGate, builtCenter, cache: builtCache, engineBuilt: true)
+  builtObserver.start(isBackground: false)
+  builtCenter.post(name: BackupGateLifecycle.didEnterBackground, object: nil)
+  expect(builtObserver.isFollowing && builtGate.canStartSQLiteWork, "c6: with the engine built, didEnterBackground leaves the gate to the engine")
+
+  // the built flag is a plain flag: reading it builds nothing, setting it is one call
+  expect(!BackupGateLifecycle.engineIsBuilt, "c6: the built flag starts false")
+  BackupGateLifecycle.noteEngineBuilt()
+  expect(BackupGateLifecycle.engineIsBuilt, "c6: and is set by noteEngineBuilt()")
 }
 
 // ── c7 ───────────────────────────────────────────────────────────────────

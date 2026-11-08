@@ -101,29 +101,51 @@ describe('app-group SQLite audit: every main-app open of the File Provider cache
 });
 
 describe('the gate is wired: the app feeds it, the quiesce reaches the cache, the sign-out reset is inside it', () => {
-  test('the engine claims the lifecycle and its quiesce interrupts and waits for the cache connections', () => {
-    // The claim comes AFTER the gate is seeded from the real application state: a gate claimed first would read "foreground" in a process started in the background.
-    const seed = ENGINE.indexOf('self?.executionGate.setForeground(state != .background)');
-    const claim = ENGINE.indexOf('self?.executionGate.claimLifecycleOwnership()');
-    expect(seed).toBeGreaterThan(-1);
-    expect(claim).toBeGreaterThan(seed);
-    expect(ENGINE).not.toContain('BackupExecutionGate.shared.claimLifecycleOwnership()');
+  test('the engine marks itself built and its quiesce interrupts and waits for the cache connections', () => {
+    // A plain flag set in init: the observer reads it and never constructs the engine.
+    expect(ENGINE).toContain('BackupGateLifecycle.noteEngineBuilt()');
+    expect(ENGINE).not.toMatch(/claimLifecycleOwnership|hasLifecycleOwner/);
     expect(ENGINE).toContain('FileProviderCacheDB.shared.interruptInFlightStatements()');
     // Everything is interrupted first, then ONE deadline for all three waits, run at once: the main thread blocks `timeout` in total.
     expect(ENGINE).toMatch(/BackupSQLiteQuiesce\.waitForAll\(timeout: timeout, \[\s*\{ BackupSQLiteQuiesce\.waitForSerialQueue\(self\.dbQueue, timeout: \$0\) \},\s*\{ ThumbnailQueueDB\.shared\.waitForQuiet\(timeout: \$0\) \},\s*\{ FileProviderCacheDB\.shared\.waitForQuiet\(timeout: \$0\) \},/);
     expect(ENGINE).not.toMatch(/deadline\.timeIntervalSinceNow/);
   });
 
-  test('FileProviderCacheDB.shared only KICKS the lifecycle owner into existence: never on the caller, never waited for', () => {
+  test('the gate is seeded at launch by a small observer, so the cache path never needs the engine', () => {
+    const delegate = readFileSync(join(IOS, 'BeebeebAppDelegate.swift'), 'utf8');
+    const launch = delegate.slice(delegate.indexOf('didFinishLaunchingWithOptions'), delegate.indexOf('handleEventsForBackgroundURLSession'));
+    const start = launch.indexOf('BackupGateLifecycle.shared.start(isBackground: application.applicationState == .background)');
+    expect(start).toBeGreaterThan(-1);
+    expect(start).toBeLessThan(launch.indexOf('NativeBackupEngine.registerBackgroundTaskEarly()'));
+    expect(launch.replace(/\/\/[^\n]*/g, '')).not.toContain('NativeBackupEngine.shared');
+    // the observer quiesces only the stores the engine does not own, and never builds the engine
+    const lifecycle = read('BackupGateLifecycle.swift');
+    expect(lifecycle.replace(/\/\/[^\n]*/g, '')).not.toMatch(/NativeBackupEngine/);
+    expect(delegate).toMatch(/extension BackupGateLifecycle \{[\s\S]*?ThumbnailQueueDB\.shared\.interruptInFlightStatement\(\)[\s\S]*?FileProviderCacheDB\.shared\.interruptInFlightStatements\(\)[\s\S]*?BackupSQLiteQuiesce\.waitForAll/);
+    expect(lifecycle).toContain('gate.setForeground(!isBackground)');
+    expect(lifecycle).toContain('guard !engineIsBuilt() else { return }');
+  });
+
+  test('the cache path never builds the engine, and the gate has no owner to ask for', () => {
+    const cacheDb = read('FileProviderCacheDB.swift');
+    expect(cacheDb.replace(/\/\/[^\n]*/g, '')).not.toMatch(/NativeBackupEngine|ensureLifecycleOwner|hasLifecycleOwner/);
+    expect(read('BackupExecutionGate.swift')).not.toMatch(/hasLifecycleOwner|claimLifecycleOwnership|lifecycleOwned/);
     const ext = MODULE.slice(MODULE.indexOf('extension FileProviderCacheDB {'), MODULE.indexOf('private let fileProviderCacheResetOwedKey'));
-    expect(ext).toMatch(/static let shared = FileProviderCacheDB\(\s*gate: \.shared,\s*ensureLifecycleOwner: \{\s*DispatchQueue\.global\(qos: \.utility\)\.async \{ _ = NativeBackupEngine\.shared \}/);
-    expect(ext).not.toMatch(/usleep|Thread\.isMainThread|Thread\.sleep/);
-    expect(MODULE).not.toMatch(/FileProviderCacheDB\(gate: BackupExecutionGate\(/);
-    // An unclaimed gate refuses (enter() is nil); it does not wait.
-    const db = read('FileProviderCacheDB.swift');
-    const enter = db.slice(db.indexOf('public func enter() -> Section?'), db.indexOf('// `SQLiteResetScope`'));
-    expect(enter).toMatch(/ensureLifecycleOwner\(\)\s*guard gate\.hasLifecycleOwner else \{ return nil \}/);
-    expect(enter).not.toMatch(/usleep|\.wait\(/);
+    expect(ext.replace(/\/\/[^\n]*/g, '')).not.toMatch(/NativeBackupEngine|usleep|Thread\./);
+    expect(ext).toMatch(/static let shared = FileProviderCacheDB\(\s*gate: \.shared,\s*owedStore:/);
+    // none of the cache's JS-called closures, nor the helpers they call, reach for the engine
+    for (const closure of ['syncFileProviderCache', 'removeFileProviderEntries', 'getFileProviderAuthRequiredAt', 'clearFileProviderAuthRequired', 'setFileProviderProtectedFolder']) {
+      const start = MODULE.indexOf(`AsyncFunction("${closure}")`);
+      expect(MODULE.slice(start, start + 3500).split('AsyncFunction("').slice(0, 2).join('').replace(/\/\/[^\n]*/g, '')).not.toContain('NativeBackupEngine');
+    }
+    for (const fn of ['private func bumpFileProviderCacheVersion(', 'private func ensureFileProviderCacheDatabase()', 'private func resetFileProviderCacheDatabase(at url: URL)']) {
+      const start = MODULE.indexOf(fn);
+      expect(start).toBeGreaterThan(-1);
+      expect(MODULE.slice(start, MODULE.indexOf('\n}\n', start)).replace(/\/\/[^\n]*/g, '')).not.toContain('NativeBackupEngine');
+    }
+    // enter() has no owner path: it asks the gate and answers
+    const enter = cacheDb.slice(cacheDb.indexOf('public func enter() -> Section?'), cacheDb.indexOf('// `SQLiteResetScope`'));
+    expect(enter).not.toMatch(/usleep|\.wait\(|Lifecycle/);
   });
 
   test('enter() reads the gate\'s open state and closure count in ONE step', () => {
@@ -209,7 +231,7 @@ describe('the gate is wired: the app feeds it, the quiesce reaches the cache, th
 
   test('the Swift driver is registered with the runner and linked against the vanilla SQLite object', () => {
     const runner = readFileSync(join(ROOT, 'scripts', 'swift-ci', 'run-swift-tests.sh'), 'utf8');
-    expect(runner).toMatch(/"file-provider-cache-quiesce-test\.swift\|[^"]*FileProviderCacheDB\.swift[^"]*BackupExecutionGate\.swift"/);
+    expect(runner).toMatch(/"file-provider-cache-quiesce-test\.swift\|[^"]*FileProviderCacheDB\.swift[^"]*BackupGateLifecycle\.swift[^"]*BackupExecutionGate\.swift"/);
     expect(runner).toMatch(/thumbnail-queue-quiesce-test\.swift\|file-provider-cache-quiesce-test\.swift\)/);
   });
 });
