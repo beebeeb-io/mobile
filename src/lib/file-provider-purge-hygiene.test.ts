@@ -78,6 +78,7 @@ function nativeSwiftHarnessTest(name: string, fn: () => void, timeout?: number):
  */
 const OPEN_GATE_STAND_IN = `
 final class OpenSection {
+  var isReset = false
   var admits: Bool { true }
   func attach(_ db: OpaquePointer) {}
   func setBusyTimeout(_ db: OpaquePointer, milliseconds: Int32) { sqlite3_busy_timeout(db, milliseconds) }

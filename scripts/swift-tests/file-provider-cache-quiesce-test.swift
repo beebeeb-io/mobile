@@ -35,6 +35,8 @@ import SQLite3
 //       next opening before anything else writes, and is not forgotten when the
 //       payment fails
 //   c12 the gate's open state and closure count are read in one step
+//   c13 the quiesce's three waits run under ONE deadline (their sum is never waited)
+//   c14 the debt is also counted when the app-group defaults are unavailable
 //   c8  a gate that closes BETWEEN the reset's statements (an interrupt is a
 //       no-op there): at every checkpoint the reset is all or nothing
 
@@ -334,6 +336,7 @@ do {
   _ = done.wait(timeout: .now() + 10)
   expect(result?.ok == false && result?.bumpCommitted == false, "c5: the reset reports a failure, no bump committed")
   expect(rowCount(big) == 1_000_000, "c5: the rollback left every row (the reset is all or nothing)")
+  expect(cache.resetOwed, "c5: a reset the gate stopped AFTER admitting it is owed too (the old rows are still there)")
 
   // Gate open (foreground): the same file resets.
   gate.setForeground(true)
@@ -572,6 +575,39 @@ do {
     section?.finish(closing: nil)
   }
   expect(forgotten == 0, "c12: a section that entered before a closure is refused after the reopen (forgotten \(forgotten) of 4000)")
+}
+
+// ── c13 ──────────────────────────────────────────────────────────────────
+do {
+  var timeoutsSeen: [TimeInterval] = []
+  let seenLock = NSLock()
+  func slow(_ t: TimeInterval) -> Bool {
+    seenLock.lock(); timeoutsSeen.append(t); seenLock.unlock()
+    usleep(UInt32(min(t, 3.0) * 1_000_000)) // never quiet within its bound
+    return false
+  }
+  let started = Date()
+  let allQuiet = BackupSQLiteQuiesce.waitForAll(timeout: 0.5, [slow, slow, slow])
+  let elapsed = Date().timeIntervalSince(started)
+  expect(!allQuiet, "c13: three waits that time out report not quiet")
+  expect(elapsed < 0.9, "c13: and take ONE deadline in total, not three (\(String(format: "%.2f", elapsed)) s for 3 x 0.5 s)")
+  expect(timeoutsSeen.count == 3 && timeoutsSeen.allSatisfy { $0 == 0.5 }, "c13: each wait is given the full bound at once")
+
+  let quickStarted = Date()
+  let quick = BackupSQLiteQuiesce.waitForAll(timeout: 2.0, [{ _ in true }, { _ in true }, { _ in true }])
+  expect(quick && Date().timeIntervalSince(quickStarted) < 0.5, "c13: waits that are quiet return at once")
+  expect(!BackupSQLiteQuiesce.waitForAll(timeout: 0.5, [{ _ in true }, { _ in false }]), "c13: one wait that is not quiet makes the result not quiet")
+}
+
+// ── c14 ──────────────────────────────────────────────────────────────────
+do {
+  let gate = BackupExecutionGate(foreground: true)
+  gate.claimLifecycleOwnership()
+  var calls = 0
+  // the app-group defaults are unavailable: the store reads false whatever is set
+  let cache = FileProviderCacheDB(gate: gate, owedStore: (get: { calls += 1; return false }, set: { _ in }))
+  cache.markResetOwed()
+  expect(cache.resetOwed, "c14: with an unusable store the in-memory debt still counts")
 }
 
 // ── c6 ───────────────────────────────────────────────────────────────────

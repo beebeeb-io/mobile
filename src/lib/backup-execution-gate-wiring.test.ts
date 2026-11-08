@@ -221,7 +221,8 @@ describe('3. every other end of background time quiesces before the task ends', 
         b.includes('BackupSQLiteQuiesce.run(') &&
         b.includes('NativeBackupEngine.manifestInterrupt.interrupt()') &&
         b.includes('ThumbnailQueueDB.shared.interruptInFlightStatement()') &&
-        b.includes('BackupSQLiteQuiesce.waitForSerialQueue(self.dbQueue, timeout: timeout)') &&
+        b.includes('BackupSQLiteQuiesce.waitForAll(timeout: timeout, [') &&
+        b.includes('BackupSQLiteQuiesce.waitForSerialQueue(self.dbQueue, timeout: $0)') &&
         b.includes('ThumbnailQueueDB.shared.waitForQuiet(')
       );
     },

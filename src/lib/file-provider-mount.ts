@@ -243,25 +243,30 @@ export async function syncDecryptedEntriesToFileProvider(
     pruneParents,
     trashChanged: options.trashChanged ?? false,
     epoch: accountEpoch(),
+    seq: 0,
   };
-  deferredFileProviderCacheWrites.supersede(write);
+  // Stamps the write and trims queued older ones it overlaps; the undo puts them back if this write FAILS.
+  const undo = deferredFileProviderCacheWrites.issue(write);
 
   try {
     const synced = await performCacheWrite(write);
     if (synced === 'not_now') {
       // LD-0002 round 2: no background time left, nothing was written. Queue the
-      // same write for the next foreground (or a backoff retry while foreground).
+      // same write for the next foreground (or a backoff retry while foreground),
+      // minus anything a NEWER write has landed for in the meantime.
       deferredFileProviderCacheWrites.defer(write);
       if (options.trashChanged) {
         await signalFileProviderTrashChanged();
       }
       return 0;
     }
+    deferredFileProviderCacheWrites.landed(write);
     if (options.trashChanged) {
       await signalFileProviderTrashChanged();
     }
     return synced;
   } catch (err) {
+    undo();
     if (isPlaintextGateClosed(err)) return 0;
     throw err;
   }
@@ -276,17 +281,20 @@ export async function removeFromFileProviderCache(ids: string[]): Promise<void> 
   if (Platform.OS !== 'ios') return;
   if (ids.length === 0) return;
   // Issued now: queued older writes of these ids (a pending upsert of a file that was just trashed) are superseded.
-  const write: CacheWrite = { kind: 'remove', ids: [...ids], epoch: accountEpoch() };
-  deferredFileProviderCacheWrites.supersede(write);
+  const write: CacheWrite = { kind: 'remove', ids: [...ids], epoch: accountEpoch(), seq: 0 };
+  const undo = deferredFileProviderCacheWrites.issue(write);
   try {
     if ((await performCacheWrite(write)) === 'not_now') {
       // LD-0002 round 2: no background time left, nothing was removed. Run it
       // again later rather than leaving the row in Files; a restore of the same
-      // ids in the meantime trims it (supersede), so it never removes restored rows.
+      // ids in the meantime trims it (issue), so it never removes restored rows.
       deferredFileProviderCacheWrites.defer(write);
+    } else {
+      deferredFileProviderCacheWrites.landed(write);
     }
   } catch {
-    // best-effort — next folder enumeration will reconcile
+    // best-effort — next folder enumeration will reconcile. The queued data trimmed for this write was not superseded.
+    undo();
   }
   await signalFileProviderTrashChanged();
 }
@@ -298,15 +306,18 @@ export async function removeFromFileProviderCache(ids: string[]): Promise<void> 
 export async function setFileProviderProtectedBackupsRoot(id: string | null): Promise<void> {
   if (Platform.OS !== 'ios') return;
   // Only the latest id matters: issuing this supersedes any queued older one.
-  const write: CacheWrite = { kind: 'protected-root', id, epoch: accountEpoch() };
-  deferredFileProviderCacheWrites.supersede(write);
+  const write: CacheWrite = { kind: 'protected-root', id, epoch: accountEpoch(), seq: 0 };
+  const undo = deferredFileProviderCacheWrites.issue(write);
   try {
     if ((await performCacheWrite(write)) === 'not_now') {
       // LD-0002 round 2: no background time left, nothing was published.
       deferredFileProviderCacheWrites.defer(write);
+    } else {
+      deferredFileProviderCacheWrites.landed(write);
     }
   } catch {
     // best-effort — the next backup folder resolve publishes it again
+    undo();
   }
 }
 

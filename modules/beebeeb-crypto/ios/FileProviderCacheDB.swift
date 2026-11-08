@@ -83,6 +83,9 @@ public final class FileProviderCacheDB: SQLiteResetScope {
   public final class Section: SQLiteResetSection {
     private unowned let owner: FileProviderCacheDB
     private let closuresAtEnter: UInt64
+    /// A section that resets the cache (the sign-out purge). One the gate stopped before
+    /// it finished leaves the reset OWED: the old account's rows are still on disk.
+    public var isReset = false
     private let target = SQLiteInterruptTarget { sqlite3_interrupt($0) }
     fileprivate var busyWait: AnyObject?
 
@@ -119,6 +122,9 @@ public final class FileProviderCacheDB: SQLiteResetScope {
     public func finish(closing db: OpaquePointer?) {
       target.withdraw()
       if let db { sqlite3_close(db) }
+      // A reset that the gate closed on was rolled back (or never finished): it is owed.
+      // (At worst a reset that had just completed is run once more: a cache, repopulated.)
+      if isReset && !admits { owner.markResetOwed() }
       owner.leave(self)
     }
 
@@ -189,6 +195,7 @@ public final class FileProviderCacheDB: SQLiteResetScope {
       markResetOwed()
       return nil
     }
+    section.isReset = true
     return section
   }
 
@@ -198,7 +205,8 @@ public final class FileProviderCacheDB: SQLiteResetScope {
   public var resetOwed: Bool {
     owedStateLock.lock()
     defer { owedStateLock.unlock() }
-    return owedStore?.get() ?? owedInMemory
+    // Both: with no usable store (the app-group defaults unavailable) the in-memory debt still counts.
+    return owedInMemory || owedStore?.get() == true
   }
 
   public func markResetOwed() {

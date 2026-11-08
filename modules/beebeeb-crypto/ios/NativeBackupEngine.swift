@@ -3600,13 +3600,15 @@ final class NativeBackupEngine: NSObject {
         FileProviderCacheDB.shared.interruptInFlightStatements()
       },
       waitForQuiet: { timeout in
-        let deadline = Date().addingTimeInterval(timeout)
-        let manifestQuiet = BackupSQLiteQuiesce.waitForSerialQueue(self.dbQueue, timeout: timeout)
-        let thumbnailQuiet = ThumbnailQueueDB.shared.waitForQuiet(timeout: deadline.timeIntervalSinceNow)
-        // Its own bound, not what the other two waits left over: a cache connection is
-        // the one a background suspension kills the app for (0xdead10cc).
-        let cacheQuiet = FileProviderCacheDB.shared.waitForQuiet(timeout: timeout)
-        return manifestQuiet && thumbnailQuiet && cacheQuiet
+        // Everything was interrupted first (above); now ONE shared deadline for all
+        // three: the waits run at once, so the main thread blocks `timeout` in total
+        // (it is inside a background-task expiration handler or didEnterBackground),
+        // and no wait is starved by another's.
+        BackupSQLiteQuiesce.waitForAll(timeout: timeout, [
+          { BackupSQLiteQuiesce.waitForSerialQueue(self.dbQueue, timeout: $0) },
+          { ThumbnailQueueDB.shared.waitForQuiet(timeout: $0) },
+          { FileProviderCacheDB.shared.waitForQuiet(timeout: $0) },
+        ])
       }
     )
     // LD-0002 (#262 review 1): the drain stops at its next checkpoint instead

@@ -265,6 +265,30 @@ public enum BackupSQLiteQuiesce {
     return waitForQuiet(timeout) ? .quiet : .timedOut
   }
 
+  /// Waits for every quiet check under ONE deadline: all run at once, each bounded
+  /// by `timeout`, so the total is `timeout` (plus scheduling), never their sum.
+  /// A grace expiry runs this on the main thread, with only a few seconds left.
+  public static func waitForAll(timeout: TimeInterval, _ waits: [(TimeInterval) -> Bool]) -> Bool {
+    let group = DispatchGroup()
+    let lock = NSLock()
+    var allQuiet = true
+    for wait in waits {
+      group.enter()
+      Thread.detachNewThread {
+        let quiet = wait(max(0, timeout))
+        lock.lock()
+        if !quiet { allQuiet = false }
+        lock.unlock()
+        group.leave()
+      }
+    }
+    // Each wait is bounded by `timeout`; a little slack for thread start-up.
+    guard group.wait(timeout: .now() + max(0, timeout) + 0.25) == .success else { return false }
+    lock.lock()
+    defer { lock.unlock() }
+    return allQuiet
+  }
+
   /// A barrier on a serial queue: true once every block enqueued before it has
   /// exited. Never call it from `queue` itself (it would time out). The
   /// barrier is a `.userInitiated` work item with `.enforceQoS` and the wait is

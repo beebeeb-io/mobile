@@ -31,9 +31,11 @@ export type CacheWrite =
       pruneParents: (string | null)[] | null;
       trashChanged: boolean;
       epoch: AccountEpoch;
+      /** Issue order, stamped by `issue()`; a write that lands later has a higher number. */
+      seq: number;
     }
-  | { kind: 'remove'; ids: string[]; epoch: AccountEpoch }
-  | { kind: 'protected-root'; id: string | null; epoch: AccountEpoch };
+  | { kind: 'remove'; ids: string[]; epoch: AccountEpoch; seq: number }
+  | { kind: 'protected-root'; id: string | null; epoch: AccountEpoch; seq: number };
 
 const ROOT_PARENT = '\u0000root';
 const parentKey = (parent: string | null | undefined): string => (parent === null || parent === undefined ? ROOT_PARENT : parent);
@@ -60,9 +62,16 @@ function isEmpty(write: CacheWrite): boolean {
 }
 
 export interface DeferredCacheWrites {
+  /** Queues a write the native side refused, minus whatever a NEWER write already landed for. */
   defer(write: CacheWrite): void;
-  /** A newer write is being issued: trim every queued write it overlaps (call BEFORE issuing it). */
-  supersede(newer: CacheWrite): void;
+  /**
+   * A write is being issued (call BEFORE sending it): stamps its `seq`, and trims every
+   * queued write it overlaps. Returns an undo that puts the trimmed data back, for when
+   * the write then FAILS (throws): the queued data was not superseded after all.
+   */
+  issue(write: CacheWrite): () => void;
+  /** The native side applied `write`: remember it, so an older write refused later is not queued over it. */
+  landed(write: CacheWrite): void;
   /** Runs the queue in order; stops at the first write the native side refuses again. */
   replay(): Promise<void>;
   /** An account boundary (sign-in or sign-out): nothing queued under the old account may run. */
@@ -97,6 +106,47 @@ export function createDeferredCacheWrites(deps: {
   let replaying: Promise<void> | null = null;
   let retries = 0;
   let retryScheduled = false;
+  let nextSeq = 0;
+  let clearGeneration = 0;
+  /** target -> seq of the newest write that LANDED for it ('id:x', 'parent:p', 'protected-root'). */
+  const landedSeq = new Map<string, number>();
+  const LANDED_CAP = 20_000;
+  const appliedWrites = new WeakSet<CacheWrite>();
+
+  function targetsOf(write: CacheWrite): string[] {
+    if (write.kind === 'protected-root') return ['protected-root'];
+    const targets = [...idsOf(write)].map((id) => `id:${id}`);
+    for (const parent of prunedParentsOf(write)) targets.push(`parent:${parent}`);
+    return targets;
+  }
+  const landedAfter = (target: string, seq: number): boolean => (landedSeq.get(target) ?? -1) > seq;
+
+  function recordLanded(write: CacheWrite): void {
+    for (const target of targetsOf(write)) {
+      if ((landedSeq.get(target) ?? -1) < write.seq) landedSeq.set(target, write.seq);
+    }
+    while (landedSeq.size > LANDED_CAP) {
+      const oldest = landedSeq.keys().next().value;
+      if (oldest === undefined) break;
+      landedSeq.delete(oldest);
+    }
+  }
+
+  /** Drops from `write` whatever a newer write already landed for. */
+  function trimAgainstLanded(write: CacheWrite): void {
+    if (write.kind === 'protected-root') return;
+    if (write.kind === 'remove') {
+      write.ids = write.ids.filter((id) => !landedAfter(`id:${id}`, write.seq));
+      return;
+    }
+    write.entries = write.entries.filter(
+      (e) => !landedAfter(`id:${e.id}`, write.seq) && !landedAfter(`parent:${parentKey(e.parent_id)}`, write.seq),
+    );
+    if (write.prune) {
+      write.pruneParents = (write.pruneParents ?? []).filter((p) => !landedAfter(`parent:${parentKey(p)}`, write.seq));
+      if (write.pruneParents.length === 0) write.pruneParents = write.entries.length > 0 ? null : [];
+    }
+  }
 
   function scheduleRetry(): void {
     if (pending.length === 0 || retryScheduled || retries >= REPLAY_MAX_RETRIES || !deps.isForeground?.()) return;
@@ -123,9 +173,11 @@ export function createDeferredCacheWrites(deps: {
         scheduleRetry();
         return;
       }
-      // `supersede`/`clear` may have changed the queue while `run` awaited.
+      // `issue`/`clear` may have changed the queue while `run` awaited.
       const index = pending.indexOf(next);
       if (index >= 0) pending.splice(index, 1);
+      appliedWrites.add(next);
+      recordLanded(next);
     }
     retries = 0;
   }
@@ -141,7 +193,9 @@ export function createDeferredCacheWrites(deps: {
 
   return {
     defer(write) {
-      if (isEmpty(write)) return;
+      // A newer write for the same target may have landed while this one was refused (an app switch).
+      trimAgainstLanded(write);
+      if (isEmpty(write) || (write.kind === 'protected-root' && landedAfter('protected-root', write.seq))) return;
       pending.push(write);
       while (pending.length > max) {
         const dropped = pending.shift();
@@ -156,35 +210,72 @@ export function createDeferredCacheWrites(deps: {
       }
       scheduleRetry();
     },
-    supersede(newer) {
-      if (pending.length === 0) return;
+    landed(write) {
+      recordLanded(write);
+    },
+    issue(newer) {
+      nextSeq += 1;
+      newer.seq = nextSeq;
+      const generation = clearGeneration;
+      // Everything this call changes, so a failed write can put it back.
+      const snapshots: Array<{ write: CacheWrite; index: number; copy: CacheWrite }> = [];
+      const remember = (write: CacheWrite, index: number) => {
+        if (snapshots.some((s) => s.write === write)) return;
+        snapshots.push({ write, index, copy: JSON.parse(JSON.stringify(write)) as CacheWrite });
+      };
+      const undo = () => {
+        if (generation !== clearGeneration) return; // an account boundary emptied the queue: nothing to restore
+        for (const { write, index, copy } of [...snapshots].sort((a, b) => a.index - b.index)) {
+          if (appliedWrites.has(write)) continue; // already applied by a replay
+          Object.assign(write, copy);
+          if (!pending.includes(write)) pending.splice(Math.min(index, pending.length), 0, write);
+        }
+      };
+      if (pending.length === 0) return undo;
       if (newer.kind === 'protected-root') {
-        for (let i = pending.length - 1; i >= 0; i--) if (pending[i].kind === 'protected-root') pending.splice(i, 1);
-        return;
+        for (let i = pending.length - 1; i >= 0; i--) {
+          if (pending[i].kind === 'protected-root') {
+            remember(pending[i], i);
+            pending.splice(i, 1);
+          }
+        }
+        return undo;
       }
       const newerIds = idsOf(newer);
-      const newerParents = prunedParentsOf(newer);
+      const newerPruned = prunedParentsOf(newer);
+      // The parents a newer sync touches at all: a queued COMPLETE listing of one of them was made without
+      // the newer write's rows, and the native prune would delete them. It cannot be replayed with a keep-set
+      // that lacks them (and replaying their stale entries would overwrite the fresh rows), so that parent
+      // leaves the queued listing; the next full listing of it reconciles.
+      const newerTouched = new Set<string>(newerPruned);
+      if (newer.kind === 'sync') for (const entry of newer.entries) newerTouched.add(parentKey(entry.parent_id));
       for (let i = pending.length - 1; i >= 0; i--) {
         const queued = pending[i];
+        remember(queued, i);
         if (queued.kind === 'remove') {
           queued.ids = queued.ids.filter((id) => !newerIds.has(id));
         } else if (queued.kind === 'sync') {
-          // A newer complete listing of a parent replaces that parent's older one; a newer write of an id (or its removal) replaces the older write of that id.
-          queued.entries = queued.entries.filter((e) => !newerIds.has(e.id) && !newerParents.has(parentKey(e.parent_id)));
+          const queuedPruned = prunedParentsOf(queued);
+          const droppedParents = new Set<string>();
+          for (const parent of queuedPruned) if (newerTouched.has(parent)) droppedParents.add(parent);
+          // A newer complete listing of a parent replaces that parent's older upserts too; a newer write of an id (or its removal) replaces the older write of that id.
+          queued.entries = queued.entries.filter(
+            (e) => !newerIds.has(e.id) && !newerPruned.has(parentKey(e.parent_id)) && !droppedParents.has(parentKey(e.parent_id)),
+          );
           if (queued.prune) {
-            queued.pruneParents = (queued.pruneParents ?? []).filter((p) => !newerParents.has(parentKey(p)));
-            if (queued.pruneParents.length === 0 && queued.entries.length > 0) {
-              // What remains is a set of upserts whose parents were not superseded: the native side prunes each parent that appears in `entries`.
-              queued.pruneParents = null;
-            }
+            queued.pruneParents = (queued.pruneParents ?? []).filter((p) => !droppedParents.has(parentKey(p)));
+            if (queued.pruneParents.length === 0 && queued.entries.length > 0) queued.pruneParents = null;
           }
         }
         if (isEmpty(queued)) pending.splice(i, 1);
       }
+      return undo;
     },
     replay,
     clear() {
       pending.length = 0;
+      landedSeq.clear();
+      clearGeneration += 1;
     },
     get size() {
       return pending.length;
