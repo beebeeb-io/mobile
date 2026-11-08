@@ -23,22 +23,33 @@ import { accountEpoch, isCurrentAccountEpoch, onAccountEpochAdvance } from './ac
  * trimmed a queued write before this call is honoured.
  */
 async function performCacheWrite(write: CacheWrite): Promise<number | 'not_now'> {
+  const count = (result: { status: 'ok'; count: number } | { status: 'not_now' } | { status: 'failed' }): number | 'not_now' => {
+    if (result.status === 'not_now') return 'not_now';
+    // A write that FAILED with background time left was rolled back: it is neither landed nor a refusal to
+    // retry blindly. It surfaces as an error (callers undo what they trimmed; a replay drops it with a warning).
+    if (result.status === 'failed') throw new FileProviderCacheWriteFailedError(write.kind);
+    return result.count;
+  };
   if (write.kind === 'sync') {
     if (write.entries.length === 0 && !(write.prune && (write.pruneParents?.length ?? 0) > 0)) return 0;
     // A fresh lease per attempt: an attempt that runs after a sign-out finds the plaintext gate closed.
     return withPlaintextLease('file provider cache push', async (lease) => {
       lease.assertValid();
-      const result = await BeebeebCrypto.syncFileProviderCache(write.entries, write.prune, write.pruneParents);
-      return result.status === 'not_now' ? 'not_now' : result.count;
+      return count(await BeebeebCrypto.syncFileProviderCache(write.entries, write.prune, write.pruneParents));
     });
   }
   if (write.kind === 'remove') {
     if (write.ids.length === 0) return 0;
-    const result = await BeebeebCrypto.removeFileProviderEntries(write.ids);
-    return result.status === 'not_now' ? 'not_now' : result.count;
+    return count(await BeebeebCrypto.removeFileProviderEntries(write.ids));
   }
-  const result = await BeebeebCrypto.setFileProviderProtectedFolder(write.id);
-  return result.status === 'not_now' ? 'not_now' : result.count;
+  return count(await BeebeebCrypto.setFileProviderProtectedFolder(write.id));
+}
+
+export class FileProviderCacheWriteFailedError extends Error {
+  constructor(kind: string) {
+    super(`File Provider cache ${kind} write failed (rolled back)`);
+    this.name = 'FileProviderCacheWriteFailedError';
+  }
 }
 
 /**
@@ -417,9 +428,14 @@ export async function populateFileProviderCache(
         // `listAllFiles` returns the COMPLETE child set for this folder (full
         // cursor walk), so prune is safe here — rows for children that no
         // longer exist remotely (e.g. trashed on the web) are deleted.
+        const queuedBefore = deferredFileProviderCacheWrites.size;
         totalSynced += await syncDecryptedEntriesToFileProvider(files, names, parentId ?? null, {
           prune: true,
         });
+        // LD-0002 round 4: the native side refused (no background time left; this listing is queued).
+        // Listing and decrypting the remaining folders now would only queue more work after background
+        // time ended; the next registration on foreground walks again.
+        if (deferredFileProviderCacheWrites.size > queuedBefore) break;
 
         for (const file of files) {
           if (options.recursive !== false && file.is_folder) queue.push(file.id);

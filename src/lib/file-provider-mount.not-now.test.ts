@@ -51,16 +51,22 @@ mock.module('../../modules/beebeeb-crypto', () => ({
   },
 }));
 
+const listCalls: string[] = [];
+let listPlan: Record<string, unknown[]> = {};
 mock.module('./api', () => ({
   getApiUrl: () => 'https://api.test',
   getToken: async () => 'tok',
-  listAllFiles: async () => [],
+  listAllFiles: async (parentId?: string) => {
+    listCalls.push(parentId ?? 'root');
+    return listPlan[parentId ?? 'root'] ?? [];
+  },
 }));
 mock.module('./encrypted-metadata', () => ({ encryptedMetadataPayloadToBytes: () => null }));
 mock.module('./device-owner-auth', () => ({ requestDeviceOwnerAuth: async () => ({ ok: true }) }));
 mock.module('./lock-state', () => ({ wasRecentlyUnlocked: () => true }));
 
 const {
+  populateFileProviderCache,
   syncDecryptedEntriesToFileProvider,
   removeFromFileProviderCache,
   setFileProviderProtectedBackupsRoot,
@@ -344,5 +350,29 @@ describe('a refused File Provider cache write waits for the foreground (LD-0002 
     const [entries, prune, pruneParents] = nativeCalls[0].args;
     expect(entries.map((e) => e.id)).toEqual(['b1']);
     expect(pruneParents).toEqual(['B']); // A is not pruned with a keep-set that lacks x
+  });
+
+  test('j19: the mount walk stops at the first refusal: it does not list and decrypt the rest after background time ended', async () => {
+    listPlan = {
+      root: [{ id: 'a', is_folder: true, name_encrypted: 'a', parent_id: null }, { id: 'b', is_folder: true, name_encrypted: 'b', parent_id: null }],
+      a: [{ id: 'a1', is_folder: false, name_encrypted: 'a1', parent_id: 'a' }],
+      b: [{ id: 'b1', is_folder: false, name_encrypted: 'b1', parent_id: 'b' }],
+    };
+    listCalls.length = 0;
+    answers.syncFileProviderCache = [NOT_NOW, ok(1)];
+    await populateFileProviderCache(async () => 'unused');
+    expect(listCalls).toEqual(['root']); // a and b were never listed
+    expect(deferredFileProviderCacheWrites.size).toBe(1); // the root listing waits for the foreground
+    listPlan = {};
+  });
+
+  test('j20: a write that FAILS (not a refusal) is an error: not landed, nothing queued, what it trimmed is put back', async () => {
+    answers.removeFileProviderEntries = [NOT_NOW];
+    await removeFromFileProviderCache(['x', 'y']);
+    answers.syncFileProviderCache = [{ status: 'failed' }];
+    await expect(syncDecryptedEntriesToFileProvider([file('x')], {}, null)).rejects.toThrow(/failed \(rolled back\)/);
+    expect(deferredFileProviderCacheWrites.queued.map((w) => w.ids)).toEqual([['x', 'y']]);
+    // and it was NOT recorded as landed: a later refusal of an older write for x is still queued
+    answers.syncFileProviderCache = [ok(1)];
   });
 });

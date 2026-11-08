@@ -1119,11 +1119,16 @@ export interface FileProviderCacheEntry {
 export type FileProviderCacheWriteResult =
   | { status: 'ok'; count: number }
   | { status: 'not_now' }
+  /** The write FAILED with background time left (busy past the timeout, a full disk): rolled back, nothing written, not a refusal to retry blindly. */
+  | { status: 'failed' }
 
 /** An older native build answers a bare number (or boolean): that is an `ok`. */
 export function toFileProviderCacheWriteResult(raw: unknown): FileProviderCacheWriteResult {
   if (raw && typeof raw === 'object' && (raw as { status?: unknown }).status === 'not_now') {
     return { status: 'not_now' }
+  }
+  if (raw && typeof raw === 'object' && (raw as { status?: unknown }).status === 'failed') {
+    return { status: 'failed' }
   }
   if (raw && typeof raw === 'object') {
     const count = (raw as { count?: unknown }).count

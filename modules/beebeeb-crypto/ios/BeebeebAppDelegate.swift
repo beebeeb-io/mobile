@@ -17,6 +17,9 @@ extension BackupGateLifecycle {
         { ThumbnailQueueDB.shared.waitForQuiet(timeout: $0) },
         { FileProviderCacheDB.shared.waitForQuiet(timeout: $0) },
       ])
+    },
+    payOwedReset: {
+      DispatchQueue.global(qos: .utility).async { settleOwedFileProviderCacheReset() }
     }
   )
 }

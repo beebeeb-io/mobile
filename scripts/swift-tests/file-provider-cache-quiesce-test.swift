@@ -606,11 +606,12 @@ do {
 // ── c6 ───────────────────────────────────────────────────────────────────
 // A cold launch with NO engine built anywhere in this process (this driver never builds one).
 do {
-  func lifecycle(_ gate: BackupExecutionGate, _ center: NotificationCenter, cache: FileProviderCacheDB, engineBuilt: Bool = false) -> BackupGateLifecycle {
+  func lifecycle(_ gate: BackupExecutionGate, _ center: NotificationCenter, cache: FileProviderCacheDB, engineBuilt: Bool = false, pay: @escaping () -> Void = {}) -> BackupGateLifecycle {
     BackupGateLifecycle(
       gate: gate, center: center, engineIsBuilt: { engineBuilt },
       interrupt: { cache.interruptInFlightStatements() },
-      waitForQuiet: { cache.waitForQuiet(timeout: $0) }
+      waitForQuiet: { cache.waitForQuiet(timeout: $0) },
+      payOwedReset: pay
     )
   }
 
@@ -637,6 +638,26 @@ do {
   center.post(name: BackupGateLifecycle.willEnterForeground, object: nil)
   expect(followedCache.enter() != nil, "c6: willEnterForeground opens it")
   observer.start(isBackground: false) // idempotent: a second start only re-seeds
+
+  // a scene-based app activates through its scene: those notifications reopen the gate too
+  let sceneCenter = NotificationCenter()
+  let sceneGate = BackupExecutionGate(foreground: true)
+  let sceneCache = FileProviderCacheDB(gate: sceneGate)
+  var paid = 0
+  let sceneObserver = lifecycle(sceneGate, sceneCenter, cache: sceneCache, pay: { paid += 1 })
+  sceneObserver.start(isBackground: true) // seeded closed (a scene app can report .background at launch)
+  expect(sceneCache.enter() == nil && paid == 0, "c6: seeded closed; a background start pays nothing yet")
+  sceneCenter.post(name: BackupGateLifecycle.sceneDidActivate, object: nil)
+  expect(sceneCache.enter() != nil, "c6: the scene activating reopens the gate (a cold user launch in a scene-based app)")
+  sceneGate.expire(); sceneGate.setForeground(false)
+  sceneCenter.post(name: BackupGateLifecycle.sceneWillEnterForeground, object: nil)
+  expect(sceneCache.enter() != nil, "c6: so does the scene entering the foreground")
+  sceneCenter.post(name: BackupGateLifecycle.willEnterForeground, object: nil)
+  sceneCenter.post(name: BackupGateLifecycle.didBecomeActive, object: nil)
+  expect(paid == 4, "c6: every foreground pays an owed reset, with no engine and no cache writer (paid \(paid) of 4)")
+  let paidAtStart = paid
+  sceneObserver.start(isBackground: false)
+  expect(paid == paidAtStart + 1, "c6: and so does a start in the foreground (a debt left by a previous launch)")
 
   // didEnterBackground with no engine built: closes the gate and quiesces a write that is in flight
   let url = freshDatabase("c6-bg")
@@ -676,6 +697,47 @@ do {
   expect(!BackupGateLifecycle.engineIsBuilt, "c6: the built flag starts false")
   BackupGateLifecycle.noteEngineBuilt()
   expect(BackupGateLifecycle.engineIsBuilt, "c6: and is set by noteEngineBuilt()")
+}
+
+// ── c15 ──────────────────────────────────────────────────────────────────
+do {
+  let url = freshDatabase("c15")
+  createSchema(url)
+  withConnection(url) { db in
+    exec(db, "CREATE TRIGGER poison BEFORE INSERT ON file_cache WHEN NEW.name_decrypted = 'poison' BEGIN SELECT RAISE(ABORT, 'poison'); END")
+  }
+  let gate = BackupExecutionGate(foreground: true)
+  let cache = FileProviderCacheDB(gate: gate)
+  var entries = makeEntries(50)
+  entries[30]["name_decrypted"] = "poison"
+  let outcome = runSync(cache, url, entries: entries)
+  if case .failed = outcome { expect(true, "c15: a step that fails with the gate open fails the transaction") }
+  else { expect(false, "c15: a step that fails with the gate open fails the transaction") }
+  expect(rowCount(url) == 0, "c15: nothing of the listing was written (49 rows are not 'ok')")
+  expect(FileProviderCacheOutcome<Int>.failed.bridged["status"] as? String == "failed", "c15: and it reaches JS as failed, never as ok")
+}
+
+// ── c16 ──────────────────────────────────────────────────────────────────
+do {
+  let gate = BackupExecutionGate(foreground: true)
+  let cache = FileProviderCacheDB(gate: gate)
+  cache.markResetOwed()
+  var fallbacks = 0
+  var resets = 0
+  // a reset that keeps failing with the gate OPEN (full disk, corrupt file): bounded, then the cache is removed
+  expect(!cache.settleOwedReset({ resets += 1; return false }, fallback: { fallbacks += 1; return true }), "c16: failure 1: still owed")
+  expect(!cache.settleOwedReset({ resets += 1; return false }, fallback: { fallbacks += 1; return true }), "c16: failure 2: still owed")
+  expect(fallbacks == 0, "c16: no fallback before the bound")
+  expect(cache.settleOwedReset({ resets += 1; return false }, fallback: { fallbacks += 1; return true }) && fallbacks == 1 && !cache.resetOwed,
+         "c16: failure 3: the fallback runs and the debt is cleared (writers are not refused for ever)")
+
+  // a refusal by the gate costs nothing: it is not a failure of the reset
+  let closed = BackupExecutionGate(foreground: false)
+  let closedCache = FileProviderCacheDB(gate: closed)
+  closedCache.markResetOwed()
+  var closedFallbacks = 0
+  for _ in 0..<6 { _ = closedCache.settleOwedReset({ false }, fallback: { closedFallbacks += 1; return true }) }
+  expect(closedFallbacks == 0 && closedCache.resetOwed, "c16: refusals by a closed gate never trigger the fallback (6 of them)")
 }
 
 // ── c7 ───────────────────────────────────────────────────────────────────

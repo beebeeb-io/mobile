@@ -25,6 +25,9 @@ public final class BackupGateLifecycle {
   public static let didEnterBackground = Notification.Name("UIApplicationDidEnterBackgroundNotification")
   public static let willEnterForeground = Notification.Name("UIApplicationWillEnterForegroundNotification")
   public static let didBecomeActive = Notification.Name("UIApplicationDidBecomeActiveNotification")
+  // A scene-based app (this one) activates through its scene; the scene notifications reopen the gate too.
+  public static let sceneWillEnterForeground = Notification.Name("UISceneWillEnterForegroundNotification")
+  public static let sceneDidActivate = Notification.Name("UISceneDidActivateNotification")
 
   // MARK: The "engine built" flag
 
@@ -52,6 +55,7 @@ public final class BackupGateLifecycle {
   private let engineIsBuilt: () -> Bool
   private let interrupt: () -> Void
   private let waitForQuiet: (_ timeout: TimeInterval) -> Bool
+  private let payOwedReset: () -> Void
   private var tokens: [NSObjectProtocol] = []
   private let lock = NSLock()
 
@@ -60,13 +64,15 @@ public final class BackupGateLifecycle {
     center: NotificationCenter = .default,
     engineIsBuilt: @escaping () -> Bool = { BackupGateLifecycle.engineIsBuilt },
     interrupt: @escaping () -> Void,
-    waitForQuiet: @escaping (_ timeout: TimeInterval) -> Bool
+    waitForQuiet: @escaping (_ timeout: TimeInterval) -> Bool,
+    payOwedReset: @escaping () -> Void = {}
   ) {
     self.gate = gate
     self.center = center
     self.engineIsBuilt = engineIsBuilt
     self.interrupt = interrupt
     self.waitForQuiet = waitForQuiet
+    self.payOwedReset = payOwedReset
   }
 
   /// Seeds the gate from the real state and starts following it. Call once, on the main
@@ -76,13 +82,24 @@ public final class BackupGateLifecycle {
     lock.lock()
     defer { lock.unlock() }
     gate.setForeground(!isBackground)
-    guard tokens.isEmpty else { return }
-    tokens.append(center.addObserver(forName: Self.willEnterForeground, object: nil, queue: nil) { [gate] _ in
+    // For the device check: a scene-based app can report `.background` at launch even for a user launch (it
+    // then reopens on the scene's activation); this records what it reported.
+    RuntimeTrace.event("gate.lifecycle_seed", ["background": isBackground])
+    guard tokens.isEmpty else {
+      if !isBackground { payOwedReset() }
+      return
+    }
+    // Foreground: reopen the gate, then pay a cache reset the gate refused earlier (a sign-out in
+    // the background, possibly in a previous launch) even when no cache writer runs. `payOwedReset`
+    // moves off the main thread itself.
+    let opened: (Notification) -> Void = { [gate, payOwedReset] _ in
       gate.setForeground(true)
-    })
-    tokens.append(center.addObserver(forName: Self.didBecomeActive, object: nil, queue: nil) { [gate] _ in
-      gate.setForeground(true)
-    })
+      payOwedReset()
+    }
+    for name in [Self.willEnterForeground, Self.didBecomeActive, Self.sceneWillEnterForeground, Self.sceneDidActivate] {
+      tokens.append(center.addObserver(forName: name, object: nil, queue: nil, using: opened))
+    }
+    if !isBackground { payOwedReset() }
     tokens.append(center.addObserver(forName: Self.didEnterBackground, object: nil, queue: nil) { [weak self] _ in
       self?.handleDidEnterBackground()
     })
