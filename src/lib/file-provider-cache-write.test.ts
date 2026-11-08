@@ -452,5 +452,21 @@ describe('round 4: a late or restored write never brings back stale rows', () =>
     expect(untouched.entries).toBe(entriesBefore);
     expect(deferred.size).toBe(1);
   });
-});
 
+  test('a replay that THROWS did not land: it does not trim older writes of the same targets', async () => {
+    const dropped: unknown[] = [];
+    const { deferred } = queue({
+      onReplayError: (e) => dropped.push(e),
+      run: async (w) => { if (w.kind === 'remove') throw new Error('native failure'); return true; },
+    });
+    const old = sync([entry('x')]);
+    deferred.issue(old);
+    const failing = remove(['x']);
+    deferred.issue(failing);
+    deferred.defer(failing);
+    await deferred.replay(); // the removal of x throws and is dropped: x was NOT removed
+    expect(dropped.length).toBe(1);
+    deferred.defer(old); // the older upsert of x is refused late: nothing newer LANDED for x
+    expect(deferred.queued.map((w) => w.entries.map((e) => e.id))).toEqual([['x']]);
+  });
+});

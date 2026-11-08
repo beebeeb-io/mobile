@@ -255,7 +255,7 @@ describe('task 1593 round 4 (P2-3) — the File Provider NAME cache writer is ga
     const body = src.slice(start, src.indexOf('\n}\n', start));
     expect(body).toMatch(/withPlaintextLease\(/);
     expect(body).toMatch(/BeebeebCrypto\.syncFileProviderCache\(/);
-    const writerStart = src.indexOf('export async function syncDecryptedEntriesToFileProvider');
+    const writerStart = src.indexOf('export async function pushDecryptedEntriesToFileProvider');
     const writer = src.slice(writerStart, src.indexOf('\n}\n', writerStart));
     expect(writer).toMatch(/performCacheWrite\(write\)/);
     expect(writer).not.toMatch(/BeebeebCrypto\.syncFileProviderCache\(/);

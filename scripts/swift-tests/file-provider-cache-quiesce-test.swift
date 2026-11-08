@@ -722,22 +722,35 @@ do {
   let gate = BackupExecutionGate(foreground: true)
   let cache = FileProviderCacheDB(gate: gate)
   cache.markResetOwed()
-  var fallbacks = 0
+  var escalations = 0
   var resets = 0
-  // a reset that keeps failing with the gate OPEN (full disk, corrupt file): bounded, then the cache is removed
-  expect(!cache.settleOwedReset({ resets += 1; return false }, fallback: { fallbacks += 1; return true }), "c16: failure 1: still owed")
-  expect(!cache.settleOwedReset({ resets += 1; return false }, fallback: { fallbacks += 1; return true }), "c16: failure 2: still owed")
-  expect(fallbacks == 0, "c16: no fallback before the bound")
-  expect(cache.settleOwedReset({ resets += 1; return false }, fallback: { fallbacks += 1; return true }) && fallbacks == 1 && !cache.resetOwed,
-         "c16: failure 3: the fallback runs and the debt is cleared (writers are not refused for ever)")
+  // a reset that keeps failing with the gate OPEN (full disk, corrupt file): counted, then it ESCALATES (once);
+  // the debt stays owed and NOTHING is unlinked (the extension holds the file open and never reopens it)
+  for failure in 1...5 {
+    let paid = cache.settleOwedReset({ resets += 1; return false }, escalate: { escalations += 1 })
+    expect(!paid && cache.resetOwed, "c16: failure \(failure): not paid, still owed")
+  }
+  expect(escalations == 1, "c16: escalated exactly once, at the third real failure (escalated \(escalations) times in 5)")
+  expect(resets == 5, "c16: and every settle still tries the reset (it is retried, not abandoned)")
+  expect(cache.settleOwedReset({ true }, escalate: { escalations += 1 }) && !cache.resetOwed, "c16: and the first reset that lands pays the debt")
 
   // a refusal by the gate costs nothing: it is not a failure of the reset
   let closed = BackupExecutionGate(foreground: false)
   let closedCache = FileProviderCacheDB(gate: closed)
   closedCache.markResetOwed()
-  var closedFallbacks = 0
-  for _ in 0..<6 { _ = closedCache.settleOwedReset({ false }, fallback: { closedFallbacks += 1; return true }) }
-  expect(closedFallbacks == 0 && closedCache.resetOwed, "c16: refusals by a closed gate never trigger the fallback (6 of them)")
+  var closedEscalations = 0
+  for _ in 0..<6 { _ = closedCache.settleOwedReset({ false }, escalate: { closedEscalations += 1 }) }
+  expect(closedEscalations == 0 && closedCache.resetOwed, "c16: refusals by a closed gate never escalate (6 of them)")
+
+  // a closure that has already REOPENED when the failure is read is still a refusal (the closure count, not the current state)
+  let flapping = BackupExecutionGate(foreground: true)
+  let flappingCache = FileProviderCacheDB(gate: flapping)
+  flappingCache.markResetOwed()
+  var flappingEscalations = 0
+  for _ in 0..<6 {
+    _ = flappingCache.settleOwedReset({ flapping.setForeground(false); flapping.setForeground(true); return false }, escalate: { flappingEscalations += 1 })
+  }
+  expect(flappingEscalations == 0, "c16: a closure that already reopened during the reset still counts as a refusal (6 of them)")
 }
 
 // ── c7 ───────────────────────────────────────────────────────────────────
