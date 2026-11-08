@@ -21,23 +21,38 @@ private let fileProviderDomainSchemaVersion = "replicated-v6-cache-bootstrap"
 private let appGroupIdentifier = "group.io.beebeeb.shared"
 
 extension FileProviderCacheDB {
-  /// LD-0002 round 2: the one gate every main-app connection to the File
-  /// Provider cache database goes through (see `FileProviderCacheDB`).
-  /// `NativeBackupEngine` observes the app's foreground/background
-  /// transitions and drives the gate; constructing it here makes sure that owner
-  /// exists before the first connection asks.
+  /// LD-0002 round 2: the one gate every main-app connection to the File Provider
+  /// cache database goes through (see `FileProviderCacheDB`).
+  /// `NativeBackupEngine` observes the app's foreground/background transitions and
+  /// drives the gate. `ensureLifecycleOwner` only KICKS that engine into existence,
+  /// on a utility queue: never on the caller's thread (a main-thread caller must not
+  /// run its full `init()`, the build-227 watchdog), never waited for. `enter()`
+  /// refuses until the engine has seeded and claimed the gate.
   static let shared = FileProviderCacheDB(
     gate: .shared,
     ensureLifecycleOwner: {
-      _ = NativeBackupEngine.shared
-      // The engine seeds the gate from the real application state on the main
-      // queue and only then claims it. Wait for that here (bounded), unless this
-      // IS the main queue: then `enter()` finds the gate unclaimed and refuses.
-      guard !Thread.isMainThread else { return }
-      let deadline = Date().addingTimeInterval(1.0)
-      while !BackupExecutionGate.shared.hasLifecycleOwner && Date() < deadline { usleep(5_000) }
-    }
+      DispatchQueue.global(qos: .utility).async { _ = NativeBackupEngine.shared }
+    },
+    owedStore: (
+      get: { sharedDefaults()?.bool(forKey: fileProviderCacheResetOwedKey) ?? false },
+      set: { sharedDefaults()?.set($0, forKey: fileProviderCacheResetOwedKey) }
+    )
   )
+}
+
+/// A reset of the File Provider cache that the background gate refused (a sign-out in
+/// the background) and that has not run since. Cleared when the reset lands.
+private let fileProviderCacheResetOwedKey = "io.beebeeb.fileprovider.cache-reset-owed.v1"
+
+/// LD-0002 round 2: pay a reset that was refused earlier BEFORE any caller writes the
+/// next account's names into the cache. A no-op (a lock and a flag) when none is owed.
+/// Called first by every cache writer, and by the engine on each foreground.
+func settleOwedFileProviderCacheReset() {
+  FileProviderCacheDB.shared.settleOwedReset {
+    guard let url = fileProviderCacheDatabaseUrl() else { return false }
+    guard FileManager.default.fileExists(atPath: url.path) else { return true }
+    return resetFileProviderCacheDatabase(at: url)
+  }
 }
 private let simulatorFileProviderMasterKeyKey = "io.beebeeb.simulatorFileProviderMasterKey"
 // Task 1671: alias the canonical `BeebeebKeychainCore` constants rather than
@@ -1527,7 +1542,7 @@ private func bumpFileProviderCacheVersion(
   // The extension's own `CacheManager` connection may hold a brief lock
   // (its own `BEGIN IMMEDIATE` in `replaceChildren`/`upsert`/`delete`);
   // worth a short wait rather than failing this purge step outright.
-  sqlite3_busy_timeout(db, 2000)
+  section.setBusyTimeout(db, milliseconds: 2000)
 
   guard section.admits else { return false }
   guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else {
@@ -1764,9 +1779,13 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
     return false
   }
 
-  // LD-0002 round 2: a closed gate means "not reset" (the purge fails closed
-  // and retries; `retryFileProviderCacheReset`).
-  guard let section = FileProviderCacheDB.shared.enter() else { return false }
+  // LD-0002 round 2: a closed gate means "not reset": the purge fails closed, and
+  // the reset is OWED. It runs on the next foreground (`settleOwedFileProviderCacheReset`),
+  // before any new account's names are written.
+  guard let section = FileProviderCacheDB.shared.enter() else {
+    FileProviderCacheDB.shared.markResetOwed()
+    return false
+  }
   var db: OpaquePointer?
   guard sqlite3_open_v2(
     url.path,
@@ -1786,7 +1805,7 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
   // Keep the SQLite file inode stable. The File Provider extension may already
   // have this database open; unlinking it can leave the app writing to one DB
   // while the extension opens another at the same path.
-  sqlite3_busy_timeout(db, 2000)
+  section.setBusyTimeout(db, milliseconds: 2000)
   // Task 1593 round 5 (P1-1, same finding as PlaintextStorageProtection.swift's
   // `resetSQLiteInPlace`) — a plain DELETE leaves the decrypted row bytes
   // readable on the freelist page; `secure_delete = ON` (set before the
@@ -2072,6 +2091,16 @@ private func registerMountedFileProviderDomainLocked(
   defaults: UserDefaults?,
   forceReset: Bool = false
 ) async throws -> [String: Any] {
+  // LD-0002 round 2: with the background gate closed the cache cannot be opened. That is
+  // not a broken cache and must not read as "Files could not be turned on": change
+  // nothing, say so (`deferred`), and JS registers again when the app is foreground.
+  guard let gateProbe = FileProviderCacheDB.shared.enter() else {
+    RuntimeTrace.event("files.registration_deferred", ["reason": "gate_closed"])
+    var status = await currentFileProviderDomainStatus()
+    status["deferred"] = "gate_closed"
+    return status
+  }
+  gateProbe.finish(closing: nil)
   let domain = beebeebFileProviderDomain()
   let domainsBefore = try await getFileProviderDomains()
   let existed = domainsBefore.contains { $0.identifier == domain.identifier }
@@ -2193,6 +2222,14 @@ private func registerMountedFileProviderDomainLocked(
       clearsPendingMarker: cacheResetOk,
       pendingNonceAtSnapshot: purgePendingNonceAtSnapshot
     )
+  }
+  // LD-0002 round 2: the gate closed during this registration. That is a refusal, not a
+  // failure: no failure trace, no refused add; JS registers again on foreground.
+  if !cacheReady || !cacheVersionBumped, FileProviderCacheDB.shared.gateRefuses {
+    RuntimeTrace.event("files.registration_deferred", ["reason": "gate_closed_mid_registration"])
+    var status = await currentFileProviderDomainStatus()
+    status["deferred"] = "gate_closed"
+    return status
   }
   if !cacheReady || !cacheVersionBumped {
     RuntimeTrace.event("storage.purge.failed", [
@@ -4090,6 +4127,10 @@ public class BeebeebCryptoModule: Module {
     // default is `false`, preserving the legacy upsert-only behaviour.
     AsyncFunction("syncFileProviderCache") { (entries: [[String: Any]], prune: Bool?, pruneParents: [Any]?) -> [String: Any] in
       let shouldPrune = prune ?? false
+      // LD-0002 round 2: a reset the gate refused earlier (a sign-out in the
+      // background) is paid FIRST, before this write puts the next account's names
+      // into the cache.
+      settleOwedFileProviderCacheReset()
       // Task 1593 round 11 — routed through the shared resolver (was an
       // inline `containerUrl.appendingPathComponent("file-provider-cache
       // .sqlite")` at the App Group root) so this call site gets the
@@ -4120,7 +4161,7 @@ public class BeebeebCryptoModule: Module {
       }
       defer { section.finish(closing: db) }
       section.attach(db)
-      sqlite3_busy_timeout(db, 2000)
+      section.setBusyTimeout(db, milliseconds: 2000)
       // Task 1593 round 7 (C2) — same reasoning as `ensureFileProviderCache
       // Database`: `SQLITE_OPEN_CREATE` above can be creating this file for
       // the first time (this JS call runs independently of that native
@@ -4203,6 +4244,7 @@ public class BeebeebCryptoModule: Module {
     // from Files.app immediately instead of lingering until the next listing.
     AsyncFunction("removeFileProviderEntries") { (ids: [String]) -> [String: Any] in
       guard !ids.isEmpty else { return FileProviderCacheOutcome<Int>.done(0).bridged }
+      settleOwedFileProviderCacheReset()
       // Task 1593 round 11 — same resolver routing as `syncFileProviderCache`
       // above.
       guard let dbUrl = fileProviderCacheDatabaseUrl() else {
@@ -4317,7 +4359,7 @@ public class BeebeebCryptoModule: Module {
       }
       defer { section.finish(closing: db) }
       section.attach(db)
-      sqlite3_busy_timeout(db, 2000)
+      section.setBusyTimeout(db, milliseconds: 2000)
       let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
       var stmt: OpaquePointer?
       guard sqlite3_prepare_v2(db, "SELECT value FROM sync_state WHERE key = ?", -1, &stmt, nil) == SQLITE_OK else { return nil }
@@ -4341,7 +4383,7 @@ public class BeebeebCryptoModule: Module {
       }
       defer { section.finish(closing: db) }
       section.attach(db)
-      sqlite3_busy_timeout(db, 2000)
+      section.setBusyTimeout(db, milliseconds: 2000)
       for statement in fileProviderCacheSchemaStatements {
         guard section.admits else { return false }
         sqlite3_exec(db, statement, nil, nil, nil)
@@ -4377,6 +4419,7 @@ public class BeebeebCryptoModule: Module {
       // `count` 1 = published (or already current), 0 = could not be. LD-0002
       // round 2: a closed gate answers "not_now" and JS publishes it again
       // when the app is foreground (`file-provider-mount.ts`).
+      settleOwedFileProviderCacheReset()
       guard let dbUrl = fileProviderCacheDatabaseUrl() else { return FileProviderCacheOutcome<Int>.done(0).bridged }
       guard let section = FileProviderCacheDB.shared.enter() else {
         return FileProviderCacheOutcome<Int>.notNow.bridged

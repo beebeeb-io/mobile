@@ -248,10 +248,17 @@ describe('task 1593 round 4 (P2-3) — the File Provider NAME cache writer is ga
     // body: `syncDecryptedEntriesToFileProvider`, the ONE JS call site of the
     // native `syncFileProviderCache` per this describe block's own scan
     // above.
-    const start = src.indexOf('export async function syncDecryptedEntriesToFileProvider');
+    // LD-0002 round 2: the lease and the native call moved into `performCacheWrite`, which the
+    // writer (and a replay of a refused write) both go through.
+    const start = src.indexOf('async function performCacheWrite');
     expect(start).toBeGreaterThan(-1);
-    const body = src.slice(start, src.indexOf('\n}', start));
+    const body = src.slice(start, src.indexOf('\n}\n', start));
     expect(body).toMatch(/withPlaintextLease\(/);
+    expect(body).toMatch(/BeebeebCrypto\.syncFileProviderCache\(/);
+    const writerStart = src.indexOf('export async function syncDecryptedEntriesToFileProvider');
+    const writer = src.slice(writerStart, src.indexOf('\n}\n', writerStart));
+    expect(writer).toMatch(/performCacheWrite\(write\)/);
+    expect(writer).not.toMatch(/BeebeebCrypto\.syncFileProviderCache\(/);
   });
 
   test('the BFS walk (populateFileProviderCache) holds its OWN lease for the whole walk, not just per push', () => {

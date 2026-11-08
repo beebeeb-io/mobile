@@ -46,19 +46,19 @@ mock.module('../../modules/beebeeb-crypto', () => ({
     return { registered: true, cacheDatabaseReady: true };
   },
   removeFileProviderAccess: async () => ({ registered: false }),
-  removeFileProviderEntries: async () => 0,
+  removeFileProviderEntries: async () => ({ status: 'ok', count: 0 }),
   signalFileProviderTrashEnumerator: async () => {
     nativeCalls.push({ fn: 'signalFileProviderTrashEnumerator', args: [] });
     return true;
   },
   setFileProviderProtectedFolder: async (id: string | null) => {
     nativeCalls.push({ fn: 'setFileProviderProtectedFolder', args: [id] });
-    return true;
+    return { status: 'ok', count: 1 };
   },
   syncFileProviderCache: async (entries: unknown[], prune: boolean, pruneParents: unknown) => {
     nativeCalls.push({ fn: 'syncFileProviderCache', args: [entries, prune, pruneParents] });
     onSyncFileProviderCache?.(entries, prune, pruneParents);
-    return (entries as unknown[]).length;
+    return { status: 'ok', count: (entries as unknown[]).length };
   },
 }));
 

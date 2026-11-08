@@ -74,6 +74,12 @@ export interface FileProviderDomainRegistrationResult {
   rootEnumerationSignaled: boolean
   workingSetEnumerationSignaled: boolean
   cacheDatabaseReady?: boolean
+  /**
+   * LD-0002 round 2: the app's background time had ended, so the cache database could not
+   * be opened. Nothing was changed and nothing failed: register again when the app is
+   * foreground (`App.tsx` does). Never shown as "Files could not be turned on".
+   */
+  deferred?: 'gate_closed'
   documentStorageURL?: string | null
   userVisibleRootURL?: string | null
   userVisibleRootError?: string | null
