@@ -212,17 +212,22 @@ public final class FileProviderCacheDB: SQLiteResetScope {
   /// account's names; clears the debt only when it returned true. True = nothing
   /// owed or paid. Retries are serialized; `reset` may itself call `markResetOwed`.
   @discardableResult
-  public func settleOwedReset(maxFailures: Int = 3, _ reset: () -> Bool, fallback: () -> Bool = { false }) -> Bool {
+  public func settleOwedReset(maxFailures: Int = 3, _ reset: () -> Bool, escalate: () -> Void = {}) -> Bool {
     settleLock.lock()
     defer { settleLock.unlock() }
     guard resetOwed else { return true }
+    let closuresBefore = gate.closures
     if !reset() {
-      // A refusal (the gate closed) is the gate's business and costs nothing. A real failure with the
-      // gate open (a full disk, a corrupt file, no container) is counted: after `maxFailures` the
-      // cache, which is derived data, is removed instead of every writer answering not-now for ever.
-      if gateRefuses { return false }
+      // A refusal is the gate's business and costs nothing: it is closed now, or it closed (and
+      // may have reopened) while the reset ran. A real failure with the gate open (a full disk, a
+      // corrupt file, no container) is counted: at `maxFailures` it ESCALATES, once. The cache file
+      // is never unlinked here: the extension holds its connection open for the life of its process
+      // and never reopens it, so a deleted file leaves the old rows visible to Files for good.
+      // The debt stays owed.
+      if gateRefuses || gate.closures != closuresBefore { return false }
       realFailures += 1
-      guard realFailures >= maxFailures, fallback() else { return false }
+      if realFailures == maxFailures { escalate() }
+      return false
     }
     realFailures = 0
     owedStateLock.lock()

@@ -183,11 +183,13 @@ export function createDeferredCacheWrites(deps: {
         continue;
       }
       let applied: boolean;
+      let threw = false;
       try {
         applied = await deps.run(next);
       } catch (error) {
         deps.onReplayError?.(error);
-        applied = true;
+        applied = true; // dropped, not retried
+        threw = true;
       }
       if (!applied) {
         scheduleRetry();
@@ -196,8 +198,11 @@ export function createDeferredCacheWrites(deps: {
       // `issue`/`clear` may have changed the queue while `run` awaited.
       const index = pending.indexOf(next);
       if (index >= 0) pending.splice(index, 1);
-      appliedWrites.add(next);
-      recordLanded(next);
+      // A write that THREW did not land: it must not trim older writes (they are not superseded by anything).
+      if (!threw) {
+        appliedWrites.add(next);
+        recordLanded(next);
+      }
     }
     retries = 0;
   }

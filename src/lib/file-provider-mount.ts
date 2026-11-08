@@ -209,13 +209,13 @@ export async function removeTrustedFileProvider(): Promise<FileProviderDomainReg
  * rather than a rejection, since every caller already treats "nothing to
  * sync" as a normal, retryable outcome (the next enumeration reconciles).
  */
-export async function syncDecryptedEntriesToFileProvider(
+export async function pushDecryptedEntriesToFileProvider(
   files: FileEntry[],
   decryptedNames: Record<string, string>,
   parentId?: string | null,
   options: { prune?: boolean; pruneParents?: (string | null)[]; trashChanged?: boolean } = {},
-): Promise<number> {
-  if (Platform.OS !== 'ios') return 0;
+): Promise<{ written: number; refused: boolean }> {
+  if (Platform.OS !== 'ios') return { written: 0, refused: false };
 
   const entries: FileProviderCacheEntry[] = files.filter(f => !sharedFileKeyIsLoaded(f.id)).map((f) => ({
     id: f.id,
@@ -269,18 +269,27 @@ export async function syncDecryptedEntriesToFileProvider(
       if (options.trashChanged) {
         await signalFileProviderTrashChanged();
       }
-      return 0;
+      return { written: 0, refused: true };
     }
     deferredFileProviderCacheWrites.landed(write);
     if (options.trashChanged) {
       await signalFileProviderTrashChanged();
     }
-    return synced;
+    return { written: synced, refused: false };
   } catch (err) {
     undo();
-    if (isPlaintextGateClosed(err)) return 0;
+    if (isPlaintextGateClosed(err)) return { written: 0, refused: false };
     throw err;
   }
+}
+
+export async function syncDecryptedEntriesToFileProvider(
+  files: FileEntry[],
+  decryptedNames: Record<string, string>,
+  parentId?: string | null,
+  options: { prune?: boolean; pruneParents?: (string | null)[]; trashChanged?: boolean } = {},
+): Promise<number> {
+  return (await pushDecryptedEntriesToFileProvider(files, decryptedNames, parentId, options)).written;
 }
 
 /**
@@ -428,14 +437,15 @@ export async function populateFileProviderCache(
         // `listAllFiles` returns the COMPLETE child set for this folder (full
         // cursor walk), so prune is safe here — rows for children that no
         // longer exist remotely (e.g. trashed on the web) are deleted.
-        const queuedBefore = deferredFileProviderCacheWrites.size;
-        totalSynced += await syncDecryptedEntriesToFileProvider(files, names, parentId ?? null, {
+        const pushed = await pushDecryptedEntriesToFileProvider(files, names, parentId ?? null, {
           prune: true,
         });
-        // LD-0002 round 4: the native side refused (no background time left; this listing is queued).
-        // Listing and decrypting the remaining folders now would only queue more work after background
-        // time ended; the next registration on foreground walks again.
-        if (deferredFileProviderCacheWrites.size > queuedBefore) break;
+        totalSynced += pushed.written;
+        // LD-0002 round 5: the writer says it was refused (no background time left; this listing is queued).
+        // Listing and decrypting the remaining folders now would only queue more work after background time
+        // ended; the next registration on foreground walks again. (The signal comes from the writer, not
+        // from the queue growing: a refusal that trims to net zero, or a full queue, would be missed.)
+        if (pushed.refused) break;
 
         for (const file of files) {
           if (options.recursive !== false && file.is_folder) queue.push(file.id);

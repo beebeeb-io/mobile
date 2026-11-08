@@ -167,7 +167,7 @@ describe('the gate is wired: the app feeds it, the quiesce reaches the cache, th
   test('no gated connection waits on a plain busy timeout: they wait with a handler that asks the gate', () => {
     const module = MODULE.replace(/\/\/[^\n]*/g, '');
     expect(module).not.toMatch(/sqlite3_busy_timeout\(db, 2000\)/);
-    expect((module.match(/section\.setBusyTimeout\(db, milliseconds: 2000\)/g) ?? []).length).toBe(5);
+    expect((module.match(/section\.setBusyTimeout\(db, milliseconds: 2000\)/g) ?? []).length).toBe(6); // + removeFileProviderEntries (round 5)
     expect(PSP).toContain('if let section { section.setBusyTimeout(db, milliseconds: 2000) } else { sqlite3_busy_timeout(db, 2000) }');
     const db = read('FileProviderCacheDB.swift');
     expect(db).toContain('sqlite3_busy_handler(db, fileProviderCacheBusy');
@@ -205,11 +205,37 @@ describe('the gate is wired: the app feeds it, the quiesce reaches the cache, th
 
   test('a write only goes ahead when the owed reset was paid; a stopped reset is owed; a refused schema step is not-now; remove checks its BEGIN', () => {
     // 3a: the result of settle is used by all three writers
-    expect((MODULE.match(/guard settleOwedFileProviderCacheReset\(\) else \{ return owedResetUnpaidAnswer\(\) \}/g) ?? []).length).toBe(3);
+    expect((MODULE.match(/guard settleOwedFileProviderCacheReset\(\) else \{ return owedResetUnpaidAnswer\(since: closuresAtStart\) \}/g) ?? []).length).toBe(3);
+    expect((MODULE.match(/let closuresAtStart = FileProviderCacheDB\.shared\.gateClosures/g) ?? []).length).toBe(3);
     // not-now only while the gate is the reason; a real reset failure is `failed`, counted towards the fallback
-    expect(MODULE).toMatch(/func owedResetUnpaidAnswer\(\) -> \[String: Any\] \{\s*FileProviderCacheDB\.shared\.gateRefuses\s*\?\s*FileProviderCacheOutcome<Int>\.notNow\.bridged\s*:\s*FileProviderCacheOutcome<Int>\.failed\.bridged/);
+    expect(MODULE).toMatch(/func owedResetUnpaidAnswer\(since closuresAtStart: UInt64\) -> \[String: Any\] \{[^}]*?FileProviderCacheDB\.shared\.gateRefuses \|\| FileProviderCacheDB\.shared\.gateClosures != closuresAtStart\s*\?\s*FileProviderCacheOutcome<Int>\.notNow\.bridged\s*:\s*FileProviderCacheOutcome<Int>\.failed\.bridged/);
     expect(MODULE).toContain('FileProviderCacheDB.shared.settleOwedReset({');
-    expect(MODULE).toMatch(/fallback: \{[\s\S]*?for suffix in \["", "-journal", "-wal", "-shm"\]/);
+    // NEVER unlink the cache database: the extension holds its connection open for the life of its process and never
+    // reopens it, so a deleted file leaves the previous account's names visible in Files for good. A reset that keeps
+    // failing ESCALATES (the domain is removed, as a sign-out does) and stays owed.
+    const settle = MODULE.slice(MODULE.indexOf('func settleOwedFileProviderCacheReset() -> Bool {'), MODULE.indexOf('\n}\n', MODULE.indexOf('func settleOwedFileProviderCacheReset() -> Bool {')));
+    expect(settle).toMatch(/escalate: \{[\s\S]*?removeFileProviderDomainIfRegistered\(\)/);
+    expect(settle.replace(/\/\/[^\n]*/g, '')).not.toMatch(/removeItem|unlink|trashItem/);
+    expect(read('FileProviderCacheDB.swift').replace(/\/\/[^\n]*/g, '')).not.toMatch(/removeItem|unlink|FileManager|trashItem/);
+    // the only unlink of the cache database in the module is the pre-existing "cannot even open it" branch of the reset
+    const resetFn = MODULE.slice(MODULE.indexOf('private func resetFileProviderCacheDatabase(at url: URL)'));
+    expect((resetFn.slice(0, resetFn.indexOf('\n}\n')).match(/removeItem\(at: url\)/g) ?? []).length).toBe(1);
+    for (const fn of ['private func bumpFileProviderCacheVersion(', 'private func ensureFileProviderCacheDatabase()']) {
+      const start = MODULE.indexOf(fn);
+      expect(MODULE.slice(start, MODULE.indexOf('\n}\n', start)).replace(/\/\/[^\n]*/g, '')).not.toMatch(/removeItem|unlink/);
+    }
+    for (const closure of ['syncFileProviderCache', 'removeFileProviderEntries', 'getFileProviderAuthRequiredAt', 'clearFileProviderAuthRequired', 'setFileProviderProtectedFolder']) {
+      const start = MODULE.indexOf(`AsyncFunction("${closure}")`);
+      expect(MODULE.slice(start, start + 4500).split('AsyncFunction("').slice(0, 2).join('').replace(/\/\/[^\n]*/g, '')).not.toMatch(/removeItem|unlink/);
+    }
+    // registration never mounts over an unpaid reset
+    const registration = MODULE.slice(MODULE.indexOf('private func registerMountedFileProviderDomainLocked('));
+    expect(registration.indexOf('files.registration_refused_reset_owed')).toBeGreaterThan(registration.indexOf('gateProbe.finish(closing: nil)'));
+    expect(registration.indexOf('files.registration_refused_reset_owed')).toBeLessThan(registration.indexOf('let domain = '));
+    // removeFileProviderEntries: a DELETE that cannot be prepared is a failure, and it waits like the others
+    const removeFn = MODULE.slice(MODULE.indexOf('AsyncFunction("removeFileProviderEntries")'), MODULE.indexOf('AsyncFunction("getFileProviderAuthRequiredAt")'));
+    expect(removeFn).toContain('section.setBusyTimeout(db, milliseconds: 2000)');
+    expect(removeFn).toMatch(/\} else \{[^}]*deleteResult = SQLITE_ERROR/);
     // a step that fails with the gate open fails the transaction (apply and remove), never an ok with fewer rows
     const db = read('FileProviderCacheDB.swift');
     expect((db.match(/return fail\(\)|\? fail\(\) : abandon\(\)/g) ?? []).length).toBeGreaterThanOrEqual(4);

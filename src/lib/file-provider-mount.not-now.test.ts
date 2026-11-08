@@ -375,4 +375,19 @@ describe('a refused File Provider cache write waits for the foreground (LD-0002 
     // and it was NOT recorded as landed: a later refusal of an older write for x is still queued
     answers.syncFileProviderCache = [ok(1)];
   });
+
+  test('j21: the walk stops on the writer\'s own refusal even when the queue does not grow (the refusal trims a queued write to net zero)', async () => {
+    answers.syncFileProviderCache = [NOT_NOW, NOT_NOW, ok(1)];
+    // a queued listing of the root; the walk's own root listing supersedes it and is refused too: size 1 before, 1 after
+    await syncDecryptedEntriesToFileProvider([file('r1')], {}, null, { prune: true, pruneParents: [null] });
+    expect(deferredFileProviderCacheWrites.size).toBe(1);
+    listPlan = {
+      root: [{ id: 'a', is_folder: true, name_encrypted: 'a', parent_id: null }],
+      a: [{ id: 'a1', is_folder: false, name_encrypted: 'a1', parent_id: 'a' }],
+    };
+    listCalls.length = 0;
+    await populateFileProviderCache(async () => 'unused');
+    expect(listCalls).toEqual(['root']);
+    listPlan = {};
+  });
 });
