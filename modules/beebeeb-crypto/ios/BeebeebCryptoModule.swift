@@ -47,7 +47,8 @@ private let fileProviderCacheResetOwedKey = "io.beebeeb.fileprovider.cache-reset
 /// LD-0002 round 2: pay a reset that was refused earlier BEFORE any caller writes the
 /// next account's names into the cache. A no-op (a lock and a flag) when none is owed.
 /// Called first by every cache writer, and by the engine on each foreground.
-func settleOwedFileProviderCacheReset() {
+@discardableResult
+func settleOwedFileProviderCacheReset() -> Bool {
   FileProviderCacheDB.shared.settleOwedReset {
     guard let url = fileProviderCacheDatabaseUrl() else { return false }
     guard FileManager.default.fileExists(atPath: url.path) else { return true }
@@ -1786,6 +1787,8 @@ private func resetFileProviderCacheDatabase(at url: URL) -> Bool {
     FileProviderCacheDB.shared.markResetOwed()
     return false
   }
+  // A reset the gate stops after admitting it (rolled back) is owed too: `finish` marks it.
+  section.isReset = true
   var db: OpaquePointer?
   guard sqlite3_open_v2(
     url.path,
@@ -4129,8 +4132,9 @@ public class BeebeebCryptoModule: Module {
       let shouldPrune = prune ?? false
       // LD-0002 round 2: a reset the gate refused earlier (a sign-out in the
       // background) is paid FIRST, before this write puts the next account's names
-      // into the cache.
-      settleOwedFileProviderCacheReset()
+      // into the cache. If it did not land, this write must not go on top of the old
+      // account's rows: not now.
+      guard settleOwedFileProviderCacheReset() else { return FileProviderCacheOutcome<Int>.notNow.bridged }
       // Task 1593 round 11 — routed through the shared resolver (was an
       // inline `containerUrl.appendingPathComponent("file-provider-cache
       // .sqlite")` at the App Group root) so this call site gets the
@@ -4189,7 +4193,10 @@ public class BeebeebCryptoModule: Module {
       for statement in fileProviderCacheSchemaStatements {
         guard section.admits else { return FileProviderCacheOutcome<Int>.notNow.bridged }
         guard sqlite3_exec(db, statement, nil, nil, nil) == SQLITE_OK else {
-          return FileProviderCacheOutcome<Int>.done(0).bridged
+          // A statement the gate stopped (busy handler, progress handler) is a refusal, not an applied write.
+          return section.admits
+            ? FileProviderCacheOutcome<Int>.done(0).bridged
+            : FileProviderCacheOutcome<Int>.notNow.bridged
         }
       }
       // The idempotent schema loop does not add columns to an existing cache. This writer uses
@@ -4244,7 +4251,7 @@ public class BeebeebCryptoModule: Module {
     // from Files.app immediately instead of lingering until the next listing.
     AsyncFunction("removeFileProviderEntries") { (ids: [String]) -> [String: Any] in
       guard !ids.isEmpty else { return FileProviderCacheOutcome<Int>.done(0).bridged }
-      settleOwedFileProviderCacheReset()
+      guard settleOwedFileProviderCacheReset() else { return FileProviderCacheOutcome<Int>.notNow.bridged }
       // Task 1593 round 11 — same resolver routing as `syncFileProviderCache`
       // above.
       guard let dbUrl = fileProviderCacheDatabaseUrl() else {
@@ -4285,7 +4292,10 @@ public class BeebeebCryptoModule: Module {
       var touchedParentIdentifiers = Set<String>()
 
       guard section.admits else { return FileProviderCacheOutcome<Int>.notNow.bridged }
-      sqlite3_exec(db, "BEGIN", nil, nil, nil)
+      // A BEGIN that fails would leave every DELETE autocommitting one by one: stop.
+      guard sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else {
+        return FileProviderCacheOutcome<Int>.notNow.bridged
+      }
       var removed = 0
       for id in ids {
         // LD-0002 round 2: a long id list is a loop of short statements; an
@@ -4419,7 +4429,7 @@ public class BeebeebCryptoModule: Module {
       // `count` 1 = published (or already current), 0 = could not be. LD-0002
       // round 2: a closed gate answers "not_now" and JS publishes it again
       // when the app is foreground (`file-provider-mount.ts`).
-      settleOwedFileProviderCacheReset()
+      guard settleOwedFileProviderCacheReset() else { return FileProviderCacheOutcome<Int>.notNow.bridged }
       guard let dbUrl = fileProviderCacheDatabaseUrl() else { return FileProviderCacheOutcome<Int>.done(0).bridged }
       guard let section = FileProviderCacheDB.shared.enter() else {
         return FileProviderCacheOutcome<Int>.notNow.bridged

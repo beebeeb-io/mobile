@@ -31,6 +31,7 @@ const MODULE_SWIFT = readFileSync(join(ROOT, 'modules', 'beebeeb-crypto', 'ios',
  */
 const OPEN_GATE_STAND_IN = `
 final class OpenSection {
+  var isReset = false
   var admits: Bool { true }
   func attach(_ db: OpaquePointer) {}
   func setBusyTimeout(_ db: OpaquePointer, milliseconds: Int32) { sqlite3_busy_timeout(db, milliseconds) }

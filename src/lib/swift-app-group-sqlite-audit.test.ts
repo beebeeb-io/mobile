@@ -109,10 +109,9 @@ describe('the gate is wired: the app feeds it, the quiesce reaches the cache, th
     expect(claim).toBeGreaterThan(seed);
     expect(ENGINE).not.toContain('BackupExecutionGate.shared.claimLifecycleOwnership()');
     expect(ENGINE).toContain('FileProviderCacheDB.shared.interruptInFlightStatements()');
-    // The cache has its OWN bound, not what the manifest and thumbnail waits left over.
-    expect(ENGINE).toMatch(/let cacheQuiet = FileProviderCacheDB\.shared\.waitForQuiet\(timeout: timeout\)/);
-    expect(ENGINE).not.toMatch(/FileProviderCacheDB\.shared\.waitForQuiet\(timeout: deadline/);
-    expect(ENGINE).toMatch(/return manifestQuiet && thumbnailQuiet && cacheQuiet/);
+    // Everything is interrupted first, then ONE deadline for all three waits, run at once: the main thread blocks `timeout` in total.
+    expect(ENGINE).toMatch(/BackupSQLiteQuiesce\.waitForAll\(timeout: timeout, \[\s*\{ BackupSQLiteQuiesce\.waitForSerialQueue\(self\.dbQueue, timeout: \$0\) \},\s*\{ ThumbnailQueueDB\.shared\.waitForQuiet\(timeout: \$0\) \},\s*\{ FileProviderCacheDB\.shared\.waitForQuiet\(timeout: \$0\) \},/);
+    expect(ENGINE).not.toMatch(/deadline\.timeIntervalSinceNow/);
   });
 
   test('FileProviderCacheDB.shared only KICKS the lifecycle owner into existence: never on the caller, never waited for', () => {
@@ -169,6 +168,22 @@ describe('the gate is wired: the app feeds it, the quiesce reaches the cache, th
     expect((body.match(/status\["deferred"\] = "gate_closed"/g) ?? []).length).toBe(2);
     expect(body.indexOf('FileProviderCacheDB.shared.gateRefuses')).toBeLessThan(body.indexOf('"stage": cacheReady ? "registration_cache_version_bump"'));
     expect(readFileSync(join(ROOT, 'src', 'App.tsx'), 'utf8')).toMatch(/result\?\.deferred === 'gate_closed'/);
+  });
+
+  test('a write only goes ahead when the owed reset was paid; a stopped reset is owed; a refused schema step is not-now; remove checks its BEGIN', () => {
+    // 3a: the result of settle is used by all three writers
+    expect((MODULE.match(/guard settleOwedFileProviderCacheReset\(\) else \{ return FileProviderCacheOutcome<Int>\.notNow\.bridged \}/g) ?? []).length).toBe(3);
+    // 3b: a reset section the gate stops after admitting it leaves the debt (Section.finish), in both resets
+    expect(read('FileProviderCacheDB.swift')).toMatch(/if isReset && !admits \{ owner\.markResetOwed\(\) \}/);
+    expect(read('FileProviderCacheDB.swift')).toMatch(/section\.isReset = true\s*return section/);
+    expect(MODULE).toMatch(/section\.isReset = true\s*\n/);
+    // 5: a schema statement the gate stopped is not-now, never done(0)
+    expect(MODULE).toMatch(/guard sqlite3_exec\(db, statement, nil, nil, nil\) == SQLITE_OK else \{[^}]*return section\.admits\s*\?\s*FileProviderCacheOutcome<Int>\.done\(0\)\.bridged\s*:\s*FileProviderCacheOutcome<Int>\.notNow\.bridged/);
+    // 6: removeFileProviderEntries stops at a failed BEGIN, like apply
+    const remove = MODULE.slice(MODULE.indexOf('AsyncFunction("removeFileProviderEntries")'), MODULE.indexOf('AsyncFunction("getFileProviderAuthRequiredAt")'));
+    expect(remove).toMatch(/guard sqlite3_exec\(db, "BEGIN", nil, nil, nil\) == SQLITE_OK else \{\s*return FileProviderCacheOutcome<Int>\.notNow\.bridged/);
+    // the in-memory debt counts when the store is unusable
+    expect(read('FileProviderCacheDB.swift')).toContain('return owedInMemory || owedStore?.get() == true');
   });
 
   test('the transaction stops at a BEGIN that fails', () => {

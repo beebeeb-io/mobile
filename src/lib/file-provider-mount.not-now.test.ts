@@ -28,7 +28,8 @@ const nativeCalls: Array<{ fn: string; args: unknown[] }> = [];
 const answers: Record<string, unknown[]> = {};
 function answer(fn: string): unknown {
   const queue = answers[fn] ?? [];
-  return queue.length > 1 ? queue.shift() : queue[0];
+  const next = queue.length > 1 ? queue.shift() : queue[0];
+  return typeof next === 'function' ? (next as () => unknown)() : next;
 }
 
 mock.module('../../modules/beebeeb-crypto', () => ({
@@ -301,6 +302,47 @@ describe('a refused File Provider cache write waits for the foreground (LD-0002 
     const names = { f1: 'name-that-must-not-be-retained.txt' };
     await syncDecryptedEntriesToFileProvider([file('f1')], names, null);
     const [queued] = deferredFileProviderCacheWrites.queued;
-    expect(Object.keys(queued).sort()).toEqual(['entries', 'epoch', 'kind', 'prune', 'pruneParents', 'trashChanged']);
+    expect(Object.keys(queued).sort()).toEqual(['entries', 'epoch', 'kind', 'prune', 'pruneParents', 'seq', 'trashChanged']);
+  });
+
+  test('j16: a listing refused after a newer listing of the same parent landed is not queued over it', async () => {
+    // A is issued first and its native call is still pending; B (issued after A) lands; then A answers not_now.
+    let releaseA: () => void = () => {};
+    answers.syncFileProviderCache = [() => new Promise((resolve) => { releaseA = () => resolve(NOT_NOW); }), ok(1)];
+    const a = syncDecryptedEntriesToFileProvider([file('old1'), file('old2')], {}, 'P', { prune: true, pruneParents: ['P'] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await syncDecryptedEntriesToFileProvider([file('new1')], {}, 'P', { prune: true, pruneParents: ['P'] });
+    releaseA();
+    await a;
+    expect(deferredFileProviderCacheWrites.size).toBe(0);
+    nativeCalls.length = 0;
+    await foreground();
+    expect(nativeCalls).toEqual([]); // the older listing never replays over the newer one
+  });
+
+  test('j17: a newer write that FAILS puts back what it trimmed from the queue', async () => {
+    answers.removeFileProviderEntries = [NOT_NOW];
+    await removeFromFileProviderCache(['x', 'y']);
+    expect(deferredFileProviderCacheWrites.queued[0].ids).toEqual(['x', 'y']);
+
+    answers.syncFileProviderCache = [() => { throw new Error('native failure'); }];
+    await expect(syncDecryptedEntriesToFileProvider([file('x')], {}, null)).rejects.toThrow('native failure');
+
+    expect(deferredFileProviderCacheWrites.queued[0].ids).toEqual(['x', 'y']); // x was not restored after all
+  });
+
+  test('j18: a queued complete listing loses a parent that a newer partial write touched: the replay never deletes the fresh row', async () => {
+    answers.syncFileProviderCache = [NOT_NOW, ok(1), ok(1)];
+    const a1 = { ...file('a1'), parent_id: 'A' };
+    const b1 = { ...file('b1'), parent_id: 'B' };
+    await syncDecryptedEntriesToFileProvider([a1, b1], {}, null, { prune: true, pruneParents: ['A', 'B'] });
+    // an upload of x into A (a partial push) lands
+    await syncDecryptedEntriesToFileProvider([{ ...file('x'), parent_id: 'A' }], {}, null);
+    nativeCalls.length = 0;
+    await foreground();
+    expect(nativeCalls.length).toBe(1);
+    const [entries, prune, pruneParents] = nativeCalls[0].args;
+    expect(entries.map((e) => e.id)).toEqual(['b1']);
+    expect(pruneParents).toEqual(['B']); // A is not pruned with a keep-set that lacks x
   });
 });

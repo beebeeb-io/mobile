@@ -9,10 +9,10 @@ import { REPLAY_BASE_DELAY_MS, REPLAY_MAX_DELAY_MS, REPLAY_MAX_RETRIES, createDe
 
 const EPOCH = { generation: 1, accountId: 'a' };
 const entry = (id: string, parent: string | null = 'p') => ({ id, parent_id: parent });
-const sync = (entries, extra = {}) => ({ kind: 'sync', entries, prune: false, pruneParents: null, trashChanged: false, epoch: EPOCH, ...extra });
+const sync = (entries, extra = {}) => ({ kind: 'sync', entries, prune: false, pruneParents: null, trashChanged: false, epoch: EPOCH, seq: 0, ...extra });
 const prune = (entries, pruneParents) => sync(entries, { prune: true, pruneParents });
-const remove = (ids) => ({ kind: 'remove', ids, epoch: EPOCH });
-const root = (id) => ({ kind: 'protected-root', id, epoch: EPOCH });
+const remove = (ids) => ({ kind: 'remove', ids, epoch: EPOCH, seq: 0 });
+const root = (id) => ({ kind: 'protected-root', id, epoch: EPOCH, seq: 0 });
 
 function queue(extra = {}) {
   const foreground: Array<() => void> = [];
@@ -102,27 +102,27 @@ describe('createDeferredCacheWrites', () => {
   });
 });
 
-describe('supersede: a queued write never lands over a newer one', () => {
+describe('issue: a queued write never lands over a newer one', () => {
   test('a restore (a newer upsert of the id) trims a queued removal of it; other ids stay', () => {
     const { deferred } = queue();
     deferred.defer(remove(['restored', 'still-gone']));
-    deferred.supersede(sync([entry('restored')]));
+    deferred.issue(sync([entry('restored')]));
     expect(deferred.queued.map((w) => w.ids)).toEqual([['still-gone']]);
-    deferred.supersede(sync([entry('still-gone')]));
+    deferred.issue(sync([entry('still-gone')]));
     expect(deferred.size).toBe(0); // emptied, dropped
   });
 
   test('a newer removal trims a queued upsert of the id', () => {
     const { deferred } = queue();
     deferred.defer(sync([entry('a'), entry('b')]));
-    deferred.supersede(remove(['a']));
+    deferred.issue(remove(['a']));
     expect(deferred.queued[0].entries.map((e) => e.id)).toEqual(['b']);
   });
 
   test('a newer COMPLETE listing of a parent replaces that parent in a queued multi-parent prune; the other parents stay', () => {
     const { deferred } = queue();
     deferred.defer(prune([entry('a1', 'A'), entry('b1', 'B')], ['A', 'B', 'C']));
-    deferred.supersede(prune([entry('a1', 'A'), entry('a2', 'A')], ['A']));
+    deferred.issue(prune([entry('a1', 'A'), entry('a2', 'A')], ['A']));
     const queued = deferred.queued[0];
     expect(queued.entries.map((e) => e.id)).toEqual(['b1']);
     expect(queued.pruneParents).toEqual(['B', 'C']);
@@ -132,32 +132,48 @@ describe('supersede: a queued write never lands over a newer one', () => {
   test('a queued prune of the ROOT is trimmed by a newer root listing (null parent)', () => {
     const { deferred } = queue();
     deferred.defer(prune([entry('r1', null)], [null]));
-    deferred.supersede(prune([], [null]));
+    deferred.issue(prune([], [null]));
     expect(deferred.size).toBe(0);
   });
 
   test('a queued prune that loses its last pruned parent but keeps entries stays a prune of the parents those entries are in', () => {
     const { deferred } = queue();
     deferred.defer(prune([entry('b1', 'B'), entry('a1', 'A')], ['A']));
-    deferred.supersede(prune([entry('a9', 'A')], ['A']));
+    deferred.issue(prune([entry('a9', 'A')], ['A']));
     const queued = deferred.queued[0];
     expect(queued.entries.map((e) => e.id)).toEqual(['b1']);
     expect(queued.prune).toBe(true);
     expect(queued.pruneParents).toBeNull();
   });
 
-  test('a partial upsert (no prune) of an id trims queued writes of that id and no parent', () => {
+  test('a partial upsert of an id trims queued writes of that id; queued upserts of other ids stay', () => {
     const { deferred } = queue();
-    deferred.defer(prune([entry('a1', 'A'), entry('a2', 'A')], ['A']));
-    deferred.supersede(sync([entry('a1', 'A')]));
+    deferred.defer(sync([entry('a1', 'A'), entry('a2', 'A')]));
+    deferred.issue(sync([entry('a1', 'A')]));
     expect(deferred.queued[0].entries.map((e) => e.id)).toEqual(['a2']);
-    expect(deferred.queued[0].pruneParents).toEqual(['A']);
+  });
+
+  test('a newer write under a parent whose complete listing is queued: that parent leaves the queued listing (its replay would delete the fresh row)', () => {
+    const { deferred } = queue();
+    deferred.defer(prune([entry('a1', 'A'), entry('a2', 'A'), entry('b1', 'B')], ['A', 'B']));
+    // a rename/upload of x in A (a partial push, no prune) lands
+    deferred.issue(sync([entry('x', 'A')]));
+    const queued = deferred.queued[0];
+    expect(queued.entries.map((e) => e.id)).toEqual(['b1']);
+    expect(queued.pruneParents).toEqual(['B']);
+  });
+
+  test('a queued listing of the only parent a newer write touched is dropped whole', () => {
+    const { deferred } = queue();
+    deferred.defer(prune([entry('a1', 'A')], ['A']));
+    deferred.issue(sync([entry('x', 'A')]));
+    expect(deferred.size).toBe(0);
   });
 
   test('the protected root: only the newest id survives', () => {
     const { deferred } = queue();
     deferred.defer(root('old'));
-    deferred.supersede(root('new'));
+    deferred.issue(root('new'));
     expect(deferred.size).toBe(0);
     deferred.defer(root('new'));
     expect(deferred.queued.map((w) => w.id)).toEqual(['new']);
@@ -175,7 +191,7 @@ describe('supersede: a queued write never lands over a newer one', () => {
     });
     deferred.defer(sync([entry('old'), entry('keep')]));
     const replaying = deferred.replay();
-    deferred.supersede(sync([entry('old')]));
+    deferred.issue(sync([entry('old')]));
     proceed();
     await replaying;
     expect(seen).toEqual([['keep']]);
@@ -187,7 +203,7 @@ describe('supersede: a queued write never lands over a newer one', () => {
     const { deferred } = queue({ run: async () => { calls += 1; await new Promise<void>((r) => { proceed = r; }); return false; } });
     deferred.defer(remove(['x']));
     const replaying = deferred.replay();
-    deferred.supersede(sync([entry('x')]));
+    deferred.issue(sync([entry('x')]));
     expect(deferred.size).toBe(0);
     proceed();
     await replaying;
@@ -254,5 +270,124 @@ describe('backoff while the app is already foreground', () => {
     const { deferred } = queue({ isForeground: () => false, scheduleReplay: (_run, delay) => delays.push(delay) });
     deferred.defer(remove(['a']));
     expect(delays).toEqual([]);
+  });
+});
+
+describe('sequence: a write refused AFTER a newer one landed is not queued over it', () => {
+  test('A (a listing of P) is issued, B (a newer listing of P) is issued and lands, then A comes back not_now: A is not queued', () => {
+    const { deferred } = queue();
+    const a = prune([entry('old1', 'P'), entry('old2', 'P')], ['P']);
+    const b = prune([entry('new1', 'P')], ['P']);
+    deferred.issue(a);
+    deferred.issue(b);
+    expect(b.seq).toBeGreaterThan(a.seq);
+    deferred.landed(b);
+    deferred.defer(a); // refused late
+    expect(deferred.size).toBe(0);
+  });
+
+  test('only what the newer write covers is dropped from the late write', () => {
+    const { deferred } = queue();
+    const a = prune([entry('a1', 'A'), entry('b1', 'B')], ['A', 'B']);
+    const b = prune([entry('a9', 'A')], ['A']);
+    deferred.issue(a);
+    deferred.issue(b);
+    deferred.landed(b);
+    deferred.defer(a);
+    expect(deferred.queued[0].entries.map((e) => e.id)).toEqual(['b1']);
+    expect(deferred.queued[0].pruneParents).toEqual(['B']);
+  });
+
+  test('a trash refused late is not queued over a restore that landed', () => {
+    const { deferred } = queue();
+    const trash = remove(['x', 'y']);
+    const restore = sync([entry('x')]);
+    deferred.issue(trash);
+    deferred.issue(restore);
+    deferred.landed(restore);
+    deferred.defer(trash);
+    expect(deferred.queued[0].ids).toEqual(['y']);
+  });
+
+  test('an older protected-root id refused after a newer one landed is not queued', () => {
+    const { deferred } = queue();
+    const older = root('old');
+    const newer = root('new');
+    deferred.issue(older);
+    deferred.issue(newer);
+    deferred.landed(newer);
+    deferred.defer(older);
+    expect(deferred.size).toBe(0);
+  });
+
+  test('a write that landed AFTER the late one was issued is the only kind that trims it: an older landed write does not', () => {
+    const { deferred } = queue();
+    const earlier = sync([entry('x')]);
+    deferred.issue(earlier);
+    deferred.landed(earlier);
+    const later = remove(['x']);
+    deferred.issue(later); // issued after `earlier` landed
+    deferred.defer(later);
+    expect(deferred.queued[0].ids).toEqual(['x']);
+  });
+
+  test('a queued write that replays successfully counts as landed for later refusals', async () => {
+    const { deferred } = queue();
+    const queued = sync([entry('x')]);
+    deferred.issue(queued);
+    deferred.defer(queued);
+    const late = remove(['x']);
+    // `late` was issued BEFORE `queued`
+    late.seq = queued.seq - 1;
+    await deferred.replay(); // `queued` runs and lands
+    deferred.defer(late);
+    expect(deferred.size).toBe(0);
+  });
+});
+
+describe('undo: a newer write that FAILS puts the trimmed queue back', () => {
+  test('trimmed ids, trimmed parents and a dropped write all come back', () => {
+    const { deferred } = queue();
+    deferred.defer(remove(['a', 'b']));
+    deferred.defer(prune([entry('p1', 'P'), entry('q1', 'Q')], ['P', 'Q']));
+    deferred.defer(root('r'));
+    const before = JSON.parse(JSON.stringify(deferred.queued));
+    const undo = deferred.issue(prune([entry('p2', 'P'), entry('a', 'P')], ['P']));
+    deferred.issue(root('r2'));
+    expect(JSON.stringify(deferred.queued)).not.toBe(JSON.stringify(before));
+    undo();
+    // the root issue was a different call; undo of the first restores everything the first changed
+    const restored = deferred.queued.filter((w) => w.kind !== 'protected-root');
+    expect(restored.map((w) => (w.kind === 'remove' ? w.ids : w.entries.map((e) => e.id)))).toEqual([['a', 'b'], ['p1', 'q1']]);
+    expect(restored[1].pruneParents).toEqual(['P', 'Q']);
+  });
+
+  test('a write emptied and dropped by the newer one is reinserted at its place', () => {
+    const { deferred } = queue();
+    deferred.defer(remove(['a']));
+    deferred.defer(remove(['b']));
+    const undo = deferred.issue(sync([entry('a'), entry('b')]));
+    expect(deferred.size).toBe(0);
+    undo();
+    expect(deferred.queued.map((w) => w.ids)).toEqual([['a'], ['b']]);
+  });
+
+  test('after an account boundary the undo restores nothing', () => {
+    const { deferred } = queue();
+    deferred.defer(remove(['a']));
+    const undo = deferred.issue(sync([entry('a')]));
+    deferred.clear();
+    undo();
+    expect(deferred.size).toBe(0);
+  });
+
+  test('a queued write a replay already applied is not put back by the undo', async () => {
+    const { deferred, ran } = queue();
+    deferred.defer(remove(['a', 'b']));
+    const undo = deferred.issue(sync([entry('a')]));
+    await deferred.replay(); // runs remove(['b'])
+    undo();
+    expect(deferred.size).toBe(0);
+    expect(ran.length).toBe(1);
   });
 });
