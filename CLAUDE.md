@@ -73,7 +73,7 @@ Scene lifecycle is plugin-owned (`plugins/scene-lifecycle/withSceneLifecycle.js`
 
 ## Worktree `.env` — copy it by hand, or the app silently defaults to production (task 1394)
 
-`git worktree add` does not copy the gitignored `.env`. Before the first simulator run in any new worktree: `cp <primary-checkout>/.env .env` (`EXPO_PUBLIC_API_URL=http://localhost:3001`), then start/RESTART Metro (the URL is inlined at bundle time). Required evidence: the Metro boot line `[Beebeeb] API environment: Local (http://localhost:3001)` — a "wrong password"/"account not found" result against a documented localhost-only QA account is the tell it was missed, not credential drift. (details: H#task-1394)
+`git worktree add` does not copy the gitignored `.env`. Before the first simulator run in any new worktree: `cp <primary-checkout>/.env .env` (`EXPO_PUBLIC_API_URL=http://localhost:3001`), then start/RESTART Metro (the URL is inlined at bundle time). Check: the Metro boot line `[Beebeeb] API environment: Local (http://localhost:3001)` — a "wrong password"/"account not found" result against a documented localhost-only QA account is the tell it was missed, not credential drift. (details: H#task-1394)
 ## Local simulator QA — environment gotchas on this Mac
 
 - Node crash `MODULE_NOT_FOUND … restore-node-options.cjs` = cmux's temp `NODE_OPTIONS` shim got GC'd — recreate as a no-op: `echo 'module.exports={};' > "$(printf '%s' "$NODE_OPTIONS" | sed -E 's/.*--require=([^ ]*restore-node-options\.cjs).*/\1/')"`, or prefix node CLIs with `env -u NODE_OPTIONS`.
@@ -85,7 +85,7 @@ Scene lifecycle is plugin-owned (`plugins/scene-lifecycle/withSceneLifecycle.js`
 - `clearState: true` does NOT sign out (master key persists in keychain) — sign out in-app.
 - Local QA account: `qa0688content@beebeeb.io` / `BeebeebQA0688content!` (OPAQUE, seeded; `.claude/skills/beebeeb-test-accounts.md`). (details: H#qa-env-gotchas)
 
-## Simulators — one lane per sim (tasks 1353/1426/1409)
+## Simulators (tasks 1353/1426/1409)
 
 | Sim | UDID | iOS | Device |
 |---|---|---|---|
@@ -94,8 +94,8 @@ Scene lifecycle is plugin-owned (`plugins/scene-lifecycle/withSceneLifecycle.js`
 | `bb-shots` | `B272D461-0765-4890-B08C-C894925919EA` | 26.5 | iPhone 17 Pro Max |
 | `bb-ios27` | `6A2C9171-813B-443E-A19D-B7869D5D0A20` | 27.0 | iPhone 17 Pro |
 
-- **Never share one sim across two lanes; claim one per lane for the session.** Sims have vanished wholesale before — confirm first: `xcrun simctl list devices | grep bb-`. **Always pass `--udid` naming the sim your lane owns.**
-- After ANY native-dependency change, rebuild the dev client once and re-run the copy procedure below against every QA sim before its next lane (a copied container keeps the native modules linked at copy time). (details: H#task-1409)
+- **Never share one sim across two runs: two runs on one simulator collide.** Sims have vanished wholesale before — confirm first: `xcrun simctl list devices | grep bb-`. **Always pass `--udid` naming the sim you are using.**
+- After ANY native-dependency change, rebuild the dev client once and re-run the copy procedure below against every QA sim before its next run (a copied container keeps the native modules linked at copy time). (details: H#task-1409)
 - Dev-client copy procedure (no rebuild):
 ```sh
 xcrun simctl create bb-qa-N "iPhone 17 Pro" com.apple.CoreSimulator.SimRuntime.iOS-26-5
@@ -111,7 +111,7 @@ xcrun simctl launch <new-udid> io.beebeeb.app
 
 ## Maestro (task 1350)
 
-- **One `maestro test` at a time, machine-wide** — the XCUITest driver/CPU is the shared resource, not the simulator; the lead grants it. `xcrun simctl io` screenshots may overlap freely.
+- **One `maestro test` at a time, machine-wide** — the XCUITest driver/CPU is the shared resource, not the simulator. `xcrun simctl io` screenshots may overlap freely.
 - An idle-but-attached driver on ANY sim poisons new driver bootstraps on ALL of them (one host-level `testmanagerd`): after every run `pgrep -f 'xcodebuild test-without-building'` and kill only your own orphan by PID (verify its `-destination id=`) — **never `pkill -f xcodebuild`**.
 - A tap reports COMPLETED and the screen does not change → it is the DRIVER, not the app (a clean PRE-tap screenshot is the proof). Retry mitigations in `search-test.yaml`/`file-preview-test.yaml`; remove once `maestro --version` is past 2.5.1 (full analysis: `docs/maestro-driver-fault-1360.md`). (details: H#task-1360)
 - `tapOn: "Dismiss menu"` on a `BBActionSheet` scrim can navigate into the wrong screen — a point tap at `50%,15%` dismisses reliably. The row "…" overflow is a NATIVE menu Maestro cannot tap in the recorded driver sessions (this is not a blanket UIMenu limitation: `fab-add` → "New folder" is tappable; release recipe `e2e/maestro/1381-native-fab-folder.yaml`) — row swipe RIGHT, or for folders `tapOn: id: "file-row-actions-<id>"` then `sheet-action-<action>`. `UIDocumentPickerViewController` exposes only "Cancel"/keyboard to XCUITest — documents cannot be seeded by automation (`simctl addmedia` rejects non-media).
@@ -119,13 +119,13 @@ xcrun simctl launch <new-udid> io.beebeeb.app
 
 ## QA account & fixtures (task 1356)
 
-`qa0688content@beebeeb.io` holds load-bearing fixtures — never touch/duplicate/delete them: `qa-red/blue/green.png`; `medium-photo.jpeg` (2 MB perf tier); `big-photo.jpeg`; `clip-1080p.mp4` (search fixture); `clip-1080p (3).mp4` (40 MB tier — separate on purpose); `qa-1301-video.mp4` (213 MB); `qa-hevc.mp4`; `qa-video.mp4`; the empty folder `Quarterly Financial Reports And Tax Documents 2026 Archive` (truncation fixture — never rename). Lanes: prefix throwaway uploads with your task id; delete your own at lane end (`bb rm` is reversible); never repurpose a fixture; flag decrypt failures not already documented by tasks 1349/1351. (details: H#task-1356)
+`qa0688content@beebeeb.io` holds load-bearing fixtures — never touch/duplicate/delete them: `qa-red/blue/green.png`; `medium-photo.jpeg` (2 MB perf tier); `big-photo.jpeg`; `clip-1080p.mp4` (search fixture); `clip-1080p (3).mp4` (40 MB tier — separate on purpose); `qa-1301-video.mp4` (213 MB); `qa-hevc.mp4`; `qa-video.mp4`; the empty folder `Quarterly Financial Reports And Tax Documents 2026 Archive` (truncation fixture — never rename). Prefix throwaway uploads with your task id; delete your own when done (`bb rm` is reversible); never repurpose a fixture; flag decrypt failures not already documented by tasks 1349/1351. (details: H#task-1356)
 
 ## Native signup & onboarding (task 1746)
 
 The app creates accounts natively, driven by `GET /api/v1/onboarding` (spec `docs/specs/2026-10-04-backend-driven-onboarding.md` §5): the server declares steps/numbers/permission, nothing hard-coded. Flow: Welcome → Login/Signup → SignupFlow (email, code, terms, password, phrase, create) → unlock(freshMasterKey), refreshAuth → AccountStateProvider → blocking `AccountOnboardingOverlay` (verify_email, accept_terms, update_required). Pure logic in `src/lib/onboarding/` (tested without mocks); crypto stays in core (`OnboardingBridge.swift` → `beebeeb_core::onboarding`, task 1744; JS holds integer handles; master key never leaves Rust). Contract copy `src/contracts/onboarding/` is byte-identical to `repos/server/contracts/onboarding/`, guarded by `scripts/check-onboarding-contract.sh` (re-vendor with `cp -R` after server changes). **No purchase UI, by construction** (App Store 3.1.3, task 1400; guarded by `no-purchase-ui.test.ts`/`account-summary.test.ts`). Anti-enumeration: the code screen's copy is identical for every address — never add a sentence saying whether an address is new. Recovery phrase screen: `usePreventScreenCapture`, `selectable={false}`, words dropped on leave; Simulator framebuffer capture NOT blocked (device-only). Debug fixture: `beebeeb://dev/onboarding-fixture?name=…` (`off` clears). Native rebuild after any `beebeeb_uniffi.swift`/`BeebeebCore.xcframework` change: `scripts/swift-ci/build-ios-simulator.sh` (unsigned sim build cannot use the Keychain in the Simulator; QA install build: `CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO`; restore `Podfile.lock`/`project.pbxproj` before committing). Two emailed codes needed today (signup + `verify_email`) — a server finding. Metro quirk: a file created after Metro started can report "Unable to resolve module" — restart Metro. (details: H#task-1746)
 
-Local run (a lane's OWN API, never the shared :3001):
+Local run (your OWN API, never the shared :3001):
 ```sh
 # server worktree .env (debug build): its own DB and port
 BB_PORT=3146  DATABASE_URL=<the dev Postgres URL, pointing at your own database name>
@@ -149,6 +149,7 @@ Canon (Guus, 2026-10-19, `docs/canon/data-residency.md`): the app names countrie
 ```sh
 bun run test        # correct: per-file process isolation (155 pass / 0 fail)
 bun test            # WRONG: leaky shared registry, reports ~10 phantom failures
+bunx tsc --noEmit; echo exit=$?   # typecheck
 ```
 
 ### Native crypto KAT — `scripts/kat-ios.sh` (task 1382) — LOCAL GATE, NOT CI
@@ -172,6 +173,7 @@ Backend at `http://localhost:3001` — same endpoints as web; see `repos/server/
 
 - `../../design/hifi/hifi-ios-app.jsx` (Home, Photos, Preview, Share, Settings, Biometric, Camera backup) · `hifi-android-app.jsx` · `hifi-mobile-extra.jsx` (offline, upgrade, share extension, push) · `hifi-mobile-sync.jsx`.
 - Tabs: Files, Shared, Photos, Settings; plus file preview, share sheet, biometric lock. Same design tokens as web, converted to RGB (OKLCH unsupported in RN) — `src/theme.ts`.
+- iOS 26 canvas: `../../design/ios26-canvas/`; deviations from it are listed in `DEVIATIONS.md`.
 
 ## Thumbnails
 
@@ -224,16 +226,4 @@ Every partial-height sheet renders through `src/components/sheet/BottomSheet.tsx
 
 ## iOS app compile gate — `ios-build` CI job (task 1669)
 
-`.github/workflows/ci.yml` job `ios-build` (macos-latest, free) runs `scripts/swift-ci/build-ios-simulator.sh` (`bun install`, `pod install`, unsigned `xcodebuild` of the `Beebeeb` scheme) — the only thing that compiles `modules/beebeeb-crypto/ios/*.swift` before a TestFlight build; asserts `BUILD SUCCEEDED` ×1, 0 `: error:` lines, and that `NativeBackupEngine.swift`/`BeebeebAppDelegate.swift` were actually compiled. Guards: `src/lib/app-delegate-launch-guard.test.ts`, `src/lib/native-backup-engine-db-queue.test.ts`. Unit suite = job `unit-tests` (`scripts/ci/unit-suite.sh`, requires the truth line `isolated: N pass, 0 fail across F files`; `--self-test` proves the gate goes red).
-
-## How we work (evidence, design, done, parallel agents)
-
-Full rules: workspace `CLAUDE.md` → "How we work" (also in workspace `AGENTS.md`). Repo-specific: truth line `bun run test 2>&1 | tee /tmp/bb-mobile-test.log` must end `isolated: N pass, 0 fail across F files` — assert N (2026-09-12: 272 across 35), not the word "ok"; `bunx tsc --noEmit; echo exit=$?` — assert the exit code, not silence. Maestro evidence = the per-flow lines of `run-all.yaml`, pasted into the task file; COMPLETED against an unchanged screenshot is the driver fault, not a pass. Simulators by UDID, always. Design before code: `design/ios26-canvas/` + `DEVIATIONS.md`; a ruling from Guus supersedes the canvas (precedent 1357); the DEVIATIONS.md line rides the same commit as the code. Done means the declared rung ran — `tsc` + `bun run test` never close a simulator, Maestro, or device rung; a Linux session parks the task in `in-review/` naming the open rungs.
-
-## Graphify
-
-Knowledge graph at `graphify-out/`: read `GRAPH_REPORT.md` before exploring code; run `graphify update .` after modifying code and commit `graphify-out/`; `graphify query "<question>"`; `graphify path "<A>" "<B>"`.
-
-## Keep shared docs in sync
-
-When you add/change/remove endpoints, types, build commands, or dependencies: update the matching skill file in the beebeeb workspace's `.claude/skills/` directory (beebeeb-api.md, beebeeb-designs.md, beebeeb-stack.md, beebeeb-dev.md). Other agents depend on these being accurate.
+`.github/workflows/ci.yml` job `ios-build` (macos-latest, free) runs `scripts/swift-ci/build-ios-simulator.sh` (`bun install`, `pod install`, unsigned `xcodebuild` of the `Beebeeb` scheme) — the only thing that compiles `modules/beebeeb-crypto/ios/*.swift` before a TestFlight build; asserts `BUILD SUCCEEDED` ×1, 0 `: error:` lines, and that `NativeBackupEngine.swift`/`BeebeebAppDelegate.swift` were actually compiled. Guards: `src/lib/app-delegate-launch-guard.test.ts`, `src/lib/native-backup-engine-db-queue.test.ts`. Unit suite = job `unit-tests` (`scripts/ci/unit-suite.sh`, requires the output line `isolated: N pass, 0 fail across F files`; `--self-test` proves the gate goes red).
