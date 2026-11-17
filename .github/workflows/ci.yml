@@ -6,10 +6,12 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
 
 jobs:
   typecheck:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,6 +26,7 @@ jobs:
   # `isolated: N pass, 0 fail across F files` with N > 0 and exit 0. A green with no count, N = 0 or
   # any failing file is a RED (scripts/ci/unit-suite.sh; its --self-test proves each of those goes red).
   unit-tests:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Unit tests (isolated suite)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -41,6 +44,7 @@ jobs:
         run: bash scripts/ci/unit-suite.sh
 
   claims-guard:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Claims guard
     runs-on: ubuntu-latest
     # Phased rollout (plan 2026-09-06-premortem-05-claims-regression-ci-guard,
@@ -62,6 +66,7 @@ jobs:
   # targets/share-extension/ source of truth, checks the two stay
   # byte-identical, then compiles and runs every scripts/swift-tests driver.
   swift-gate:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Swift compile gate
     runs-on: macos-latest
     permissions:
@@ -89,6 +94,7 @@ jobs:
   # simulator build of the Beebeeb scheme, which compiles modules/beebeeb-crypto/ios/*.swift
   # (NativeBackupEngine, BeebeebAppDelegate, ...). See scripts/swift-ci/build-ios-simulator.sh.
   ios-build:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: iOS app build (simulator, unsigned)
     runs-on: macos-latest
     timeout-minutes: 75
