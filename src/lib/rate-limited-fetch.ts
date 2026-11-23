@@ -83,7 +83,12 @@ async function read429Body(response: Response): Promise<{ retryAfterMs: number |
 interface BucketState {
   chain: Promise<void>;
   nextAt: number;
+  /** End of the last 429 pause (not the pacing backlog in `nextAt`). */
+  pausedUntil: number;
 }
+
+/** A request that would wait longer than this in a 429 pause is answered locally with a 429 instead. */
+export const LOCAL_429_THRESHOLD_MS = 3000;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -145,7 +150,7 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
   function stateFor(bucket: RateLimitBucket): BucketState {
     let state = states.get(bucket);
     if (!state) {
-      state = { chain: Promise.resolve(), nextAt: 0 };
+      state = { chain: Promise.resolve(), nextAt: 0, pausedUntil: 0 };
       states.set(bucket, state);
     }
     return state;
@@ -159,6 +164,22 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
     const cappedMs = Math.min(pauseMs, MAX_PACING_PAUSE_MS);
     const state = stateFor(bucket);
     state.nextAt = Math.max(state.nextAt, now() + cappedMs);
+    state.pausedUntil = Math.max(state.pausedUntil, now() + cappedMs);
+  }
+
+  /**
+   * A long 429 pause is not slept through: the request would sit there until
+   * its own deadline and surface as "could not reach the server". Answer it
+   * with the 429 the server gave, Retry-After being the rest of the pause.
+   */
+  function localPauseResponse(bucket: RateLimitBucket): Response | null {
+    const restMs = stateFor(bucket).pausedUntil - now();
+    if (restMs <= LOCAL_429_THRESHOLD_MS) return null;
+    const retryAfter = Math.ceil(restMs / 1000);
+    return new Response(
+      JSON.stringify({ error: 'rate_limited', message: 'Too many requests. Try again in ' + retryAfter + ' seconds.', retry_after: retryAfter }),
+      { status: 429, headers: { 'content-type': 'application/json', 'Retry-After': String(retryAfter) } },
+    );
   }
 
   async function applyResponsePacing(bucket: RateLimitBucket, response: Response): Promise<void> {
@@ -201,6 +222,8 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
       // round 1 (A1) introduced that pause for `thumbnails` only; `billing`
       // and `external` behave exactly as on main (no pause gate).
       if (bucket === 'thumbnails') {
+        const local = localPauseResponse(bucket);
+        if (local) return local;
         const state = stateFor(bucket);
         const waitMs = Math.max(0, state.nextAt - now());
         if (waitMs > 0) await sleep(waitMs);
@@ -210,6 +233,8 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
       return response;
     }
 
+    const local = localPauseResponse(bucket);
+    if (local) return local;
     const state = stateFor(bucket);
     // The chain owns launch slots only. A slow response must not hold every
     // later file/list/upload request behind it; the server-facing cadence is

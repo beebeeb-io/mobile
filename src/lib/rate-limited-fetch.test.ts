@@ -144,6 +144,7 @@ describe('rate-limited fetch', () => {
     });
 
     await fetcher('https://api.beebeeb.io/api/v1/files/a');
+    now += MAX_PACING_PAUSE_MS - 2_000; // a longer wait is answered locally (08f)
     await fetcher('https://api.beebeeb.io/api/v1/files/b');
 
     // Paced for exactly the cap: not 0 (dropped), not 3_600_000 (the lockout).
@@ -167,6 +168,7 @@ describe('rate-limited fetch', () => {
         bucketSpacingMs: { files: 0, general: 80 },
       });
       await fetcher('https://api.beebeeb.io/api/v1/prefs');
+      now += expected - 2_000; // a longer rest would be answered locally (08f)
       await fetcher('https://api.beebeeb.io/api/v1/prefs');
       expect(calls[1] - calls[0]).toBe(expected);
     }
@@ -189,6 +191,7 @@ describe('rate-limited fetch', () => {
       bucketSpacingMs: { general: 80 },
     });
     await fetcher('https://api.beebeeb.io/api/v1/prefs');
+    now += 18_000;
     await fetcher('https://api.beebeeb.io/api/v1/prefs');
     expect(calls[1] - calls[0]).toBe(20_000);
   });
@@ -212,6 +215,7 @@ describe('rate-limited fetch', () => {
     });
     first = await fetcher('https://api.beebeeb.io/api/v1/prefs');
     expect((await first.json()).error).toBe('banned');
+    now += 28_000;
     await fetcher('https://api.beebeeb.io/api/v1/prefs');
     expect(calls[1] - calls[0]).toBe(30_000);
   });

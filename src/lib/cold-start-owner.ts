@@ -45,23 +45,44 @@ export async function getMeNamingKeyOwner<T>(deps: {
   }
 }
 
+/** A 429 `ApiError`, matched structurally so this module stays native-free. */
+function as429(err: unknown): { retryAfterSeconds?: number } | null {
+  if (err instanceof Error && err.name === 'ApiError' && (err as { status?: unknown }).status === 429) {
+    const secs = (err as { retryAfterSeconds?: unknown }).retryAfterSeconds;
+    return { retryAfterSeconds: typeof secs === 'number' && Number.isFinite(secs) && secs >= 0 ? secs : undefined };
+  }
+  return null;
+}
+
+/** Longest Retry-After the cold launch waits out; above it the 429 is thrown to the caller. */
+export const STARTUP_MAX_RETRY_AFTER_SECONDS = 60;
+/** Retries after a 429 (the first attempt is not counted). */
+export const STARTUP_MAX_429_RETRIES = 4;
+const STARTUP_JITTER_MAX_FRACTION = 0.25;
+
 /**
- * The cold launch's profile fetch (moved from App.tsx's `retryGetMe` in
- * round 15; the one change is that the timeout timer is cleared once the
- * race settles). Retries transient failures; a 401 is definitive
- * (the API client clears the invalid token) and is rethrown. Returns null
- * when every attempt failed transiently. `getMe` is the caller's
- * owner-naming call (`getMeNamingKeyOwner`).
+ * The cold launch's profile fetch (moved from App.tsx's `retryGetMe`).
+ * Retries transient failures; a 401 is definitive (the API client clears the
+ * invalid token) and is rethrown. Returns null only when every attempt failed
+ * for network/timeout reasons. A 429 is remembered across later timeouts: it
+ * waits its Retry-After (+0-25 % jitter, at most ${STARTUP_MAX_429_RETRIES} retries) and, when the
+ * Retry-After is above 60 s or the attempts run out, the 429 `ApiError` is
+ * thrown, so the caller can tell "rate limited" from "offline".
+ * `getMe` is the caller's owner-naming call (`getMeNamingKeyOwner`).
  */
 export async function retryStartupGetMe<T>(
   getMe: () => Promise<T>,
   isUnauthorized: (err: unknown) => boolean,
-  options: { delaysMs?: number[]; timeoutMs?: number } = {},
+  options: { delaysMs?: number[]; timeoutMs?: number; random?: () => number; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<T | null> {
   const delays = options.delaysMs ?? [1000, 3000, 5000];
   const timeoutMs = options.timeoutMs ?? 10_000;
-  for (const delay of delays) {
+  const random = options.random ?? Math.random;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let last429: unknown = null;
+  for (let attempt = 0; ; attempt++) {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let waitMs: number;
     try {
       return await Promise.race([
         getMe(),
@@ -73,10 +94,22 @@ export async function retryStartupGetMe<T>(
       if (isUnauthorized(err)) {
         throw err;
       }
-      await new Promise((r) => setTimeout(r, delay));
+      const limited = as429(err);
+      if (limited) last429 = err;
+      if (limited && limited.retryAfterSeconds !== undefined) {
+        if (limited.retryAfterSeconds > STARTUP_MAX_RETRY_AFTER_SECONDS) throw err;
+        waitMs = limited.retryAfterSeconds * 1000 * (1 + random() * STARTUP_JITTER_MAX_FRACTION);
+      } else {
+        waitMs = delays[Math.min(attempt, delays.length - 1)] ?? 0;
+      }
+      const retriesLeft = last429 ? attempt < STARTUP_MAX_429_RETRIES : attempt < delays.length - 1;
+      if (!retriesLeft) {
+        if (last429) throw last429;
+        return null; // all retries failed with network/timeout failures
+      }
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+    await sleep(waitMs);
   }
-  return null; // all retries failed with transient failures
 }

@@ -5,7 +5,8 @@ export type StartupAuthState =
   | 'token-read-timeout'
   | 'secure-storage-unavailable'
   | 'restored'
-  | 'invalid-token';
+  | 'invalid-token'
+  | 'rate-limited';
 
 export type StartupAuthUiDecision =
   | 'keep-restoring'
@@ -25,6 +26,7 @@ export function decideStartupAuthUi(state: StartupAuthState): StartupAuthUiDecis
     case 'unknown':
     case 'token-present':
     case 'token-read-timeout':
+    case 'rate-limited':
       return 'keep-restoring';
   }
 }
@@ -91,6 +93,7 @@ export function classifyStartupError(err: unknown): string {
 export function startupAuthStateForError(err: unknown, current: StartupAuthState): StartupAuthState {
   if (isSecureStoreException(err)) return 'secure-storage-unavailable';
   if (err instanceof StartupTokenReadRecoveryError) return 'token-read-timeout';
+  if (apiErrorStatus(err) === 429) return 'rate-limited';
   return current;
 }
 
