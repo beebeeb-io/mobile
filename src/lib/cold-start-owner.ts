@@ -55,9 +55,9 @@ function as429(err: unknown): { retryAfterSeconds?: number } | null {
 }
 
 /** Longest Retry-After the cold launch waits out; above it the 429 is thrown to the caller. */
-export const STARTUP_MAX_RETRY_AFTER_SECONDS = 60;
+export const STARTUP_MAX_RETRY_AFTER_SECONDS = 10;
 /** Retries after a 429 (the first attempt is not counted). */
-export const STARTUP_MAX_429_RETRIES = 4;
+export const STARTUP_MAX_429_RETRIES = 1;
 const STARTUP_JITTER_MAX_FRACTION = 0.25;
 
 /**
@@ -98,7 +98,7 @@ export async function retryStartupGetMe<T>(
       if (limited) last429 = err;
       if (limited && limited.retryAfterSeconds !== undefined) {
         if (limited.retryAfterSeconds > STARTUP_MAX_RETRY_AFTER_SECONDS) throw err;
-        waitMs = limited.retryAfterSeconds * 1000 * (1 + random() * STARTUP_JITTER_MAX_FRACTION);
+        waitMs = Math.max(1, limited.retryAfterSeconds) * 1000 * (1 + random() * STARTUP_JITTER_MAX_FRACTION);
       } else {
         waitMs = delays[Math.min(attempt, delays.length - 1)] ?? 0;
       }

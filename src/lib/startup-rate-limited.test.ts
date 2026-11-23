@@ -30,14 +30,14 @@ describe('retryStartupGetMe with 429', () => {
     expect(err.status).toBe(429);
     expect(n).toBe(1);
   });
-  test('429 remembered across later timeouts; thrown when attempts run out (4 retries)', async () => {
+  test('429 remembered across later timeouts; thrown when attempts run out (1 retry)', async () => {
     let n = 0;
     const err = await retryStartupGetMe(async () => {
       if (n++ === 0) throw new ApiError(429, 'x', undefined, 1);
       return new Promise(() => {});
     }, is401, { ...fast, sleep: async () => {} }).catch((e) => e);
     expect(err.status).toBe(429);
-    expect(n).toBe(5);
+    expect(n).toBe(2);
   });
   test('network only still returns null; 401 still throws', async () => {
     expect(await retryStartupGetMe(async () => { throw new ApiError(0, 'net'); }, is401, { ...fast, sleep: async () => {} })).toBeNull();

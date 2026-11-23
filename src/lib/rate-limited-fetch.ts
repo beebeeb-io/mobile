@@ -85,6 +85,10 @@ interface BucketState {
   nextAt: number;
   /** End of the last 429 pause (not the pacing backlog in `nextAt`). */
   pausedUntil: number;
+  /** The server's real deadline (uncapped); replayed in the local 429. */
+  realUntil: number;
+  /** The last long pause was a ban (body `error: 'banned'`). */
+  banned: boolean;
 }
 
 /** A request that would wait longer than this in a 429 pause is answered locally with a 429 instead. */
@@ -150,13 +154,13 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
   function stateFor(bucket: RateLimitBucket): BucketState {
     let state = states.get(bucket);
     if (!state) {
-      state = { chain: Promise.resolve(), nextAt: 0, pausedUntil: 0 };
+      state = { chain: Promise.resolve(), nextAt: 0, pausedUntil: 0, realUntil: 0, banned: false };
       states.set(bucket, state);
     }
     return state;
   }
 
-  function pauseBucket(bucket: RateLimitBucket, pauseMs: number): void {
+  function pauseBucket(bucket: RateLimitBucket, pauseMs: number, banned = false): void {
     if (pauseMs <= 0) return;
     // A pause longer than the cap is a policy lockout, not pacing — pause the
     // bucket for the cap only, never silently for the whole lockout (see
@@ -165,6 +169,10 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
     const state = stateFor(bucket);
     state.nextAt = Math.max(state.nextAt, now() + cappedMs);
     state.pausedUntil = Math.max(state.pausedUntil, now() + cappedMs);
+    if (now() + pauseMs >= state.realUntil) {
+      state.realUntil = now() + pauseMs;
+      state.banned = banned;
+    }
   }
 
   /**
@@ -176,11 +184,17 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
     // The files bucket carries uploads, which rely on being paced through the
     // full pause (server-busy-retry r2-3): it keeps sleeping.
     if (bucket === 'files') return null;
-    const restMs = stateFor(bucket).pausedUntil - now();
-    if (restMs <= LOCAL_429_THRESHOLD_MS) return null;
-    const retryAfter = Math.ceil(restMs / 1000);
+    const state = stateFor(bucket);
+    // Only the capped pause is slept; the answer replays the server's real
+    // deadline and ban flag so the second tap still says "blocked for an hour".
+    if (state.pausedUntil - now() <= LOCAL_429_THRESHOLD_MS) return null;
+    const retryAfter = Math.ceil(Math.max(0, state.realUntil - now()) / 1000);
     return new Response(
-      JSON.stringify({ error: 'rate_limited', message: 'Too many requests. Try again in ' + retryAfter + ' seconds.', retry_after: retryAfter }),
+      JSON.stringify({
+        error: state.banned ? 'banned' : 'rate_limited',
+        message: 'Too many requests. Try again in ' + retryAfter + ' seconds.',
+        retry_after: retryAfter,
+      }),
       { status: 429, headers: { 'content-type': 'application/json', 'Retry-After': String(retryAfter) } },
     );
   }
@@ -195,7 +209,7 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
       // A ban or a wait above the cap is a policy lockout, not pacing: keep
       // today's path (capped pause, no jitter, the caller refuses per request).
       if (body.banned || retryAfterMs > MAX_PACING_PAUSE_MS) {
-        pauseBucket(bucket, headerMs ?? retryAfterMs);
+        pauseBucket(bucket, Math.max(headerMs ?? 0, retryAfterMs), body.banned);
         return;
       }
       const jitter = (ms: number) => ms * (1 + random() * RETRY_JITTER_MAX_FRACTION);
