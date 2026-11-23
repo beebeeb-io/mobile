@@ -20,6 +20,7 @@ function harness() {
   const starts: Array<{ url: string; at: number }> = [];
   let rateLimitedOnce = true;
   const fetcher = createRateLimitedFetch({
+    random: () => 0,
     now: () => now,
     sleep: async (ms) => { sleeps.push(ms); now += ms; },
     fetchImpl: async (input: any) => {

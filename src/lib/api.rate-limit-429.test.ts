@@ -92,16 +92,17 @@ describe('auth request after a long 429 lockout (Retry-After: 3600)', () => {
     expect(first).toBeInstanceOf(api.ApiError);
     expect(first.status).toBe(429);
     expect(first.retryAfterSeconds).toBe(3600);
-    expect(api.friendlyError(first)).toBe('Too many attempts. Try again in about 1 hour.');
+    expect(api.friendlyError(first)).toBe('Access is temporarily blocked. Try again in about 1 hour.');
 
-    // The user retries after the message: the request must go out without
-    // being held back for the lockout (it used to sleep 3_600_000 ms).
+    // The user retries after the message: the client answers locally with the
+    // 429 and the rest of the pause (08f) instead of sleeping through it.
     const second = await api.login('a@beebeeb.io', 'pw').catch((e) => e);
     expect(second).toBeInstanceOf(api.ApiError);
     expect(second.status).toBe(429);
-    expect(sent.length).toBe(2);
+    expect(sent.length).toBe(1);
+    expect(second.retryAfterSeconds).toBeGreaterThan(3000);
+    expect(api.friendlyError(second)).toMatch(/^Access is temporarily blocked\. Try again in about (1 hour|60 minutes)/);
     expect(Math.max(0, ...sleeps)).toBeLessThanOrEqual(real.MAX_PACING_PAUSE_MS);
-    expect(sent[1].at - sent[0].at).toBeLessThanOrEqual(real.MAX_PACING_PAUSE_MS);
   });
 
   test('the lockout does not stall unrelated requests in the same bucket', async () => {
@@ -114,14 +115,18 @@ describe('auth request after a long 429 lockout (Retry-After: 3600)', () => {
 });
 
 describe('short 429 pacing is still honoured', () => {
-  test('Retry-After: 30 pauses the bucket for 30 s before the next request', async () => {
+  test('Retry-After: 30 answers the next request locally with the rest of the 30 s', async () => {
+    now += 4_000_000; // earlier tests leave the shared auth bucket paused
     let calls = 0;
     respond = () => (++calls === 1 ? tooMany('30') : new Response('{"message":"ok"}', { status: 200 }));
     await api.login('c@beebeeb.io', 'pw').catch(() => {});
     // The 200 body carries no session token, so login() itself rejects; only
     // the send times matter here.
     await api.login('c@beebeeb.io', 'pw').catch(() => {});
-    expect(sent[1].at - sent[0].at).toBeGreaterThanOrEqual(30_000);
+    expect(sent.length).toBe(1);
+    const second = await api.login('c@beebeeb.io', 'pw').catch((e) => e);
+    expect(second.status).toBe(429);
+    expect(second.retryAfterSeconds).toBeGreaterThanOrEqual(29);
   });
 });
 

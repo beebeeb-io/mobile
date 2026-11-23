@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import {
   View,
   Text,
@@ -28,9 +28,25 @@ const STATUS_ICONS: Record<string, string> = {
 interface Props {
   onRetry: () => void
   onSignIn: () => void
+  /** Set when startup got a 429: busy copy with a countdown, no diagnostics, no Sign in. */
+  rateLimited?: { retryAfterSeconds?: number }
 }
 
-export function DiagnosticPanel({ onRetry, onSignIn }: Props) {
+/** Wait used when the 429 carried no Retry-After. */
+export const RATE_LIMITED_DEFAULT_WAIT_SECONDS = 30
+
+export const RATE_LIMITED_TITLE = 'Beebeeb is busy'
+
+export function rateLimitedBody(secondsLeft: number): string {
+  return `Too many requests from your network. Trying again in ${Math.max(0, Math.ceil(secondsLeft))} s.`
+}
+
+export function DiagnosticPanel({ onRetry, onSignIn, rateLimited }: Props) {
+  const isRateLimited = rateLimited !== undefined
+  const waitSeconds = rateLimited?.retryAfterSeconds ?? RATE_LIMITED_DEFAULT_WAIT_SECONDS
+  const [secondsLeft, setSecondsLeft] = useState(waitSeconds)
+  const onRetryRef = useRef(onRetry)
+  onRetryRef.current = onRetry
   const { colors: c } = useTheme()
   const { fontScale } = useWindowDimensions()
   const accessibilityLayout = fontScale >= 1.3
@@ -54,7 +70,26 @@ export function DiagnosticPanel({ onRetry, onSignIn }: Props) {
     }
   }, [checkVault])
 
+  // Rate-limited: count down to the server's Retry-After, then retry startup.
   useEffect(() => {
+    if (!isRateLimited) return
+    const deadline = Date.now() + waitSeconds * 1000
+    setSecondsLeft(waitSeconds)
+    const tick = setInterval(() => {
+      const left = Math.ceil((deadline - Date.now()) / 1000)
+      if (left <= 0) {
+        clearInterval(tick)
+        setSecondsLeft(0)
+        onRetryRef.current()
+      } else {
+        setSecondsLeft(left)
+      }
+    }, 1000)
+    return () => clearInterval(tick)
+  }, [isRateLimited, waitSeconds])
+
+  useEffect(() => {
+    if (isRateLimited) return
     void runChecks()
     SecureStore.getItemAsync(LAST_CONNECTED_KEY).then(setLastConnected).catch(() => null)
     // Auto-retry every 30s
@@ -65,7 +100,7 @@ export function DiagnosticPanel({ onRetry, onSignIn }: Props) {
       } catch { /* still down */ }
     }, 30_000)
     return () => clearInterval(interval)
-  }, [runChecks, onRetry])
+  }, [runChecks, onRetry, isRateLimited])
 
   return (
     <ScrollView
@@ -74,19 +109,19 @@ export function DiagnosticPanel({ onRetry, onSignIn }: Props) {
       showsVerticalScrollIndicator={accessibilityLayout}
     >
       <Text style={{ color: c.ink, fontSize: 16, fontWeight: '600', textAlign: 'center', marginBottom: 4 }}>
-        Couldn't reach our servers
+        {isRateLimited ? RATE_LIMITED_TITLE : "Couldn't reach our servers"}
       </Text>
       <Text style={{ color: c.ink3, fontSize: 13, textAlign: 'center', marginBottom: 20 }}>
-        Running diagnostics...
+        {isRateLimited ? rateLimitedBody(secondsLeft) : 'Running diagnostics...'}
       </Text>
 
       <View style={{ width: '100%', maxWidth: 300 }}>
-        {result?.checks.map(check => (
+        {!isRateLimited && result?.checks.map(check => (
           <CheckRow key={check.id} check={check} accessibilityLayout={accessibilityLayout} fontScale={fontScale} />
         ))}
       </View>
 
-      {result?.summary && !result.summary.includes('Running') ? (
+      {!isRateLimited && result?.summary && !result.summary.includes('Running') ? (
         <Text style={{ color: c.ink2, fontSize: 13, textAlign: 'center', marginTop: 16, lineHeight: 18 }}>
           {result.summary}
         </Text>
@@ -105,12 +140,14 @@ export function DiagnosticPanel({ onRetry, onSignIn }: Props) {
         >
           <Text style={{ color: '#1a1a2e', fontSize: 14, fontWeight: '600' }}>Retry</Text>
         </TouchableOpacity>
+        {!isRateLimited ? (
         <TouchableOpacity
           onPress={onSignIn}
           style={{ paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: c.line, minHeight: accessibilityLayout ? 48 : undefined, alignItems: 'center', justifyContent: 'center' }}
         >
           <Text style={{ color: c.ink2, fontSize: 14 }}>Sign in</Text>
         </TouchableOpacity>
+        ) : null}
       </View>
 
       <TouchableOpacity

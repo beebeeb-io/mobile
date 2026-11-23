@@ -290,6 +290,14 @@ describe('1709: human messages still pass through unchanged', () => {
     expect(friendlyError(err)).toBe('Too many attempts. Try again in about 45 seconds.');
   });
 
+  test('429 banned or Retry-After above 60 s says temporary block', async () => {
+    const { friendlyError, ApiError } = await loadFreshApi();
+    expect(friendlyError(new ApiError(429, 'banned', undefined, 900))).toBe(
+      'Access is temporarily blocked. Try again in about 15 minutes.');
+    expect(friendlyError(new ApiError(429, 'rate_limited', undefined, 3600))).toContain('temporarily blocked');
+    expect(friendlyError(new ApiError(429, 'banned'))).toBe('Access is temporarily blocked. Try again later.');
+  });
+
   test('network failure (TypeError) keeps the connection line', async () => {
     const { friendlyError } = await loadFreshApi();
     expect(friendlyError(new TypeError('Network request failed'))).toBe(

@@ -121,6 +121,7 @@ describe('task 2233 A1 — thumbnail pacing lane', () => {
         return new Response('{}', { status: 200 });
       },
       now: () => now,
+      random: () => 0,
       sleep: async (ms) => { sleeps.push(ms); now += ms; },
     });
 

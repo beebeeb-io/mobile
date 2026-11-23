@@ -1285,6 +1285,7 @@ export default function App() {
   const [loadingStatus, setLoadingStatus] = useState('');
   const [loadingFailed, setLoadingFailed] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [startupRateLimited, setStartupRateLimited] = useState<{ retryAfterSeconds?: number } | null>(null);
   const [showSecureStorageError, setShowSecureStorageError] = useState(false);
 
   const [fontsLoaded] = Font.useFonts(optionalFontAssets);
@@ -1512,6 +1513,7 @@ export default function App() {
   // Full startup flow — extracted so the diagnostic panel's Retry can rerun it
   const runStartup = useCallback(async () => {
     setShowDiagnostics(false);
+    setStartupRateLimited(null);
     setShowSecureStorageError(false);
     setLoadingFailed(false);
     setLoadingStatus('Restoring session...');
@@ -1625,6 +1627,11 @@ export default function App() {
         // valid once the device is unlocked, so this is not a sign-out.
         setShowDiagnostics(false);
         setShowSecureStorageError(true);
+        setChecking(true);
+      } else if (startupAuthState === 'rate-limited') {
+        // A 429 on /auth/me: busy panel with a countdown, session kept.
+        setStartupRateLimited({ retryAfterSeconds: err instanceof ApiError ? err.retryAfterSeconds : undefined });
+        setShowDiagnostics(true);
         setChecking(true);
       } else if (shouldKeepStartupRestoring(startupAuthState)) {
         setShowDiagnostics(true);
@@ -1940,6 +1947,7 @@ export default function App() {
             <SecureStoragePanel onRetry={() => void runStartup()} />
           ) : showDiagnostics ? (
             <DiagnosticPanel
+              rateLimited={startupRateLimited ?? undefined}
               onRetry={() => void runStartup()}
               onSignIn={() => {
                 startupRunIdRef.current += 1;

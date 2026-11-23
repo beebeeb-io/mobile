@@ -59,12 +59,40 @@ interface RateLimitedFetchOptions {
   sleep?: SleepFn;
   now?: NowFn;
   bucketSpacingMs?: Partial<Record<RateLimitBucket, number>>;
+  /** Returns [0, 1); injectable so tests can pin the jitter. */
+  random?: () => number;
+}
+
+/** Jitter added to every Retry-After pause: 0-25 % on top, so clients do not retry in lockstep. */
+export const RETRY_JITTER_MAX_FRACTION = 0.25;
+
+/** The body's `retry_after` (seconds) and whether it is a ban, read from a clone so the caller's body stays unread. */
+async function read429Body(response: Response): Promise<{ retryAfterMs: number | null; banned: boolean }> {
+  try {
+    const body = await response.clone().json();
+    const secs = Number(body?.retry_after);
+    return {
+      retryAfterMs: Number.isFinite(secs) && secs >= 0 ? secs * 1000 : null,
+      banned: body?.error === 'banned',
+    };
+  } catch {
+    return { retryAfterMs: null, banned: false };
+  }
 }
 
 interface BucketState {
   chain: Promise<void>;
   nextAt: number;
+  /** End of the last 429 pause (not the pacing backlog in `nextAt`). */
+  pausedUntil: number;
+  /** The server's real deadline (uncapped); replayed in the local 429. */
+  realUntil: number;
+  /** The last long pause was a ban (body `error: 'banned'`). */
+  banned: boolean;
 }
+
+/** A request that would wait longer than this in a 429 pause is answered locally with a 429 instead. */
+export const LOCAL_429_THRESHOLD_MS = 3000;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -119,19 +147,20 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
   const fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
+  const random = options.random ?? Math.random;
   const spacing = { ...DEFAULT_BUCKET_SPACING_MS, ...options.bucketSpacingMs };
   const states = new Map<RateLimitBucket, BucketState>();
 
   function stateFor(bucket: RateLimitBucket): BucketState {
     let state = states.get(bucket);
     if (!state) {
-      state = { chain: Promise.resolve(), nextAt: 0 };
+      state = { chain: Promise.resolve(), nextAt: 0, pausedUntil: 0, realUntil: 0, banned: false };
       states.set(bucket, state);
     }
     return state;
   }
 
-  function pauseBucket(bucket: RateLimitBucket, pauseMs: number): void {
+  function pauseBucket(bucket: RateLimitBucket, pauseMs: number, banned = false): void {
     if (pauseMs <= 0) return;
     // A pause longer than the cap is a policy lockout, not pacing — pause the
     // bucket for the cap only, never silently for the whole lockout (see
@@ -139,11 +168,51 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
     const cappedMs = Math.min(pauseMs, MAX_PACING_PAUSE_MS);
     const state = stateFor(bucket);
     state.nextAt = Math.max(state.nextAt, now() + cappedMs);
+    state.pausedUntil = Math.max(state.pausedUntil, now() + cappedMs);
+    if (now() + pauseMs >= state.realUntil) {
+      state.realUntil = now() + pauseMs;
+      state.banned = banned;
+    }
+  }
+
+  /**
+   * A long 429 pause is not slept through: the request would sit there until
+   * its own deadline and surface as "could not reach the server". Answer it
+   * with the 429 the server gave, Retry-After being the rest of the pause.
+   */
+  function localPauseResponse(bucket: RateLimitBucket): Response | null {
+    // The files bucket carries uploads, which rely on being paced through the
+    // full pause (server-busy-retry r2-3): it keeps sleeping.
+    if (bucket === 'files') return null;
+    const state = stateFor(bucket);
+    // Only the capped pause is slept; the answer replays the server's real
+    // deadline and ban flag so the second tap still says "blocked for an hour".
+    if (state.pausedUntil - now() <= LOCAL_429_THRESHOLD_MS) return null;
+    const retryAfter = Math.ceil(Math.max(0, state.realUntil - now()) / 1000);
+    return new Response(
+      JSON.stringify({
+        error: state.banned ? 'banned' : 'rate_limited',
+        message: 'Too many requests. Try again in ' + retryAfter + ' seconds.',
+        retry_after: retryAfter,
+      }),
+      { status: 429, headers: { 'content-type': 'application/json', 'Retry-After': String(retryAfter) } },
+    );
   }
 
   async function applyResponsePacing(bucket: RateLimitBucket, response: Response): Promise<void> {
-    const retryAfterMs = parseRetryAfterMs(response.headers.get('Retry-After'), now());
-    if (response.status === 429 && retryAfterMs !== null) {
+    const headerMs = parseRetryAfterMs(response.headers.get('Retry-After'), now());
+    if (response.status === 429 && (headerMs !== null || response.headers.get('content-type')?.includes('json'))) {
+      const body = await read429Body(response);
+      // Honour the body's retry_after when it is larger than the header.
+      const retryAfterMs = Math.max(headerMs ?? 0, body.retryAfterMs ?? 0);
+      if (retryAfterMs <= 0 && !body.banned) return;
+      // A ban or a wait above the cap is a policy lockout, not pacing: keep
+      // today's path (capped pause, no jitter, the caller refuses per request).
+      if (body.banned || retryAfterMs > MAX_PACING_PAUSE_MS) {
+        pauseBucket(bucket, Math.max(headerMs ?? 0, retryAfterMs), body.banned);
+        return;
+      }
+      const jitter = (ms: number) => ms * (1 + random() * RETRY_JITTER_MAX_FRACTION);
       // Task 1870 r2 (Codex P2): a `429 server_busy` is retried by
       // `withServerBusyRetry` after at most SERVER_BUSY_MAX_WAIT_SECONDS. If
       // the bucket were paused for the server's full Retry-After (up to 60 s)
@@ -151,7 +220,7 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
       // on top of the first. So pause it for the same capped time. Any other
       // 429 (upload_rate_limited, the generic limiter) keeps the full pause.
       const busy = (await serverBusyWait(response)) !== null;
-      pauseBucket(bucket, busy ? Math.min(retryAfterMs, SERVER_BUSY_MAX_WAIT_SECONDS * 1000) : retryAfterMs);
+      pauseBucket(bucket, jitter(busy ? Math.min(retryAfterMs, SERVER_BUSY_MAX_WAIT_SECONDS * 1000) : retryAfterMs));
     } else {
       const remaining = Number(response.headers.get('X-RateLimit-Remaining'));
       if (Number.isFinite(remaining) && remaining <= 2) {
@@ -170,6 +239,8 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
       // round 1 (A1) introduced that pause for `thumbnails` only; `billing`
       // and `external` behave exactly as on main (no pause gate).
       if (bucket === 'thumbnails') {
+        const local = localPauseResponse(bucket);
+        if (local) return local;
         const state = stateFor(bucket);
         const waitMs = Math.max(0, state.nextAt - now());
         if (waitMs > 0) await sleep(waitMs);
@@ -179,6 +250,8 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
       return response;
     }
 
+    const local = localPauseResponse(bucket);
+    if (local) return local;
     const state = stateFor(bucket);
     // The chain owns launch slots only. A slow response must not hold every
     // later file/list/upload request behind it; the server-facing cadence is
