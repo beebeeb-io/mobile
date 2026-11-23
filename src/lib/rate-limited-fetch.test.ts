@@ -114,6 +114,7 @@ describe('rate-limited fetch', () => {
         return new Response('{}', { status: 200 });
       },
       now: () => now,
+      random: () => 0,
       sleep: async (ms) => { now += ms; },
       bucketSpacingMs: { files: 80, general: 0, auth: 0, shares: 0, external: 0 },
     });
@@ -147,6 +148,72 @@ describe('rate-limited fetch', () => {
 
     // Paced for exactly the cap: not 0 (dropped), not 3_600_000 (the lockout).
     expect(calls[1] - calls[0]).toBe(MAX_PACING_PAUSE_MS);
+  });
+
+  test('adds 0-25 % jitter to a Retry-After pause', async () => {
+    for (const [rnd, expected] of [[0, 10_000], [0.5, 11_250], [0.999, 12_497.5]]) {
+      let now = 1_000;
+      const calls: number[] = [];
+      const fetcher = createRateLimitedFetch({
+        fetchImpl: async () => {
+          calls.push(now);
+          return calls.length === 1
+            ? new Response('{}', { status: 429, headers: { 'Retry-After': '10' } })
+            : new Response('{}', { status: 200 });
+        },
+        now: () => now,
+        sleep: async (ms) => { now += ms; },
+        random: () => rnd,
+        bucketSpacingMs: { files: 0, general: 80 },
+      });
+      await fetcher('https://api.beebeeb.io/api/v1/prefs');
+      await fetcher('https://api.beebeeb.io/api/v1/prefs');
+      expect(calls[1] - calls[0]).toBe(expected);
+    }
+  });
+
+  test('honours a larger body retry_after', async () => {
+    let now = 1_000;
+    const calls: number[] = [];
+    const fetcher = createRateLimitedFetch({
+      fetchImpl: async () => {
+        calls.push(now);
+        return calls.length === 1
+          ? new Response(JSON.stringify({ error: 'rate_limited', retry_after: 20 }), {
+              status: 429, headers: { 'Retry-After': '5', 'content-type': 'application/json' } })
+          : new Response('{}', { status: 200 });
+      },
+      now: () => now,
+      sleep: async (ms) => { now += ms; },
+      random: () => 0,
+      bucketSpacingMs: { general: 80 },
+    });
+    await fetcher('https://api.beebeeb.io/api/v1/prefs');
+    await fetcher('https://api.beebeeb.io/api/v1/prefs');
+    expect(calls[1] - calls[0]).toBe(20_000);
+  });
+
+  test('a ban keeps the unjittered path, and the body stays readable', async () => {
+    let now = 1_000;
+    const calls: number[] = [];
+    let first: Response | undefined;
+    const fetcher = createRateLimitedFetch({
+      fetchImpl: async () => {
+        calls.push(now);
+        return calls.length === 1
+          ? new Response(JSON.stringify({ error: 'banned', retry_after: 30 }), {
+              status: 429, headers: { 'Retry-After': '30', 'content-type': 'application/json' } })
+          : new Response('{}', { status: 200 });
+      },
+      now: () => now,
+      sleep: async (ms) => { now += ms; },
+      random: () => 0.9,
+      bucketSpacingMs: { general: 80 },
+    });
+    first = await fetcher('https://api.beebeeb.io/api/v1/prefs');
+    expect((await first.json()).error).toBe('banned');
+    await fetcher('https://api.beebeeb.io/api/v1/prefs');
+    expect(calls[1] - calls[0]).toBe(30_000);
   });
 
   test('parses Retry-After seconds and dates', () => {

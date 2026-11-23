@@ -568,6 +568,12 @@ export function friendlyError(err: unknown): string {
       return displayFor(err.message, 'Invalid input. Please check your details.');
     }
     if (err.status === 429) {
+      // Temporary block (ban, or a wait over a minute): say so, it is not an outage.
+      if (err.code === 'banned' || err.message === 'banned' || (err.retryAfterSeconds ?? 0) > 60) {
+        return err.retryAfterSeconds != null && err.retryAfterSeconds > 0
+          ? `Access is temporarily blocked. Try again in ${formatRetryAfter(err.retryAfterSeconds)}.`
+          : 'Access is temporarily blocked. Try again later.';
+      }
       if (err.retryAfterSeconds != null && err.retryAfterSeconds > 0) {
         return `Too many attempts. Try again in ${formatRetryAfter(err.retryAfterSeconds)}.`;
       }
