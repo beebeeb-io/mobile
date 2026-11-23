@@ -173,6 +173,9 @@ export function createRateLimitedFetch(options: RateLimitedFetchOptions = {}): F
    * with the 429 the server gave, Retry-After being the rest of the pause.
    */
   function localPauseResponse(bucket: RateLimitBucket): Response | null {
+    // The files bucket carries uploads, which rely on being paced through the
+    // full pause (server-busy-retry r2-3): it keeps sleeping.
+    if (bucket === 'files') return null;
     const restMs = stateFor(bucket).pausedUntil - now();
     if (restMs <= LOCAL_429_THRESHOLD_MS) return null;
     const retryAfter = Math.ceil(restMs / 1000);
