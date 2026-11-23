@@ -205,6 +205,7 @@ describe('bucket pacing stays coherent with the real rateLimitedFetch', () => {
       fetchImpl: async () => queue.shift()!(),
       sleep: async (ms) => { sleeps.push(ms) },
       now: () => Date.now(),
+      random: () => 0, // pin the 0-25 % jitter so the pause is exact
     })
     const url = 'https://api.test/api/v1/files/upload'
     const p = withServerBusyRetry(() => rl(url, { method: 'POST' }))
@@ -225,6 +226,7 @@ describe('bucket pacing stays coherent with the real rateLimitedFetch', () => {
     const sentAt: number[] = []
     const queue = [() => busy(60), () => created()]
     const rl = createRateLimitedFetch({
+      random: () => 0, // pin the 0-25 % jitter so the pause is exact
       fetchImpl: async () => { sentAt.push(Date.now()); return queue.shift()!() },
       // The bucket's own sleep, on the same fake clock, recorded.
       sleep: (ms) => { sleeps.push(ms); return new Promise((r) => setTimeout(r, ms)) },
@@ -254,6 +256,7 @@ describe('bucket pacing stays coherent with the real rateLimitedFetch', () => {
       () => created(),
     ]
     const rl = createRateLimitedFetch({
+      random: () => 0,
       fetchImpl: async () => queue.shift()!(),
       sleep: (ms) => { sleeps.push(ms); return Promise.resolve() },
     })

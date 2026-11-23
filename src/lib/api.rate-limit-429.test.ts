@@ -92,7 +92,7 @@ describe('auth request after a long 429 lockout (Retry-After: 3600)', () => {
     expect(first).toBeInstanceOf(api.ApiError);
     expect(first.status).toBe(429);
     expect(first.retryAfterSeconds).toBe(3600);
-    expect(api.friendlyError(first)).toBe('Too many attempts. Try again in about 1 hour.');
+    expect(api.friendlyError(first)).toBe('Access is temporarily blocked. Try again in about 1 hour.');
 
     // The user retries after the message: the request must go out without
     // being held back for the lockout (it used to sleep 3_600_000 ms).
