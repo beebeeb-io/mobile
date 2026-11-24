@@ -63,7 +63,7 @@ export default function SignupScreen() {
       // The session token is already stored (register-finish). Refreshing auth flips
       // the navigator to the signed-in stack; the user-keyed CryptoProvider then
       // unlocks from the keychain. If the vault did not adopt the key here, the
-      // app's "Vault locked" screen asks for the recovery phrase just written down.
+      // app's "Vault locked" screen asks for the master key just saved.
       await refreshAuth();
     } finally {
       endSignupUnlock();

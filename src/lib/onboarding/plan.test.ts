@@ -201,7 +201,7 @@ describe('account stage', () => {
   });
 });
 
-describe('recovery phrase length the server declares (1753 pass 2, finding 3)', () => {
+describe('master key length the server declares (1753 pass 2, finding 3)', () => {
   test('a word_count core does not generate is refused up front, as a schema this build does not understand', () => {
     const d = doc('pre_account.ios', (raw) => { raw.policy.recovery_phrase.word_count = 24; });
     const s = planScreen(d, new Set());

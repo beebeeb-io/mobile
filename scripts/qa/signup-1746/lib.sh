@@ -3,7 +3,7 @@
 #   BB_WORKSPACE  the beebeeb.io workspace root (for scripts/coord/with-lock.sh)
 #   BB_QA_UDID    the UDID of the simulator YOU created for this run
 #   BB_QA_EVIDENCE  where screenshots go (a directory outside this repo, or the task evidence dir)
-# Everything that can contain the recovery phrase (hierarchy dumps, word and answer files,
+# Everything that can contain the master key (hierarchy dumps, word and answer files,
 # generated flows) goes to a mktemp directory that is removed when the shell exits.
 : "${BB_WORKSPACE:?set BB_WORKSPACE to the beebeeb.io workspace root}"
 : "${BB_QA_UDID:?set BB_QA_UDID to the simulator UDID}"

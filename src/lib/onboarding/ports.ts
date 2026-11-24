@@ -86,7 +86,7 @@ export interface SignupPorts {
    * The account exists and the session is stored. Hand the vault the new master
    * key (the caller zeroes it afterwards). Resolves true when the vault adopted
    * it; false means the vault did not unlock here and the person will be asked
-   * for the recovery phrase they just wrote down (honest degraded path).
+   * for the master key they just saved (honest degraded path).
    */
   adoptVault: (masterKey: Uint8Array) => Promise<boolean>;
 }

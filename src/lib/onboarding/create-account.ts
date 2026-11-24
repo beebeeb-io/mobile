@@ -16,8 +16,8 @@
  *      ceremony's key hand-over, the vault) must NEVER call `registrationFailed`
  *      or offer "try again": a second registration collides with the account that
  *      now exists. The caller refreshes auth either way; if the vault did not
- *      adopt the key the app shows "Vault locked" and asks for the recovery
- *      phrase the person just wrote down.
+ *      adopt the key the app shows "Vault locked" and asks for the master
+ *      key the person just saved.
  */
 
 import type { SignupCeremony } from '../../../modules/beebeeb-crypto/src/BeebeebOnboarding';
@@ -34,7 +34,7 @@ export interface CreateAccountSession {
 export type CreateAccountOutcome =
   /**
    * The account exists. `vaultAdopted` false means the vault did not adopt the key:
-   * refresh auth anyway and let "Vault locked" ask for the recovery phrase.
+   * refresh auth anyway and let "Vault locked" ask for the master key.
    */
   | { kind: 'created'; vaultAdopted: boolean }
   /** The email-code ticket expired before register-finish: back to the code step. */
@@ -101,7 +101,7 @@ export async function runCreateAccount(deps: CreateAccountDeps): Promise<CreateA
   } catch (err) {
     const code = err instanceof ActionError ? err.code : 'unknown';
     if (code === 'signup_ticket_invalid') {
-      // Spec 5.9: back to the code step, keep the confirmed phrase and the typed
+      // Spec 5.9: back to the code step, keep the confirmed master key and the typed
       // password (core keeps them across emailTicketInvalidated).
       try {
         await ceremony.emailTicketInvalidated();

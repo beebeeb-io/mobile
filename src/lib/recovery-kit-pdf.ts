@@ -1,5 +1,5 @@
 /**
- * Recovery Kit PDF generator — mobile (iOS + Android).
+ * Master key kit PDF generator — mobile (iOS + Android).
  *
  * Uses expo-print to render the HTML document to a PDF file, then
  * expo-sharing to open the native share sheet (Save to Files, AirDrop,
@@ -12,10 +12,10 @@ import * as Sharing from 'expo-sharing'
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Generate a Recovery Kit PDF for the given phrase and email, then open the
+ * Generate a master key kit PDF for the given phrase and email, then open the
  * native share sheet so the user can save or print it.
  *
- * @param phrase Space-separated recovery phrase (e.g. "word1 word2 ... word24")
+ * @param phrase Space-separated master key words (e.g. "word1 word2 ... word24")
  * @param email  The user's account email, shown on the kit for identification
  */
 export async function generateRecoveryKitPDF(phrase: string, email: string): Promise<void> {
@@ -23,7 +23,7 @@ export async function generateRecoveryKitPDF(phrase: string, email: string): Pro
   const { uri } = await Print.printToFileAsync({ html })
   await Sharing.shareAsync(uri, {
     mimeType: 'application/pdf',
-    dialogTitle: 'Save Recovery Kit',
+    dialogTitle: 'Save your master key',
     UTI: 'com.adobe.pdf',
   })
 }
@@ -57,7 +57,7 @@ function buildRecoveryKitHTML(phrase: string, email: string): string {
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<title>Beebeeb Recovery Kit</title>
+<title>Your Beebeeb master key</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -101,7 +101,7 @@ function buildRecoveryKitHTML(phrase: string, email: string): string {
 <body>
 <div class="accent-bar"></div>
 <div class="logo">beebeeb<span class="dot">.</span>io</div>
-<div class="kit-title">Recovery Kit</div>
+<div class="kit-title">Your Beebeeb master key</div>
 <div class="meta">
   <div class="meta-item">
     <span class="meta-label">Account</span>
@@ -116,15 +116,15 @@ function buildRecoveryKitHTML(phrase: string, email: string): string {
     <span class="meta-value">${words.length}</span>
   </div>
 </div>
-<div class="phrase-heading">Recovery Phrase</div>
+<div class="phrase-heading">Master key</div>
 <table class="phrase-table">
   ${wordRows.join('\n  ')}
 </table>
 <div class="warning">
   <div class="warning-title">Keep this safe — we cannot recover it for you</div>
   <div class="warning-body">
-    This phrase is the master key to your encrypted files. If you forget your password,
-    this phrase is the only way to recover your account.<br/><br/>
+    These 12 words are your master key. Your password only unlocks it on this device. If you forget your password,
+    your master key is the only way to recover your account.<br/><br/>
     <strong>Store it offline</strong> — printed, in a safe, with your important documents.
     Never share it. Never photograph it. Never type it into any website other than beebeeb.io.
   </div>

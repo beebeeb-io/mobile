@@ -1,6 +1,6 @@
 /**
  * Screen privacy for the signup steps that put a secret on screen (task 1746, 1753
- * pass 2 hardening): the recovery phrase and its confirmation, and the password
+ * pass 2 hardening): the master key and its confirmation, and the password
  * while "Show password" is on. Best effort: a failure to arm protection must never
  * break the step, so every native call swallows its rejection.
  */

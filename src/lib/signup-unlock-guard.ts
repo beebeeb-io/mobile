@@ -5,7 +5,7 @@
  * `SignupScreen.handleSignup` calls `crypto.unlock(recovery.phrase)` on the
  * transient 'signed-out'-keyed `CryptoProvider` instance BEFORE it calls
  * `refreshAuth()` itself — it needs the freshly-derived key stored
- * immediately (the recovery phrase is shown from this same flow, right
+ * immediately (the master key is shown from this same flow, right
  * after). This is NOT how login works: `LoginScreen` never unlocks the
  * pre-remount instance at all (see its own comment, "Token is stored by
  * opaqueLoginFinish. App.tsx auth state will pick it up.") — the actual vault

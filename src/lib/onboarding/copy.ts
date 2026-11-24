@@ -31,7 +31,7 @@ export function ceremonyMessage(code: string): string {
     case 'breach_check_blocked':
       return 'We could not check this password against known breaches, and we do not let you continue without that check. Try again.';
     case 'phrase_word_mismatch':
-      return 'Those words do not match your recovery phrase. Check them against what you wrote down.';
+      return "These words don't match your master key. Check them against what you saved.";
     case 'breach_prefix_mismatch':
     case 'breach_check_stale':
     case 'breach_check_missing':
@@ -79,7 +79,7 @@ export function createAccountMessage(rateLimited: boolean, code: string): string
 }
 
 export const TICKET_EXPIRED_NOTICE =
-  'Your email code expired before the account was created. Request a new one. Your password and recovery phrase are kept.';
+  'Your email code expired before the account was created. Request a new one. Your password and master key are kept.';
 
 export const ACCOUNT_EXISTS_MESSAGE =
   'An account with this address already exists. Sign in instead. Nothing was changed.';
@@ -89,8 +89,8 @@ export const ACCOUNT_EXISTS_MESSAGE =
  * be stored): the account may exist. Never "Nothing was stored", never "try again".
  */
 export const UNKNOWN_OUTCOME_MESSAGE =
-  'We could not confirm whether your account was created. Check by signing in; if the account exists, use your recovery phrase.';
+  'We could not confirm whether your account was created. Check by signing in; if the account exists, use your master key.';
 
-/** The account exists but this device's vault did not adopt the key: name the phrase they just wrote down. */
+/** The account exists but this device's vault did not adopt the key: name the master key they just saved. */
 export const VAULT_NOT_ADOPTED_MESSAGE =
-  'Your account was created, but this device could not unlock your vault. Next, enter the recovery phrase you just wrote down.';
+  'Your account was created, but this device could not unlock your vault. Next, enter the master key you just saved.';

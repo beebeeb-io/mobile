@@ -6,7 +6,7 @@
  */
 
 /**
- * The recovery phrase length `beebeeb_core` generates (`RECOVERY_WORD_COUNT`, BIP39,
+ * The master key length `beebeeb_core` generates (`RECOVERY_WORD_COUNT`, BIP39,
  * fixed in core). The ceremony cannot be asked for another length, so a document
  * that declares a different `recovery_phrase.word_count` is a version this build
  * cannot honour: signup is refused rather than shown a number it will not deliver.

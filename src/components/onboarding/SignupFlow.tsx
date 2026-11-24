@@ -8,7 +8,7 @@
  * What lives where (spec 5.5, 5.12):
  *   - The planner (`planScreen`) picks the screen. This file never decides order,
  *     never skips a step on its own, never invents policy.
- *   - Password policy, the breach gate, the recovery phrase and OPAQUE all run in
+ *   - Password policy, the breach gate, the master key and OPAQUE all run in
  *     the core ceremony (UniFFI, `beebeeb_core::onboarding`). The fields below are
  *     inputs and buttons. No cryptography in TypeScript.
  *   - The ceremony is wiped (`dispose` = abandon + release) when the flow is left,
@@ -375,7 +375,7 @@ function AcceptTermsStep({ ctx }: { ctx: Ctx }) {
         I accept the Terms of Service and the Privacy Policy.
       </CheckRow>
       <CheckRow checked={understood} onChange={setUnderstood} testID="signup-understood-check">
-        I understand that Beebeeb cannot recover my account if I lose both my password and my recovery phrase. We can't recover this.
+        I understand that Beebeeb can't recover my account if I forget my password and lose my master key.
       </CheckRow>
       <View style={{ marginTop: spacing.xl }}>
         <PrimaryButton label="Continue" disabled={!terms || !understood} onPress={() => {
@@ -468,8 +468,8 @@ function SetPasswordStep({ ctx }: { ctx: CeremonyCtx }) {
 
   return (
     <OnboardingFrame
-      title="Set a password"
-      subtitle="It unlocks your account on this device. Your recovery phrase stays the ultimate backup."
+      title="Choose a password for this device"
+      subtitle="Your password only unlocks your master key on this device."
       position={screen.position}
       total={screen.total}
       testID="signup-step-set_password"
@@ -585,7 +585,7 @@ function SaveRecoveryPhraseStep({ ctx }: { ctx: CeremonyCtx }) {
         setWords((await ceremony.phrase()).split(' '));
         setPhase('show');
       } catch (err) {
-        setError(err instanceof CeremonyError ? ceremonyMessage(err.code) : 'Could not create your recovery phrase.');
+        setError(err instanceof CeremonyError ? ceremonyMessage(err.code) : 'Could not create your master key.');
         setPhase('show');
       }
     })();
@@ -631,14 +631,14 @@ function SaveRecoveryPhraseStep({ ctx }: { ctx: CeremonyCtx }) {
       setSaved(false);
       setError('');
     } catch {
-      setError('The words are no longer available. Start over to get a new phrase.');
+      setError('The words are no longer available. Start over to get a new master key.');
     }
   }
 
   if (phase === 'loading') {
     return (
-      <OnboardingFrame title="Your recovery phrase" position={screen.position} total={screen.total} testID="signup-step-save_recovery_phrase">
-        <Spinner label="Generating your recovery phrase" />
+      <OnboardingFrame title="Your master key" position={screen.position} total={screen.total} testID="signup-step-save_recovery_phrase">
+        <Spinner label="Generating your master key" />
       </OnboardingFrame>
     );
   }
@@ -646,8 +646,8 @@ function SaveRecoveryPhraseStep({ ctx }: { ctx: CeremonyCtx }) {
   if (phase === 'confirm') {
     return (
       <OnboardingFrame
-        title="Confirm your phrase"
-        subtitle="Type the words you wrote down. This is how we know you can recover your account."
+        title="Confirm your master key"
+        subtitle={`Type words ${positions.length > 1 ? `${positions.slice(0, -1).join(', ')} and ${positions[positions.length - 1]}` : positions.join('')} of your master key.`}
         position={screen.position}
         total={screen.total}
         testID="signup-step-confirm_phrase"
@@ -691,8 +691,8 @@ function SaveRecoveryPhraseStep({ ctx }: { ctx: CeremonyCtx }) {
 
   return (
     <OnboardingFrame
-      title="Your recovery phrase"
-      subtitle={`${words.length > 0 ? `These ${words.length} words are` : 'These words are'} the only way to recover your account. Write them down or save them in a password manager. We can't recover this for you.`}
+      title="Your master key"
+      subtitle="Your master key: 12 words. Your password only unlocks it on this device. Anyone with these words can open your files; without them, a forgotten password means the data is gone. Beebeeb can't recover it."
       position={screen.position}
       total={screen.total}
       testID="signup-step-save_recovery_phrase"
@@ -752,7 +752,7 @@ function SaveRecoveryPhraseStep({ ctx }: { ctx: CeremonyCtx }) {
       </View>
       {error ? <ErrorLine testID="signup-phrase-error">{error}</ErrorLine> : null}
       <CheckRow checked={saved} onChange={setSaved} testID="signup-phrase-saved-check">
-        I have saved my recovery phrase offline.
+        I have saved my master key somewhere safe, outside Beebeeb.
       </CheckRow>
       <View style={{ marginTop: spacing.lg }}>
         <PrimaryButton

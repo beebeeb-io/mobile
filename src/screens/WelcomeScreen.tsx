@@ -35,8 +35,8 @@ const POINTS: Array<{ icon: React.ComponentProps<typeof Ionicons>['name']; title
   },
   {
     icon: 'key-outline',
-    title: 'Your recovery phrase',
-    body: 'Twelve words are the only way back in if you forget your password. We can\'t recover this for you.',
+    title: 'Your master key',
+    body: 'Your master key is 12 words. Your password only unlocks it on this device. We can\'t recover it for you.',
   },
 ];
 

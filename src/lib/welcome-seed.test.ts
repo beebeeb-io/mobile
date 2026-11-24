@@ -219,7 +219,7 @@ describe('ensureUnlockedAndSeed — CryptoProvider remount race (1444)', () => {
     try {
       rootListing = [FOLDER];
       const unlock = async () => {
-        throw new Error('No master key in keychain — provide a recovery phrase to restore');
+        throw new Error('No master key in keychain — provide a master key to restore');
       };
       const seeded = await ensureUnlockedAndSeed({ ...opts(), isUnlocked: false, unlock });
       expect(seeded).toBe(false);

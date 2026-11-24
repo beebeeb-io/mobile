@@ -59,7 +59,7 @@ appId: io.beebeeb.app
     id: "signup-phrase-saved"
 - extendedWaitUntil:
     visible:
-      text: "Confirm your phrase"
+      text: "Confirm your master key"
     timeout: 20000
 Y
   mae test $FL/phaseC.yaml | /usr/bin/grep -E "FAILED|Error" | head -2
@@ -80,7 +80,7 @@ PY
 phaseD() { # NAME [nowait]
   { echo 'appId: io.beebeeb.app'; echo '---'
     while read p w; do printf -- '- tapOn:\n    id: "signup-phrase-answer-%s"\n- waitForAnimationToEnd\n- inputText: "%s"\n- waitForAnimationToEnd\n' $p $w; done < $FL/answers-$1.txt
-    echo '- tapOn: "Confirm your phrase"'
+    echo '- tapOn: "Confirm your master key"'
   } > $FL/phaseD-$1.yaml
   mae test $FL/phaseD-$1.yaml | /usr/bin/grep -E "FAILED|Error" | head -2
 }

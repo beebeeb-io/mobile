@@ -1,4 +1,4 @@
-# Anything that can hold a recovery phrase must never be committed.
+# Anything that can hold a master key must never be committed.
 words-*.txt
 answers-*.txt
 hier-*.json

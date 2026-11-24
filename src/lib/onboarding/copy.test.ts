@@ -52,7 +52,7 @@ describe('no raw server text, status code or JSON ever reaches a screen', () => 
     }
   });
   test('fixed notices', () => {
-    expect(TICKET_EXPIRED_NOTICE).toContain('password and recovery phrase are kept');
+    expect(TICKET_EXPIRED_NOTICE).toContain('password and master key are kept');
     expect(ACCOUNT_EXISTS_MESSAGE).toContain('Sign in instead');
   });
 });
@@ -61,11 +61,11 @@ describe('post-commit copy (1753 pass 2, findings 4 and 5)', () => {
   const { UNKNOWN_OUTCOME_MESSAGE, VAULT_NOT_ADOPTED_MESSAGE } = require('./copy');
   test('an unknown outcome tells the person to check by signing in and never claims nothing was stored', () => {
     expect(UNKNOWN_OUTCOME_MESSAGE).toContain('Check by signing in');
-    expect(UNKNOWN_OUTCOME_MESSAGE).toContain('recovery phrase');
+    expect(UNKNOWN_OUTCOME_MESSAGE).toContain('master key');
     expect(UNKNOWN_OUTCOME_MESSAGE).not.toMatch(/nothing was stored|try again/i);
   });
-  test('a vault that did not adopt the key names the recovery phrase just written down, in one sentence-pair', () => {
-    expect(VAULT_NOT_ADOPTED_MESSAGE).toContain('recovery phrase you just wrote down');
+  test('a vault that did not adopt the key names the master key just saved, in one sentence-pair', () => {
+    expect(VAULT_NOT_ADOPTED_MESSAGE).toContain('master key you just saved');
     expect(VAULT_NOT_ADOPTED_MESSAGE).not.toMatch(/nothing was stored/i);
   });
 });

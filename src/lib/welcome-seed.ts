@@ -1,7 +1,7 @@
 /**
  * One-shot seed of a welcome.md file into a brand-new account.
  *
- * Runs after successful recovery-phrase verification. Encrypted via the
+ * Runs after successful master key verification. Encrypted via the
  * existing upload pipeline — the server never sees the plaintext copy.
  *
  * Idempotency is double-guarded:
@@ -9,7 +9,7 @@
  *     sign-in on the same device short-circuits before we hit the network.
  *  2. Server-side root-content check. If the user already has a real FILE
  *     (a non-folder entry) at root (e.g. they're signing in from a second
- *     device, or restored from a recovery phrase), we skip the seed entirely so
+ *     device, or restored from a master key), we skip the seed entirely so
  *     we never spam duplicate welcome.md files into an established vault.
  *     NB: auto-created system folders (e.g. "Backups") are NOT real content and
  *     must not block the seed — that was the 0558 bug (every new account gets a
@@ -42,9 +42,9 @@ To get started:
 
 - Tap **+** to upload a photo or document
 - Open **Settings → Backup** to mirror your camera roll automatically
-- Your **12-word recovery phrase** is the only way to restore access if you lose this device. Keep it somewhere safe and offline.
+- Your **master key (12 words)** is the only way to restore access if you lose this device. Keep it somewhere safe and offline.
 
-We can't recover your phrase for you. That's the trade-off for end-to-end encryption — and the whole point of choosing Beebeeb.
+We can't recover your master key for you. That's the trade-off for end-to-end encryption — and the whole point of choosing Beebeeb.
 
 Stored and made in Europe.
 `;
@@ -123,7 +123,7 @@ export async function seedWelcomeMarkdown(opts: SeedWelcomeOptions): Promise<boo
     }
 
     // Server-side guard: if root already has a real FILE (non-folder), the user
-    // has content (second device, restore from recovery phrase, or a prior
+    // has content (second device, restore from master key, or a prior
     // seed — welcome.md is itself a non-folder file), so don't seed. Folders are
     // ignored on purpose: the server auto-creates a "Backups" folder at root for
     // every new account, and counting it as "content" suppressed the seed on
@@ -206,8 +206,8 @@ export interface EnsureUnlockedAndSeedOptions extends SeedWelcomeOptions {
  * handle was released when the old 'signed-out' instance unmounted.
  * `BiometricGuard`'s "post-login vault unlock" effect (App.tsx) re-unlocks
  * the new instance from the keychain (the key WAS persisted during the
- * original phrase unlock), but it does so fire-and-forget — unawaited by any
- * screen. A fast verify (a scripted/Maestro run reading the phrase words and
+ * original master key unlock), but it does so fire-and-forget — unawaited by any
+ * screen. A fast verify (a scripted/Maestro run reading the master key words and
  * submitting in well under a second) can reach
  * `RecoveryPhraseVerifyScreen.handleVerify` before that background unlock
  * resolves.
