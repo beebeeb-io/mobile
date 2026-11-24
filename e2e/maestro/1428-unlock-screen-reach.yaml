@@ -7,11 +7,11 @@
 # install) — see the sign-out guard below for why.
 #
 # Fixture account (task 1428 Notes, created via the SAME beebeeb-wasm crypto
-# the app uses — OPAQUE registration + a real 12-word BIP39 recovery phrase —
+# the app uses — OPAQUE registration + a real 12-word BIP39 master key —
 # against the local dev API at :3001; never the prod demo account):
 #   email:    bb-qa-1428-87e670fd60f4@beebeeb.io
 #   password: Bb1428-Qa-e988a08fefc618efcd98!
-# Recovery phrase deliberately NOT repeated here — each variant file supplies
+# Master key deliberately NOT repeated here — each variant file supplies
 # its own copy of the words so a flow file is self-contained and diff-able.
 #
 # Preconditions: a RELEASE build of the app freshly installed on the target
@@ -61,7 +61,7 @@
 # CAVEAT (also not yet confirmed on-device — flag if a screenshot below comes
 # back blank/black): RecoveryUnlockScreen.tsx calls
 # usePreventScreenCapture('recovery-unlock') for the whole time this screen is
-# visible, since it's where the user types their recovery phrase. If iOS's
+# visible, since it's where the user types their master key. If iOS's
 # capture-prevention blanks XCTest-driven screenshots the same way it blanks
 # a real screen recording (unconfirmed — it may only intercept AirPlay/
 # QuickTime capture, not the accessibility-tree screenshot Maestro takes),

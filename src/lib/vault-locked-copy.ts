@@ -11,7 +11,7 @@
  * module carries the same language on iOS (see DEVIATIONS.md → task 1704).
  *
  * The two-tier story stays explicit, because it is the core 1704 promise:
- * the PASSWORD unlocks the account; the 12-WORD RECOVERY PHRASE (the vault
+ * the PASSWORD unlocks the account; the 12-WORD MASTER KEY (the vault
  * key's portable encoding) is what unlocks the vault — the password alone
  * can never decrypt anything.
  *
@@ -25,8 +25,8 @@ export const VAULT_LOCKED_TITLE = 'Vault locked';
 /**
  * The landing's honest explanation. Names the state (the device does not
  * hold the vault key), the two tiers (password = account, phrase = vault),
- * and the one unlock path offered here (the 12-word recovery phrase).
+ * and the one unlock path offered here (the 12-word master key).
  */
 export const VAULT_LOCKED_LANDING_SUBTITLE =
   "This device doesn't hold your vault key. Your password unlocks your account — " +
-  'your 12-word recovery phrase unlocks the vault. Enter it below to decrypt your files here.';
+  'your 12-word master key unlocks the vault. Enter it below to decrypt your files here.';

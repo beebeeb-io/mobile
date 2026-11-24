@@ -80,7 +80,7 @@ Order on the listing (7 screens; the Photos screen is dropped, Guus 2026-10-30: 
 no personal photos and no illustrations): 1, 3, 2, 7, 4, 5, 6 (encryption and sharing first). Drop 6 if check 1 above
 fails; six screenshots is plenty.
 
-Never capture: the recovery phrase screen (it blocks screen capture on purpose), any real email
+Never capture: the master key screen (it blocks screen capture on purpose), any real email
 address, the sign-in screen with a typed password, or a notification from another app.
 
 ## Copy rules this follows
@@ -88,6 +88,6 @@ address, the sign-in screen with a typed password, or a notification from anothe
 - Headline "Stored in Europe" (Guus, 2026-09-26). No city, no provider, no region choice
   (workspace `CLAUDE.md`, EU references). No "Dutch company" (Guus, 2026-10-22).
 - Honest over reassuring: the listing says up front that we cannot recover files without the
-  password or the recovery phrase.
+  password or the master key.
 - "Audited" only in the negated form ("not yet audited externally"), per the public-claims canon.
 - No emojis, no "best" or "#1", no testimonials, no prices.

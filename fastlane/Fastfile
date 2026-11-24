@@ -29,7 +29,7 @@ platform :ios do
 
     # App Review contact + demo account, built from the environment so the
     # filled-in values — including the demo password and the 12-word
-    # recovery phrase quoted in the notes — never touch git. Only populated
+    # master key quoted in the notes — never touch git. Only populated
     # when ASC_REVIEW_DEMO_USER is set; otherwise this stays `nil`, which
     # `deliver` treats as "leave this field alone" (verified: `app_review_
     # information` is `optional: true`, so an absent/nil value is not sent

@@ -1331,7 +1331,7 @@ export default function App() {
   // (src/lib/cold-start-owner.ts).
   const coldStartOwnerRef = useRef<string | null>(null);
 
-  // Phrase verification: false until the user types back their recovery words.
+  // Phrase verification: false until the user types back their master key.
   // Defaults to true so existing (pre-phrase-flow) users are unaffected.
   const [phraseVerified, setPhraseVerified] = useState(true);
   const [navReady, setNavReady] = useState(false);
@@ -1914,7 +1914,7 @@ export default function App() {
     }
   }, [user]);
 
-  // Task 1445 (ruling 2): an account whose recovery phrase was never
+  // Task 1445 (ruling 2): an account whose master key was never
   // confirmed is sent to PhraseNotConfirmed. Since task 1037 no account is
   // created in-app, so this only applies to one made by an older build.
   const needsPhraseGate = shouldRouteToPhraseGate({

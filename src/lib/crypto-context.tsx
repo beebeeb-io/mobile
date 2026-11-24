@@ -72,7 +72,7 @@ export { SIMULATOR_MASTER_KEY_FILE }
 //
 // Lifecycle:
 //   - CREATED on the first successful `unlock()` of the JS process —
-//     either from a recovery phrase (creates a fresh handle from
+//     either from a master key (creates a fresh handle from
 //     bytes that exist only transiently in native memory) or from a
 //     Keychain auto-unlock (`loadKeyFromKeychainAsHandle` reads the
 //     SE-wrapped blob, may prompt Face ID once, then zeros bytes).
@@ -367,7 +367,7 @@ async function publicKeyFromHandle(handleId: number): Promise<Uint8Array> {
  *   - `no_key`    — the master-key check label is absent: no key was ever
  *                   provisioned on this install (fresh Debug-sim, or a
  *                   device restore that dropped the SE blob). The vault
- *                   genuinely needs a recovery phrase. This is terminal.
+ *                   genuinely needs a master key. This is terminal.
  *   - `transient` — a key WAS provisioned here (check label present) but the
  *                   Secure-Enclave / Keychain read threw or returned null,
  *                   typically because the SE isn't warm yet this early in
@@ -632,7 +632,7 @@ interface CryptoContextValue {
   needsRecoveryPhrase: boolean
   /**
    * Unlock the vault.
-   * - With phrase: derives the master key from a recovery phrase and stores it
+   * - With phrase: derives the master key from the 12 words and stores it
    *   in the secure enclave for future unlocks.
    * - Without phrase: loads the master key from the secure enclave directly.
    */
@@ -717,7 +717,7 @@ interface CryptoContextValue {
    */
   getRequestContentKey: (file: RequestFileFields) => Promise<Uint8Array>
   /**
-   * Task 1445 (ruling 2): verify a typed recovery phrase against the master
+   * Task 1445 (ruling 2): verify a typed master key against the master
    * key ALREADY persisted for this account, without ever writing to the
    * keychain. Returns true only if the phrase derives the same key. Unlike
    * `unlock(phrase)`, a wrong phrase here is inert — it can never overwrite
@@ -861,7 +861,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
       inFlightAtRequest,
     })
 
-    // If the vault is already open and no recovery phrase was given, skip the
+    // If the vault is already open and no master key was given, skip the
     // redundant keychain load. On devices with biometric-protected Secure
     // Enclave keys, loadKeyFromKeychainAsHandle triggers a Face ID prompt —
     // calling unlock() again after BiometricLockScreen already authenticated
@@ -925,7 +925,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
       })
       try {
         if (hasRecoveryPhrase) {
-          // Derive the master key from the recovery phrase. The raw bytes
+          // Derive the key from the 12 words. The raw bytes
           // are needed transiently to persist to keychain, but we immediately
           // load a handle and zero the raw bytes.
           const result = freshMasterKey != null ? { masterKey: freshMasterKey } : await recoverFromPhrase(phrase as string)
@@ -969,7 +969,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
             // Persist before reporting phrase unlock as complete. The iOS
             // simulator falls back to SecureStore because Secure Enclave is not
             // available; if this races with a dev reload the next launch asks for
-            // the recovery phrase again.
+            // the master key again.
             await storeMasterKey(masterKey, ownerUserId, myGeneration)
             adopted = true
           } finally {
@@ -993,7 +993,7 @@ export function CryptoProvider({ children, userId }: { children: React.ReactNode
           }
           // Owner recorded and it is someone else → purge BEFORE the key is
           // loaded (no Face ID prompt, no native handle for the backup engine
-          // to adopt) and ask for this account's recovery phrase.
+          // to adopt) and ask for this account's master key.
           const precheck = await precheckKeyOwner(ownerUserId)
           if (precheck === 'purged') {
             setNeedsRecoveryPhrase(true)

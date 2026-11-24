@@ -15,7 +15,7 @@
  *   1. An owner record (`io.beebeeb.master-key-owner`, the account's user id)
  *      is stored next to the key. A stored owner that is not the signed-in user
  *      → the key, check, fallback, simulator file and owner are PURGED before
- *      the key is ever loaded, and the recovery phrase is required.
+ *      the key is ever loaded, and the master key is required.
  *   2. Once per sign-in (a CryptoProvider mount), the key is proven against the
  *      server: `POST /api/v1/auth/verify-recovery-check` with the stored check
  *      value (the same HMAC signup sent and web sends — never the key or the
@@ -42,13 +42,13 @@ export const MASTER_KEY_OWNER_LABEL = 'io.beebeeb.master-key-owner';
 export const SIMULATOR_MASTER_KEY_FILE = `${FileSystem.documentDirectory ?? ''}beebeeb-simulator-master-key.txt`;
 
 /**
- * The message the vault throws when it needs the recovery phrase. It MUST keep
+ * The message the vault throws when it needs the master key. It MUST keep
  * matching `/no master key in keychain/i` — BiometricGuard (App.tsx) lets only
  * that failure through the lock screen to the recovery gate.
  */
-export const VAULT_NEEDS_PHRASE_MESSAGE = 'No master key in keychain — provide a recovery phrase to restore';
+export const VAULT_NEEDS_PHRASE_MESSAGE = 'No master key in keychain — provide a master key to restore';
 export const PHRASE_WRONG_ACCOUNT_MESSAGE =
-  'This recovery phrase belongs to a different account. Enter the phrase for the account you signed in with.';
+  'This master key belongs to a different account. Enter the 12 words for the account you signed in with.';
 export const OWNERSHIP_UNREACHABLE_MESSAGE =
   "Couldn't confirm this vault key belongs to your account — check your connection and try again.";
 

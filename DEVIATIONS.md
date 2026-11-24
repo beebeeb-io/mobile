@@ -85,7 +85,7 @@ Precedent: task 1037 (NeedsPlan) and the removed SignupScreen, which had none ei
 
 **What shipped:** the new screens are styled after their siblings (`LoginScreen`,
 `NeedsPlanScreen`): plain surface, brand mark, ONE amber primary per screen, JetBrains Mono for
-codes, counters and the recovery phrase, no emojis. Components: `src/components/onboarding/*`,
+codes, counters and the master key, no emojis. Components: `src/components/onboarding/*`,
 `src/screens/WelcomeScreen.tsx`, `src/screens/SignupScreen.tsx`.
 
 **Why:** the screens are driven by the server's onboarding document (spec section 5), and the
@@ -123,7 +123,7 @@ copy and visuals belong to the design lane (task 1703 says the same of the first
 7. **`describeApiEnvironment`** treats any loopback port as `Local` (was :3001 only), so a lane on
    its own port can show "API environment: Local" in Metro.
 8. **`CryptoProvider.unlock(phrase?, source?, freshMasterKey?)`** takes the new account's master key
-   from the signup ceremony through the same branch as a typed recovery phrase. No second way to
+   from the signup ceremony through the same branch as a typed master key. No second way to
    adopt a key was added.
 9. **The signup screen disables the swipe-back gesture** so an accidental swipe cannot drop a
    phrase the person has already written down.
@@ -778,11 +778,11 @@ reviewed, not discovered):**
 
 ## Task 1591 — store-blocking UI fixes (App Store capture pass, 2026-09-27)
 
-- **Recovery phrase header / buttons (no artboard).** No canvas artboard exists for the
+- **Master key header / buttons (no artboard).** No canvas artboard exists for the
   onboarding screens (see the 1445 line above). Changed to the brand rule, not to a design:
   the mark (36 pt) and wordmark (20 pt) sit in one row with a 10 pt gap (the 48 pt mark used
   to overhang a 44 pt box into the wordmark), and "Copy all words" became the secondary
-  (outlined) button so "I've saved my recovery phrase" is the screen's ONE amber primary.
+  (outlined) button so "I've saved my master key" is the screen's ONE amber primary.
 - **Preview status bar follows the surface, not only the theme.** Photo/video/RAW stage and
   the code/editor surfaces (`#282c34`) are dark in both themes, so the status bar is
   light-content there and the doc header's top scrim uses its dark stops over them.
@@ -919,7 +919,7 @@ language and offer the 12-word phrase unlock.
 **What shipped (2026-10-02):** `RecoveryUnlockScreen`'s heading changed from
 "Unlock your vault" to the canonical `Vault locked`, and its subheading now
 states the two-tier story honestly (password unlocks the account; the
-12-word recovery phrase unlocks the vault). Copy lives in
+12-word master key unlocks the vault). Copy lives in
 `src/lib/vault-locked-copy.ts`, pinned by `src/lib/vault-locked-copy.test.ts`
 (source-scan precedent: `sheet-sweep.test.ts`). Layout and styles unchanged;
 the screen's phrase input, retryable error banner and "Use another account"

@@ -85,7 +85,7 @@ appId: io.beebeeb.app
     commands:
       - tapOn: "Not Now"
 # On a device with no master key the vault must be restored from the
-# recovery phrase (local-qa-signin-unlock.yaml gotcha 3 — the phrase input
+# master key (local-qa-signin-unlock.yaml gotcha 3 — the phrase input
 # is not addressable by placeholder, tap by point).
 - runFlow:
     when:

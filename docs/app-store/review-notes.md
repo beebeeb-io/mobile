@@ -27,16 +27,16 @@ contacts, or calendar entries — everything is encrypted on-device before it is
 walkthrough exists so the reviewer isn't surprised by that when they can't "just look at" a file
 from an admin angle — there is no such angle.
 
-**Sign-up (recovery phrase step, ~1 minute):**
+**Sign-up (master key step, ~1 minute):**
 1. Tap "Create account," enter an email and password. Password auth uses the OPAQUE protocol — the
    password itself never reaches the server, only a zero-knowledge proof of it
    (`src/lib/api.ts:2198-2266`).
-2. The app then shows a **12-word recovery phrase** (`OnboardingScreen.tsx:452`, BIP39, generated
+2. The app then shows a **12-word master key** (`OnboardingScreen.tsx:452`, BIP39, generated
    by the Rust core — `repos/core/CLAUDE.md:7`) with the copy: *"These 12 words are the ONLY way to
    recover your vault if you lose access. Write them down."* Screenshots/screen-recording are
    blocked while this screen is visible (`OnboardingScreen.tsx:72`).
 3. The user re-enters a few of the words to confirm they saved it, then lands in the app.
-4. **This is why account recovery cannot be done by Beebeeb support**: the recovery phrase (or the
+4. **This is why account recovery cannot be done by Beebeeb support**: the master key (or the
    password, which wraps it) is the only key. If both are lost, the data is unrecoverable by
    design — including by us. This is disclosed in the app's own copy and in the App Store
    description ("If you forget your password, we cannot recover it. We will not pretend
@@ -88,7 +88,7 @@ destroyed server-side. See task 1399 for the exact flow.
 > Creating this account is a **production mutation** and is gated on Guus's word per decision 1398
 > §6: either he says "create it" (the lead signs up through the public app and records the
 > credentials) or he creates it himself. Either way, the filled-in credentials — and the notes text
-> above once it quotes the account's 12-word recovery phrase for the reviewer walkthrough — go into
+> above once it quotes the account's 12-word master key for the reviewer walkthrough — go into
 > a **copy of this file kept OUTSIDE the repo**, never into this tracked placeholder (this file is
 > **not** gitignored, so anything written here goes straight into git history). The `deliver_metadata`
 > lane (`repos/mobile/fastlane/Fastfile`) reads that external copy at upload time via the
@@ -108,11 +108,11 @@ notes copy that `ASC_REVIEW_NOTES_PATH` points at, never here.
 1. Launch the app. The sign-in screen opens. Enter the demo email and password and tap **Sign in**.
 2. If iOS asks about notifications, either answer works.
 3. The app opens **"Unlock your vault"**. The vault key never leaves a device that holds it, so a
-   new device unlocks with the recovery phrase. Tap the large text box and type or paste the 12
+   new device unlocks with the master key. Tap the large text box and type or paste the 12
    words (lowercase, single spaces). The counter reads **"12/12 words"**.
 4. Tap **Unlock vault**. The Files screen opens.
 
-The iOS app does **not** show a "Set up this device" chooser (passkey / QR / recovery phrase).
+The iOS app does **not** show a "Set up this device" chooser (passkey / QR / master key).
 That screen exists only in the web app (`repos/web/src/components/device-provision.tsx`). The
 private review notes submitted in September 2026 described it. Keep the private notes on the
 four steps above.
@@ -199,7 +199,7 @@ upload — only `fastlane/metadata/**/*.txt` fields are, plus the review-informa
 The `deliver_metadata` lane in `repos/mobile/fastlane/Fastfile` pushes the text fields + screenshots
 and, when `ASC_REVIEW_DEMO_USER` is set, the App Review contact + demo account + notes (see
 "Reviewer account" above for the exact env vars, and `ASC_REVIEW_NOTES_PATH` for where the filled
-notes text — including the recovery phrase — is read from, outside this repo). It does not touch
+notes text — including the master key — is read from, outside this repo). It does not touch
 age rating, category, or privacy labels — those still go in by hand.
 
 Non-interactive runs (no TTY to answer the HTML-diff confirmation) set `DELIVER_FORCE=1`; an

@@ -135,7 +135,7 @@ describe('settingChangeNeedsAuth', () => {
 });
 
 describe('classifyKeyLoad', () => {
-  const noKey = new Error('No master key in keychain — provide a recovery phrase to restore');
+  const noKey = new Error('No master key in keychain — provide a master key to restore');
   test('success opens', () => {
     expect(classifyKeyLoad({ error: null, viaPassword: false })).toBe('open');
     expect(classifyKeyLoad({ error: null, viaPassword: true })).toBe('open');

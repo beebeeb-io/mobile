@@ -17,7 +17,7 @@ export class VaultKeyMismatchError extends Error {
   constructor(public readonly undecryptableFolders: number) {
     super(
       `Backup stopped: the vault key on this device can't read ${undecryptableFolders} of your folder name${undecryptableFolders === 1 ? '' : 's'}, ` +
-      'so it may not be your account\'s key. Nothing was created. Sign out, sign in again and enter your recovery phrase.',
+      'so it may not be your account\'s key. Nothing was created. Sign out, sign in again and enter your master key.',
     );
     this.name = 'VaultKeyMismatchError';
   }

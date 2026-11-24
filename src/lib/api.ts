@@ -548,7 +548,7 @@ export function friendlyError(err: unknown): string {
       return 'Verify your email address to upload, share, or receive files. Check your inbox or request a new link.';
     }
     if (err.code === 'key_binding_conflict' || err.message === 'key_binding_conflict') {
-      return 'This account already has a different recovery phrase or sharing key bound. Log out and back in, then try again — if this persists, contact support.';
+      return 'This account already has a different master key or sharing key bound. Log out and back in, then try again — if this persists, contact support.';
     }
     if (err.status === 403) {
       // A 403 always means the request was refused, so the status line is an
@@ -4168,7 +4168,7 @@ export async function opaqueLoginStart(email: string, password: string): Promise
 /**
  * Round 2 of OPAQUE login.
  * Returns the session token. The OPAQUE session key is not the vault key;
- * the vault key must come from the 12-word recovery phrase or keychain.
+ * the vault key must come from the 12-word master key or keychain.
  */
 export async function opaqueLoginFinish(
   email: string,

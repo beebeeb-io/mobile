@@ -2986,8 +2986,8 @@ export default function FilesScreen() {
     const uploadTrace = createManualUploadTrace(recordRuntimeTrace);
     if (!phraseVerified) {
       Alert.alert(
-        'Save your recovery phrase first',
-        'Verify your recovery phrase before uploading. Go to Settings → Security to complete verification.',
+        'Save your master key first',
+        'Verify your master key before uploading. Go to Settings → Security to complete verification.',
         [{ text: 'OK' }],
       );
       return;
@@ -3244,8 +3244,8 @@ export default function FilesScreen() {
   const pickAndUploadPhotos = useCallback(async () => {
     if (!phraseVerified) {
       Alert.alert(
-        'Save your recovery phrase first',
-        'Verify your recovery phrase before uploading. Go to Settings → Security to complete verification.',
+        'Save your master key first',
+        'Verify your master key before uploading. Go to Settings → Security to complete verification.',
         [{ text: 'OK' }],
       );
       return;
@@ -3530,8 +3530,8 @@ export default function FilesScreen() {
   const openDocumentScanner = useCallback(() => {
     if (!phraseVerified) {
       Alert.alert(
-        'Save your recovery phrase first',
-        'Verify your recovery phrase before scanning documents. Go to Settings → Security to complete verification.',
+        'Save your master key first',
+        'Verify your master key before scanning documents. Go to Settings → Security to complete verification.',
         [{ text: 'OK' }],
       );
       return;
@@ -3661,13 +3661,13 @@ export default function FilesScreen() {
   }, [files, decryptedNames]);
 
   /** "+" → New file. The same gates as every other upload: a verified
-   *  recovery phrase, and an unlocked vault — a locked vault is offered an
+   *  master key, and an unlocked vault — a locked vault is offered an
    *  unlock (Face ID / keychain) rather than a plaintext path. */
   const openNewFileSheet = useCallback(() => {
     if (!phraseVerified) {
       Alert.alert(
-        'Save your recovery phrase first',
-        'Verify your recovery phrase before creating files. Go to Settings → Security to complete verification.',
+        'Save your master key first',
+        'Verify your master key before creating files. Go to Settings → Security to complete verification.',
         [{ text: 'OK' }],
       );
       return;

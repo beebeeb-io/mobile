@@ -152,7 +152,7 @@ export default function PhraseNotConfirmedScreen() {
         }),
       });
       if (outcome === 'mismatch') {
-        setError("That phrase doesn't match this account. Check the words and try again.");
+        setError("These words don't match your master key. Check them against what you saved.");
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         return;
       }
@@ -183,10 +183,10 @@ export default function PhraseNotConfirmedScreen() {
 
         {step === 'choice' && (
           <>
-            <Text style={styles.heading}>Confirm your recovery phrase</Text>
+            <Text style={styles.heading}>Confirm your master key</Text>
             <Text style={styles.body}>
               This device closed before you finished setting up your account. We can't show your
-              recovery phrase again — it's shown once, at signup, and never stored anywhere, not
+              master key again — it's shown once, at signup, and never stored anywhere, not
               even by us.
             </Text>
             <View style={styles.warning}>
@@ -219,7 +219,7 @@ export default function PhraseNotConfirmedScreen() {
 
         {step === 'verify' && (
           <>
-            <Text style={styles.heading}>Enter your recovery phrase</Text>
+            <Text style={styles.heading}>Enter your master key</Text>
             <Text style={styles.body}>
               Enter all 12 words in order to confirm this is the account you created.
             </Text>
@@ -230,7 +230,7 @@ export default function PhraseNotConfirmedScreen() {
               </View>
             )}
 
-            <Text style={styles.label}>Recovery phrase</Text>
+            <Text style={styles.label}>Master key</Text>
             <TextInput
               style={styles.input}
               value={phrase}
@@ -247,7 +247,7 @@ export default function PhraseNotConfirmedScreen() {
               returnKeyType="done"
               editable={!verifying}
               testID="phrase-not-confirmed-input"
-              accessibilityLabel="Recovery phrase field"
+              accessibilityLabel="Master key field"
             />
             <Text style={styles.counter}>{words.length}/{RECOVERY_WORD_COUNT} words</Text>
 
@@ -261,7 +261,7 @@ export default function PhraseNotConfirmedScreen() {
                 accessibilityState={{ disabled: !canSubmit, busy: verifying }}
                 testID="phrase-not-confirmed-submit"
               >
-                {verifying ? <ActivityIndicator color={c.ink} /> : <Text style={styles.buttonText}>Verify phrase</Text>}
+                {verifying ? <ActivityIndicator color={c.ink} /> : <Text style={styles.buttonText}>Verify master key</Text>}
               </TouchableOpacity>
             </View>
 

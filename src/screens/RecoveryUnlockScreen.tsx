@@ -45,7 +45,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 const UNLOCK_TIMEOUT_MS = 20_000;
 
 export default function RecoveryUnlockScreen() {
-  // Block screenshots/screen recording — user types their recovery phrase here.
+  // Block screenshots/screen recording — user types their master key here.
   usePreventScreenCapture('recovery-unlock');
   const navigation = useNavigation<Nav>();
   const insets = useSafeAreaInsets();
@@ -168,7 +168,7 @@ export default function RecoveryUnlockScreen() {
           // Task 1594: the phrase was checked against THIS account — say so.
           : message === PHRASE_WRONG_ACCOUNT_MESSAGE || message === OWNERSHIP_UNREACHABLE_MESSAGE
             ? message
-            : 'That recovery phrase did not unlock this vault. Check the words and order.',
+            : 'That master key did not unlock this vault. Check the words and order.',
       );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } finally {
@@ -211,7 +211,7 @@ export default function RecoveryUnlockScreen() {
           </View>
         )}
 
-        <Text style={styles.label}>Recovery phrase</Text>
+        <Text style={styles.label}>Master key</Text>
         <TextInput
           style={styles.input}
           value={phrase}
@@ -224,7 +224,7 @@ export default function RecoveryUnlockScreen() {
           textContentType="none"
           returnKeyType="done"
           testID="recovery-phrase-input"
-          accessibilityLabel="Recovery phrase field"
+          accessibilityLabel="Master key field"
         />
         <Text style={styles.counter}>{words.length}/{RECOVERY_WORD_COUNT} words</Text>
 

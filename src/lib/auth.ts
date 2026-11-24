@@ -8,7 +8,7 @@ export interface AuthContextValue {
   /** Sign out — clears token and resets state. */
   signOut: () => Promise<void>;
   /**
-   * True once the user has verified their recovery phrase (or for legacy users
+   * True once the user has verified their master key (or for legacy users
    * who pre-date the phrase flow). Persisted in SecureStore across restarts.
    */
   phraseVerified: boolean;

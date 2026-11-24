@@ -534,7 +534,7 @@ describe('1594 round 2 (F1) — an unbound key never sends recovery_check', () =
   });
 });
 
-describe('1594 — the recovery phrase must belong to the signed-in account', () => {
+describe('1594 — the master key must belong to the signed-in account', () => {
   test("B entering A's phrase is refused and nothing is stored", async () => {
     server.sessionUser = USER_B;
     const render = mountProvider(USER_B);

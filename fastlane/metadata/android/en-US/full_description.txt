@@ -1,6 +1,6 @@
 Beebeeb is cloud storage that cannot read your files.
 
-Every file, photo and folder name is encrypted on your phone before it leaves it. We store data we cannot decrypt. That also means we cannot recover your files if you lose both your password and your recovery phrase. We tell you this up front because it is what real privacy costs.
+Every file, photo and folder name is encrypted on your phone before it leaves it. We store data we cannot decrypt. That also means we cannot recover your files if you lose both your password and your master key. We tell you this up front because it is what real privacy costs.
 
 STORED IN EUROPE
 
@@ -30,7 +30,7 @@ HOW IT WORKS
 - Files are encrypted with AES-256-GCM on your phone, before upload
 - Your keys are made on your own devices. We never hold them in a form we can use.
 - File names are encrypted too, not only the contents
-- Your recovery phrase is the only way back in if you forget your password. Keep it somewhere safe. We cannot reset it for you.
+- Your master key is the only way back in if you forget your password. Keep it somewhere safe. We cannot reset it for you.
 
 OPEN, NOT HIDDEN
 

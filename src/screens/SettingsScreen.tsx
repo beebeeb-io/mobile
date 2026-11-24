@@ -2106,7 +2106,7 @@ export default function SettingsScreen() {
             />
           </View>
           <SectionNote
-            text="Your recovery phrase is shown once during account setup and is not stored on this device. Use the copy you saved offline."
+            text="Your master key is shown once during account setup and is not stored on this device. Use the copy you saved offline."
             c={c}
           />
           <SectionNote

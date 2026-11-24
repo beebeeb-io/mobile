@@ -23,7 +23,7 @@ describe('1704 — RecoveryUnlockScreen uses the canonical "Vault locked" landin
 
   test('honest two-tier subtitle: password = account, 12-word phrase = vault', () => {
     // Names the phrase as THE vault-unlock path…
-    expect(VAULT_LOCKED_LANDING_SUBTITLE).toContain('12-word recovery phrase');
+    expect(VAULT_LOCKED_LANDING_SUBTITLE).toContain('12-word master key');
     // …and keeps the account/vault tier split honest.
     expect(VAULT_LOCKED_LANDING_SUBTITLE).toContain('password');
     // Never implies the password can decrypt the vault (1704 core promise).

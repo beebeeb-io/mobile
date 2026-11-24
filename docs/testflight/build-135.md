@@ -15,14 +15,14 @@ Quick happy-path sweep — nothing under here is allowed to break. If any step f
 | # | Step | Pass criterion |
 |---|---|---|
 | 1.1 | Cold launch the app from a clean install | Onboarding splash loads in < 2 s, no white screen |
-| 1.2 | Sign up: tap "Create account", enter email + password, accept ToS | OPAQUE signup succeeds; 12-word recovery phrase appears |
+| 1.2 | Sign up: tap "Create account", enter email + password, accept ToS | OPAQUE signup succeeds; 12-word master key appears |
 | 1.3 | Verify 3 random words of the phrase as prompted | Verification accepts the correct words; tapping wrong words shows error |
 | 1.4 | Complete onboarding → land on Files tab | Files tab renders with empty state |
 | 1.5 | Tap "Add file or folder" → "Upload photo" → grant Photos access → pick any photo | Upload progresses; file appears with decrypted filename + thumbnail |
 | 1.6 | Tap the uploaded photo | Preview renders the actual image, Details panel shows Size / Chunks / "Decrypted on this device" |
 | 1.7 | Sign out via Settings → confirm | App returns to login screen |
 | 1.8 | Sign back in with the same email + password | Files tab loads with the uploaded photo still present |
-| 1.9 | Force-quit the app (swipe up) and relaunch | App auto-unlocks (Face ID/Touch ID prompt if enabled, or silent); no recovery phrase re-entry needed |
+| 1.9 | Force-quit the app (swipe up) and relaunch | App auto-unlocks (Face ID/Touch ID prompt if enabled, or silent); no master key re-entry needed |
 
 ---
 
@@ -34,8 +34,8 @@ Vault unlock has multiple paths. Each must reach a usable Files tab without leav
 |---|---|---|---|
 | 2.1 | Signed in, Face ID enabled | Cold launch | Single Face ID prompt → Files tab. Face ID does NOT fire on every tab switch (regression from earlier fix) |
 | 2.2 | Signed in, biometrics OFF | Cold launch | Silent keychain auto-unlock → Files tab. No prompt. |
-| 2.3 | Signed in, but device was wiped / fresh install of the IPA | Cold launch | App detects missing master key → automatically navigates to "Enter recovery phrase" screen (NOT a blank screen) |
-| 2.4 | On the recovery phrase screen from 2.3 | Enter the 12 words | Vault unlocks, Files tab loads with all previously uploaded files |
+| 2.3 | Signed in, but device was wiped / fresh install of the IPA | Cold launch | App detects missing master key → automatically navigates to "Enter master key" screen (NOT a blank screen) |
+| 2.4 | On the master key screen from 2.3 | Enter the 12 words | Vault unlocks, Files tab loads with all previously uploaded files |
 
 > **Known limitation:** on first install when the Photos tab is opened before anything else, ensure no crash about "documentDirectory" (regression check for 0446).
 
@@ -86,11 +86,11 @@ These are the share-extension cluster — must work on a real device because the
 
 ### 4.3 64a4416 clipboard auto-expiry for secrets
 
-1. Settings → Account → "Show recovery phrase". Authenticate.
+1. Settings → Account → "Show master key". Authenticate.
 2. The phrase appears. Tap "Copy to clipboard".
 3. Open **Notes.app**. Paste. The 12 words should appear. ✓
 4. Wait **60 seconds** without interacting with Beebeeb (you can switch to another app, just don't tap inside Beebeeb).
-5. After 60 s, switch back to Notes. Try to paste again. **Pass criterion:** the clipboard is empty (or contains the previous clipboard value), NOT the recovery phrase.
+5. After 60 s, switch back to Notes. Try to paste again. **Pass criterion:** the clipboard is empty (or contains the previous clipboard value), NOT the master key.
 6. Repeat for: Settings → Security → "Set up two-factor auth" → during the QR step there's a "Copy secret" button. Same 60 s auto-expiry should apply.
 7. Repeat for: 2FA backup codes screen → "Copy all codes". Same expiry.
 
