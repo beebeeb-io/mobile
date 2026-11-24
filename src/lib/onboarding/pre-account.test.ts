@@ -18,8 +18,8 @@ describe('canSignUpNatively', () => {
     expect(canSignUpNatively(doc('pre_account.ios', native))).toBe(true);
     expect(canSignUpNatively(doc('pre_account.web'))).toBe(true);
   });
-  test('the iOS fixture itself (web_only, not allowed) -> no', () => {
-    expect(canSignUpNatively(doc('pre_account.ios'))).toBe(false);
+  test('the iOS fixture itself (native, allowed) -> yes', () => {
+    expect(canSignUpNatively(doc('pre_account.ios'))).toBe(true);
   });
   test('web_only, not allowed, handoff, or an update_required client -> no', () => {
     expect(canSignUpNatively(doc('pre_account.ios', (r) => { native(r); r.signup.mode = 'web_only'; }))).toBe(false);

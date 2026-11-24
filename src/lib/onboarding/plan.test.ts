@@ -20,13 +20,13 @@ function doc(name, mutate) {
   return r.doc;
 }
 
-const PRE = ['enter_email', 'verify_email_code', 'accept_terms', 'set_password', 'save_recovery_phrase', 'create_account'];
+const PRE = ['enter_email', 'verify_email_code', 'accept_terms', 'save_recovery_phrase', 'set_password', 'create_account'];
 
 describe('pre-account order', () => {
-  test('the iOS fixture as the server emits it (web_only) has no native signup to plan', () => {
+  test('the iOS fixture as the server emits it (native) plans the first signup step', () => {
     const r = parseOnboardingDocument(loadFixture('pre_account.ios'));
     expect(r.ok).toBe(true);
-    expect(planScreen(r.doc, new Set()).kind).toBe('signup_unavailable');
+    expect(planScreen(r.doc, new Set()).kind).toBe('step');
   });
   test('walks the six steps in document order, one at a time, position n of 6', () => {
     const d = doc('pre_account.ios');
@@ -62,7 +62,7 @@ describe('pre-account order', () => {
   test('going back (undoing a step) returns to it', () => {
     const d = doc('pre_account.ios');
     const done = new Set(['enter_email', 'verify_email_code', 'accept_terms']);
-    expect(planScreen(d, done).stepId).toBe('set_password');
+    expect(planScreen(d, done).stepId).toBe('save_recovery_phrase');
     done.delete('verify_email_code');
     expect(planScreen(d, done).stepId).toBe('verify_email_code');
   });
