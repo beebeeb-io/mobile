@@ -60,9 +60,9 @@ describe('the iOS pre-account document', () => {
     const d = doc();
     expect(d.stage).toBe('pre_account');
     expect(d.signup).toEqual({
-      allowed: false,
-      mode: 'web_only',
-      reason: 'signup_web_only',
+      allowed: true,
+      mode: 'native',
+      reason: null,
       webUrl: 'https://app.beebeeb.io/signup',
     });
     expect(d.policy.password.minLength).toBe(12);
@@ -74,8 +74,8 @@ describe('the iOS pre-account document', () => {
       'enter_email',
       'verify_email_code',
       'accept_terms',
-      'set_password',
       'save_recovery_phrase',
+      'set_password',
       'create_account',
     ]);
   });
