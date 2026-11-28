@@ -136,6 +136,56 @@ final class NativeUploadProgress: NSObject, URLSessionTaskDelegate, @unchecked S
   }
 }
 
+/// The one 429 pause every manual upload in the process shares (the epic's
+/// Client pause rule; the numbers mirror `rate_limit_wait_ms` in beebeeb-core
+/// `retry.rs`). All methods are synchronous, so the lock never spans a
+/// suspension point.
+private final class ManualUploadRatePause: @unchecked Sendable {
+  private static let floorMs: UInt64 = 2_000
+  private static let capMs: UInt64 = 60_000
+  private static let jitterPercent: UInt64 = 25
+
+  private let lock = NSLock()
+  private var pausedUntil: Date = .distantPast
+  /// Consecutive pauses started without a non-429 answer in between.
+  private var streak: UInt32 = 0
+
+  /// How long a request must still wait before it may be sent (<= 0: go).
+  func remaining() -> TimeInterval {
+    lock.lock()
+    defer { lock.unlock() }
+    return pausedUntil.timeIntervalSinceNow
+  }
+
+  /// A 429 came back for a request sent at `sentAt`. Starts a pause unless
+  /// one already covers it: a refusal that arrives while a pause runs, or for
+  /// a request that left before the last pause ended, neither starts nor
+  /// doubles one.
+  func rateLimited(hintSeconds: UInt64?, sentAt: Date) {
+    lock.lock()
+    defer { lock.unlock() }
+    if sentAt < pausedUntil { return }
+    let waitMs = Self.waitMs(streak: streak, hintSeconds: hintSeconds, jitterPermille: UInt64.random(in: 0...1000))
+    pausedUntil = Date().addingTimeInterval(Double(waitMs) / 1000)
+    streak += 1
+  }
+
+  /// Any non-429 answer ends the run of refusals.
+  func answered() {
+    lock.lock()
+    streak = 0
+    lock.unlock()
+  }
+
+  /// `base = max(min(floor << streak, cap), hint)`, plus 0-25 % jitter on top.
+  private static func waitMs(streak: UInt32, hintSeconds: UInt64?, jitterPermille: UInt64) -> UInt64 {
+    let ladder = min(floorMs << UInt64(min(streak, 5)), capMs)
+    let hintMs = min(hintSeconds ?? 0, NativeManualUploader.policyRefusalSeconds) * 1000
+    let base = max(ladder, hintMs)
+    return base + base * jitterPercent * min(jitterPermille, 1000) / 100_000
+  }
+}
+
 final class NativeManualUploader {
   static let shared = NativeManualUploader()
 
@@ -148,6 +198,11 @@ final class NativeManualUploader {
   private static let requestSpacing: TimeInterval = 0.12
   /// AES-256-GCM frame overhead per chunk: 12-byte nonce + 16-byte tag.
   private static let frameOverheadBytes = 28
+  /// A 429 whose wait hint is above this is a policy refusal, not a pause.
+  fileprivate static let policyRefusalSeconds: UInt64 = 60
+  /// One pause for every manual upload in the process, whichever instance
+  /// sends the request.
+  private static let ratePause = ManualUploadRatePause()
 
   struct Request {
     let masterKey: MasterKeyHandle
@@ -275,16 +330,28 @@ final class NativeManualUploader {
     while true {
       attempt += 1
       if progress.isCancelled { throw NativeUploadFailure.cancelled }
+      try await waitForRatePause(progress: progress)
       await enforceSpacing()
       do {
+        let sentAt = Date()
         let (body, response) = try await session.upload(for: request, from: frame, delegate: progress)
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
+        if status != 429 { Self.ratePause.answered() }
         if (200..<300).contains(status) { return }
         let (code, message) = Self.parseErrorBody(body, status: status)
-        let retryable = status == 429 || status >= 500
-        if retryable && attempt < Self.maxAttemptsPerChunk {
-          try await Self.backoff(attempt: attempt, retryAfter: Self.retryAfterSeconds(http))
+        if status == 429 {
+          let hint = Self.rateLimitHintSeconds(http, body: body)
+          // `banned`, or a wait above 60 s, is a policy refusal: no pause, no retry.
+          if code == "banned" || (hint ?? 0) > Self.policyRefusalSeconds {
+            throw NativeUploadFailure(status: status, code: code, message: message)
+          }
+          Self.ratePause.rateLimited(hintSeconds: hint, sentAt: sentAt)
+          if attempt < Self.maxAttemptsPerChunk { continue }
+          throw NativeUploadFailure(status: status, code: code, message: message)
+        }
+        if status >= 500 && attempt < Self.maxAttemptsPerChunk {
+          try await Self.backoff(attempt: attempt, retryAfter: Self.retryAfterSeconds(http).map { min($0, 60) })
           continue
         }
         throw NativeUploadFailure(status: status, code: code, message: message)
@@ -298,6 +365,18 @@ final class NativeManualUploader {
         }
         throw NativeUploadFailure(status: 0, code: "network", message: urlError.localizedDescription)
       }
+    }
+  }
+
+  /// Holds the request until the shared 429 pause is over. Sleeps in short
+  /// slices so a cancel is noticed, and re-reads the pause each time: another
+  /// upload may have started one meanwhile.
+  private func waitForRatePause(progress: NativeUploadProgress) async throws {
+    while true {
+      let remaining = Self.ratePause.remaining()
+      if remaining <= 0 { return }
+      if progress.isCancelled { throw NativeUploadFailure.cancelled }
+      try await Task.sleep(nanoseconds: UInt64(min(remaining, 0.5) * 1_000_000_000))
     }
   }
 
@@ -326,8 +405,25 @@ final class NativeManualUploader {
 
   private static func retryAfterSeconds(_ response: HTTPURLResponse?) -> TimeInterval? {
     guard let raw = response?.value(forHTTPHeaderField: "Retry-After") else { return nil }
-    if let seconds = TimeInterval(raw), seconds >= 0 { return min(seconds, 60) }
+    if let seconds = TimeInterval(raw.trimmingCharacters(in: .whitespaces)), seconds >= 0, seconds.isFinite {
+      return seconds
+    }
     return nil
+  }
+
+  /// The server's wait hint for a 429: the larger of the `Retry-After` header
+  /// and the body's `retry_after`, in whole seconds (rounded up).
+  private static func rateLimitHintSeconds(_ response: HTTPURLResponse?, body: Data) -> UInt64? {
+    var hint = retryAfterSeconds(response)
+    if
+      let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+      let raw = (object["retry_after"] as? NSNumber)?.doubleValue,
+      raw >= 0, raw.isFinite
+    {
+      hint = max(hint ?? 0, raw)
+    }
+    // Clamp before converting: anything above the refusal line is a refusal anyway.
+    return hint.map { UInt64(min($0, 86_400).rounded(.up)) }
   }
 
   /// Server errors are `{ "error": <machine code>, "message": <human text> }`.
